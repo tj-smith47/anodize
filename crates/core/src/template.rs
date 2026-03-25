@@ -1,19 +1,19 @@
-// Template rendering — supports both Go-style {{ .Field }} and Tera-style {{ Field }}.
-// Auto-detects: if the template contains `{{ .` it uses Go-style, otherwise Tera.
+// Template rendering powered by Tera.
+// Supports both Go-style `{{ .Field }}` and Tera-style `{{ Field }}`.
+// Go-style templates are preprocessed (leading dots stripped) before Tera renders them.
+// Tera gives us: if/else/endif, for loops, pipes (| lower, | upper, | replace),
+// | default, | trim, | title, and many more built-in filters.
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use regex::Regex;
 
-// Go-style: {{ .Field }}, {{ .Env.VAR }}
-static GO_TEMPLATE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\{\{\s*\.(\w+(?:\.\w+)*)\s*\}\}").unwrap()
-});
-
-// Tera-style: {{ Field }}, {{ Env.VAR }} (no leading dot)
-static TERA_TEMPLATE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\{\{\s*(\w+(?:\.\w+)*)\s*\}\}").unwrap()
+/// Regex to find Go-style dot-prefixed references inside `{{ }}` blocks.
+/// Matches `{{ .Field }}`, `{{.Field}}`, `{{ .Env.VAR }}`, and also expressions
+/// like `{{ .Field | filter }}`. We only strip the dot from the variable name.
+static GO_DOT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\{\{(\s*)\.(\w+)").unwrap()
 });
 
 pub struct TemplateVars {
@@ -45,35 +45,40 @@ impl Default for TemplateVars {
     }
 }
 
-/// Auto-detect template style and render.
-/// Default is Tera-style (`{{ Field }}`). If the template contains a leading
-/// dot (`{{ .Field }}`), Go-style is used for GoReleaser migration compatibility.
-pub fn render(template: &str, vars: &TemplateVars) -> Result<String> {
-    let is_go_style = template.contains("{{ .") || template.contains("{{.");
-    let re = if is_go_style { &*GO_TEMPLATE_RE } else { &*TERA_TEMPLATE_RE };
-    render_with_regex(template, vars, re)
+/// Preprocess a template: convert Go-style `{{ .Field }}` to Tera-style `{{ Field }}`.
+/// Handles both `{{ .Field }}` and `{{.Field}}` (no spaces).
+/// Also handles chained access like `{{ .Env.VAR }}` → `{{ Env.VAR }}`.
+fn preprocess(template: &str) -> String {
+    // Replace `{{<optional whitespace>.<word>` with `{{<optional whitespace><word>`
+    // This strips the leading dot while preserving whitespace and the rest of the expression.
+    GO_DOT_RE.replace_all(template, "{{${1}${2}").to_string()
 }
 
-/// Render using a specific regex pattern.
-fn render_with_regex(template: &str, vars: &TemplateVars, re: &Regex) -> Result<String> {
-    let mut result = template.to_string();
-    let matches: Vec<(String, String)> = re
-        .captures_iter(template)
-        .map(|cap| (cap[0].to_string(), cap[1].to_string()))
-        .collect();
-    for (full_match, key) in matches {
-        let value = if let Some(env_key) = key.strip_prefix("Env.") {
-            vars.env
-                .get(env_key)
-                .ok_or_else(|| anyhow::anyhow!("unknown env variable: {}", env_key))?
-        } else {
-            vars.vars
-                .get(&key)
-                .ok_or_else(|| anyhow::anyhow!("unknown template variable: {}", key))?
-        };
-        result = result.replace(&full_match, value);
+/// Build a `tera::Context` from `TemplateVars`.
+/// - Regular vars are inserted at the top level: `ProjectName`, `Version`, etc.
+/// - Env vars are nested under an `Env` key as a HashMap, so `{{ Env.GITHUB_TOKEN }}` works.
+fn build_tera_context(vars: &TemplateVars) -> tera::Context {
+    let mut ctx = tera::Context::new();
+    for (k, v) in &vars.vars {
+        ctx.insert(k.as_str(), v);
     }
-    Ok(result)
+    ctx.insert("Env", &vars.env);
+    ctx
+}
+
+/// Render a template string with the given variables.
+///
+/// Supports both Go-style (`{{ .Field }}`) and native Tera-style (`{{ Field }}`).
+/// Go-style references are preprocessed into Tera-style before rendering.
+///
+/// Because this uses Tera under the hood, all Tera features are available:
+/// conditionals (`{% if %}` / `{% else %}` / `{% endif %}`), loops (`{% for %}`),
+/// filters (`| lower`, `| upper`, `| default`, `| trim`, `| title`, `| replace`, etc.).
+pub fn render(template: &str, vars: &TemplateVars) -> Result<String> {
+    let preprocessed = preprocess(template);
+    let ctx = build_tera_context(vars);
+    tera::Tera::one_off(&preprocessed, &ctx, false)
+        .with_context(|| format!("failed to render template: {}", template))
 }
 
 #[cfg(test)]
