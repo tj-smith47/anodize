@@ -9,3 +9,6 @@ authors.workspace = true
 [dependencies]
 anodize-core.workspace = true
 anyhow.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
