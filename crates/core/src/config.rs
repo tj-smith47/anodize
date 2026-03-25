@@ -92,6 +92,7 @@ pub struct CrateConfig {
     pub tag_template: String,
     pub depends_on: Option<Vec<String>>,
     pub builds: Option<Vec<BuildConfig>>,
+    pub cross: Option<CrossStrategy>,
     #[serde(default, deserialize_with = "deserialize_archives_config")]
     pub archives: ArchivesConfig,
     pub checksum: Option<ChecksumConfig>,
@@ -109,6 +110,7 @@ impl Default for CrateConfig {
             tag_template: String::new(),
             depends_on: None,
             builds: None,
+            cross: None,
             archives: ArchivesConfig::Configs(vec![]),
             checksum: None,
             release: None,

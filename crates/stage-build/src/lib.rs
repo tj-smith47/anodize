@@ -134,7 +134,7 @@ impl Stage for BuildStage {
             .defaults
             .as_ref()
             .and_then(|d| d.cross.clone())
-            .unwrap_or(CrossStrategy::Cargo);
+            .unwrap_or(CrossStrategy::Auto);
         let default_flags: Option<String> = ctx
             .config
             .defaults
@@ -187,8 +187,11 @@ impl Stage for BuildStage {
                     continue;
                 }
 
-                // Strategy: per-build or global default
-                let strategy = default_strategy.clone();
+                // Strategy: per-crate override, else global default
+                let strategy = crate_cfg
+                    .cross
+                    .clone()
+                    .unwrap_or_else(|| default_strategy.clone());
 
                 // Flags: per-build or global default
                 let flags: Option<&str> = build
@@ -204,60 +207,6 @@ impl Stage for BuildStage {
 
                 // Per-target env (target-keyed map in BuildConfig.env)
                 for target in &targets {
-                    // Resolve env for this target
-                    let target_env: HashMap<String, String> = build
-                        .env
-                        .as_ref()
-                        .and_then(|m| m.get(target.as_str()))
-                        .cloned()
-                        .unwrap_or_default();
-
-                    let cmd = build_command(
-                        &build.binary,
-                        &crate_cfg.path,
-                        target,
-                        &strategy,
-                        flags,
-                        &features,
-                        no_default_features,
-                        &target_env,
-                    );
-
-                    if dry_run {
-                        eprintln!(
-                            "[build] (dry-run) {} {}",
-                            cmd.program,
-                            cmd.args.join(" ")
-                        );
-                    } else {
-                        eprintln!(
-                            "[build] running: {} {}",
-                            cmd.program,
-                            cmd.args.join(" ")
-                        );
-                        let status = Command::new(&cmd.program)
-                            .args(&cmd.args)
-                            .envs(&cmd.env)
-                            .current_dir(&cmd.cwd)
-                            .status()
-                            .with_context(|| {
-                                format!(
-                                    "failed to spawn `{} {}`",
-                                    cmd.program,
-                                    cmd.args.join(" ")
-                                )
-                            })?;
-                        if !status.success() {
-                            anyhow::bail!(
-                                "build failed for {}/{} on target {} (exit: {})",
-                                crate_cfg.name,
-                                build.binary,
-                                target,
-                                status
-                            );
-                        }
-                    }
-
                     // Determine the binary path
                     // Flags may contain --release; check for it
                     let profile = if flags
@@ -276,24 +225,38 @@ impl Stage for BuildStage {
                         build.binary.clone()
                     };
 
-                    let bin_path = PathBuf::from(&crate_cfg.path)
-                        .join("target")
+                    // Workspace root target directory (not per-crate)
+                    let bin_path = PathBuf::from("target")
                         .join(target)
                         .join(profile)
                         .join(&bin_name);
 
-                    // Handle copy_from: binary aliasing
+                    // Handle copy_from: skip compilation, just copy from source binary
                     let final_path = if let Some(src_binary) = &build.copy_from {
                         let src_name = if os == "windows" {
                             format!("{}.exe", src_binary)
                         } else {
                             src_binary.clone()
                         };
-                        let src_path = PathBuf::from(&crate_cfg.path)
-                            .join("target")
-                            .join(target)
-                            .join(profile)
-                            .join(&src_name);
+
+                        // Find the source path: check registered artifacts first,
+                        // then fall back to the expected workspace target path
+                        let src_path = ctx
+                            .artifacts
+                            .by_kind(ArtifactKind::Binary)
+                            .into_iter()
+                            .find(|a| {
+                                a.target.as_deref() == Some(target.as_str())
+                                    && a.metadata.get("binary").map(|b| b.as_str())
+                                        == Some(src_binary.as_str())
+                            })
+                            .map(|a| a.path.clone())
+                            .unwrap_or_else(|| {
+                                PathBuf::from("target")
+                                    .join(target)
+                                    .join(profile)
+                                    .join(&src_name)
+                            });
 
                         if !dry_run {
                             std::fs::copy(&src_path, &bin_path).with_context(|| {
@@ -312,6 +275,60 @@ impl Stage for BuildStage {
                         }
                         bin_path.clone()
                     } else {
+                        // No copy_from: run the build command
+                        let target_env: HashMap<String, String> = build
+                            .env
+                            .as_ref()
+                            .and_then(|m| m.get(target.as_str()))
+                            .cloned()
+                            .unwrap_or_default();
+
+                        let cmd = build_command(
+                            &build.binary,
+                            &crate_cfg.path,
+                            target,
+                            &strategy,
+                            flags,
+                            &features,
+                            no_default_features,
+                            &target_env,
+                        );
+
+                        if dry_run {
+                            eprintln!(
+                                "[build] (dry-run) {} {}",
+                                cmd.program,
+                                cmd.args.join(" ")
+                            );
+                        } else {
+                            eprintln!(
+                                "[build] running: {} {}",
+                                cmd.program,
+                                cmd.args.join(" ")
+                            );
+                            let status = Command::new(&cmd.program)
+                                .args(&cmd.args)
+                                .envs(&cmd.env)
+                                .current_dir(&cmd.cwd)
+                                .status()
+                                .with_context(|| {
+                                    format!(
+                                        "failed to spawn `{} {}`",
+                                        cmd.program,
+                                        cmd.args.join(" ")
+                                    )
+                                })?;
+                            if !status.success() {
+                                anyhow::bail!(
+                                    "build failed for {}/{} on target {} (exit: {})",
+                                    crate_cfg.name,
+                                    build.binary,
+                                    target,
+                                    status
+                                );
+                            }
+                        }
+
                         bin_path
                     };
 
