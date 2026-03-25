@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 use anyhow::{Context as _, Result};
 use regex::Regex;
+use tera::Value;
 
 /// Regex to find Go-style dot-prefixed references inside `{{ }}` blocks.
 /// Matches `{{ .Field }}`, `{{.Field}}`, `{{ .Env.VAR }}`, and also expressions
@@ -57,10 +58,15 @@ fn preprocess(template: &str) -> String {
 /// Build a `tera::Context` from `TemplateVars`.
 /// - Regular vars are inserted at the top level: `ProjectName`, `Version`, etc.
 /// - Env vars are nested under an `Env` key as a HashMap, so `{{ Env.GITHUB_TOKEN }}` works.
+/// - String values of `"true"` / `"false"` are inserted as bools so `{% if Var %}` works.
 fn build_tera_context(vars: &TemplateVars) -> tera::Context {
     let mut ctx = tera::Context::new();
     for (k, v) in &vars.vars {
-        ctx.insert(k.as_str(), v);
+        match v.as_str() {
+            "true" => ctx.insert(k.as_str(), &true),
+            "false" => ctx.insert(k.as_str(), &false),
+            _ => ctx.insert(k.as_str(), v),
+        }
     }
     ctx.insert("Env", &vars.env);
     ctx
@@ -74,10 +80,65 @@ fn build_tera_context(vars: &TemplateVars) -> tera::Context {
 /// Because this uses Tera under the hood, all Tera features are available:
 /// conditionals (`{% if %}` / `{% else %}` / `{% endif %}`), loops (`{% for %}`),
 /// filters (`| lower`, `| upper`, `| default`, `| trim`, `| title`, `| replace`, etc.).
+///
+/// Custom GoReleaser-compat filters are registered:
+/// - `tolower` / `toupper` — aliases for Tera's built-in `lower` / `upper`
+/// - `trimprefix(prefix="v")` — strip a prefix from a string
+/// - `trimsuffix(suffix=".exe")` — strip a suffix from a string
 pub fn render(template: &str, vars: &TemplateVars) -> Result<String> {
     let preprocessed = preprocess(template);
     let ctx = build_tera_context(vars);
-    tera::Tera::one_off(&preprocessed, &ctx, false)
+
+    let mut tera = tera::Tera::default();
+
+    // GoReleaser-compat aliases
+    tera.register_filter(
+        "tolower",
+        |value: &Value, _: &HashMap<String, Value>| {
+            let s = tera::try_get_value!("tolower", "value", String, value);
+            Ok(Value::String(s.to_lowercase()))
+        },
+    );
+    tera.register_filter(
+        "toupper",
+        |value: &Value, _: &HashMap<String, Value>| {
+            let s = tera::try_get_value!("toupper", "value", String, value);
+            Ok(Value::String(s.to_uppercase()))
+        },
+    );
+
+    // trimprefix(prefix="...") — strip prefix from a string
+    tera.register_filter(
+        "trimprefix",
+        |value: &Value, args: &HashMap<String, Value>| {
+            let s = tera::try_get_value!("trimprefix", "value", String, value);
+            let prefix = args
+                .get("prefix")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tera::Error::msg("trimprefix requires a `prefix` argument"))?;
+            let result = s.strip_prefix(prefix).unwrap_or(&s);
+            Ok(Value::String(result.to_string()))
+        },
+    );
+
+    // trimsuffix(suffix="...") — strip suffix from a string
+    tera.register_filter(
+        "trimsuffix",
+        |value: &Value, args: &HashMap<String, Value>| {
+            let s = tera::try_get_value!("trimsuffix", "value", String, value);
+            let suffix = args
+                .get("suffix")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tera::Error::msg("trimsuffix requires a `suffix` argument"))?;
+            let result = s.strip_suffix(suffix).unwrap_or(&s);
+            Ok(Value::String(result.to_string()))
+        },
+    );
+
+    tera.add_raw_template("__inline__", &preprocessed)
+        .with_context(|| format!("failed to parse template: {}", template))?;
+
+    tera.render("__inline__", &ctx)
         .with_context(|| format!("failed to render template: {}", template))
 }
 
@@ -170,5 +231,103 @@ mod tests {
         let vars = test_vars();
         let result = render("{{ Missing }}", &vars);
         assert!(result.is_err());
+    }
+
+    // --- Task 1B: custom filters and extended template tests ---
+
+    #[test]
+    fn test_conditional_true() {
+        let mut vars = test_vars();
+        vars.set("IsSnapshot", "true");
+        let result = render("{% if IsSnapshot %}SNAP{% endif %}", &vars).unwrap();
+        assert_eq!(result, "SNAP");
+    }
+
+    #[test]
+    fn test_conditional_false_else() {
+        let mut vars = test_vars();
+        vars.set("IsSnapshot", "false");
+        let result =
+            render("{% if IsSnapshot %}SNAP{% else %}RELEASE{% endif %}", &vars).unwrap();
+        assert_eq!(result, "RELEASE");
+    }
+
+    #[test]
+    fn test_pipe_lower() {
+        let vars = test_vars();
+        let result = render("{{ Version | lower }}", &vars).unwrap();
+        assert_eq!(result, "1.2.3");
+    }
+
+    #[test]
+    fn test_pipe_upper() {
+        let vars = test_vars();
+        let result = render("{{ ProjectName | upper }}", &vars).unwrap();
+        assert_eq!(result, "CFGD");
+    }
+
+    #[test]
+    fn test_tolower_alias() {
+        let vars = test_vars();
+        let result = render("{{ ProjectName | tolower }}", &vars).unwrap();
+        assert_eq!(result, "cfgd");
+    }
+
+    #[test]
+    fn test_toupper_alias() {
+        let vars = test_vars();
+        let result = render("{{ ProjectName | toupper }}", &vars).unwrap();
+        assert_eq!(result, "CFGD");
+    }
+
+    #[test]
+    fn test_trimprefix() {
+        let vars = test_vars();
+        let result = render("{{ Tag | trimprefix(prefix=\"v\") }}", &vars).unwrap();
+        assert_eq!(result, "1.2.3");
+    }
+
+    #[test]
+    fn test_trimprefix_no_match() {
+        let vars = test_vars();
+        let result = render("{{ Tag | trimprefix(prefix=\"x\") }}", &vars).unwrap();
+        assert_eq!(result, "v1.2.3");
+    }
+
+    #[test]
+    fn test_trimsuffix() {
+        let vars = test_vars();
+        let result = render("{{ ProjectName | trimsuffix(suffix=\"gd\") }}", &vars).unwrap();
+        assert_eq!(result, "cf");
+    }
+
+    #[test]
+    fn test_trimsuffix_no_match() {
+        let vars = test_vars();
+        let result = render("{{ ProjectName | trimsuffix(suffix=\"xyz\") }}", &vars).unwrap();
+        assert_eq!(result, "cfgd");
+    }
+
+    #[test]
+    fn test_default_value_for_undefined() {
+        let vars = test_vars();
+        let result =
+            render("{{ Undefined | default(value=\"fallback\") }}", &vars).unwrap();
+        assert_eq!(result, "fallback");
+    }
+
+    #[test]
+    fn test_bad_syntax_error() {
+        let vars = test_vars();
+        let result = render("{{ unclosed", &vars);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_nested_env_conditional() {
+        let vars = test_vars();
+        let result =
+            render("{% if Env.GITHUB_TOKEN %}has token{% endif %}", &vars).unwrap();
+        assert_eq!(result, "has token");
     }
 }
