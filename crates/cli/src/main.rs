@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use anyhow::Result;
+use colored::Colorize;
 
 mod commands;
 mod pipeline;
@@ -52,9 +53,9 @@ enum Commands {
     },
 }
 
-fn main() -> Result<()> {
+fn main() {
     let cli = Cli::parse();
-    match cli.command {
+    let result = match cli.command {
         Commands::Release { crate_names, all, force, snapshot, dry_run, clean, skip, token } => {
             commands::release::run(commands::release::ReleaseOpts {
                 crate_names, all, force, snapshot, dry_run, clean, skip, token,
@@ -65,5 +66,13 @@ fn main() -> Result<()> {
         Commands::Check => commands::check::run(),
         Commands::Init => commands::init::run(),
         Commands::Changelog { crate_name } => commands::changelog::run(crate_name),
+    };
+    if let Err(e) = result {
+        eprintln!("{} {}", "Error:".red().bold(), e);
+        // Print the error chain
+        for cause in e.chain().skip(1) {
+            eprintln!("  {} {}", "caused by:".dimmed(), cause);
+        }
+        std::process::exit(1);
     }
 }

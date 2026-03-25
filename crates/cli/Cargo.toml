@@ -24,5 +24,10 @@ anodize-stage-sign.workspace = true
 anodize-stage-announce.workspace = true
 anyhow.workspace = true
 clap.workspace = true
+colored.workspace = true
+serde.workspace = true
 serde_yaml.workspace = true
 toml.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

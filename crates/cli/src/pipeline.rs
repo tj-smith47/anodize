@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
-use anyhow::{Result, bail};
+use std::process::Command;
+use anyhow::{Context as _, Result, bail};
+use colored::Colorize;
 use anodize_core::config::Config;
 use anodize_core::context::Context;
 use anodize_core::stage::Stage;
@@ -30,6 +32,32 @@ pub fn load_config(path: &Path) -> Result<Config> {
     }
 }
 
+/// Execute a list of shell hook commands.
+/// In dry-run mode, log but do not execute.
+pub fn run_hooks(hooks: &[String], label: &str, dry_run: bool) -> Result<()> {
+    for hook in hooks {
+        if dry_run {
+            eprintln!("  [dry-run] {} hook: {}", label, hook);
+        } else {
+            eprintln!("  running {} hook: {}", label, hook);
+            let status = Command::new("sh")
+                .arg("-c")
+                .arg(hook)
+                .status()
+                .with_context(|| format!("failed to spawn {} hook: {}", label, hook))?;
+            if !status.success() {
+                bail!(
+                    "{} hook failed (exit {}): {}",
+                    label,
+                    status.code().unwrap_or(-1),
+                    hook
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 pub struct Pipeline {
     stages: Vec<Box<dyn Stage>>,
 }
@@ -43,13 +71,19 @@ impl Pipeline {
 
     pub fn run(&self, ctx: &mut Context) -> Result<()> {
         for stage in &self.stages {
+            let name = stage.name().bold();
             if ctx.should_skip(stage.name()) {
-                eprintln!("  \u{2022} skipping {}", stage.name());
+                eprintln!("  {} {}", name, "skipped".yellow());
                 continue;
             }
-            eprintln!("  \u{2022} running {}...", stage.name());
-            stage.run(ctx)?;
-            eprintln!("  \u{2713} {}", stage.name());
+            eprintln!("  \u{2022} {}...", name);
+            match stage.run(ctx) {
+                Ok(()) => eprintln!("  {} {}", "\u{2713}".green().bold(), name),
+                Err(e) => {
+                    eprintln!("  {} {} — {}", "\u{2717}".red().bold(), name, e);
+                    return Err(e);
+                }
+            }
         }
         Ok(())
     }
