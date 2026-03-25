@@ -381,6 +381,15 @@ pub struct NfpmConfig {
     pub description: Option<String>,
     pub license: Option<String>,
     pub bindir: Option<String>,
+    pub contents: Option<Vec<NfpmContent>>,
+    pub dependencies: Option<HashMap<String, Vec<String>>>,
+    pub overrides: Option<HashMap<String, serde_yaml::Value>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NfpmContent {
+    pub src: String,
+    pub dst: String,
 }
 
 // ---------------------------------------------------------------------------
