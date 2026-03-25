@@ -22,7 +22,7 @@ path = "src/main.rs"
 
 /// Helper to create an anodize.yaml config
 fn create_config(dir: &std::path::Path, content: &str) {
-    fs::write(dir.join("anodize.yaml"), content).unwrap();
+    fs::write(dir.join(".anodize.yaml"), content).unwrap();
 }
 
 /// Helper to init git repo with a tag

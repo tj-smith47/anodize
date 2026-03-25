@@ -9,8 +9,8 @@ use anodize_core::stage::Stage;
 /// Find config file in current directory
 pub fn find_config() -> Result<PathBuf> {
     let candidates = [
-        "anodize.yaml", "anodize.yml", "anodize.toml",
         ".anodize.yaml", ".anodize.yml", ".anodize.toml",
+        "anodize.yaml", "anodize.yml", "anodize.toml",
     ];
     for name in &candidates {
         let path = PathBuf::from(name);
