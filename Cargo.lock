@@ -28,6 +28,8 @@ dependencies = [
  "anodize-stage-sign",
  "anyhow",
  "clap",
+ "serde_yaml",
+ "toml",
 ]
 
 [[package]]
