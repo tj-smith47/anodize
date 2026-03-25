@@ -39,6 +39,7 @@ pub fn build_docker_command(
     staging_dir: &str,
     platforms: &[&str],
     tags: &[&str],
+    extra_flags: &[String],
     dry_run: bool,
 ) -> Vec<String> {
     let mut cmd: Vec<String> = vec![
@@ -57,10 +58,14 @@ pub fn build_docker_command(
         cmd.push(tag.to_string());
     }
 
-    // --push or --load
-    if dry_run {
-        cmd.push("--load".to_string());
-    } else {
+    // Extra build flags (rendered build_flag_templates)
+    for flag in extra_flags {
+        cmd.push(flag.clone());
+    }
+
+    // --push in live mode; omit both --push and --load in dry-run
+    // (--load is incompatible with multi-platform builds)
+    if !dry_run {
         cmd.push("--push".to_string());
     }
 
@@ -267,10 +272,22 @@ impl Stage for DockerStage {
                     rendered_tags.iter().map(|s| s.as_str()).collect();
                 let staging_str = staging_dir.to_string_lossy().into_owned();
 
+                // Render build_flag_templates
+                let mut extra_flags = Vec::new();
+                if let Some(ref flag_templates) = docker_cfg.build_flag_templates {
+                    for tmpl in flag_templates {
+                        let rendered = ctx.render_template(tmpl).with_context(|| {
+                            format!("docker: render build_flag_template '{}'", tmpl)
+                        })?;
+                        extra_flags.push(rendered);
+                    }
+                }
+
                 let cmd_args = build_docker_command(
                     &staging_str,
                     &platform_refs,
                     &tag_refs,
+                    &extra_flags,
                     dry_run,
                 );
 
@@ -348,7 +365,8 @@ mod tests {
             "/tmp/staging",
             &["linux/amd64", "linux/arm64"],
             &["ghcr.io/owner/app:v1.0.0", "ghcr.io/owner/app:latest"],
-            false, // not dry-run, so push
+            &[],
+            false,
         );
         assert!(cmd.contains(&"buildx".to_string()));
         assert!(cmd.contains(&"build".to_string()));
@@ -363,9 +381,10 @@ mod tests {
             "/tmp/staging",
             &["linux/amd64"],
             &["ghcr.io/owner/app:v1.0.0"],
-            true, // dry-run, so --load instead of --push
+            &[],
+            true,
         );
-        assert!(cmd.contains(&"--load".to_string()));
+        // In dry-run, neither --push nor --load (--load incompatible with multi-platform)
         assert!(!cmd.contains(&"--push".to_string()));
     }
 
@@ -392,6 +411,7 @@ mod tests {
             "/tmp/ctx",
             &["linux/amd64"],
             &["my-image:latest"],
+            &[],
             false,
         );
         assert_eq!(cmd[0], "docker");
@@ -407,6 +427,7 @@ mod tests {
             "/tmp/ctx",
             &["linux/amd64", "linux/arm64"],
             &["repo/img:v1.0.0", "repo/img:latest"],
+            &[],
             false,
         );
         // Both tags should appear after --tag flags
