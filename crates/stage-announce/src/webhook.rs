@@ -1,22 +1,16 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
-use serde_json::json;
-
 // ---------------------------------------------------------------------------
 // Body builder
 // ---------------------------------------------------------------------------
 
 /// Build the request body for a generic HTTP webhook.
 ///
-/// For `application/json` (and the default case) this returns
-/// `{"text": "<message>"}`.  Other content-types get the raw message string.
-pub(crate) fn webhook_body(message: &str, content_type: &str) -> String {
-    if content_type.contains("json") || content_type.is_empty() {
-        json!({ "text": message }).to_string()
-    } else {
-        message.to_string()
-    }
+/// The user's rendered `message_template` is sent as the raw body.
+/// For generic webhooks the user controls the full payload shape.
+pub(crate) fn webhook_body(message: &str, _content_type: &str) -> String {
+    message.to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -66,9 +60,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_webhook_no_custom_template_uses_default() {
-        let body = webhook_body("myapp v1.0.0 released!", "application/json");
+    fn test_webhook_body_is_raw_message() {
+        // Generic webhook sends user's template as raw body
+        let body = webhook_body(r#"{"project":"myapp","tag":"v1.0.0"}"#, "application/json");
         let json: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(json["text"], "myapp v1.0.0 released!");
+        assert_eq!(json["project"], "myapp");
+        assert_eq!(json["tag"], "v1.0.0");
     }
 }

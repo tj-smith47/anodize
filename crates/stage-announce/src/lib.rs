@@ -33,11 +33,11 @@ impl Stage for AnnounceStage {
         // ----------------------------------------------------------------
         if let Some(discord_cfg) = &announce.discord
             && discord_cfg.enabled.unwrap_or(false) {
-                let url = discord_cfg
+                let raw_url = discord_cfg
                     .webhook_url
                     .as_deref()
-                    .ok_or_else(|| anyhow::anyhow!("announce.discord: missing webhook_url"))?
-                    .to_string();
+                    .ok_or_else(|| anyhow::anyhow!("announce.discord: missing webhook_url"))?;
+                let url = ctx.render_template(raw_url)?;
 
                 let tmpl = discord_cfg
                     .message_template
@@ -59,11 +59,11 @@ impl Stage for AnnounceStage {
         // ----------------------------------------------------------------
         if let Some(slack_cfg) = &announce.slack
             && slack_cfg.enabled.unwrap_or(false) {
-                let url = slack_cfg
+                let raw_url = slack_cfg
                     .webhook_url
                     .as_deref()
-                    .ok_or_else(|| anyhow::anyhow!("announce.slack: missing webhook_url"))?
-                    .to_string();
+                    .ok_or_else(|| anyhow::anyhow!("announce.slack: missing webhook_url"))?;
+                let url = ctx.render_template(raw_url)?;
 
                 let tmpl = slack_cfg
                     .message_template
@@ -85,11 +85,11 @@ impl Stage for AnnounceStage {
         // ----------------------------------------------------------------
         if let Some(webhook_cfg) = &announce.webhook
             && webhook_cfg.enabled.unwrap_or(false) {
-                let url = webhook_cfg
+                let raw_url = webhook_cfg
                     .endpoint_url
                     .as_deref()
-                    .ok_or_else(|| anyhow::anyhow!("announce.webhook: missing endpoint_url"))?
-                    .to_string();
+                    .ok_or_else(|| anyhow::anyhow!("announce.webhook: missing endpoint_url"))?;
+                let url = ctx.render_template(raw_url)?;
 
                 let tmpl = webhook_cfg
                     .message_template
@@ -98,10 +98,14 @@ impl Stage for AnnounceStage {
 
                 let message = ctx.render_template(tmpl)?;
 
-                let headers: HashMap<String, String> = webhook_cfg
+                let raw_headers = webhook_cfg
                     .headers
                     .clone()
                     .unwrap_or_default();
+                let mut headers = HashMap::new();
+                for (k, v) in &raw_headers {
+                    headers.insert(k.clone(), ctx.render_template(v)?);
+                }
 
                 let content_type = webhook_cfg
                     .content_type
