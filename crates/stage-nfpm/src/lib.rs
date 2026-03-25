@@ -1,10 +1,450 @@
+use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
+use std::process::Command;
+
+use anyhow::{Context as _, Result};
+
+use anodize_core::artifact::{Artifact, ArtifactKind};
+use anodize_core::config::NfpmConfig;
 use anodize_core::context::Context;
 use anodize_core::stage::Stage;
-use anyhow::Result;
+
+// ---------------------------------------------------------------------------
+// generate_nfpm_yaml
+// ---------------------------------------------------------------------------
+
+/// Generate an nfpm YAML configuration string from the anodize nfpm config.
+pub fn generate_nfpm_yaml(config: &NfpmConfig, version: &str, binary_path: &str) -> String {
+    let mut lines: Vec<String> = Vec::new();
+
+    // Required fields
+    if let Some(name) = &config.package_name {
+        lines.push(format!("name: {name}"));
+    }
+    lines.push(format!("version: {version}"));
+
+    // Optional metadata
+    if let Some(vendor) = &config.vendor {
+        lines.push(format!("vendor: {vendor}"));
+    }
+    if let Some(homepage) = &config.homepage {
+        lines.push(format!("homepage: {homepage}"));
+    }
+    if let Some(maintainer) = &config.maintainer {
+        lines.push(format!("maintainer: {maintainer}"));
+    }
+    if let Some(description) = &config.description {
+        lines.push(format!("description: {description}"));
+    }
+    if let Some(license) = &config.license {
+        lines.push(format!("license: {license}"));
+    }
+
+    // Contents section — always include the binary
+    lines.push("contents:".to_string());
+    let bindir = config
+        .bindir
+        .as_deref()
+        .unwrap_or("/usr/local/bin");
+    let binary_name = PathBuf::from(binary_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("binary")
+        .to_string();
+    lines.push(format!("  - src: {binary_path}"));
+    lines.push(format!("    dst: {bindir}/{binary_name}"));
+
+    // Extra contents from config
+    if let Some(contents) = &config.contents {
+        for entry in contents {
+            lines.push(format!("  - src: {}", entry.src));
+            lines.push(format!("    dst: {}", entry.dst));
+        }
+    }
+
+    // Per-format overrides
+    if let Some(overrides) = &config.overrides
+        && !overrides.is_empty()
+    {
+        lines.push("overrides:".to_string());
+        for (fmt, val) in overrides {
+            lines.push(format!("  {fmt}:"));
+            if let Some(obj) = val.as_object() {
+                for (k, v) in obj {
+                    lines.push(format!("    {k}: {v}"));
+                }
+            }
+        }
+    }
+
+    // Per-format dependencies
+    if let Some(deps) = &config.dependencies
+        && !deps.is_empty()
+    {
+        lines.push("dependencies:".to_string());
+        for (fmt, dep_list) in deps {
+            lines.push(format!("  {fmt}:"));
+            for dep in dep_list {
+                lines.push(format!("    - {dep}"));
+            }
+        }
+    }
+
+    lines.join("\n")
+}
+
+// ---------------------------------------------------------------------------
+// nfpm_command
+// ---------------------------------------------------------------------------
+
+/// Construct the nfpm CLI command arguments.
+pub fn nfpm_command(config_path: &str, format: &str, output_dir: &str) -> Vec<String> {
+    vec![
+        "nfpm".to_string(),
+        "pkg".to_string(),
+        "--config".to_string(),
+        config_path.to_string(),
+        "--packager".to_string(),
+        format.to_string(),
+        "--target".to_string(),
+        output_dir.to_string(),
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// NfpmStage
+// ---------------------------------------------------------------------------
 
 pub struct NfpmStage;
 
 impl Stage for NfpmStage {
-    fn name(&self) -> &str { "nfpm" }
-    fn run(&self, _ctx: &mut Context) -> Result<()> { todo!() }
+    fn name(&self) -> &str {
+        "nfpm"
+    }
+
+    fn run(&self, ctx: &mut Context) -> Result<()> {
+        let selected = ctx.options.selected_crates.clone();
+        let dry_run = ctx.options.dry_run;
+        let dist = ctx.config.dist.clone();
+
+        // Collect crates that have nfpm config
+        let crates: Vec<_> = ctx
+            .config
+            .crates
+            .iter()
+            .filter(|c| selected.is_empty() || selected.contains(&c.name))
+            .filter(|c| c.nfpm.is_some())
+            .cloned()
+            .collect();
+
+        if crates.is_empty() {
+            return Ok(());
+        }
+
+        // Resolve version from template vars
+        let version = ctx
+            .template_vars()
+            .get("Version")
+            .cloned()
+            .unwrap_or_else(|| "0.0.0".to_string());
+
+        let mut new_artifacts: Vec<Artifact> = Vec::new();
+
+        for krate in &crates {
+            let nfpm_configs = krate.nfpm.as_ref().unwrap();
+
+            // Collect binary artifacts for this crate to find the binary path
+            let binaries: Vec<_> = ctx
+                .artifacts
+                .by_kind_and_crate(ArtifactKind::Binary, &krate.name)
+                .into_iter()
+                .cloned()
+                .collect();
+
+            // Use the first linux binary, or fall back to a default path
+            let binary_path = binaries
+                .iter()
+                .find(|b| {
+                    b.target
+                        .as_deref()
+                        .map(|t| t.contains("linux"))
+                        .unwrap_or(false)
+                })
+                .or_else(|| binaries.first())
+                .map(|b| b.path.to_string_lossy().into_owned())
+                .unwrap_or_else(|| format!("dist/{}", krate.name));
+
+            for nfpm_cfg in nfpm_configs {
+                // Generate YAML content
+                let yaml_content = generate_nfpm_yaml(nfpm_cfg, &version, &binary_path);
+
+                for format in &nfpm_cfg.formats {
+                    // Ensure output directory exists
+                    let output_dir = dist.join("linux");
+                    if !dry_run {
+                        fs::create_dir_all(&output_dir).with_context(|| {
+                            format!("create nfpm output dir: {}", output_dir.display())
+                        })?;
+                    }
+
+                    if dry_run {
+                        eprintln!(
+                            "[nfpm] (dry-run) would run: nfpm pkg --packager {format} for crate {}",
+                            krate.name
+                        );
+                        // Register a placeholder artifact path
+                        let pkg_name = nfpm_cfg
+                            .package_name
+                            .as_deref()
+                            .unwrap_or(&krate.name);
+                        let ext = format_extension(format);
+                        let pkg_path = output_dir.join(format!("{pkg_name}_{version}{ext}"));
+                        new_artifacts.push(Artifact {
+                            kind: ArtifactKind::LinuxPackage,
+                            path: pkg_path,
+                            target: None,
+                            crate_name: krate.name.clone(),
+                            metadata: {
+                                let mut m = HashMap::new();
+                                m.insert("format".to_string(), format.clone());
+                                m
+                            },
+                        });
+                        continue;
+                    }
+
+                    // Write temp nfpm YAML config
+                    let tmp_dir = tempfile::tempdir()
+                        .context("create temp dir for nfpm config")?;
+                    let config_path = tmp_dir.path().join("nfpm.yaml");
+                    fs::write(&config_path, &yaml_content)
+                        .with_context(|| {
+                            format!("write nfpm config to {}", config_path.display())
+                        })?;
+
+                    let cmd_args =
+                        nfpm_command(&config_path.to_string_lossy(), format, &output_dir.to_string_lossy());
+
+                    eprintln!(
+                        "[nfpm] running: {}",
+                        cmd_args.join(" ")
+                    );
+
+                    let status = Command::new(&cmd_args[0])
+                        .args(&cmd_args[1..])
+                        .status()
+                        .with_context(|| {
+                            format!("execute nfpm for format {format} (crate {})", krate.name)
+                        })?;
+
+                    if !status.success() {
+                        anyhow::bail!(
+                            "nfpm failed for format {format} (crate {}): exit code {:?}",
+                            krate.name,
+                            status.code()
+                        );
+                    }
+
+                    // Determine expected output file name
+                    let pkg_name = nfpm_cfg
+                        .package_name
+                        .as_deref()
+                        .unwrap_or(&krate.name);
+                    let ext = format_extension(format);
+                    let pkg_path = output_dir.join(format!("{pkg_name}_{version}{ext}"));
+
+                    new_artifacts.push(Artifact {
+                        kind: ArtifactKind::LinuxPackage,
+                        path: pkg_path,
+                        target: None,
+                        crate_name: krate.name.clone(),
+                        metadata: {
+                            let mut m = HashMap::new();
+                            m.insert("format".to_string(), format.clone());
+                            m
+                        },
+                    });
+                }
+            }
+        }
+
+        for artifact in new_artifacts {
+            ctx.artifacts.add(artifact);
+        }
+
+        Ok(())
+    }
+}
+
+/// Return the file extension for a given nfpm packager format.
+fn format_extension(format: &str) -> &str {
+    match format {
+        "deb" => ".deb",
+        "rpm" => ".rpm",
+        "apk" => ".apk",
+        "archlinux" => ".pkg.tar.zst",
+        _ => "",
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+    use std::fs;
+
+    #[test]
+    fn test_generate_nfpm_yaml() {
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            vendor: Some("Test Vendor".to_string()),
+            homepage: Some("https://example.com".to_string()),
+            maintainer: Some("test@example.com".to_string()),
+            description: Some("A test app".to_string()),
+            license: Some("MIT".to_string()),
+            bindir: Some("/usr/bin".to_string()),
+            contents: None,
+            dependencies: None,
+            overrides: None,
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/path/to/binary");
+        assert!(yaml.contains("name: myapp"));
+        assert!(yaml.contains("version: 1.0.0"));
+        assert!(yaml.contains("vendor: Test Vendor"));
+        assert!(yaml.contains("/usr/bin/"));
+    }
+
+    #[test]
+    fn test_nfpm_command() {
+        let cmd = nfpm_command("/tmp/nfpm.yaml", "deb", "/tmp/output");
+        assert_eq!(cmd[0], "nfpm");
+        assert!(cmd.contains(&"pkg".to_string()));
+        assert!(cmd.contains(&"deb".to_string()));
+    }
+
+    #[test]
+    fn test_stage_skips_when_no_nfpm_config() {
+        use anodize_core::config::Config;
+        use anodize_core::context::{Context, ContextOptions};
+
+        // NfpmStage should be a no-op when crates have no nfpm block
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        let stage = NfpmStage;
+        // Should succeed (no-op)
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_generate_nfpm_yaml_with_contents() {
+        use anodize_core::config::NfpmContent;
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["rpm".to_string()],
+            vendor: None,
+            homepage: None,
+            maintainer: None,
+            description: Some("desc".to_string()),
+            license: None,
+            bindir: None,
+            contents: Some(vec![NfpmContent {
+                src: "/src/config".to_string(),
+                dst: "/etc/myapp/config".to_string(),
+            }]),
+            dependencies: None,
+            overrides: None,
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "2.0.0", "/dist/myapp");
+        assert!(yaml.contains("version: 2.0.0"));
+        assert!(yaml.contains("/etc/myapp/config"));
+        assert!(yaml.contains("/usr/local/bin/myapp"));
+    }
+
+    #[test]
+    fn test_nfpm_command_structure() {
+        let cmd = nfpm_command("/etc/nfpm.yaml", "rpm", "/out");
+        assert_eq!(cmd, vec![
+            "nfpm",
+            "pkg",
+            "--config",
+            "/etc/nfpm.yaml",
+            "--packager",
+            "rpm",
+            "--target",
+            "/out",
+        ]);
+    }
+
+    #[test]
+    fn test_stage_dry_run_registers_artifacts() {
+        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string(), "rpm".to_string()],
+            vendor: None,
+            homepage: None,
+            maintainer: None,
+            description: None,
+            license: None,
+            bindir: None,
+            contents: None,
+            dependencies: None,
+            overrides: None,
+        };
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nfpm: Some(vec![nfpm_cfg]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        let stage = NfpmStage;
+        stage.run(&mut ctx).unwrap();
+
+        // In dry-run mode, two artifacts (deb + rpm) should be registered
+        let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+        assert_eq!(pkgs.len(), 2);
+
+        let formats: Vec<&str> = pkgs
+            .iter()
+            .map(|a| a.metadata.get("format").unwrap().as_str())
+            .collect();
+        assert!(formats.contains(&"deb"));
+        assert!(formats.contains(&"rpm"));
+    }
+
+    // Ensure unused import from task spec compiles (tempfile::TempDir is used above)
+    #[test]
+    fn test_tempdir_compiles() {
+        let _tmp = TempDir::new().unwrap();
+        let _path = _tmp.path().join("test.yaml");
+        fs::write(&_path, "test").unwrap();
+        assert!(_path.exists());
+    }
 }
