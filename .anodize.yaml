@@ -1,3 +1,8 @@
+# This config explicitly sets many fields to their default values for dogfooding
+# purposes — to demonstrate and exercise as much of anodize as possible. In
+# practice, you can omit any field that matches the default (e.g., dist, format,
+# algorithm, draft, features, no_default_features, index_timeout, etc.).
+
 project_name: anodize
 dist: ./dist
 
