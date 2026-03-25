@@ -99,11 +99,17 @@ impl Stage for SignStage {
                         &signature_str,
                     );
 
+                    // Also resolve any remaining template variables (e.g., {{ .Env.GPG_FINGERPRINT }})
+                    let fully_resolved: Vec<String> = resolved
+                        .iter()
+                        .map(|arg| ctx.render_template(arg).unwrap_or_else(|_| arg.clone()))
+                        .collect();
+
                     if ctx.is_dry_run() {
                         eprintln!(
                             "[sign] (dry-run) would run: {} {}",
                             cmd,
-                            resolved.join(" ")
+                            fully_resolved.join(" ")
                         );
                         continue;
                     }
@@ -115,7 +121,7 @@ impl Stage for SignStage {
                     );
 
                     let status = Command::new(&cmd)
-                        .args(&resolved)
+                        .args(&fully_resolved)
                         .status()
                         .with_context(|| {
                             format!("sign: failed to spawn '{}' for {}", cmd, artifact_str)
@@ -153,6 +159,15 @@ impl Stage for SignStage {
                         ]
                     });
 
+                let docker_filter = docker_sign_cfg
+                    .artifacts
+                    .as_deref()
+                    .unwrap_or("all");
+
+                if docker_filter == "none" {
+                    continue;
+                }
+
                 let image_paths: Vec<std::path::PathBuf> = ctx
                     .artifacts
                     .by_kind(ArtifactKind::DockerImage)
@@ -173,11 +188,16 @@ impl Stage for SignStage {
                         &signature_str,
                     );
 
+                    let fully_resolved: Vec<String> = resolved
+                        .iter()
+                        .map(|arg| ctx.render_template(arg).unwrap_or_else(|_| arg.clone()))
+                        .collect();
+
                     if ctx.is_dry_run() {
                         eprintln!(
                             "[sign] (dry-run) would run: {} {}",
                             cmd,
-                            resolved.join(" ")
+                            fully_resolved.join(" ")
                         );
                         continue;
                     }
@@ -185,7 +205,7 @@ impl Stage for SignStage {
                     eprintln!("[sign] docker-sign {}", image_str);
 
                     let status = Command::new(&cmd)
-                        .args(&resolved)
+                        .args(&fully_resolved)
                         .status()
                         .with_context(|| {
                             format!(
