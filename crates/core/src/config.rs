@@ -417,6 +417,7 @@ pub struct NfpmConfig {
     pub contents: Option<Vec<NfpmContent>>,
     pub dependencies: Option<HashMap<String, Vec<String>>>,
     pub overrides: Option<HashMap<String, serde_json::Value>>,
+    pub file_name_template: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

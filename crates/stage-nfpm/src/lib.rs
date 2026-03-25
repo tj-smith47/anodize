@@ -154,56 +154,131 @@ impl Stage for NfpmStage {
         for krate in &crates {
             let nfpm_configs = krate.nfpm.as_ref().unwrap();
 
-            // Collect binary artifacts for this crate to find the binary path
-            let binaries: Vec<_> = ctx
+            // Collect all Linux binary artifacts for this crate
+            let linux_binaries: Vec<_> = ctx
                 .artifacts
                 .by_kind_and_crate(ArtifactKind::Binary, &krate.name)
                 .into_iter()
-                .cloned()
-                .collect();
-
-            // Use the first linux binary, or fall back to a default path
-            let binary_path = binaries
-                .iter()
-                .find(|b| {
+                .filter(|b| {
                     b.target
                         .as_deref()
                         .map(|t| t.contains("linux"))
                         .unwrap_or(false)
                 })
-                .or_else(|| binaries.first())
-                .map(|b| b.path.to_string_lossy().into_owned())
-                .unwrap_or_else(|| format!("dist/{}", krate.name));
+                .cloned()
+                .collect();
+
+            // If no linux binaries found, use a single synthetic entry with a default path
+            let effective_binaries: Vec<(Option<String>, String)> = if linux_binaries.is_empty() {
+                vec![(None, format!("dist/{}", krate.name))]
+            } else {
+                linux_binaries
+                    .iter()
+                    .map(|b| (b.target.clone(), b.path.to_string_lossy().into_owned()))
+                    .collect()
+            };
 
             for nfpm_cfg in nfpm_configs {
-                // Generate YAML content
-                let yaml_content = generate_nfpm_yaml(nfpm_cfg, &version, &binary_path);
+                for (target, binary_path) in &effective_binaries {
+                    // Derive Os/Arch from the target triple for template rendering
+                    let (os, arch) = target
+                        .as_deref()
+                        .map(anodize_core::target::map_target)
+                        .unwrap_or_else(|| ("linux".to_string(), "amd64".to_string()));
 
-                for format in &nfpm_cfg.formats {
-                    // Ensure output directory exists
-                    let output_dir = dist.join("linux");
-                    if !dry_run {
-                        fs::create_dir_all(&output_dir).with_context(|| {
-                            format!("create nfpm output dir: {}", output_dir.display())
-                        })?;
-                    }
+                    // Generate YAML content for this specific binary
+                    let yaml_content = generate_nfpm_yaml(nfpm_cfg, &version, binary_path);
 
-                    if dry_run {
-                        eprintln!(
-                            "[nfpm] (dry-run) would run: nfpm pkg --packager {format} for crate {}",
-                            krate.name
-                        );
-                        // Register a placeholder artifact path
+                    for format in &nfpm_cfg.formats {
+                        // Ensure output directory exists
+                        let output_dir = dist.join("linux");
+                        if !dry_run {
+                            fs::create_dir_all(&output_dir).with_context(|| {
+                                format!("create nfpm output dir: {}", output_dir.display())
+                            })?;
+                        }
+
+                        // Determine package file name (template or default)
                         let pkg_name = nfpm_cfg
                             .package_name
                             .as_deref()
                             .unwrap_or(&krate.name);
                         let ext = format_extension(format);
-                        let pkg_path = output_dir.join(format!("{pkg_name}_{version}{ext}"));
+                        let pkg_filename = if let Some(tmpl) = &nfpm_cfg.file_name_template {
+                            // Set Os/Arch in template vars temporarily
+                            ctx.template_vars_mut().set("Os", &os);
+                            ctx.template_vars_mut().set("Arch", &arch);
+                            let rendered = ctx.render_template(tmpl).with_context(|| {
+                                format!(
+                                    "nfpm: render file_name_template for crate {} target {:?}",
+                                    krate.name, target
+                                )
+                            })?;
+                            format!("{rendered}{ext}")
+                        } else {
+                            format!("{pkg_name}_{version}{ext}")
+                        };
+                        let pkg_path = output_dir.join(&pkg_filename);
+
+                        if dry_run {
+                            eprintln!(
+                                "[nfpm] (dry-run) would run: nfpm pkg --packager {format} for crate {} target {:?}",
+                                krate.name, target
+                            );
+                            new_artifacts.push(Artifact {
+                                kind: ArtifactKind::LinuxPackage,
+                                path: pkg_path,
+                                target: target.clone(),
+                                crate_name: krate.name.clone(),
+                                metadata: {
+                                    let mut m = HashMap::new();
+                                    m.insert("format".to_string(), format.clone());
+                                    m
+                                },
+                            });
+                            continue;
+                        }
+
+                        // Write temp nfpm YAML config
+                        let tmp_dir = tempfile::tempdir()
+                            .context("create temp dir for nfpm config")?;
+                        let config_path = tmp_dir.path().join("nfpm.yaml");
+                        fs::write(&config_path, &yaml_content)
+                            .with_context(|| {
+                                format!("write nfpm config to {}", config_path.display())
+                            })?;
+
+                        let cmd_args = nfpm_command(
+                            &config_path.to_string_lossy(),
+                            format,
+                            &output_dir.to_string_lossy(),
+                        );
+
+                        eprintln!("[nfpm] running: {}", cmd_args.join(" "));
+
+                        let status = Command::new(&cmd_args[0])
+                            .args(&cmd_args[1..])
+                            .status()
+                            .with_context(|| {
+                                format!(
+                                    "execute nfpm for format {format} (crate {} target {:?})",
+                                    krate.name, target
+                                )
+                            })?;
+
+                        if !status.success() {
+                            anyhow::bail!(
+                                "nfpm failed for format {format} (crate {} target {:?}): exit code {:?}",
+                                krate.name,
+                                target,
+                                status.code()
+                            );
+                        }
+
                         new_artifacts.push(Artifact {
                             kind: ArtifactKind::LinuxPackage,
                             path: pkg_path,
-                            target: None,
+                            target: target.clone(),
                             crate_name: krate.name.clone(),
                             metadata: {
                                 let mut m = HashMap::new();
@@ -211,60 +286,7 @@ impl Stage for NfpmStage {
                                 m
                             },
                         });
-                        continue;
                     }
-
-                    // Write temp nfpm YAML config
-                    let tmp_dir = tempfile::tempdir()
-                        .context("create temp dir for nfpm config")?;
-                    let config_path = tmp_dir.path().join("nfpm.yaml");
-                    fs::write(&config_path, &yaml_content)
-                        .with_context(|| {
-                            format!("write nfpm config to {}", config_path.display())
-                        })?;
-
-                    let cmd_args =
-                        nfpm_command(&config_path.to_string_lossy(), format, &output_dir.to_string_lossy());
-
-                    eprintln!(
-                        "[nfpm] running: {}",
-                        cmd_args.join(" ")
-                    );
-
-                    let status = Command::new(&cmd_args[0])
-                        .args(&cmd_args[1..])
-                        .status()
-                        .with_context(|| {
-                            format!("execute nfpm for format {format} (crate {})", krate.name)
-                        })?;
-
-                    if !status.success() {
-                        anyhow::bail!(
-                            "nfpm failed for format {format} (crate {}): exit code {:?}",
-                            krate.name,
-                            status.code()
-                        );
-                    }
-
-                    // Determine expected output file name
-                    let pkg_name = nfpm_cfg
-                        .package_name
-                        .as_deref()
-                        .unwrap_or(&krate.name);
-                    let ext = format_extension(format);
-                    let pkg_path = output_dir.join(format!("{pkg_name}_{version}{ext}"));
-
-                    new_artifacts.push(Artifact {
-                        kind: ArtifactKind::LinuxPackage,
-                        path: pkg_path,
-                        target: None,
-                        crate_name: krate.name.clone(),
-                        metadata: {
-                            let mut m = HashMap::new();
-                            m.insert("format".to_string(), format.clone());
-                            m
-                        },
-                    });
                 }
             }
         }
@@ -312,6 +334,7 @@ mod tests {
             contents: None,
             dependencies: None,
             overrides: None,
+            file_name_template: None,
         };
         let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/path/to/binary");
         assert!(yaml.contains("name: myapp"));
@@ -359,6 +382,7 @@ mod tests {
             }]),
             dependencies: None,
             overrides: None,
+            file_name_template: None,
         };
         let yaml = generate_nfpm_yaml(&nfpm_cfg, "2.0.0", "/dist/myapp");
         assert!(yaml.contains("version: 2.0.0"));
@@ -400,6 +424,7 @@ mod tests {
             contents: None,
             dependencies: None,
             overrides: None,
+            file_name_template: None,
         };
 
         let crate_cfg = CrateConfig {

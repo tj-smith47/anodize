@@ -7,6 +7,7 @@ use anyhow::{bail, Context as _, Result};
 use sha2::{Digest, Sha256, Sha512};
 
 use anodize_core::artifact::{Artifact, ArtifactKind};
+use anodize_core::config::ArchivesConfig;
 use anodize_core::context::Context;
 use anodize_core::stage::Stage;
 
@@ -106,6 +107,12 @@ impl Stage for ChecksumStage {
 
         for crate_cfg in &crates {
             let crate_name = &crate_cfg.name;
+
+            // Skip crates that have archives explicitly disabled
+            if matches!(crate_cfg.archives, ArchivesConfig::Disabled) {
+                eprintln!("[checksum] archives disabled for crate {crate_name}, skipping");
+                continue;
+            }
 
             // Per-crate overrides
             let algorithm = crate_cfg
