@@ -247,6 +247,12 @@ pub struct ReleaseConfig {
     pub prerelease: Option<PrereleaseConfig>,
     pub make_latest: Option<MakeLatestConfig>,
     pub name_template: Option<String>,
+    pub header: Option<String>,
+    pub footer: Option<String>,
+    pub extra_files: Option<Vec<String>>,
+    pub skip_upload: Option<bool>,
+    pub replace_existing_draft: Option<bool>,
+    pub replace_existing_artifacts: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -900,5 +906,182 @@ crates:
         let bool_false = MakeLatestConfig::Bool(false);
         let json = serde_json::to_string(&bool_false).unwrap();
         assert_eq!(json, "false");
+    }
+
+    // ---- ReleaseConfig header/footer tests ----
+
+    #[test]
+    fn test_release_header_footer() {
+        let yaml = r###"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    release:
+      header: "## Custom Header"
+      footer: "---\nPowered by anodize"
+"###;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let release = config.crates[0].release.as_ref().unwrap();
+        assert_eq!(release.header, Some("## Custom Header".to_string()));
+        assert_eq!(release.footer, Some("---\nPowered by anodize".to_string()));
+    }
+
+    #[test]
+    fn test_release_header_footer_omitted() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    release:
+      draft: false
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let release = config.crates[0].release.as_ref().unwrap();
+        assert_eq!(release.header, None);
+        assert_eq!(release.footer, None);
+    }
+
+    // ---- ReleaseConfig extra_files tests ----
+
+    #[test]
+    fn test_release_extra_files() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    release:
+      extra_files:
+        - "dist/*.sig"
+        - "CHANGELOG.md"
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let release = config.crates[0].release.as_ref().unwrap();
+        let files = release.extra_files.as_ref().unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0], "dist/*.sig");
+        assert_eq!(files[1], "CHANGELOG.md");
+    }
+
+    #[test]
+    fn test_release_extra_files_omitted() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    release:
+      draft: true
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let release = config.crates[0].release.as_ref().unwrap();
+        assert_eq!(release.extra_files, None);
+    }
+
+    // ---- ReleaseConfig skip_upload tests ----
+
+    #[test]
+    fn test_release_skip_upload() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    release:
+      skip_upload: true
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let release = config.crates[0].release.as_ref().unwrap();
+        assert_eq!(release.skip_upload, Some(true));
+    }
+
+    #[test]
+    fn test_release_skip_upload_false() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    release:
+      skip_upload: false
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let release = config.crates[0].release.as_ref().unwrap();
+        assert_eq!(release.skip_upload, Some(false));
+    }
+
+    // ---- ReleaseConfig replace_existing_draft / replace_existing_artifacts tests ----
+
+    #[test]
+    fn test_release_replace_existing_draft() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    release:
+      replace_existing_draft: true
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let release = config.crates[0].release.as_ref().unwrap();
+        assert_eq!(release.replace_existing_draft, Some(true));
+    }
+
+    #[test]
+    fn test_release_replace_existing_artifacts() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    release:
+      replace_existing_artifacts: true
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let release = config.crates[0].release.as_ref().unwrap();
+        assert_eq!(release.replace_existing_artifacts, Some(true));
+    }
+
+    #[test]
+    fn test_release_all_new_fields() {
+        let yaml = r##"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    release:
+      github:
+        owner: myorg
+        name: myrepo
+      draft: true
+      make_latest: auto
+      header: "# Release Notes"
+      footer: "Thank you!"
+      extra_files:
+        - "dist/extra.zip"
+      skip_upload: false
+      replace_existing_draft: true
+      replace_existing_artifacts: false
+"##;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let release = config.crates[0].release.as_ref().unwrap();
+        assert_eq!(release.header, Some("# Release Notes".to_string()));
+        assert_eq!(release.footer, Some("Thank you!".to_string()));
+        assert_eq!(release.extra_files.as_ref().unwrap(), &["dist/extra.zip"]);
+        assert_eq!(release.skip_upload, Some(false));
+        assert_eq!(release.replace_existing_draft, Some(true));
+        assert_eq!(release.replace_existing_artifacts, Some(false));
+        assert_eq!(release.make_latest, Some(MakeLatestConfig::Auto));
     }
 }
