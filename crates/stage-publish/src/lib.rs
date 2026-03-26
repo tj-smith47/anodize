@@ -303,4 +303,71 @@ mod tests {
         // Should succeed (no-op)
         assert!(PublishStage.run(&mut ctx).is_ok());
     }
+
+    /// Document current behavior: the publish stage does NOT skip homebrew/scoop
+    /// publishing for prerelease versions. It proceeds regardless of whether
+    /// the version contains a prerelease suffix like -rc.1 or -beta.
+    ///
+    /// This is a known limitation: GoReleaser skips homebrew/scoop for prereleases
+    /// by default. If this behavior is added in the future, this test should be
+    /// updated to verify that skipping occurs.
+    #[test]
+    fn test_publish_prerelease_version_proceeds_without_skip() {
+        use anodize_core::context::ContextOptions;
+
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                crates: Some(CratesPublishConfig::Bool(true)),
+                homebrew: Some(HomebrewConfig {
+                    tap: Some(TapConfig {
+                        owner: "org".to_string(),
+                        name: "homebrew-tap".to_string(),
+                    }),
+                    description: Some("A tool".to_string()),
+                    ..Default::default()
+                }),
+                scoop: Some(ScoopConfig {
+                    bucket: Some(BucketConfig {
+                        owner: "org".to_string(),
+                        name: "scoop-bucket".to_string(),
+                    }),
+                    description: Some("A tool".to_string()),
+                    ..Default::default()
+                }),
+            }),
+            ..Default::default()
+        }];
+
+        // Use a prerelease version like v1.0.0-rc.1
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+
+        // Manually set the Version template var to a prerelease string.
+        // The publish stage reads this from template_vars, not from git.
+        ctx.template_vars_mut().set("Version", "1.0.0-rc.1");
+        ctx.template_vars_mut().set("Tag", "v1.0.0-rc.1");
+
+        // The publish stage should succeed in dry-run mode even with
+        // a prerelease version. It does NOT currently skip homebrew/scoop
+        // for prereleases (unlike GoReleaser which does by default).
+        let result = PublishStage.run(&mut ctx);
+        assert!(
+            result.is_ok(),
+            "publish stage should succeed for prerelease versions in dry-run: {:?}",
+            result.err()
+        );
+
+        // NOTE: Known limitation — there is no prerelease-skip logic in the
+        // publish stage. GoReleaser's `brews[].skip_upload` defaults to "auto"
+        // which skips for prereleases. Anodize currently publishes regardless.
+    }
 }

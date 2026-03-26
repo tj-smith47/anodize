@@ -459,9 +459,11 @@ mod tests {
 
     #[test]
     fn test_ids_filter_restricts_signed_artifacts() {
+        // Verify the ids filter logic directly by testing should_sign_artifact
+        // combined with the ids-based metadata check that the stage performs.
         use anodize_core::artifact::{Artifact, ArtifactKind};
 
-        let signs = vec![SignConfig {
+        let sign_cfg = SignConfig {
             id: Some("gpg".to_string()),
             cmd: Some("echo".to_string()),
             args: Some(vec!["sign".to_string()]),
@@ -470,15 +472,12 @@ mod tests {
             signature: None,
             stdin: None,
             stdin_file: None,
-        }];
+        };
 
-        let mut ctx = TestContextBuilder::new()
-            .dry_run(true)
-            .signs(signs)
-            .build();
+        let filter = sign_cfg.artifacts.as_deref().unwrap_or("checksum");
 
-        // Artifact with matching id
-        ctx.artifacts.add(Artifact {
+        // Build test artifacts
+        let matching_artifact = Artifact {
             kind: ArtifactKind::Archive,
             path: std::path::PathBuf::from("/tmp/linux.tar.gz"),
             target: None,
@@ -488,10 +487,9 @@ mod tests {
                 m.insert("id".to_string(), "linux-release".to_string());
                 m
             },
-        });
+        };
 
-        // Artifact without matching id
-        ctx.artifacts.add(Artifact {
+        let non_matching_artifact = Artifact {
             kind: ArtifactKind::Archive,
             path: std::path::PathBuf::from("/tmp/darwin.tar.gz"),
             target: None,
@@ -501,20 +499,86 @@ mod tests {
                 m.insert("id".to_string(), "darwin-release".to_string());
                 m
             },
-        });
+        };
+
+        let no_id_artifact = Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from("/tmp/other.tar.gz"),
+            target: None,
+            crate_name: "test".to_string(),
+            metadata: Default::default(),
+        };
+
+        let wrong_kind_artifact = Artifact {
+            kind: ArtifactKind::Binary,
+            path: std::path::PathBuf::from("/tmp/binary"),
+            target: None,
+            crate_name: "test".to_string(),
+            metadata: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("id".to_string(), "linux-release".to_string());
+                m
+            },
+        };
+
+        // Replicate the stage's filtering logic:
+        // 1. should_sign_artifact(kind, filter) must be true
+        // 2. If ids is set, artifact metadata["id"] must be in ids
+        let ids = &sign_cfg.ids;
+        let should_sign = |a: &Artifact| -> bool {
+            if !should_sign_artifact(a.kind, filter) {
+                return false;
+            }
+            if let Some(id_list) = ids {
+                if let Some(artifact_id) = a.metadata.get("id") {
+                    return id_list.contains(artifact_id);
+                }
+                return false;
+            }
+            true
+        };
+
+        assert!(
+            should_sign(&matching_artifact),
+            "archive with matching id 'linux-release' should be signed"
+        );
+        assert!(
+            !should_sign(&non_matching_artifact),
+            "archive with non-matching id 'darwin-release' should NOT be signed"
+        );
+        assert!(
+            !should_sign(&no_id_artifact),
+            "archive with no id metadata should NOT be signed when ids filter is set"
+        );
+        assert!(
+            !should_sign(&wrong_kind_artifact),
+            "binary with matching id should NOT be signed when filter is 'archive'"
+        );
+
+        // Also run through the stage in dry-run to confirm it completes
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(true)
+            .signs(vec![sign_cfg])
+            .build();
+        ctx.artifacts.add(matching_artifact);
+        ctx.artifacts.add(non_matching_artifact);
+        ctx.artifacts.add(no_id_artifact);
+        ctx.artifacts.add(wrong_kind_artifact);
 
         let stage = SignStage;
-        // Dry-run: the stage should only log the matching artifact
         assert!(stage.run(&mut ctx).is_ok());
     }
 
     #[test]
     fn test_dry_run_logs_without_executing() {
+        // The critical assertion: a nonexistent binary in dry-run mode must NOT
+        // cause an error. If the stage tried to actually execute the binary,
+        // it would fail because /nonexistent/gpg does not exist.
         use anodize_core::artifact::{Artifact, ArtifactKind};
 
         let signs = vec![SignConfig {
             id: Some("gpg".to_string()),
-            cmd: Some("/nonexistent/gpg".to_string()),
+            cmd: Some("/nonexistent/binary/that/does/not/exist".to_string()),
             args: Some(vec![
                 "--output".to_string(),
                 "{{ .Signature }}".to_string(),
@@ -530,7 +594,7 @@ mod tests {
 
         let mut ctx = TestContextBuilder::new()
             .dry_run(true)
-            .signs(signs)
+            .signs(signs.clone())
             .build();
 
         ctx.artifacts.add(Artifact {
@@ -542,8 +606,35 @@ mod tests {
         });
 
         let stage = SignStage;
-        // In dry-run, the nonexistent binary should NOT be executed
-        assert!(stage.run(&mut ctx).is_ok());
+        // This MUST succeed. If dry-run mode were broken and tried to spawn
+        // the nonexistent binary, it would return an error.
+        let result = stage.run(&mut ctx);
+        assert!(
+            result.is_ok(),
+            "dry-run must not execute the signing binary; got error: {:?}",
+            result.err()
+        );
+
+        // Now verify that WITHOUT dry-run, the same config WOULD fail,
+        // proving that dry-run is what prevents execution.
+        let mut ctx_no_dry = TestContextBuilder::new()
+            .dry_run(false)
+            .signs(signs)
+            .build();
+
+        ctx_no_dry.artifacts.add(Artifact {
+            kind: ArtifactKind::Checksum,
+            path: std::path::PathBuf::from("/tmp/checksums.sha256"),
+            target: None,
+            crate_name: "test".to_string(),
+            metadata: Default::default(),
+        });
+
+        let result_no_dry = stage.run(&mut ctx_no_dry);
+        assert!(
+            result_no_dry.is_err(),
+            "without dry-run, a nonexistent binary should cause an error"
+        );
     }
 
     #[test]
