@@ -25,6 +25,8 @@
 //! ```
 
 use std::path::PathBuf;
+
+#[cfg(feature = "test-helpers")]
 use std::sync::Mutex;
 
 // ---------------------------------------------------------------------------
@@ -111,13 +113,16 @@ pub trait GitHubClient {
 }
 
 // ---------------------------------------------------------------------------
-// MockGitHubClient
+// MockGitHubClient (test-only)
 // ---------------------------------------------------------------------------
 
 /// A mock GitHub client that records calls and returns configurable responses.
 ///
 /// All response setters use interior mutability (Mutex) so the mock can be
 /// shared across test code without requiring `&mut`.
+///
+/// Only available when the `test-helpers` feature is enabled.
+#[cfg(feature = "test-helpers")]
 pub struct MockGitHubClient {
     create_release_calls: Mutex<Vec<CreateReleaseParams>>,
     upload_asset_calls: Mutex<Vec<UploadAssetParams>>,
@@ -130,6 +135,7 @@ pub struct MockGitHubClient {
     delete_release_response: Mutex<Option<Result<(), String>>>,
 }
 
+#[cfg(feature = "test-helpers")]
 impl MockGitHubClient {
     /// Create a new mock with no pre-configured responses.
     ///
@@ -214,12 +220,14 @@ impl MockGitHubClient {
     }
 }
 
+#[cfg(feature = "test-helpers")]
 impl Default for MockGitHubClient {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(feature = "test-helpers")]
 impl GitHubClient for MockGitHubClient {
     fn create_release(&self, params: &CreateReleaseParams) -> anyhow::Result<ReleaseInfo> {
         self.create_release_calls
@@ -286,7 +294,7 @@ impl GitHubClient for MockGitHubClient {
 // Tests
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(all(test, feature = "test-helpers"))]
 mod tests {
     use super::*;
 

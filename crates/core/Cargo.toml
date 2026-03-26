@@ -12,6 +12,10 @@ categories.workspace = true
 [features]
 test-helpers = []
 
+[dev-dependencies]
+anodize-core = { path = ".", features = ["test-helpers"] }
+tempfile = "3"
+
 [dependencies]
 anyhow.workspace = true
 serde.workspace = true

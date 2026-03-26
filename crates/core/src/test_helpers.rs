@@ -561,26 +561,20 @@ mod tests {
 
     #[test]
     fn test_create_fake_binary() {
-        let dir = std::env::temp_dir().join("anodize_test_fake_binary");
-        let _ = fs::create_dir_all(&dir);
+        let tmp = tempfile::TempDir::new().unwrap();
 
-        let path = create_fake_binary(&dir, "myapp");
+        let path = create_fake_binary(tmp.path(), "myapp");
         assert!(path.exists());
         let data = fs::read(&path).unwrap();
         assert_eq!(data.len(), 256);
-
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn test_create_fake_binary_nested() {
-        let dir = std::env::temp_dir().join("anodize_test_fake_binary_nested");
-        let _ = fs::create_dir_all(&dir);
+        let tmp = tempfile::TempDir::new().unwrap();
 
-        let path = create_fake_binary(&dir, "subdir/myapp");
+        let path = create_fake_binary(tmp.path(), "subdir/myapp");
         assert!(path.exists());
-
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
