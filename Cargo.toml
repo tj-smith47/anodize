@@ -52,3 +52,6 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 reqwest = { version = "0.12", features = ["blocking"] }
 colored = "2"
 chrono = "0.4"
+xz2 = "0.1"
+zstd = "0.13"
+glob = "0.3"

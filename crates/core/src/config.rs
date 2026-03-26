@@ -214,6 +214,7 @@ pub struct ArchiveConfig {
     pub format_overrides: Option<Vec<FormatOverride>>,
     pub files: Option<Vec<String>>,
     pub binaries: Option<Vec<String>>,
+    pub wrap_in_directory: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
