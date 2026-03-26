@@ -369,32 +369,60 @@ Eliminate the need for a separate tagging action (like `anothrNick/github-tag-ac
 
 ---
 
-## Session 6: Full Audit — Code Quality Gate
+## Session 6: GoReleaser Parity Audit — Comprehensive Comparison
 
-**Depends on:** Session 5 complete.
+**Depends on:** Session 5 complete (extended features implemented).
 
-**Why before publish:** Sessions 1-5 were built fast across many parallel agents. Code quality, consistency, and dead code accumulate. A systematic audit before publishing catches design drift, duplication, unwired features, and cohesion issues that individual task reviews miss. The comprehensive test suite from Session 4 provides a safety net for refactoring.
+**Why here:** Sessions 4 and 5 added features and tests based on an initial gap analysis. Now that the full feature set is implemented, do a thorough side-by-side comparison against GoReleaser's current state — features, config options, CLI behavior, error handling, edge cases — to catch anything that was missed or diverged. This is the last chance to close gaps before the final code quality audit locks everything down.
 
-### Task 6A: Run `/full-audit`
+### Task 6A: Feature-by-feature comparison
+- Clone GoReleaser (https://github.com/goreleaser/goreleaser) and systematically walk through every config section, CLI flag, and stage
+- For each GoReleaser feature, document: does anodize support it? If yes, is the behavior equivalent? If no, is it in scope or intentionally omitted?
+- Produce a parity matrix covering: builds, archives, checksums, changelog, release, docker, nfpm, sign, announce, publish (homebrew, scoop, crates.io), snapshot, hooks, environment, templates, CLI flags
+
+**Done when:** Parity matrix produced. Every GoReleaser feature is categorized as: implemented, partially implemented, intentionally omitted (with reason), or missing (needs work).
+
+### Task 6B: Close identified gaps
+- Implement any "missing" items that should be in the initial release
+- Fix any "partially implemented" items where behavior diverges from GoReleaser in ways that would surprise users
+- Add tests for each fix
+
+### Task 6C: Test coverage for new parity work
+- Every gap closed in 6B gets parsing tests, behavior tests, and error path tests
+- Run coverage report to verify no new blind spots
+
+**Done when:** Parity matrix shows no unintentional gaps. All new work has tests. `cargo test --workspace` and `cargo clippy` pass.
+
+**Session 6 exit criteria:** Comprehensive parity matrix complete. All actionable gaps closed. No surprises left for users coming from GoReleaser.
+
+---
+
+## Session 7: Full Audit — Code Quality Gate
+
+**Depends on:** Session 6 complete.
+
+**Why before publish:** Sessions 1-6 were built fast across many parallel agents. Code quality, consistency, and dead code accumulate. A systematic audit before publishing catches design drift, duplication, unwired features, and cohesion issues that individual task reviews miss. The comprehensive test suite from Sessions 4 and 6 provides a safety net for refactoring.
+
+### Task 7A: Run `/full-audit`
 - Run the full-audit skill which dispatches three parallel agents:
   - **Design + Cohesion review** — inconsistent error handling, parameter styles, logging, naming conventions, cohesion issues across all 12 crates
   - **Duplication scan** — duplicated logic across stage crates, shared code that should be in `core`
   - **Gap analysis** — config fields parsed but never consumed, public functions with no production callers, error variants never constructed
 - All automated checks (fmt, clippy, test) must pass before and after
 
-### Task 6B: Fix all Round 1 findings
+### Task 7B: Fix all Round 1 findings
 - Create task list from aggregated findings
 - Fix all findings in priority order (critical → important → minor)
 - Run test suite after each logical group of changes
 
-### Task 6C: Round 2 verification
+### Task 7C: Round 2 verification
 - Re-run full-audit to catch regressions and issues missed in Round 1
 - Fix any new findings
 - Continue until a round returns zero findings or 3 rounds complete
 
 **Done when:** Full audit returns zero findings. All automated checks pass. No dead code, no duplication, no design inconsistencies across crates.
 
-**Session 6 exit criteria:** Clean full-audit (zero findings across all three scopes). `cargo fmt --check`, `cargo clippy -- -D warnings`, and `cargo test --workspace` all pass. Codebase is publish-ready.
+**Session 7 exit criteria:** Clean full-audit (zero findings across all three scopes). `cargo fmt --check`, `cargo clippy -- -D warnings`, and `cargo test --workspace` all pass. Codebase is publish-ready.
 
 ---
 
