@@ -525,7 +525,7 @@ mod tests {
             checksum: Some(ChecksumConfig {
                 disable: Some(true),
                 algorithm: Some("sha512".to_string()),
-                name_template: None,
+                ..Default::default()
             }),
             ..Default::default()
         });
@@ -541,6 +541,7 @@ mod tests {
             disable: Some(true),
             algorithm: Some("sha512".to_string()),
             name_template: Some("checksums.txt".to_string()),
+            ..Default::default()
         });
         let config = make_config(vec![c]);
         // Should pass (warnings only, not errors)

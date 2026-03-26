@@ -279,6 +279,8 @@ pub struct ChecksumConfig {
     pub name_template: Option<String>,
     pub algorithm: Option<String>,
     pub disable: Option<bool>,
+    pub extra_files: Option<Vec<String>>,
+    pub ids: Option<Vec<String>>,
 }
 
 // ---------------------------------------------------------------------------
