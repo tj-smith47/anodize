@@ -793,21 +793,21 @@ fn test_e2e_init_generates_parseable_yaml() {
     // Verify key fields exist in the parsed YAML
     let map = parsed.as_mapping().expect("parsed YAML should be a mapping");
     assert!(
-        map.contains_key(&serde_yaml::Value::String("project_name".to_string())),
+        map.contains_key(serde_yaml::Value::String("project_name".to_string())),
         "YAML should contain project_name"
     );
     assert!(
-        map.contains_key(&serde_yaml::Value::String("crates".to_string())),
+        map.contains_key(serde_yaml::Value::String("crates".to_string())),
         "YAML should contain crates"
     );
     assert!(
-        map.contains_key(&serde_yaml::Value::String("defaults".to_string())),
+        map.contains_key(serde_yaml::Value::String("defaults".to_string())),
         "YAML should contain defaults"
     );
 
     // Verify the project name matches
     let project_name = map
-        .get(&serde_yaml::Value::String("project_name".to_string()))
+        .get(serde_yaml::Value::String("project_name".to_string()))
         .and_then(|v| v.as_str())
         .unwrap_or("");
     assert_eq!(
@@ -817,7 +817,7 @@ fn test_e2e_init_generates_parseable_yaml() {
 
     // Verify crates section is an array
     let crates = map
-        .get(&serde_yaml::Value::String("crates".to_string()))
+        .get(serde_yaml::Value::String("crates".to_string()))
         .and_then(|v| v.as_sequence())
         .expect("crates should be an array");
     assert!(
