@@ -231,6 +231,7 @@ pub struct FormatOverride {
 pub struct ChecksumConfig {
     pub name_template: Option<String>,
     pub algorithm: Option<String>,
+    pub disable: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -243,6 +244,7 @@ pub struct ReleaseConfig {
     pub github: Option<GitHubConfig>,
     pub draft: Option<bool>,
     pub prerelease: Option<PrereleaseConfig>,
+    pub make_latest: Option<MakeLatestConfig>,
     pub name_template: Option<String>,
 }
 
@@ -288,6 +290,45 @@ impl<'de> Deserialize<'de> for PrereleaseConfig {
             }
         }
         deserializer.deserialize_any(PrereleaseVisitor)
+    }
+}
+
+/// `make_latest` can be the string `"auto"` or a boolean.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MakeLatestConfig {
+    Auto,
+    Bool(bool),
+}
+
+impl Serialize for MakeLatestConfig {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        match self {
+            MakeLatestConfig::Auto => serializer.serialize_str("auto"),
+            MakeLatestConfig::Bool(b) => serializer.serialize_bool(*b),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for MakeLatestConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        struct MakeLatestVisitor;
+        impl serde::de::Visitor<'_> for MakeLatestVisitor {
+            type Value = MakeLatestConfig;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "\"auto\" or a boolean")
+            }
+            fn visit_bool<E: serde::de::Error>(self, v: bool) -> std::result::Result<MakeLatestConfig, E> {
+                Ok(MakeLatestConfig::Bool(v))
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> std::result::Result<MakeLatestConfig, E> {
+                if v == "auto" {
+                    Ok(MakeLatestConfig::Auto)
+                } else {
+                    Err(E::custom(format!("expected \"auto\", got \"{}\"", v)))
+                }
+            }
+        }
+        deserializer.deserialize_any(MakeLatestVisitor)
     }
 }
 
@@ -437,6 +478,9 @@ pub struct ChangelogConfig {
     pub sort: Option<String>,
     pub filters: Option<ChangelogFilters>,
     pub groups: Option<Vec<ChangelogGroup>>,
+    pub header: Option<String>,
+    pub footer: Option<String>,
+    pub disable: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -666,5 +710,194 @@ crates:
         let crates_cfg = config.crates[0].publish.as_ref().unwrap().crates_config();
         assert!(crates_cfg.enabled);
         assert_eq!(crates_cfg.index_timeout, 120);
+    }
+
+    // ---- MakeLatestConfig tests ----
+
+    #[test]
+    fn test_make_latest_auto() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    release:
+      make_latest: auto
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let release = config.crates[0].release.as_ref().unwrap();
+        assert_eq!(release.make_latest, Some(MakeLatestConfig::Auto));
+    }
+
+    #[test]
+    fn test_make_latest_true() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    release:
+      make_latest: true
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let release = config.crates[0].release.as_ref().unwrap();
+        assert_eq!(release.make_latest, Some(MakeLatestConfig::Bool(true)));
+    }
+
+    #[test]
+    fn test_make_latest_false() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    release:
+      make_latest: false
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let release = config.crates[0].release.as_ref().unwrap();
+        assert_eq!(release.make_latest, Some(MakeLatestConfig::Bool(false)));
+    }
+
+    #[test]
+    fn test_make_latest_omitted() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    release:
+      draft: false
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let release = config.crates[0].release.as_ref().unwrap();
+        assert_eq!(release.make_latest, None);
+    }
+
+    #[test]
+    fn test_make_latest_invalid_string() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    release:
+      make_latest: "bogus"
+"#;
+        let result: Result<Config, _> = serde_yaml::from_str(yaml);
+        assert!(result.is_err());
+    }
+
+    // ---- ChangelogConfig header/footer/disable tests ----
+
+    #[test]
+    fn test_changelog_header_footer() {
+        let yaml = r##"
+project_name: test
+changelog:
+  header: "# My Release Notes"
+  footer: "---\nGenerated by anodize"
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"##;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let cl = config.changelog.as_ref().unwrap();
+        assert_eq!(cl.header, Some("# My Release Notes".to_string()));
+        assert_eq!(cl.footer, Some("---\nGenerated by anodize".to_string()));
+    }
+
+    #[test]
+    fn test_changelog_disable() {
+        let yaml = r#"
+project_name: test
+changelog:
+  disable: true
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let cl = config.changelog.as_ref().unwrap();
+        assert_eq!(cl.disable, Some(true));
+    }
+
+    #[test]
+    fn test_changelog_disable_false() {
+        let yaml = r#"
+project_name: test
+changelog:
+  disable: false
+  sort: desc
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let cl = config.changelog.as_ref().unwrap();
+        assert_eq!(cl.disable, Some(false));
+        assert_eq!(cl.sort, Some("desc".to_string()));
+    }
+
+    // ---- ChecksumConfig disable tests ----
+
+    #[test]
+    fn test_checksum_disable() {
+        let yaml = r#"
+project_name: test
+defaults:
+  checksum:
+    disable: true
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let checksum = config.defaults.as_ref().unwrap().checksum.as_ref().unwrap();
+        assert_eq!(checksum.disable, Some(true));
+    }
+
+    #[test]
+    fn test_checksum_disable_per_crate() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    checksum:
+      disable: true
+      algorithm: sha512
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let checksum = config.crates[0].checksum.as_ref().unwrap();
+        assert_eq!(checksum.disable, Some(true));
+        assert_eq!(checksum.algorithm, Some("sha512".to_string()));
+    }
+
+    // ---- MakeLatestConfig serialization roundtrip ----
+
+    #[test]
+    fn test_make_latest_serialize_roundtrip() {
+        let auto = MakeLatestConfig::Auto;
+        let json = serde_json::to_string(&auto).unwrap();
+        assert_eq!(json, "\"auto\"");
+
+        let bool_true = MakeLatestConfig::Bool(true);
+        let json = serde_json::to_string(&bool_true).unwrap();
+        assert_eq!(json, "true");
+
+        let bool_false = MakeLatestConfig::Bool(false);
+        let json = serde_json::to_string(&bool_false).unwrap();
+        assert_eq!(json, "false");
     }
 }

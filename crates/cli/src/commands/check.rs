@@ -102,7 +102,51 @@ pub fn run_checks(config: &Config, check_env: bool) -> Result<()> {
         }
     }
 
-    // 6. Crate path directories exist
+    // 6. Warn if changelog is disabled but has other fields configured
+    if let Some(cl) = &config.changelog
+        && cl.disable == Some(true)
+    {
+        let has_other = cl.sort.is_some()
+            || cl.filters.is_some()
+            || cl.groups.is_some()
+            || cl.header.is_some()
+            || cl.footer.is_some();
+        if has_other {
+            warnings.push(
+                "changelog: disable is true but other changelog fields are also set (they will be ignored)".to_string(),
+            );
+        }
+    }
+
+    // 7. Warn if checksum is disabled but has other fields configured (global defaults)
+    if let Some(defaults) = &config.defaults
+        && let Some(cksum) = &defaults.checksum
+        && cksum.disable == Some(true)
+    {
+        let has_other = cksum.algorithm.is_some() || cksum.name_template.is_some();
+        if has_other {
+            warnings.push(
+                "defaults.checksum: disable is true but other checksum fields are also set (they will be ignored)".to_string(),
+            );
+        }
+    }
+
+    // 8. Warn if per-crate checksum is disabled but has other fields configured
+    for c in &config.crates {
+        if let Some(cksum) = &c.checksum
+            && cksum.disable == Some(true)
+        {
+            let has_other = cksum.algorithm.is_some() || cksum.name_template.is_some();
+            if has_other {
+                warnings.push(format!(
+                    "crate '{}': checksum disable is true but other checksum fields are also set (they will be ignored)",
+                    c.name,
+                ));
+            }
+        }
+    }
+
+    // 9. Crate path directories exist
     for c in &config.crates {
         if !c.path.is_empty() {
             let p = std::path::Path::new(&c.path);
@@ -435,5 +479,57 @@ mod tests {
         let config = make_config(vec![c]);
         let result = run_checks(&config, false);
         assert!(result.is_err());
+    }
+
+    // ---- Contradictory config warning tests ----
+
+    #[test]
+    fn test_check_changelog_disabled_with_other_fields_passes() {
+        use anodize_core::config::{ChangelogConfig, ChangelogGroup};
+        let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
+        config.changelog = Some(ChangelogConfig {
+            disable: Some(true),
+            sort: Some("desc".to_string()),
+            header: Some("header".to_string()),
+            footer: None,
+            filters: None,
+            groups: Some(vec![ChangelogGroup {
+                title: "Features".to_string(),
+                regexp: Some("^feat".to_string()),
+                order: Some(0),
+            }]),
+        });
+        // Should pass (warnings only, not errors)
+        assert!(run_checks(&config, false).is_ok());
+    }
+
+    #[test]
+    fn test_check_checksum_disabled_with_other_fields_passes() {
+        use anodize_core::config::{ChecksumConfig, Defaults};
+        let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
+        config.defaults = Some(Defaults {
+            checksum: Some(ChecksumConfig {
+                disable: Some(true),
+                algorithm: Some("sha512".to_string()),
+                name_template: None,
+            }),
+            ..Default::default()
+        });
+        // Should pass (warnings only, not errors)
+        assert!(run_checks(&config, false).is_ok());
+    }
+
+    #[test]
+    fn test_check_per_crate_checksum_disabled_with_other_fields_passes() {
+        use anodize_core::config::ChecksumConfig;
+        let mut c = make_crate("a", "a-v{{ .Version }}", None);
+        c.checksum = Some(ChecksumConfig {
+            disable: Some(true),
+            algorithm: Some("sha512".to_string()),
+            name_template: Some("checksums.txt".to_string()),
+        });
+        let config = make_config(vec![c]);
+        // Should pass (warnings only, not errors)
+        assert!(run_checks(&config, false).is_ok());
     }
 }

@@ -79,6 +79,20 @@ impl Stage for ChecksumStage {
         let selected = ctx.options.selected_crates.clone();
         let dist = ctx.config.dist.clone();
 
+        // Check global disable flag
+        let global_disabled = ctx
+            .config
+            .defaults
+            .as_ref()
+            .and_then(|d| d.checksum.as_ref())
+            .and_then(|c| c.disable)
+            .unwrap_or(false);
+
+        if global_disabled {
+            eprintln!("[checksum] globally disabled, skipping");
+            return Ok(());
+        }
+
         // Global checksum algorithm/name-template defaults
         let global_algorithm = ctx
             .config
@@ -107,6 +121,12 @@ impl Stage for ChecksumStage {
 
         for crate_cfg in &crates {
             let crate_name = &crate_cfg.name;
+
+            // Skip crates that have checksum explicitly disabled
+            if crate_cfg.checksum.as_ref().and_then(|c| c.disable).unwrap_or(false) {
+                eprintln!("[checksum] disabled for crate {crate_name}, skipping");
+                continue;
+            }
 
             // Skip crates that have archives explicitly disabled
             if matches!(crate_cfg.archives, ArchivesConfig::Disabled) {
@@ -413,6 +433,7 @@ mod tests {
             checksum: Some(ChecksumConfig {
                 algorithm: Some("sha512".to_string()),
                 name_template: None,
+                disable: None,
             }),
             ..Default::default()
         }];
@@ -465,6 +486,97 @@ mod tests {
         let stage = ChecksumStage;
         stage.run(&mut ctx).unwrap();
 
+        let checksums = ctx.artifacts.by_kind(ArtifactKind::Checksum);
+        assert!(checksums.is_empty());
+    }
+
+    #[test]
+    fn test_checksum_stage_global_disable() {
+        use anodize_core::config::{ChecksumConfig, Config, CrateConfig, Defaults};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        fs::create_dir_all(&dist).unwrap();
+
+        let archive_path = dist.join("myapp.tar.gz");
+        fs::write(&archive_path, b"fake archive content").unwrap();
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = dist.clone();
+        config.defaults = Some(Defaults {
+            checksum: Some(ChecksumConfig {
+                algorithm: None,
+                name_template: None,
+                disable: Some(true),
+            }),
+            ..Default::default()
+        });
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: archive_path,
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+        });
+
+        let stage = ChecksumStage;
+        stage.run(&mut ctx).unwrap();
+
+        // No checksums should be generated when globally disabled
+        let checksums = ctx.artifacts.by_kind(ArtifactKind::Checksum);
+        assert!(checksums.is_empty());
+    }
+
+    #[test]
+    fn test_checksum_stage_per_crate_disable() {
+        use anodize_core::config::{ChecksumConfig, Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        fs::create_dir_all(&dist).unwrap();
+
+        let archive_path = dist.join("myapp.tar.gz");
+        fs::write(&archive_path, b"fake archive content").unwrap();
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = dist.clone();
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            checksum: Some(ChecksumConfig {
+                algorithm: Some("sha256".to_string()),
+                name_template: None,
+                disable: Some(true),
+            }),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: archive_path,
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+        });
+
+        let stage = ChecksumStage;
+        stage.run(&mut ctx).unwrap();
+
+        // No checksums should be generated for the disabled crate
         let checksums = ctx.artifacts.by_kind(ArtifactKind::Checksum);
         assert!(checksums.is_empty());
     }
