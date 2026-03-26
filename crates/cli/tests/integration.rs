@@ -112,6 +112,8 @@ fn test_help_output() {
     assert!(stdout.contains("check"));
     assert!(stdout.contains("init"));
     assert!(stdout.contains("changelog"));
+    assert!(stdout.contains("completion"), "help should list completion command");
+    assert!(stdout.contains("healthcheck"), "help should list healthcheck command");
 }
 
 #[test]
@@ -302,6 +304,72 @@ crates:
         "process should have been killed by timeout quickly, but took {:?}",
         elapsed
     );
+}
+
+#[test]
+fn test_completion_bash_produces_output() {
+    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+        .args(["completion", "bash"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "completion bash should succeed: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.is_empty(), "bash completions should not be empty");
+    assert!(stdout.contains("anodize"), "bash completions should reference 'anodize'");
+}
+
+#[test]
+fn test_completion_zsh_produces_output() {
+    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+        .args(["completion", "zsh"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "completion zsh should succeed");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.is_empty(), "zsh completions should not be empty");
+}
+
+#[test]
+fn test_healthcheck_succeeds() {
+    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+        .arg("healthcheck")
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "healthcheck should succeed: {}", String::from_utf8_lossy(&output.stderr));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Health Check"), "healthcheck should print header");
+    assert!(stderr.contains("cargo"), "healthcheck should check cargo");
+}
+
+#[test]
+fn test_release_help_shows_new_flags() {
+    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+        .args(["release", "--help"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--parallelism"), "release --help should show --parallelism: {}", stdout);
+    assert!(stdout.contains("--auto-snapshot"), "release --help should show --auto-snapshot: {}", stdout);
+    assert!(stdout.contains("--single-target"), "release --help should show --single-target: {}", stdout);
+    assert!(stdout.contains("--release-notes"), "release --help should show --release-notes: {}", stdout);
+}
+
+#[test]
+fn test_build_help_shows_new_flags() {
+    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+        .args(["build", "--help"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("--parallelism"), "build --help should show --parallelism: {}", stdout);
+    assert!(stdout.contains("--single-target"), "build --help should show --single-target: {}", stdout);
 }
 
 #[test]

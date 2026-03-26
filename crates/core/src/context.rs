@@ -4,6 +4,7 @@ use crate::git::GitInfo;
 use crate::template::TemplateVars;
 use chrono::Utc;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 #[derive(Default)]
 pub struct ContextOptions {
@@ -14,6 +15,12 @@ pub struct ContextOptions {
     pub skip_stages: Vec<String>,
     pub selected_crates: Vec<String>,
     pub token: Option<String>,
+    /// Maximum number of parallel build jobs.
+    pub parallelism: usize,
+    /// When set, build only for this single host target triple.
+    pub single_target: Option<String>,
+    /// Path to a custom release notes file (overrides changelog).
+    pub release_notes_path: Option<PathBuf>,
 }
 
 pub struct Context {

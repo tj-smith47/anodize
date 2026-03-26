@@ -1,5 +1,7 @@
 pub mod build;
 pub mod changelog;
 pub mod check;
+pub mod completion;
+pub mod healthcheck;
 pub mod init;
 pub mod release;

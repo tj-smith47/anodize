@@ -17,6 +17,9 @@ pub struct ReleaseOpts {
     pub verbose: bool,
     pub debug: bool,
     pub config_override: Option<PathBuf>,
+    pub parallelism: usize,
+    pub single_target: Option<String>,
+    pub release_notes: Option<PathBuf>,
 }
 
 pub fn run(opts: ReleaseOpts) -> Result<()> {
@@ -72,6 +75,9 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
         skip_stages: opts.skip,
         selected_crates: selected_sorted,
         token: opts.token,
+        parallelism: opts.parallelism,
+        single_target: opts.single_target,
+        release_notes_path: opts.release_notes,
     };
     let mut ctx = Context::new(config.clone(), ctx_opts);
     ctx.populate_time_vars();

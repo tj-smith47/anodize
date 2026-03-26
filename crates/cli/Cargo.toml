@@ -24,6 +24,7 @@ anodize-stage-sign.workspace = true
 anodize-stage-announce.workspace = true
 anyhow.workspace = true
 clap.workspace = true
+clap_complete.workspace = true
 colored.workspace = true
 serde.workspace = true
 serde_yaml.workspace = true
