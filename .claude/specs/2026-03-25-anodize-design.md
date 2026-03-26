@@ -361,23 +361,26 @@ Per-target environment variables (linkers, CC, AR) are set via the `env` map in 
 
 ## Template Engine
 
-GoReleaser uses Go's `text/template` with `{{ .FieldName }}` dot-accessor syntax. Jinja2-based engines (`minijinja`, `tera`) do not support this syntax natively.
+GoReleaser uses Go's `text/template` with `{{ .FieldName }}` dot-accessor syntax.
 
 ### Approach
 
-Anodize implements a **lightweight custom template engine** that supports Go-style `{{ .Field }}` syntax directly. This preserves GoReleaser migration compatibility — users can copy template strings from GoReleaser configs with minimal changes. The engine supports:
+Anodize uses the **[Tera](https://keats.github.io/tera/) template engine** with a Go-style preprocessor for migration compatibility. The preprocessor translates Go-style `{{ .Field }}` → `{{ Field }}` before passing templates to Tera, so users can copy template strings from GoReleaser configs without changes. Tera provides:
 
-- **Dot-access variables:** `{{ .ProjectName }}`, `{{ .Version }}`, `{{ .Tag }}`, `{{ .ShortCommit }}`, `{{ .FullCommit }}`
-- **Nested dot-access:** `{{ .Env.VAR }}` — environment variable access
-- **Target-specific:** `{{ .Os }}`, `{{ .Arch }}` — mapped from Rust target triples
-- **Semver components:** `{{ .Major }}`, `{{ .Minor }}`, `{{ .Patch }}`, `{{ .Prerelease }}`
-- **Temporal:** `{{ .Date }}`, `{{ .Timestamp }}`
-- **State:** `{{ .IsSnapshot }}`, `{{ .IsDraft }}`, `{{ .IsNightly }}`
-- **Release:** `{{ .ReleaseURL }}` — URL of the created GitHub release
-- **Signing:** `{{ .Signature }}`, `{{ .Artifact }}` — used in sign stage config
-- Conditionals and loops
+- **Variable substitution:** `{{ ProjectName }}`, `{{ Version }}`, `{{ Tag }}`, `{{ ShortCommit }}`, `{{ FullCommit }}`, `{{ Commit }}`
+- **Nested access:** `{{ Env.VAR }}` — environment variable access
+- **Target-specific:** `{{ Os }}`, `{{ Arch }}` — mapped from Rust target triples
+- **Semver components:** `{{ Major }}`, `{{ Minor }}`, `{{ Patch }}`, `{{ Prerelease }}`
+- **Temporal:** `{{ Date }}`, `{{ Timestamp }}`, `{{ CommitDate }}`, `{{ CommitTimestamp }}`, `{{ Now }}`
+- **State:** `{{ IsSnapshot }}`, `{{ IsDraft }}`, `{{ IsGitDirty }}`, `{{ GitTreeState }}`
+- **Git context:** `{{ Branch }}`, `{{ PreviousTag }}`, `{{ RawVersion }}`
+- **Release:** `{{ ReleaseURL }}` — URL of the created GitHub release
+- **Signing:** `{{ Signature }}`, `{{ Artifact }}` — used in sign stage config
+- **Conditionals:** `{% if IsSnapshot %}...{% endif %}`
+- **Loops:** `{% for item in list %}...{% endfor %}`
+- **Pipe filters:** `{{ Tag | trimprefix(prefix="v") }}`, `{{ Name | toupper }}`
 
-The engine is intentionally minimal — it handles variable substitution, conditionals, and loops. It does not aim to replicate Go's full `text/template` standard library (pipes, custom functions, etc.). If a future need arises for more complex templating, the engine can be extended or swapped for a preprocessor that translates `{{ .Field }}` → `{{ Field }}` before passing to `minijinja`.
+Custom GoReleaser-compatible filters: `tolower`, `toupper`, `trimprefix(prefix=...)`, `trimsuffix(suffix=...)`.
 
 ### Target Triple Mapping
 

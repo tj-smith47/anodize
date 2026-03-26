@@ -2,6 +2,10 @@
 # purposes — to demonstrate and exercise as much of anodize as possible. In
 # practice, you can omit any field that matches the default (e.g., dist, format,
 # algorithm, draft, features, no_default_features, index_timeout, etc.).
+#
+# Templates use Tera syntax with Go-style compat. Tera features used below:
+#   - Pipe filters: {{ Tag | trimprefix(prefix='v') }}
+#   - New variables: {{ RawVersion }}, {{ Branch }}, {{ CommitDate }}, etc.
 
 project_name: anodize
 dist: ./dist
@@ -61,6 +65,7 @@ crates:
         name: anodize
       draft: false
       prerelease: auto
+      make_latest: auto
       name_template: "{{ ProjectName }} {{ Tag }}"
     publish:
       crates:
@@ -95,7 +100,7 @@ crates:
         description: "A Rust-native release automation tool"
         license: MIT
         bindir: /usr/bin
-        file_name_template: "{{ ProjectName }}_{{ Version }}_{{ Os }}_{{ Arch }}"
+        file_name_template: "{{ ProjectName }}_{{ RawVersion }}_{{ Os }}_{{ Arch }}"
         contents:
           - src: LICENSE
             dst: /usr/share/doc/anodize/LICENSE
@@ -103,6 +108,7 @@ crates:
             dst: /usr/share/doc/anodize/README.md
 
 changelog:
+  header: "# Changelog for {{ ProjectName }}"
   sort: asc
   filters:
     exclude:
@@ -136,7 +142,7 @@ sign:
     - "{{ Artifact }}"
 
 snapshot:
-  name_template: "{{ Version }}-SNAPSHOT-{{ ShortCommit }}"
+  name_template: "{{ Tag | trimprefix(prefix='v') }}-SNAPSHOT-{{ ShortCommit }}"
 
 announce:
   discord:

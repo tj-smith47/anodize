@@ -2,6 +2,17 @@
 
 Anodize uses `.anodize.yaml` (or `.anodize.toml`) in your project root. Both formats use the same schema via serde.
 
+## CLI Flags
+
+| Flag | Short | Applies to | Default | Description |
+|------|-------|-----------|---------|-------------|
+| `--config` | `-f` | All commands | `.anodize.yaml` | Path to config file |
+| `--timeout` | — | `release`, `build` | `30m` | Maximum time for the pipeline to run |
+
+## Auto-detection
+
+When `release.github.owner` and `release.github.name` are omitted from the config, anodize will attempt to auto-detect them from the git remote URL (supports both HTTPS and SSH remote formats). You can still set them explicitly to override auto-detection.
+
 ## Full Example
 
 ```yaml
@@ -127,6 +138,7 @@ crates:
           - cfgd-operator
 
 changelog:
+  header: "# Changelog"
   sort: asc
   filters:
     exclude:
@@ -162,7 +174,7 @@ docker_signs:
       - "--yes"
 
 snapshot:
-  name_template: "{{ Version }}-SNAPSHOT-{{ ShortCommit }}"
+  name_template: "{{ Tag | trimprefix(prefix='v') }}-SNAPSHOT-{{ ShortCommit }}"
 
 announce:
   discord:
@@ -244,10 +256,11 @@ announce:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `github.owner` | string | **required** | GitHub repo owner |
-| `github.name` | string | **required** | GitHub repo name |
+| `github.owner` | string | auto-detected | GitHub repo owner (auto-detected from git remote if omitted) |
+| `github.name` | string | auto-detected | GitHub repo name (auto-detected from git remote if omitted) |
 | `draft` | bool | `false` | Create as draft release |
 | `prerelease` | `auto` or bool | `false` | `auto` detects from tag (-rc, -beta, -alpha) |
+| `make_latest` | `auto`, `true`, or `false` | `auto` | Whether to mark release as "latest" on GitHub |
 | `name_template` | string | `{{ Tag }}` | Release name template |
 
 ### `crates[].publish`
@@ -280,9 +293,28 @@ announce:
 | `dependencies` | map | — | Per-format package dependencies (e.g., `deb: [libc6]`) |
 | `overrides` | map | — | Per-format config overrides |
 
+### `changelog`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `header` | string | — | Header text prepended to the changelog (supports templates) |
+| `footer` | string | — | Footer text appended to the changelog (supports templates) |
+| `disable` | bool | `false` | Disable changelog generation entirely |
+| `sort` | string | `asc` | Sort order for commits: `asc` or `desc` |
+| `filters.exclude` | string[] | — | Regex patterns to exclude commits |
+| `groups` | array | — | Commit groups with `title`, `regexp`, `order` |
+
+### `crates[].checksum`
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name_template` | string | `{{ ProjectName }}-{{ Version }}-checksums.txt` | Checksum filename template |
+| `algorithm` | string | `sha256` | Hash algorithm: `sha256` or `sha512` |
+| `disable` | bool | `false` | Disable checksum generation for this crate |
+
 ### Template Variables
 
-Anodize uses Tera-style templates by default (`{{ Field }}`). For GoReleaser migration compatibility, Go-style templates (`{{ Field }}` with a leading dot) are also supported and auto-detected.
+Anodize uses Tera-style templates by default (`{{ Field }}`). For GoReleaser migration compatibility, Go-style templates (`{{ .Field }}` with a leading dot) are also supported and auto-detected.
 
 | Variable | Tera (default) | Go-style (compat) | Description |
 |----------|---------------|-------------------|-------------|
@@ -305,6 +337,36 @@ Anodize uses Tera-style templates by default (`{{ Field }}`). For GoReleaser mig
 | Env.VAR | `{{ Env.VAR }}` | `{{ .Env.VAR }}` | Environment variable |
 | Signature | `{{ Signature }}` | `{{ .Signature }}` | Signature output path (sign stage) |
 | Artifact | `{{ Artifact }}` | `{{ .Artifact }}` | Artifact input path (sign stage) |
+| RawVersion | `{{ RawVersion }}` | `{{ .RawVersion }}` | Version string as-is from Cargo.toml (may include pre-release) |
+| Commit | `{{ Commit }}` | `{{ .Commit }}` | Alias for FullCommit |
+| Branch | `{{ Branch }}` | `{{ .Branch }}` | Current git branch name |
+| PreviousTag | `{{ PreviousTag }}` | `{{ .PreviousTag }}` | Previous matching git tag (or empty) |
+| CommitDate | `{{ CommitDate }}` | `{{ .CommitDate }}` | ISO 8601 author date of HEAD commit |
+| CommitTimestamp | `{{ CommitTimestamp }}` | `{{ .CommitTimestamp }}` | Unix timestamp of HEAD commit |
+| IsGitDirty | `{{ IsGitDirty }}` | `{{ .IsGitDirty }}` | `true` if working tree has uncommitted changes |
+| GitTreeState | `{{ GitTreeState }}` | `{{ .GitTreeState }}` | `clean` or `dirty` |
+| Now | `{{ Now }}` | `{{ .Now }}` | Current UTC time as ISO 8601 |
+
+### Tera Template Features
+
+Anodize uses the [Tera](https://keats.github.io/tera/) template engine. In addition to standard Tera features (conditionals, loops, built-in filters), the following GoReleaser-compatible custom filters are available:
+
+| Filter | Usage | Description |
+|--------|-------|-------------|
+| `tolower` | `{{ "FOO" \| tolower }}` | Convert to lowercase (alias for Tera `lower`) |
+| `toupper` | `{{ "foo" \| toupper }}` | Convert to uppercase (alias for Tera `upper`) |
+| `trimprefix` | `{{ Tag \| trimprefix(prefix="v") }}` | Strip a prefix from a string |
+| `trimsuffix` | `{{ Name \| trimsuffix(suffix=".exe") }}` | Strip a suffix from a string |
+
+**Conditionals example:**
+```yaml
+name_template: "{% if IsSnapshot %}SNAPSHOT-{% endif %}{{ ProjectName }}-{{ Version }}"
+```
+
+**Pipe filters example:**
+```yaml
+name_template: "{{ Tag | trimprefix(prefix='v') }}-{{ Os | tolower }}-{{ Arch }}"
+```
 
 ### Target Triple Mapping
 
