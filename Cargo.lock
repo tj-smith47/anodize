@@ -108,6 +108,7 @@ dependencies = [
  "anyhow",
  "regex",
  "serde_yaml",
+ "tempfile",
 ]
 
 [[package]]

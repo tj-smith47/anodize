@@ -521,6 +521,46 @@ mod tests {
     }
 
     #[test]
+    fn test_publish_to_homebrew_dry_run() {
+        use anodize_core::config::{
+            Config, CrateConfig, HomebrewConfig, PublishConfig, TapConfig,
+        };
+        use anodize_core::context::{Context, ContextOptions};
+
+        let config = Config {
+            crates: vec![CrateConfig {
+                name: "cfgd".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                publish: Some(PublishConfig {
+                    homebrew: Some(HomebrewConfig {
+                        tap: Some(TapConfig {
+                            owner: "myorg".to_string(),
+                            name: "homebrew-tap".to_string(),
+                        }),
+                        description: Some("Declarative config management".to_string()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+
+        // dry-run should succeed without any network/git calls
+        assert!(publish_to_homebrew(&ctx, "cfgd").is_ok());
+    }
+
+    #[test]
     fn test_integration_formula_multiline_install() {
         let formula = generate_formula(
             "complex-app",

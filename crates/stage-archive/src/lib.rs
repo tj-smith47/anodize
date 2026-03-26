@@ -1165,6 +1165,20 @@ crates:
     // Deep integration tests: realistic file trees, verify archive contents
     // -----------------------------------------------------------------------
 
+    /// Helper: read all entries from a tar archive into a HashMap of name -> content.
+    fn read_tar_entries<R: std::io::Read>(archive: tar::Archive<R>) -> HashMap<String, Vec<u8>> {
+        let mut found_files = HashMap::new();
+        let mut archive = archive;
+        for entry in archive.entries().unwrap() {
+            let mut entry = entry.unwrap();
+            let name = entry.path().unwrap().to_string_lossy().to_string();
+            let mut content = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut content).unwrap();
+            found_files.insert(name, content);
+        }
+        found_files
+    }
+
     /// Helper: create a realistic file tree with a binary, LICENSE, and README.
     fn create_realistic_file_tree(dir: &Path) -> (PathBuf, PathBuf, PathBuf) {
         let bin = dir.join("myapp");
@@ -1193,16 +1207,7 @@ crates:
         // Open the archive and verify all files are present with correct names
         let file = File::open(&archive_path).unwrap();
         let dec = flate2::read::GzDecoder::new(file);
-        let mut tar = tar::Archive::new(dec);
-
-        let mut found_files: HashMap<String, Vec<u8>> = HashMap::new();
-        for entry in tar.entries().unwrap() {
-            let mut entry = entry.unwrap();
-            let name = entry.path().unwrap().to_string_lossy().to_string();
-            let mut content = Vec::new();
-            std::io::Read::read_to_end(&mut entry, &mut content).unwrap();
-            found_files.insert(name, content);
-        }
+        let found_files = read_tar_entries(tar::Archive::new(dec));
 
         assert_eq!(found_files.len(), 3, "archive should contain exactly 3 files");
         assert!(found_files.contains_key("myapp"), "should contain myapp binary");
@@ -1290,16 +1295,7 @@ crates:
         // Open the archive and verify all files
         let file = File::open(&archive_path).unwrap();
         let dec = xz2::read::XzDecoder::new(file);
-        let mut tar = tar::Archive::new(dec);
-
-        let mut found_files: HashMap<String, Vec<u8>> = HashMap::new();
-        for entry in tar.entries().unwrap() {
-            let mut entry = entry.unwrap();
-            let name = entry.path().unwrap().to_string_lossy().to_string();
-            let mut content = Vec::new();
-            std::io::Read::read_to_end(&mut entry, &mut content).unwrap();
-            found_files.insert(name, content);
-        }
+        let found_files = read_tar_entries(tar::Archive::new(dec));
 
         assert_eq!(found_files.len(), 3, "tar.xz should contain exactly 3 files");
         assert!(found_files.contains_key("myapp"));
@@ -1335,16 +1331,7 @@ crates:
 
         let file = File::open(&archive_path).unwrap();
         let dec = flate2::read::GzDecoder::new(file);
-        let mut tar = tar::Archive::new(dec);
-
-        let mut found_files: HashMap<String, Vec<u8>> = HashMap::new();
-        for entry in tar.entries().unwrap() {
-            let mut entry = entry.unwrap();
-            let name = entry.path().unwrap().to_string_lossy().to_string();
-            let mut content = Vec::new();
-            std::io::Read::read_to_end(&mut entry, &mut content).unwrap();
-            found_files.insert(name, content);
-        }
+        let found_files = read_tar_entries(tar::Archive::new(dec));
 
         // All entries should be prefixed with wrap directory
         assert_eq!(found_files.len(), 3);
@@ -1357,5 +1344,50 @@ crates:
             found_files["myapp-1.0.0/myapp"],
             b"\x7fELF fake binary content with some bytes: \x00\x01\x02\x03".to_vec()
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Integration test: tar.zst with realistic file tree
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_integration_tar_zst_realistic_file_tree() {
+        let tmp = TempDir::new().unwrap();
+        let (bin, license, readme) = create_realistic_file_tree(tmp.path());
+
+        let archive_path = tmp.path().join("myapp-1.0.0-linux-amd64.tar.zst");
+        create_tar_zst(
+            &[&bin, &license, &readme],
+            &archive_path,
+            None,
+            None,
+        )
+        .unwrap();
+
+        // Open the archive and verify all files
+        let file = File::open(&archive_path).unwrap();
+        let dec = zstd::Decoder::new(file).unwrap();
+        let found_files = read_tar_entries(tar::Archive::new(dec));
+
+        assert_eq!(found_files.len(), 3, "tar.zst should contain exactly 3 files");
+        assert!(found_files.contains_key("myapp"), "should contain myapp binary");
+        assert!(found_files.contains_key("LICENSE"), "should contain LICENSE");
+        assert!(found_files.contains_key("README.md"), "should contain README.md");
+
+        // Verify binary content is preserved byte-for-byte
+        assert_eq!(
+            found_files["myapp"],
+            b"\x7fELF fake binary content with some bytes: \x00\x01\x02\x03".to_vec(),
+            "binary content in tar.zst should be preserved exactly"
+        );
+
+        // Verify text content
+        assert!(
+            found_files["LICENSE"].starts_with(b"MIT License"),
+            "LICENSE content should be preserved"
+        );
+        let readme_str = String::from_utf8(found_files["README.md"].clone()).unwrap();
+        assert!(readme_str.contains("## Usage"), "README structure should be intact");
+        assert!(readme_str.contains("myapp --help"), "README content should be preserved");
     }
 }

@@ -984,7 +984,7 @@ abbrev: 10
             ("mno7890", "feat(api): add pagination"),
         ];
 
-        let mut commits: Vec<CommitInfo> = messages
+        let commits: Vec<CommitInfo> = messages
             .iter()
             .map(|(hash, msg)| {
                 let mut info = parse_commit_message(msg);
@@ -997,13 +997,14 @@ abbrev: 10
         let included = apply_include_filters(&commits, &["^feat".to_string(), "^fix".to_string()]);
         assert_eq!(included.len(), 3);
 
-        // Sort and group
-        sort_commits(&mut commits, "asc");
+        // Sort the filtered list, then group
+        let mut sorted = included;
+        sort_commits(&mut sorted, "asc");
         let groups = vec![
             ChangelogGroup { title: "Features".into(), regexp: Some("^feat".into()), order: Some(0) },
             ChangelogGroup { title: "Bug Fixes".into(), regexp: Some("^fix".into()), order: Some(1) },
         ];
-        let grouped = group_commits(&included, &groups);
+        let grouped = group_commits(&sorted, &groups);
 
         let md = render_changelog(&grouped, 7);
 
@@ -1077,5 +1078,120 @@ abbrev: 10
 
         let md = render_changelog(&grouped, 7);
         assert!(md.is_empty(), "changelog should be empty when all commits are filtered");
+    }
+
+    // -----------------------------------------------------------------------
+    // Integration test with real git history
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_integration_changelog_stage_with_real_git_repo() {
+        use anodize_core::config::{ChangelogConfig, ChangelogFilters, ChangelogGroup, Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+        use std::process::Command;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+
+        // Helper to run git commands in the temp repo
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(repo)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+
+        // Initialise a real git repo and make conventional commits
+        git(&["init"]);
+        // Create an initial file and commit
+        std::fs::write(repo.join("file.txt"), b"v1").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-m", "feat: add initial feature"]);
+
+        std::fs::write(repo.join("bug.txt"), b"fix").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-m", "fix: resolve startup crash"]);
+
+        std::fs::write(repo.join("README.md"), b"# docs").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-m", "docs: update readme"]);
+
+        std::fs::write(repo.join("file.txt"), b"v2").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-m", "feat(core): add rate limiting"]);
+
+        // Build a config with changelog settings
+        let config = Config {
+            project_name: "test-project".to_string(),
+            dist: repo.join("dist"),
+            changelog: Some(ChangelogConfig {
+                disable: None,
+                sort: Some("asc".to_string()),
+                filters: Some(ChangelogFilters {
+                    exclude: Some(vec!["^docs:".to_string()]),
+                    include: None,
+                }),
+                groups: Some(vec![
+                    ChangelogGroup { title: "Features".into(), regexp: Some("^feat".into()), order: Some(0) },
+                    ChangelogGroup { title: "Bug Fixes".into(), regexp: Some("^fix".into()), order: Some(1) },
+                ]),
+                header: Some("# Changelog".to_string()),
+                footer: None,
+                use_source: None,
+                abbrev: Some(7),
+            }),
+            crates: vec![CrateConfig {
+                name: "test-project".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+
+        // Run the stage from within the temp repo so git commands target it
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(repo).unwrap();
+        let result = ChangelogStage.run(&mut ctx);
+        std::env::set_current_dir(&original_dir).unwrap();
+
+        result.unwrap();
+
+        // Verify the per-crate changelog was populated
+        let changelog = ctx.changelogs.get("test-project")
+            .expect("changelog for test-project should exist");
+        assert!(!changelog.is_empty(), "changelog should not be empty");
+
+        // Verify expected sections exist
+        assert!(changelog.contains("## Features"), "should have Features section");
+        assert!(changelog.contains("## Bug Fixes"), "should have Bug Fixes section");
+
+        // Verify expected commit messages appear
+        assert!(changelog.contains("add initial feature"), "should contain feat commit");
+        assert!(changelog.contains("add rate limiting"), "should contain scoped feat commit");
+        assert!(changelog.contains("resolve startup crash"), "should contain fix commit");
+
+        // Verify excluded docs commit does NOT appear
+        assert!(!changelog.contains("update readme"), "docs commit should be filtered out");
+
+        // Verify RELEASE_NOTES.md was written
+        let notes_path = repo.join("dist").join("RELEASE_NOTES.md");
+        assert!(notes_path.exists(), "RELEASE_NOTES.md should be written");
+        let notes_content = std::fs::read_to_string(&notes_path).unwrap();
+        assert!(notes_content.starts_with("# Changelog\n"), "should start with header");
+        assert!(notes_content.contains("## Features"), "notes should contain Features");
     }
 }
