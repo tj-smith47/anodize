@@ -163,6 +163,7 @@ dependencies = [
  "anyhow",
  "glob",
  "octocrab",
+ "serde_json",
  "tokio",
 ]
 

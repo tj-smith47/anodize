@@ -11,4 +11,5 @@ anodize-core.workspace = true
 anyhow.workspace = true
 glob.workspace = true
 octocrab.workspace = true
+serde_json.workspace = true
 tokio.workspace = true

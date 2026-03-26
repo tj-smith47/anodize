@@ -124,6 +124,7 @@ impl Stage for ReleaseStage {
 
         let selected = ctx.options.selected_crates.clone();
         let dry_run = ctx.is_dry_run();
+        let github_native_changelog = ctx.github_native_changelog;
 
         // Collect crates that have a `release` block.
         let crates: Vec<_> = ctx
@@ -296,37 +297,59 @@ impl Stage for ReleaseStage {
                     }
                 }
 
-                // Create the release, wiring make_latest if configured.
-                let repo_handler = octo.repos(&github.owner, &github.name);
-                let releases_handler = repo_handler.releases();
-                let mut builder = releases_handler
-                    .create(&tag)
-                    .name(&release_name)
-                    .body(&release_body)
-                    .draft(draft)
-                    .prerelease(prerelease);
+                // Create the release. When github-native changelog is enabled,
+                // use a raw API request to set `generate_release_notes: true`
+                // (not exposed by octocrab's CreateReleaseBuilder).
+                let release = if github_native_changelog {
+                    let route = format!(
+                        "/repos/{}/{}/releases",
+                        github.owner, github.name
+                    );
+                    let mut body = serde_json::json!({
+                        "tag_name": tag,
+                        "name": release_name,
+                        "draft": draft,
+                        "prerelease": prerelease,
+                        "generate_release_notes": true,
+                    });
+                    if !release_body.is_empty() {
+                        body["body"] = serde_json::Value::String(release_body.clone());
+                    }
+                    if let Some(ref ml) = make_latest {
+                        body["make_latest"] = serde_json::Value::String(ml.to_string());
+                    }
+                    octo.post::<_, octocrab::models::repos::Release>(route, Some(&body))
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "release: create GitHub release '{}' on {}/{}",
+                                tag, github.owner, github.name
+                            )
+                        })?
+                } else {
+                    let repo_handler = octo.repos(&github.owner, &github.name);
+                    let releases_handler = repo_handler.releases();
+                    let mut builder = releases_handler
+                        .create(&tag)
+                        .name(&release_name)
+                        .body(&release_body)
+                        .draft(draft)
+                        .prerelease(prerelease);
 
-                if let Some(ml) = make_latest {
-                    builder = builder.make_latest(ml);
-                }
+                    if let Some(ml) = make_latest {
+                        builder = builder.make_latest(ml);
+                    }
 
-                // TODO: When `ctx.github_native_changelog` is true, set
-                // `generate_release_notes: true` in the GitHub API request.
-                // octocrab's CreateReleaseBuilder does not expose this parameter
-                // yet. When it does, wire it here:
-                // if github_native_changelog {
-                //     builder = builder.generate_release_notes(true);
-                // }
-
-                let release = builder
-                    .send()
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "release: create GitHub release '{}' on {}/{}",
-                            tag, github.owner, github.name
-                        )
-                    })?;
+                    builder
+                        .send()
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "release: create GitHub release '{}' on {}/{}",
+                                tag, github.owner, github.name
+                            )
+                        })?
+                };
 
                 eprintln!(
                     "[release] created GitHub Release '{}' (id={}) on {}/{}",
