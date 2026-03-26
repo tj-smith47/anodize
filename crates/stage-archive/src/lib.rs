@@ -420,10 +420,8 @@ impl Stage for ArchiveStage {
                     tvars.set("Arch", &arch);
 
                     // Set Binary to the first selected binary's name (matches GoReleaser behavior)
-                    if let Some(first_bin) = selected_bins.first() {
-                        if let Some(bin_name) = first_bin.metadata.get("binary") {
-                            tvars.set("Binary", bin_name);
-                        }
+                    if let Some(bin_name) = selected_bins.first().and_then(|b| b.metadata.get("binary")) {
+                        tvars.set("Binary", bin_name);
                     }
 
                     // Render wrap_in_directory (template-aware)

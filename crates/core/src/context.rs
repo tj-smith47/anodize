@@ -108,9 +108,9 @@ impl Context {
     /// - `PreviousTag` — previous matching tag (or empty)
     ///
     /// **Stage-scoped variables** (NOT set here; set per-artifact during stage execution):
-    /// - `Binary` — binary name, set by build/archive stages per artifact
-    /// - `ArtifactName` — output artifact filename, set by archive/checksum stages
-    /// - `ArtifactPath` — absolute path to artifact, set by archive/checksum stages
+    /// - `Binary` — binary name, set by build stage per binary and archive stage per archive
+    /// - `ArtifactName` — output artifact filename, set by archive stage after creating each archive
+    /// - `ArtifactPath` — absolute path to artifact, set by archive stage after creating each archive
     /// - `Os` — target OS, set by archive/nfpm stages per target
     /// - `Arch` — target architecture, set by archive/nfpm stages per target
     pub fn populate_git_vars(&mut self) {

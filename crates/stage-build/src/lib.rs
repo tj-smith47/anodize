@@ -332,6 +332,9 @@ impl Stage for BuildStage {
                         bin_path
                     };
 
+                    // Set stage-scoped Binary template var
+                    ctx.template_vars_mut().set("Binary", &build.binary);
+
                     // Register Binary artifact
                     ctx.artifacts.add(Artifact {
                         kind: ArtifactKind::Binary,
