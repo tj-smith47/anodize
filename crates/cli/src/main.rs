@@ -114,6 +114,24 @@ fn is_git_dirty() -> bool {
         .unwrap_or(false)
 }
 
+/// Resolve --single-target flag to the actual host target triple.
+fn resolve_single_target(single_target: bool) -> Option<String> {
+    if single_target {
+        match detect_host_target() {
+            Ok(triple) => {
+                eprintln!("{} building only for host target: {}", "Note:".cyan().bold(), triple);
+                Some(triple)
+            }
+            Err(e) => {
+                eprintln!("{} failed to detect host target: {}", "Error:".red().bold(), e);
+                std::process::exit(1);
+            }
+        }
+    } else {
+        None
+    }
+}
+
 fn main() {
     let cli = Cli::parse();
     let result = match cli.command {
@@ -134,21 +152,7 @@ fn main() {
                 snapshot
             };
 
-            // Resolve --single-target to actual host triple
-            let resolved_single_target = if single_target {
-                match detect_host_target() {
-                    Ok(triple) => {
-                        eprintln!("{} building only for host target: {}", "Note:".cyan().bold(), triple);
-                        Some(triple)
-                    }
-                    Err(e) => {
-                        eprintln!("{} failed to detect host target: {}", "Error:".red().bold(), e);
-                        std::process::exit(1);
-                    }
-                }
-            } else {
-                None
-            };
+            let resolved_single_target = resolve_single_target(single_target);
 
             timeout::run_with_timeout(duration, || {
                 commands::release::run(commands::release::ReleaseOpts {
@@ -167,27 +171,12 @@ fn main() {
                 std::process::exit(1);
             });
             let config_override = cli.config.clone();
-
-            // Resolve --single-target to actual host triple
-            let resolved_single_target = if single_target {
-                match detect_host_target() {
-                    Ok(triple) => {
-                        eprintln!("{} building only for host target: {}", "Note:".cyan().bold(), triple);
-                        Some(triple)
-                    }
-                    Err(e) => {
-                        eprintln!("{} failed to detect host target: {}", "Error:".red().bold(), e);
-                        std::process::exit(1);
-                    }
-                }
-            } else {
-                None
-            };
+            let resolved_single_target = resolve_single_target(single_target);
 
             timeout::run_with_timeout(duration, move || {
                 commands::build::run(commands::build::BuildOpts {
                     crate_names,
-                    config_override: config_override.map(|p| p.to_path_buf()),
+                    config_override,
                     parallelism,
                     single_target: resolved_single_target,
                 })

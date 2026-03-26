@@ -6,7 +6,6 @@ use chrono::Utc;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-#[derive(Default)]
 pub struct ContextOptions {
     pub snapshot: bool,
     pub dry_run: bool,
@@ -15,12 +14,29 @@ pub struct ContextOptions {
     pub skip_stages: Vec<String>,
     pub selected_crates: Vec<String>,
     pub token: Option<String>,
-    /// Maximum number of parallel build jobs.
+    /// Maximum number of parallel build jobs (minimum 1).
     pub parallelism: usize,
     /// When set, build only for this single host target triple.
     pub single_target: Option<String>,
     /// Path to a custom release notes file (overrides changelog).
     pub release_notes_path: Option<PathBuf>,
+}
+
+impl Default for ContextOptions {
+    fn default() -> Self {
+        Self {
+            snapshot: false,
+            dry_run: false,
+            verbose: false,
+            debug: false,
+            skip_stages: Vec::new(),
+            selected_crates: Vec::new(),
+            token: None,
+            parallelism: 1,
+            single_target: None,
+            release_notes_path: None,
+        }
+    }
 }
 
 pub struct Context {

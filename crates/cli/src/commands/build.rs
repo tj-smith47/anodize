@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use anyhow::Result;
 
+#[allow(dead_code)] // Fields consumed when build command is fully implemented
 pub struct BuildOpts {
     pub crate_names: Vec<String>,
     pub config_override: Option<PathBuf>,
