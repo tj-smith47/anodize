@@ -1218,4 +1218,259 @@ ids:
         let expected_hash = sha256_file(&fake_bin).unwrap();
         assert!(sidecar_content.starts_with(&expected_hash));
     }
+
+    // -----------------------------------------------------------------------
+    // Task 4C: Additional behavior tests — config fields actually do things
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_each_algorithm_produces_correct_known_hash() {
+        // Verify known test vectors for "hello world" against all algorithms
+        let tmp = TempDir::new().unwrap();
+        let f = tmp.path().join("test.txt");
+        fs::write(&f, b"hello world").unwrap();
+
+        // SHA-1: well-known test vector
+        assert_eq!(
+            hash_file(&f, "sha1").unwrap(),
+            "2aae6c35c94fcfb415dbe95f408b9ce91ee846ed"
+        );
+        // SHA-256: well-known test vector
+        assert_eq!(
+            hash_file(&f, "sha256").unwrap(),
+            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        );
+        // SHA-512 prefix
+        assert!(hash_file(&f, "sha512")
+            .unwrap()
+            .starts_with("309ecc489c12d6eb4cc40f50c902f2b4"));
+    }
+
+    #[test]
+    fn test_checksum_file_registered_as_checksum_artifact() {
+        use anodize_core::config::{Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        fs::create_dir_all(&dist).unwrap();
+
+        let archive = dist.join("release.tar.gz");
+        fs::write(&archive, b"data").unwrap();
+
+        let config = Config {
+            project_name: "myapp".to_string(),
+            dist: dist.clone(),
+            crates: vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: archive,
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+        });
+
+        ChecksumStage.run(&mut ctx).unwrap();
+
+        // All checksum artifacts should have kind = Checksum
+        for a in ctx.artifacts.by_kind(ArtifactKind::Checksum) {
+            assert_eq!(a.kind, ArtifactKind::Checksum);
+            assert!(a.metadata.contains_key("algorithm"));
+        }
+
+        // Combined file should have "combined" metadata
+        let combined = ctx
+            .artifacts
+            .by_kind(ArtifactKind::Checksum)
+            .into_iter()
+            .find(|a| a.metadata.get("combined") == Some(&"true".to_string()));
+        assert!(combined.is_some(), "should have a combined checksum artifact");
+    }
+
+    #[test]
+    fn test_checksum_missing_file_errors() {
+        use anodize_core::config::{Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        fs::create_dir_all(&dist).unwrap();
+
+        let nonexistent = dist.join("does-not-exist.tar.gz");
+
+        let config = Config {
+            project_name: "myapp".to_string(),
+            dist: dist.clone(),
+            crates: vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: nonexistent,
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+        });
+
+        let result = ChecksumStage.run(&mut ctx);
+        assert!(
+            result.is_err(),
+            "checksumming a nonexistent file should error"
+        );
+    }
+
+    #[test]
+    fn test_extra_files_appear_in_combined_checksum() {
+        use anodize_core::config::{ChecksumConfig, Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        fs::create_dir_all(&dist).unwrap();
+
+        let archive = dist.join("app.tar.gz");
+        fs::write(&archive, b"archive content").unwrap();
+
+        let extra = dist.join("extra-file.txt");
+        fs::write(&extra, b"extra content").unwrap();
+
+        let glob_pattern = format!("{}/extra-*.txt", dist.display());
+
+        let config = Config {
+            project_name: "app".to_string(),
+            dist: dist.clone(),
+            crates: vec![CrateConfig {
+                name: "app".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                checksum: Some(ChecksumConfig {
+                    extra_files: Some(vec![glob_pattern]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: archive,
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: Default::default(),
+        });
+
+        ChecksumStage.run(&mut ctx).unwrap();
+
+        // Combined file should include both archive and extra file
+        let combined = dist.join("app_checksums.sha256");
+        let content = fs::read_to_string(&combined).unwrap();
+        assert!(
+            content.contains("app.tar.gz"),
+            "combined should include archive"
+        );
+        assert!(
+            content.contains("extra-file.txt"),
+            "combined should include extra file"
+        );
+    }
+
+    #[test]
+    fn test_ids_filter_excludes_unmatched_artifacts() {
+        use anodize_core::config::{ChecksumConfig, Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        fs::create_dir_all(&dist).unwrap();
+
+        let linux = dist.join("app-linux.tar.gz");
+        let darwin = dist.join("app-darwin.tar.gz");
+        let windows = dist.join("app-windows.zip");
+        fs::write(&linux, b"linux").unwrap();
+        fs::write(&darwin, b"darwin").unwrap();
+        fs::write(&windows, b"windows").unwrap();
+
+        let config = Config {
+            project_name: "app".to_string(),
+            dist: dist.clone(),
+            crates: vec![CrateConfig {
+                name: "app".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                checksum: Some(ChecksumConfig {
+                    ids: Some(vec!["linux".to_string(), "darwin".to_string()]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+
+        // Add 3 artifacts, only 2 have matching ids
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: linux,
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: {
+                let mut m = HashMap::new();
+                m.insert("id".to_string(), "linux".to_string());
+                m
+            },
+        });
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: darwin,
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: {
+                let mut m = HashMap::new();
+                m.insert("id".to_string(), "darwin".to_string());
+                m
+            },
+        });
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: windows,
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: {
+                let mut m = HashMap::new();
+                m.insert("id".to_string(), "windows".to_string());
+                m
+            },
+        });
+
+        ChecksumStage.run(&mut ctx).unwrap();
+
+        // Combined file should include only linux and darwin
+        let combined = dist.join("app_checksums.sha256");
+        let content = fs::read_to_string(&combined).unwrap();
+        assert!(content.contains("app-linux.tar.gz"));
+        assert!(content.contains("app-darwin.tar.gz"));
+        assert!(
+            !content.contains("app-windows.zip"),
+            "windows should be excluded by ids filter"
+        );
+    }
 }

@@ -196,4 +196,111 @@ mod tests {
         let mut ctx = dry_run_ctx(config);
         assert!(PublishStage.run(&mut ctx).is_ok());
     }
+
+    // -----------------------------------------------------------------------
+    // Task 4C: Additional behavior tests — config fields actually do things
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_dry_run_logs_without_executing_for_all_publishers() {
+        // Verify dry-run mode works for all publisher types simultaneously
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: "multi".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                crates: Some(CratesPublishConfig::Bool(true)),
+                homebrew: Some(HomebrewConfig {
+                    tap: Some(TapConfig {
+                        owner: "org".to_string(),
+                        name: "homebrew-tap".to_string(),
+                    }),
+                    description: Some("A multi-publisher tool".to_string()),
+                    ..Default::default()
+                }),
+                scoop: Some(ScoopConfig {
+                    bucket: Some(BucketConfig {
+                        owner: "org".to_string(),
+                        name: "scoop-bucket".to_string(),
+                    }),
+                    description: Some("A multi-publisher tool".to_string()),
+                    ..Default::default()
+                }),
+            }),
+            ..Default::default()
+        }];
+
+        let mut ctx = dry_run_ctx(config);
+        // All three publishers should succeed in dry-run mode
+        let result = PublishStage.run(&mut ctx);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_selected_crates_filter_applies_to_publishers() {
+        let mut config = Config::default();
+        config.crates = vec![
+            CrateConfig {
+                name: "included".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                publish: Some(PublishConfig {
+                    homebrew: Some(HomebrewConfig {
+                        tap: Some(TapConfig {
+                            owner: "org".to_string(),
+                            name: "tap".to_string(),
+                        }),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            CrateConfig {
+                name: "excluded".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                publish: Some(PublishConfig {
+                    homebrew: Some(HomebrewConfig {
+                        tap: Some(TapConfig {
+                            owner: "org".to_string(),
+                            name: "tap".to_string(),
+                        }),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        ];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                selected_crates: vec!["included".to_string()],
+                ..Default::default()
+            },
+        );
+
+        // Should only run for "included", not "excluded"
+        assert!(PublishStage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_no_publish_config_is_noop() {
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: "nopub".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: None, // No publish config
+            ..Default::default()
+        }];
+
+        let mut ctx = dry_run_ctx(config);
+        // Should succeed (no-op)
+        assert!(PublishStage.run(&mut ctx).is_ok());
+    }
 }

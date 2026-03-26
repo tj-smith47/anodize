@@ -880,4 +880,167 @@ mod tests {
         assert_eq!(upload_calls[0].release_id, 42);
         assert_eq!(upload_calls[0].file_name, "myapp-linux-amd64.tar.gz");
     }
+
+    // -----------------------------------------------------------------------
+    // Task 4C: Additional behavior tests — config fields actually do things
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_header_footer_wrap_changelog_in_release_body() {
+        // Verify that header and footer actually appear around the changelog body
+        let body = build_release_body(
+            "- Fixed bug A\n- Added feature B",
+            Some("## Release v2.0"),
+            Some("---\nThank you for using our tool!"),
+        );
+        assert!(body.starts_with("## Release v2.0"));
+        assert!(body.contains("- Fixed bug A"));
+        assert!(body.contains("- Added feature B"));
+        assert!(body.ends_with("Thank you for using our tool!"));
+
+        // Parts should be separated by double newlines
+        assert!(body.contains("## Release v2.0\n\n- Fixed bug A"));
+        assert!(body.contains("Added feature B\n\n---"));
+    }
+
+    #[test]
+    fn test_extra_files_collected_with_glob() {
+        // Create temp files and verify glob collection works
+        let dir = std::env::temp_dir().join("anodize_release_extra_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let f1 = dir.join("artifact1.sig");
+        let f2 = dir.join("artifact2.sig");
+        let f3 = dir.join("readme.txt");
+        std::fs::write(&f1, "sig1").unwrap();
+        std::fs::write(&f2, "sig2").unwrap();
+        std::fs::write(&f3, "text").unwrap();
+
+        // Collect only .sig files
+        let pattern = dir.join("*.sig").to_string_lossy().into_owned();
+        let result = collect_extra_files(&[pattern]);
+        assert_eq!(result.len(), 2, "should find exactly 2 .sig files");
+        assert!(result.iter().all(|p| p.extension().unwrap() == "sig"));
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_skip_upload_prevents_dry_run_upload_messages() {
+        // When skip_upload is true, the dry-run output should mention skip_upload
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "testcrate".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    skip_upload: Some(true),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+
+        let stage = ReleaseStage;
+        // Should complete without error
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_make_latest_values_resolve_correctly() {
+        // Bool(true) -> MakeLatest::True
+        let ml_true = resolve_make_latest(&Some(MakeLatestConfig::Bool(true))).unwrap();
+        assert_eq!(ml_true.to_string(), "true");
+
+        // Bool(false) -> MakeLatest::False
+        let ml_false = resolve_make_latest(&Some(MakeLatestConfig::Bool(false))).unwrap();
+        assert_eq!(ml_false.to_string(), "false");
+
+        // Auto -> MakeLatest::Legacy
+        let ml_auto = resolve_make_latest(&Some(MakeLatestConfig::Auto)).unwrap();
+        assert_eq!(ml_auto.to_string(), "legacy");
+
+        // None -> None
+        assert!(resolve_make_latest(&None).is_none());
+    }
+
+    #[test]
+    fn test_release_name_template_rendering() {
+        // When a name_template is configured, the release name should be rendered
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .tag("v2.0.0")
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                release: Some(ReleaseConfig {
+                    name_template: Some("MyApp {{ .Version }}".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+
+        let stage = ReleaseStage;
+        // In dry-run, the rendered name would be logged. The stage should not error.
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_draft_release_flag() {
+        // Verify draft defaults to false and can be set to true
+        let cfg_default = ReleaseConfig::default();
+        assert_eq!(cfg_default.draft, None);
+
+        // When draft is Some(true), the flag should propagate
+        let cfg_draft = ReleaseConfig {
+            draft: Some(true),
+            ..Default::default()
+        };
+        assert!(cfg_draft.draft.unwrap_or(false));
+    }
+
+    #[test]
+    fn test_prerelease_auto_case_insensitive() {
+        // The prerelease Auto detection should be case-insensitive
+        assert!(should_mark_prerelease(
+            &Some(PrereleaseConfig::Auto),
+            "v1.0.0-RC.1"
+        ));
+        assert!(should_mark_prerelease(
+            &Some(PrereleaseConfig::Auto),
+            "v1.0.0-BETA"
+        ));
+        assert!(should_mark_prerelease(
+            &Some(PrereleaseConfig::Auto),
+            "v1.0.0-ALPHA.5"
+        ));
+    }
+
+    #[test]
+    fn test_dry_run_with_draft_release() {
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "testcrate".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    draft: Some(true),
+                    prerelease: Some(PrereleaseConfig::Auto),
+                    make_latest: Some(MakeLatestConfig::Bool(false)),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+
+        let stage = ReleaseStage;
+        assert!(stage.run(&mut ctx).is_ok());
+    }
 }

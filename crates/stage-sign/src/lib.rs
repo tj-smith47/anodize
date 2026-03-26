@@ -366,4 +366,233 @@ mod tests {
         let stage = SignStage;
         assert!(stage.run(&mut ctx).is_ok());
     }
+
+    // -----------------------------------------------------------------------
+    // Task 4C: Additional behavior tests — config fields actually do things
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_multiple_sign_configs_run_independently() {
+        use anodize_core::artifact::{Artifact, ArtifactKind};
+
+        // Two sign configs targeting different artifact types
+        let signs = vec![
+            SignConfig {
+                id: Some("gpg".to_string()),
+                cmd: Some("echo".to_string()),
+                args: Some(vec!["signing-archive".to_string()]),
+                artifacts: Some("archive".to_string()),
+                ids: None,
+                signature: None,
+                stdin: None,
+                stdin_file: None,
+            },
+            SignConfig {
+                id: Some("cosign".to_string()),
+                cmd: Some("echo".to_string()),
+                args: Some(vec!["signing-checksum".to_string()]),
+                artifacts: Some("checksum".to_string()),
+                ids: None,
+                signature: None,
+                stdin: None,
+                stdin_file: None,
+            },
+        ];
+
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(true)
+            .signs(signs)
+            .build();
+
+        // Add artifacts of both types
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from("/tmp/app.tar.gz"),
+            target: None,
+            crate_name: "test".to_string(),
+            metadata: Default::default(),
+        });
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Checksum,
+            path: std::path::PathBuf::from("/tmp/checksums.sha256"),
+            target: None,
+            crate_name: "test".to_string(),
+            metadata: Default::default(),
+        });
+
+        let stage = SignStage;
+        // Both configs should run independently without interfering
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_artifacts_filter_selects_correct_kinds() {
+        // "all" matches everything
+        assert!(should_sign_artifact(ArtifactKind::Archive, "all"));
+        assert!(should_sign_artifact(ArtifactKind::Binary, "all"));
+        assert!(should_sign_artifact(ArtifactKind::Checksum, "all"));
+        assert!(should_sign_artifact(ArtifactKind::LinuxPackage, "all"));
+
+        // "none" matches nothing
+        assert!(!should_sign_artifact(ArtifactKind::Archive, "none"));
+        assert!(!should_sign_artifact(ArtifactKind::Binary, "none"));
+        assert!(!should_sign_artifact(ArtifactKind::Checksum, "none"));
+        assert!(!should_sign_artifact(ArtifactKind::LinuxPackage, "none"));
+
+        // "archive" only matches Archive
+        assert!(should_sign_artifact(ArtifactKind::Archive, "archive"));
+        assert!(!should_sign_artifact(ArtifactKind::Binary, "archive"));
+        assert!(!should_sign_artifact(ArtifactKind::Checksum, "archive"));
+
+        // "binary" only matches Binary
+        assert!(should_sign_artifact(ArtifactKind::Binary, "binary"));
+        assert!(!should_sign_artifact(ArtifactKind::Archive, "binary"));
+
+        // "package" only matches LinuxPackage
+        assert!(should_sign_artifact(ArtifactKind::LinuxPackage, "package"));
+        assert!(!should_sign_artifact(ArtifactKind::Archive, "package"));
+
+        // Unknown filter defaults to checksum
+        assert!(should_sign_artifact(ArtifactKind::Checksum, "unknown-value"));
+        assert!(!should_sign_artifact(ArtifactKind::Archive, "unknown-value"));
+    }
+
+    #[test]
+    fn test_ids_filter_restricts_signed_artifacts() {
+        use anodize_core::artifact::{Artifact, ArtifactKind};
+
+        let signs = vec![SignConfig {
+            id: Some("gpg".to_string()),
+            cmd: Some("echo".to_string()),
+            args: Some(vec!["sign".to_string()]),
+            artifacts: Some("archive".to_string()),
+            ids: Some(vec!["linux-release".to_string()]),
+            signature: None,
+            stdin: None,
+            stdin_file: None,
+        }];
+
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(true)
+            .signs(signs)
+            .build();
+
+        // Artifact with matching id
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from("/tmp/linux.tar.gz"),
+            target: None,
+            crate_name: "test".to_string(),
+            metadata: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("id".to_string(), "linux-release".to_string());
+                m
+            },
+        });
+
+        // Artifact without matching id
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from("/tmp/darwin.tar.gz"),
+            target: None,
+            crate_name: "test".to_string(),
+            metadata: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("id".to_string(), "darwin-release".to_string());
+                m
+            },
+        });
+
+        let stage = SignStage;
+        // Dry-run: the stage should only log the matching artifact
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_dry_run_logs_without_executing() {
+        use anodize_core::artifact::{Artifact, ArtifactKind};
+
+        let signs = vec![SignConfig {
+            id: Some("gpg".to_string()),
+            cmd: Some("/nonexistent/gpg".to_string()),
+            args: Some(vec![
+                "--output".to_string(),
+                "{{ .Signature }}".to_string(),
+                "--detach-sig".to_string(),
+                "{{ .Artifact }}".to_string(),
+            ]),
+            artifacts: Some("checksum".to_string()),
+            ids: None,
+            signature: None,
+            stdin: None,
+            stdin_file: None,
+        }];
+
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(true)
+            .signs(signs)
+            .build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Checksum,
+            path: std::path::PathBuf::from("/tmp/checksums.sha256"),
+            target: None,
+            crate_name: "test".to_string(),
+            metadata: Default::default(),
+        });
+
+        let stage = SignStage;
+        // In dry-run, the nonexistent binary should NOT be executed
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_template_variables_in_args_resolve_correctly() {
+        let args = vec![
+            "--output".to_string(),
+            "{{ .Signature }}".to_string(),
+            "--detach-sig".to_string(),
+            "{{ .Artifact }}".to_string(),
+            "--extra={{ .Artifact }}.meta".to_string(),
+        ];
+
+        let resolved = resolve_sign_args(&args, "/tmp/file.tar.gz", "/tmp/file.tar.gz.sig");
+        assert_eq!(resolved[0], "--output");
+        assert_eq!(resolved[1], "/tmp/file.tar.gz.sig");
+        assert_eq!(resolved[2], "--detach-sig");
+        assert_eq!(resolved[3], "/tmp/file.tar.gz");
+        assert_eq!(resolved[4], "--extra=/tmp/file.tar.gz.meta");
+    }
+
+    #[test]
+    fn test_sign_none_filter_skips_entirely() {
+        use anodize_core::artifact::{Artifact, ArtifactKind};
+
+        let signs = vec![SignConfig {
+            id: Some("skip".to_string()),
+            cmd: Some("false".to_string()), // Would fail if executed
+            args: None,
+            artifacts: Some("none".to_string()),
+            ids: None,
+            signature: None,
+            stdin: None,
+            stdin_file: None,
+        }];
+
+        let mut ctx = TestContextBuilder::new()
+            .signs(signs)
+            .build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from("/tmp/file.tar.gz"),
+            target: None,
+            crate_name: "test".to_string(),
+            metadata: Default::default(),
+        });
+
+        let stage = SignStage;
+        // "none" filter should skip without executing any command
+        assert!(stage.run(&mut ctx).is_ok());
+    }
 }

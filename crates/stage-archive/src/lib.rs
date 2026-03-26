@@ -1407,4 +1407,446 @@ crates:
             Some(&"1.0.0".to_string())
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Task 4C: Additional behavior tests — config fields actually do things
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_format_for_target_multiple_overrides() {
+        // Multiple OS overrides: windows->zip AND darwin->tar.gz
+        let overrides = vec![
+            FormatOverride {
+                os: "windows".to_string(),
+                format: "zip".to_string(),
+            },
+            FormatOverride {
+                os: "darwin".to_string(),
+                format: "tar.gz".to_string(),
+            },
+        ];
+        // Default is tar.xz but windows should get zip
+        assert_eq!(
+            format_for_target("x86_64-pc-windows-msvc", "tar.xz", &overrides),
+            "zip"
+        );
+        // darwin should get tar.gz
+        assert_eq!(
+            format_for_target("aarch64-apple-darwin", "tar.xz", &overrides),
+            "tar.gz"
+        );
+        // Linux falls through to default
+        assert_eq!(
+            format_for_target("x86_64-unknown-linux-gnu", "tar.xz", &overrides),
+            "tar.xz"
+        );
+    }
+
+    #[test]
+    fn test_archive_stage_multiple_binaries_per_archive() {
+        use anodize_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+
+        // Create two fake binaries for the same target
+        let bin1 = tmp.path().join("myapp");
+        let bin2 = tmp.path().join("myhelper");
+        fs::write(&bin1, b"binary 1").unwrap();
+        fs::write(&bin2, b"binary 2").unwrap();
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                name_template: Some(
+                    "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}".to_string(),
+                ),
+                format: Some("tar.gz".to_string()),
+                format_overrides: None,
+                files: None,
+                binaries: None, // Include all binaries
+                wrap_in_directory: None,
+            }]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = dist.clone();
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+        // Register two binary artifacts for the same target
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: bin1.clone(),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: {
+                let mut m = HashMap::new();
+                m.insert("binary".to_string(), "myapp".to_string());
+                m
+            },
+        });
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: bin2.clone(),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: {
+                let mut m = HashMap::new();
+                m.insert("binary".to_string(), "myhelper".to_string());
+                m
+            },
+        });
+
+        let stage = ArchiveStage;
+        stage.run(&mut ctx).unwrap();
+
+        // Should create one archive containing both binaries
+        let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+        assert_eq!(archives.len(), 1);
+        assert!(archives[0].path.exists());
+
+        // Verify both binaries are in the archive
+        let file = File::open(&archives[0].path).unwrap();
+        let dec = flate2::read::GzDecoder::new(file);
+        let found_files = read_tar_entries(tar::Archive::new(dec));
+        assert_eq!(found_files.len(), 2, "archive should contain both binaries");
+        assert!(found_files.contains_key("myapp"));
+        assert!(found_files.contains_key("myhelper"));
+    }
+
+    #[test]
+    fn test_archive_stage_default_config_inheritance() {
+        use anodize_core::config::{
+            ArchiveConfig, ArchivesConfig, Config, CrateConfig, DefaultArchiveConfig, Defaults,
+            FormatOverride,
+        };
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+
+        let bin = tmp.path().join("myapp.exe");
+        fs::write(&bin, b"fake windows binary").unwrap();
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            // Use default archive config (no format_overrides set) — should inherit global
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig::default()]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = dist.clone();
+        config.crates = vec![crate_cfg];
+        // Global defaults: format_overrides windows -> zip
+        config.defaults = Some(Defaults {
+            archives: Some(DefaultArchiveConfig {
+                format: Some("tar.gz".to_string()),
+                format_overrides: Some(vec![FormatOverride {
+                    os: "windows".to_string(),
+                    format: "zip".to_string(),
+                }]),
+            }),
+            ..Default::default()
+        });
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: bin.clone(),
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: {
+                let mut m = HashMap::new();
+                m.insert("binary".to_string(), "myapp".to_string());
+                m
+            },
+        });
+
+        let stage = ArchiveStage;
+        stage.run(&mut ctx).unwrap();
+
+        let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+        assert_eq!(archives.len(), 1);
+        // Should have inherited global format_override: windows -> zip
+        assert!(
+            archives[0].path.to_string_lossy().ends_with(".zip"),
+            "windows archive should use zip from global defaults, got: {}",
+            archives[0].path.display()
+        );
+    }
+
+    #[test]
+    fn test_archive_stage_name_template_renders_all_variables() {
+        use anodize_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+
+        let bin = tmp.path().join("myapp");
+        fs::write(&bin, b"fake binary").unwrap();
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                name_template: Some(
+                    "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}".to_string(),
+                ),
+                format: Some("tar.gz".to_string()),
+                format_overrides: None,
+                files: None,
+                binaries: None,
+                wrap_in_directory: None,
+            }]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = dist.clone();
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "2.5.0");
+        ctx.template_vars_mut().set("Tag", "v2.5.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: bin.clone(),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: {
+                let mut m = HashMap::new();
+                m.insert("binary".to_string(), "myapp".to_string());
+                m
+            },
+        });
+
+        let stage = ArchiveStage;
+        stage.run(&mut ctx).unwrap();
+
+        let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+        assert_eq!(archives.len(), 1);
+
+        let name = archives[0].path.file_name().unwrap().to_str().unwrap();
+        assert_eq!(name, "myapp_2.5.0_darwin_arm64.tar.gz");
+    }
+
+    #[test]
+    fn test_archive_stage_files_included_alongside_binaries() {
+        use anodize_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+
+        let bin = tmp.path().join("myapp");
+        let license = tmp.path().join("LICENSE");
+        let readme = tmp.path().join("README.md");
+        fs::write(&bin, b"binary content").unwrap();
+        fs::write(&license, b"MIT License").unwrap();
+        fs::write(&readme, b"# MyApp").unwrap();
+
+        let license_pattern = tmp.path().join("LICENSE").to_string_lossy().to_string();
+        let readme_pattern = tmp.path().join("README.md").to_string_lossy().to_string();
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                name_template: Some("myapp-1.0.0-linux-amd64".to_string()),
+                format: Some("tar.gz".to_string()),
+                format_overrides: None,
+                files: Some(vec![license_pattern, readme_pattern]),
+                binaries: None,
+                wrap_in_directory: None,
+            }]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = dist.clone();
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: bin.clone(),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: {
+                let mut m = HashMap::new();
+                m.insert("binary".to_string(), "myapp".to_string());
+                m
+            },
+        });
+
+        let stage = ArchiveStage;
+        stage.run(&mut ctx).unwrap();
+
+        let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+        assert_eq!(archives.len(), 1);
+
+        // Verify all 3 files are in the archive
+        let file = File::open(&archives[0].path).unwrap();
+        let dec = flate2::read::GzDecoder::new(file);
+        let found_files = read_tar_entries(tar::Archive::new(dec));
+        assert_eq!(
+            found_files.len(),
+            3,
+            "archive should contain binary + 2 extra files"
+        );
+        assert!(found_files.contains_key("myapp"));
+        assert!(found_files.contains_key("LICENSE"));
+        assert!(found_files.contains_key("README.md"));
+    }
+
+    #[test]
+    fn test_archive_registers_correct_metadata() {
+        use anodize_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+
+        let bin = tmp.path().join("myapp");
+        fs::write(&bin, b"binary").unwrap();
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                format: Some("zip".to_string()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = dist;
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: bin,
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: {
+                let mut m = HashMap::new();
+                m.insert("binary".to_string(), "myapp".to_string());
+                m
+            },
+        });
+
+        ArchiveStage.run(&mut ctx).unwrap();
+
+        let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+        assert_eq!(archives.len(), 1);
+        // Verify the artifact metadata contains format and name
+        assert_eq!(
+            archives[0].metadata.get("format"),
+            Some(&"zip".to_string())
+        );
+        assert!(archives[0].metadata.contains_key("name"));
+        // Verify it's registered as an Archive artifact for the right crate
+        assert_eq!(archives[0].crate_name, "myapp");
+        assert_eq!(archives[0].kind, ArtifactKind::Archive);
+        // Target should be preserved
+        assert_eq!(
+            archives[0].target.as_deref(),
+            Some("x86_64-pc-windows-msvc")
+        );
+    }
+
+    #[test]
+    fn test_archive_stage_wrap_in_directory_renders_template() {
+        use anodize_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+
+        let bin = tmp.path().join("myapp");
+        fs::write(&bin, b"binary").unwrap();
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                name_template: Some("myapp-linux-amd64".to_string()),
+                format: Some("tar.gz".to_string()),
+                wrap_in_directory: Some("{{ .ProjectName }}-{{ .Version }}".to_string()),
+                files: None,
+                format_overrides: None,
+                binaries: None,
+            }]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = dist;
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "3.0.0");
+        ctx.template_vars_mut().set("Tag", "v3.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: bin,
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: {
+                let mut m = HashMap::new();
+                m.insert("binary".to_string(), "myapp".to_string());
+                m
+            },
+        });
+
+        ArchiveStage.run(&mut ctx).unwrap();
+
+        let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+        assert_eq!(archives.len(), 1);
+
+        // Verify that the wrap directory was rendered from the template
+        let file = File::open(&archives[0].path).unwrap();
+        let dec = flate2::read::GzDecoder::new(file);
+        let found = read_tar_entries(tar::Archive::new(dec));
+        assert!(
+            found.contains_key("myapp-3.0.0/myapp"),
+            "wrap directory should use rendered template, got keys: {:?}",
+            found.keys().collect::<Vec<_>>()
+        );
+    }
 }

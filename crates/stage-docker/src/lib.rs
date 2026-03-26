@@ -833,4 +833,260 @@ dockerfile: Dockerfile
         assert_eq!(cfg.extra_files, None);
         assert_eq!(cfg.push_flags, None);
     }
+
+    // -----------------------------------------------------------------------
+    // Task 4C: Additional behavior tests — config fields actually do things
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_skip_push_prevents_push_flag_in_command() {
+        // When skip_push=true and dry_run=false, should_push should be false
+        // so the docker command should NOT contain --push
+        let cmd = build_docker_command(
+            "/tmp/staging",
+            &["linux/amd64"],
+            &["ghcr.io/owner/app:v1.0.0"],
+            &[],
+            false, // push=false (because skip_push=true or dry_run)
+            &["--provenance=true".to_string()],
+        );
+        assert!(!cmd.contains(&"--push".to_string()));
+        // push_flags should also NOT be included when push=false
+        assert!(!cmd.contains(&"--provenance=true".to_string()));
+    }
+
+    #[test]
+    fn test_push_flags_appended_to_command() {
+        let push_flags = vec![
+            "--provenance=true".to_string(),
+            "--sbom=true".to_string(),
+        ];
+        let cmd = build_docker_command(
+            "/tmp/staging",
+            &["linux/amd64"],
+            &["img:v1.0.0"],
+            &[],
+            true,
+            &push_flags,
+        );
+        assert!(cmd.contains(&"--push".to_string()));
+        assert!(cmd.contains(&"--provenance=true".to_string()));
+        assert!(cmd.contains(&"--sbom=true".to_string()));
+        // push_flags should come after --push
+        let push_idx = cmd.iter().position(|x| x == "--push").unwrap();
+        let prov_idx = cmd.iter().position(|x| x == "--provenance=true").unwrap();
+        assert!(prov_idx > push_idx, "push_flags should come after --push");
+    }
+
+    #[test]
+    fn test_multi_platform_generates_correct_platform_flag() {
+        let cmd = build_docker_command(
+            "/tmp/ctx",
+            &["linux/amd64", "linux/arm64", "linux/arm/v7"],
+            &["img:latest"],
+            &[],
+            false,
+            &[],
+        );
+        assert!(cmd.contains(&"--platform=linux/amd64,linux/arm64,linux/arm/v7".to_string()));
+    }
+
+    #[test]
+    fn test_platform_to_arch_various_formats() {
+        assert_eq!(platform_to_arch("linux/amd64"), "amd64");
+        assert_eq!(platform_to_arch("linux/arm64"), "arm64");
+        assert_eq!(platform_to_arch("linux/arm/v7"), "v7");
+        assert_eq!(platform_to_arch("linux/386"), "386");
+        assert_eq!(platform_to_arch("windows/amd64"), "amd64");
+    }
+
+    #[test]
+    fn test_image_template_rendering_with_context() {
+        use anodize_core::config::{Config, CrateConfig, DockerConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let dockerfile = tmp.path().join("Dockerfile");
+        fs::write(&dockerfile, b"FROM scratch\n").unwrap();
+
+        let docker_cfg = DockerConfig {
+            image_templates: vec![
+                "ghcr.io/owner/myapp:{{ .Version }}".to_string(),
+                "ghcr.io/owner/myapp:{{ .Tag }}".to_string(),
+                "ghcr.io/owner/myapp:latest".to_string(),
+            ],
+            dockerfile: dockerfile.to_string_lossy().into_owned(),
+            platforms: Some(vec!["linux/amd64".to_string()]),
+            binaries: None,
+            build_flag_templates: None,
+            skip_push: None,
+            extra_files: None,
+            push_flags: None,
+        };
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            docker: Some(vec![docker_cfg]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "2.5.0");
+        ctx.template_vars_mut().set("Tag", "v2.5.0");
+
+        let stage = DockerStage;
+        stage.run(&mut ctx).unwrap();
+
+        // Verify all 3 rendered tags appear in the registered artifacts
+        let images = ctx.artifacts.by_kind(ArtifactKind::DockerImage);
+        assert_eq!(images.len(), 3);
+
+        let tags: Vec<&str> = images
+            .iter()
+            .map(|a| a.metadata.get("tag").unwrap().as_str())
+            .collect();
+        assert!(tags.contains(&"ghcr.io/owner/myapp:2.5.0"));
+        assert!(tags.contains(&"ghcr.io/owner/myapp:v2.5.0"));
+        assert!(tags.contains(&"ghcr.io/owner/myapp:latest"));
+    }
+
+    #[test]
+    fn test_binary_staging_per_architecture_subdirectory() {
+        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use anodize_core::config::{Config, CrateConfig, DockerConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+
+        // Create fake binaries
+        let amd64_bin = tmp.path().join("myapp-amd64");
+        let arm64_bin = tmp.path().join("myapp-arm64");
+        fs::write(&amd64_bin, b"fake amd64").unwrap();
+        fs::write(&arm64_bin, b"fake arm64").unwrap();
+
+        // Create Dockerfile
+        let dockerfile = tmp.path().join("Dockerfile");
+        fs::write(&dockerfile, b"FROM scratch\nCOPY . /\n").unwrap();
+
+        let docker_cfg = DockerConfig {
+            image_templates: vec!["ghcr.io/owner/myapp:latest".to_string()],
+            dockerfile: dockerfile.to_string_lossy().into_owned(),
+            platforms: Some(vec!["linux/amd64".to_string(), "linux/arm64".to_string()]),
+            binaries: None,
+            build_flag_templates: None,
+            skip_push: Some(true),
+            extra_files: None,
+            push_flags: None,
+        };
+
+        let dist = tmp.path().join("dist");
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            docker: Some(vec![docker_cfg]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = dist.clone();
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: false,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+        // Register binary artifacts with correct target triples
+        let mut meta_amd64 = HashMap::new();
+        meta_amd64.insert("binary".to_string(), "myapp".to_string());
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: amd64_bin,
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: meta_amd64,
+        });
+
+        let mut meta_arm64 = HashMap::new();
+        meta_arm64.insert("binary".to_string(), "myapp".to_string());
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: arm64_bin,
+            target: Some("aarch64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: meta_arm64,
+        });
+
+        // Run the stage — it will fail at docker buildx, but staging will be done
+        let _result = DockerStage.run(&mut ctx);
+
+        // Verify binaries are staged per arch subdirectory
+        let staging_base = dist.join("docker").join("myapp").join("0");
+        let amd64_dir = staging_base.join("binaries").join("amd64");
+        let arm64_dir = staging_base.join("binaries").join("arm64");
+
+        assert!(amd64_dir.exists(), "amd64 binaries dir should exist");
+        assert!(arm64_dir.exists(), "arm64 binaries dir should exist");
+        assert!(
+            amd64_dir.join("myapp").exists(),
+            "amd64 binary should be staged"
+        );
+        assert!(
+            arm64_dir.join("myapp").exists(),
+            "arm64 binary should be staged"
+        );
+    }
+
+    #[test]
+    fn test_build_docker_command_extra_build_flags() {
+        let extra = vec![
+            "--build-arg=APP_VERSION=1.0.0".to_string(),
+            "--label=org.opencontainers.image.version=1.0.0".to_string(),
+        ];
+        let cmd = build_docker_command(
+            "/tmp/ctx",
+            &["linux/amd64"],
+            &["img:v1.0.0"],
+            &extra,
+            false,
+            &[],
+        );
+        assert!(cmd.contains(&"--build-arg=APP_VERSION=1.0.0".to_string()));
+        assert!(cmd.contains(
+            &"--label=org.opencontainers.image.version=1.0.0".to_string()
+        ));
+    }
+
+    #[test]
+    fn test_build_docker_command_context_dir_is_last() {
+        let cmd = build_docker_command(
+            "/my/staging/dir",
+            &["linux/amd64"],
+            &["img:latest"],
+            &[],
+            false,
+            &[],
+        );
+        assert_eq!(cmd.last().unwrap(), "/my/staging/dir");
+    }
 }

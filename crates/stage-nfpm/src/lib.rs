@@ -702,4 +702,275 @@ crates:
         assert!(!yaml.contains("recommends:"));
         assert!(!yaml.contains("suggests:"));
     }
+
+    // -----------------------------------------------------------------------
+    // Task 4C: Additional behavior tests — config fields actually do things
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_scripts_block_appears_in_generated_yaml() {
+        use anodize_core::config::NfpmScripts;
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            scripts: Some(NfpmScripts {
+                preinstall: Some("/scripts/pre.sh".to_string()),
+                postinstall: Some("/scripts/post.sh".to_string()),
+                preremove: Some("/scripts/prerm.sh".to_string()),
+                postremove: Some("/scripts/postrm.sh".to_string()),
+            }),
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp");
+        assert!(yaml.contains("scripts:"));
+        assert!(yaml.contains("  preinstall: /scripts/pre.sh"));
+        assert!(yaml.contains("  postinstall: /scripts/post.sh"));
+        assert!(yaml.contains("  preremove: /scripts/prerm.sh"));
+        assert!(yaml.contains("  postremove: /scripts/postrm.sh"));
+    }
+
+    #[test]
+    fn test_all_package_relationship_fields_in_yaml() {
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            recommends: Some(vec!["libfoo".to_string(), "libbar".to_string()]),
+            suggests: Some(vec!["opt-pkg".to_string()]),
+            conflicts: Some(vec!["old-myapp".to_string()]),
+            replaces: Some(vec!["old-myapp".to_string()]),
+            provides: Some(vec!["myapp-bin".to_string()]),
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp");
+
+        // Each field should appear with its items
+        assert!(yaml.contains("recommends:\n  - libfoo\n  - libbar"));
+        assert!(yaml.contains("suggests:\n  - opt-pkg"));
+        assert!(yaml.contains("conflicts:\n  - old-myapp"));
+        assert!(yaml.contains("replaces:\n  - old-myapp"));
+        assert!(yaml.contains("provides:\n  - myapp-bin"));
+    }
+
+    #[test]
+    fn test_contents_type_and_file_info_serialize_correctly() {
+        use anodize_core::config::{NfpmContent, NfpmFileInfo};
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            contents: Some(vec![
+                NfpmContent {
+                    src: "/src/config.toml".to_string(),
+                    dst: "/etc/myapp/config.toml".to_string(),
+                    content_type: Some("config".to_string()),
+                    file_info: Some(NfpmFileInfo {
+                        owner: Some("root".to_string()),
+                        group: Some("admin".to_string()),
+                        mode: Some("0640".to_string()),
+                    }),
+                },
+                NfpmContent {
+                    src: "/src/readme".to_string(),
+                    dst: "/usr/share/doc/myapp/README".to_string(),
+                    content_type: Some("doc".to_string()),
+                    file_info: None,
+                },
+            ]),
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "2.0.0", "/dist/myapp");
+
+        // First content entry with type and file_info
+        assert!(yaml.contains("  - src: /src/config.toml"));
+        assert!(yaml.contains("    dst: /etc/myapp/config.toml"));
+        assert!(yaml.contains("    type: config"));
+        assert!(yaml.contains("    file_info:"));
+        assert!(yaml.contains("      owner: root"));
+        assert!(yaml.contains("      group: admin"));
+        assert!(yaml.contains("      mode: \"0640\""));
+
+        // Second content entry with type but no file_info
+        assert!(yaml.contains("  - src: /src/readme"));
+        assert!(yaml.contains("    type: doc"));
+    }
+
+    #[test]
+    fn test_multiple_formats_in_one_pass() {
+        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string(), "rpm".to_string(), "apk".to_string()],
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nfpm: Some(vec![nfpm_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        NfpmStage.run(&mut ctx).unwrap();
+
+        // Should register 3 artifacts (one per format)
+        let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+        assert_eq!(pkgs.len(), 3);
+
+        let formats: Vec<&str> = pkgs
+            .iter()
+            .map(|a| a.metadata.get("format").unwrap().as_str())
+            .collect();
+        assert!(formats.contains(&"deb"));
+        assert!(formats.contains(&"rpm"));
+        assert!(formats.contains(&"apk"));
+    }
+
+    #[test]
+    fn test_file_name_template_rendering() {
+        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            file_name_template: Some(
+                "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}".to_string(),
+            ),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nfpm: Some(vec![nfpm_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "3.0.0");
+
+        NfpmStage.run(&mut ctx).unwrap();
+
+        let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+        assert_eq!(pkgs.len(), 1);
+
+        // The file path should use the rendered template + extension
+        let path_str = pkgs[0].path.file_name().unwrap().to_str().unwrap();
+        assert!(
+            path_str.starts_with("myapp_3.0.0_"),
+            "expected file_name_template to be rendered, got: {}",
+            path_str
+        );
+        assert!(path_str.ends_with(".deb"));
+    }
+
+    #[test]
+    fn test_artifact_registration_of_linux_package() {
+        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nfpm: Some(vec![nfpm_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        NfpmStage.run(&mut ctx).unwrap();
+
+        let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs[0].kind, ArtifactKind::LinuxPackage);
+        assert_eq!(pkgs[0].crate_name, "myapp");
+        assert_eq!(
+            pkgs[0].metadata.get("format"),
+            Some(&"deb".to_string())
+        );
+    }
+
+    #[test]
+    fn test_format_extension_mapping() {
+        assert_eq!(format_extension("deb"), ".deb");
+        assert_eq!(format_extension("rpm"), ".rpm");
+        assert_eq!(format_extension("apk"), ".apk");
+        assert_eq!(format_extension("archlinux"), ".pkg.tar.zst");
+        assert_eq!(format_extension("unknown"), "");
+    }
+
+    #[test]
+    fn test_nfpm_yaml_binary_path_included_in_contents() {
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            bindir: Some("/usr/local/bin".to_string()),
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/build/myapp");
+
+        // Binary should appear in the contents section
+        assert!(yaml.contains("contents:"));
+        assert!(yaml.contains("  - src: /build/myapp"));
+        assert!(yaml.contains("    dst: /usr/local/bin/myapp"));
+    }
+
+    #[test]
+    fn test_nfpm_yaml_custom_bindir() {
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            bindir: Some("/opt/myapp/bin".to_string()),
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/build/myapp");
+        assert!(yaml.contains("    dst: /opt/myapp/bin/myapp"));
+    }
 }

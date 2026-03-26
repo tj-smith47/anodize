@@ -488,4 +488,66 @@ mod tests {
         assert!(auto_url.ends_with("-windows-amd64.zip"));
         assert!(auto_url.contains("release-tool-$version-"));
     }
+
+    // -----------------------------------------------------------------------
+    // Task 4C: Additional behavior tests — config fields actually do things
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_scoop_manifest_architecture_structure() {
+        let manifest = generate_manifest(
+            "myapp",
+            "1.0.0",
+            "https://example.com/myapp-1.0.0-windows-amd64.zip",
+            "deadbeef",
+            "My application",
+            "Apache-2.0",
+        );
+
+        let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+
+        // Verify architecture.64bit has all expected fields
+        let arch64 = &json["architecture"]["64bit"];
+        assert_eq!(
+            arch64["url"],
+            "https://example.com/myapp-1.0.0-windows-amd64.zip"
+        );
+        assert_eq!(arch64["hash"], "deadbeef");
+        assert_eq!(arch64["bin"], "myapp");
+    }
+
+    #[test]
+    fn test_scoop_manifest_checkver_and_autoupdate() {
+        let manifest = generate_manifest(
+            "mytool",
+            "2.0.0",
+            "https://example.com/mytool.zip",
+            "abc",
+            "desc",
+            "MIT",
+        );
+
+        let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+        assert_eq!(json["checkver"], "github");
+        assert!(json["autoupdate"].is_object());
+        assert!(json["autoupdate"]["architecture"]["64bit"]["url"]
+            .as_str()
+            .unwrap()
+            .contains("$version"));
+    }
+
+    #[test]
+    fn test_scoop_manifest_homepage_derived_from_name() {
+        let manifest = generate_manifest(
+            "my-tool",
+            "1.0.0",
+            "https://example.com/t.zip",
+            "hash",
+            "desc",
+            "MIT",
+        );
+
+        let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+        assert_eq!(json["homepage"], "https://github.com/my-tool");
+    }
 }

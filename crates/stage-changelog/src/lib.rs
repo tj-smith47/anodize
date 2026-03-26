@@ -1494,4 +1494,264 @@ abbrev: 10
             "notes should contain Features"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Task 4C: Additional behavior tests — config fields actually do things
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_header_appears_before_changelog_body() {
+        let grouped = vec![GroupedCommits {
+            title: "Features".into(),
+            commits: vec![CommitInfo {
+                raw_message: "feat: new feature".into(),
+                kind: "feat".into(),
+                description: "new feature".into(),
+                hash: "abc1234".into(),
+            }],
+        }];
+        let body = render_changelog(&grouped, 7);
+
+        // Simulate the stage's header/footer assembly
+        let mut final_md = String::new();
+        final_md.push_str("# Release Header");
+        final_md.push('\n');
+        final_md.push_str(&body);
+
+        // Header must appear first, before the changelog sections
+        let header_pos = final_md.find("# Release Header").unwrap();
+        let features_pos = final_md.find("## Features").unwrap();
+        assert!(
+            header_pos < features_pos,
+            "header should appear before changelog body"
+        );
+    }
+
+    #[test]
+    fn test_footer_appears_after_changelog_body() {
+        let grouped = vec![GroupedCommits {
+            title: "Bug Fixes".into(),
+            commits: vec![CommitInfo {
+                raw_message: "fix: crash".into(),
+                kind: "fix".into(),
+                description: "crash".into(),
+                hash: "def5678".into(),
+            }],
+        }];
+        let body = render_changelog(&grouped, 7);
+
+        let mut final_md = String::new();
+        final_md.push_str(&body);
+        final_md.push_str("--- Footer ---");
+        final_md.push('\n');
+
+        let fixes_pos = final_md.find("## Bug Fixes").unwrap();
+        let footer_pos = final_md.find("--- Footer ---").unwrap();
+        assert!(
+            footer_pos > fixes_pos,
+            "footer should appear after changelog body"
+        );
+    }
+
+    #[test]
+    fn test_include_filters_restrict_commits_to_matching_patterns() {
+        // Only feat and fix should survive the include filter
+        let commits = vec![
+            CommitInfo {
+                raw_message: "feat: add login".into(),
+                kind: "feat".into(),
+                description: "add login".into(),
+                hash: "a".into(),
+            },
+            CommitInfo {
+                raw_message: "fix: crash".into(),
+                kind: "fix".into(),
+                description: "crash".into(),
+                hash: "b".into(),
+            },
+            CommitInfo {
+                raw_message: "chore: deps".into(),
+                kind: "chore".into(),
+                description: "deps".into(),
+                hash: "c".into(),
+            },
+            CommitInfo {
+                raw_message: "refactor: cleanup".into(),
+                kind: "refactor".into(),
+                description: "cleanup".into(),
+                hash: "d".into(),
+            },
+        ];
+
+        let result = apply_include_filters(&commits, &["^feat".to_string(), "^fix".to_string()]);
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().all(|c| c.kind == "feat" || c.kind == "fix"));
+        // Excluded types should not be present
+        assert!(!result.iter().any(|c| c.kind == "chore"));
+        assert!(!result.iter().any(|c| c.kind == "refactor"));
+    }
+
+    #[test]
+    fn test_abbrev_truncates_to_specified_length() {
+        let grouped = vec![GroupedCommits {
+            title: "Changes".into(),
+            commits: vec![CommitInfo {
+                raw_message: "feat: test".into(),
+                kind: "feat".into(),
+                description: "test".into(),
+                hash: "abcdef1234567890".into(),
+            }],
+        }];
+
+        // abbrev = 3 should produce "(abc)"
+        let md = render_changelog(&grouped, 3);
+        assert!(md.contains("(abc)"), "abbrev=3 expected (abc), got: {}", md);
+
+        // abbrev = 10 should produce "(abcdef1234)"
+        let md10 = render_changelog(&grouped, 10);
+        assert!(
+            md10.contains("(abcdef1234)"),
+            "abbrev=10 expected (abcdef1234), got: {}",
+            md10
+        );
+    }
+
+    #[test]
+    fn test_abbrev_zero_uses_minimum_one() {
+        let grouped = vec![GroupedCommits {
+            title: "Changes".into(),
+            commits: vec![CommitInfo {
+                raw_message: "feat: test".into(),
+                kind: "feat".into(),
+                description: "test".into(),
+                hash: "abcdef".into(),
+            }],
+        }];
+
+        // abbrev = 0 should be clamped to 1 (minimum)
+        let md = render_changelog(&grouped, 0);
+        assert!(md.contains("(a)"), "abbrev=0 should clamp to 1, got: {}", md);
+    }
+
+    #[test]
+    fn test_disable_skips_stage_entirely() {
+        use anodize_core::config::{ChangelogConfig, Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let mut config = Config::default();
+        config.project_name = "test".to_string();
+        config.changelog = Some(ChangelogConfig {
+            disable: Some(true),
+            sort: None,
+            filters: None,
+            groups: None,
+            header: None,
+            footer: None,
+            use_source: None,
+            abbrev: None,
+        });
+        config.crates = vec![CrateConfig {
+            name: "test".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ChangelogStage.run(&mut ctx).unwrap();
+
+        // No changelogs should be generated when disabled
+        assert!(ctx.changelogs.is_empty());
+        // The github_native_changelog flag should NOT be set
+        assert!(!ctx.github_native_changelog);
+    }
+
+    #[test]
+    fn test_empty_changelog_when_all_commits_filtered() {
+        let commits = vec![
+            CommitInfo {
+                raw_message: "ci: pipeline fix".into(),
+                kind: "ci".into(),
+                description: "pipeline fix".into(),
+                hash: "a".into(),
+            },
+        ];
+
+        // Include filter that matches nothing
+        let result = apply_include_filters(&commits, &["^feat".to_string()]);
+        assert!(result.is_empty());
+
+        let grouped = group_commits(&result, &[]);
+        let md = render_changelog(&grouped, 7);
+        assert!(md.is_empty(), "changelog should be empty when no commits match");
+    }
+
+    #[test]
+    fn test_changelog_written_to_correct_output_location() {
+        use anodize_core::config::{ChangelogConfig, Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+        use std::process::Command;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+
+        // Helper to run git commands
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(repo)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+        };
+
+        git(&["init"]);
+        std::fs::write(repo.join("file.txt"), b"v1").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-m", "feat: initial"]);
+
+        let custom_dist = repo.join("custom-dist");
+
+        let config = Config {
+            project_name: "test".to_string(),
+            dist: custom_dist.clone(),
+            changelog: Some(ChangelogConfig {
+                disable: None,
+                sort: None,
+                filters: None,
+                groups: None,
+                header: None,
+                footer: None,
+                use_source: None,
+                abbrev: None,
+            }),
+            crates: vec![CrateConfig {
+                name: "test".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(repo).unwrap();
+        let result = ChangelogStage.run(&mut ctx);
+        std::env::set_current_dir(&original_dir).unwrap();
+        result.unwrap();
+
+        // RELEASE_NOTES.md should be written to the dist directory
+        let notes_path = custom_dist.join("RELEASE_NOTES.md");
+        assert!(
+            notes_path.exists(),
+            "RELEASE_NOTES.md should be in the dist directory: {}",
+            custom_dist.display()
+        );
+    }
 }

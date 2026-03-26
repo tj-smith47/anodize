@@ -658,4 +658,78 @@ mod tests {
         assert!(formula.contains("    system \"#{bin}/complex-app\", \"--version\"\n"));
         assert!(formula.contains("    assert_match \"complex-app\","));
     }
+
+    // -----------------------------------------------------------------------
+    // Task 4C: Additional behavior tests — config fields actually do things
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_formula_multi_arch_darwin_intel_and_arm() {
+        // Verify that darwin-amd64 and darwin-arm64 produce on_intel/on_arm blocks
+        let formula = generate_formula(
+            "myapp",
+            "1.0.0",
+            &[
+                (
+                    "darwin-amd64",
+                    "https://example.com/myapp-darwin-amd64.tar.gz",
+                    "hash_intel",
+                ),
+                (
+                    "darwin-arm64",
+                    "https://example.com/myapp-darwin-arm64.tar.gz",
+                    "hash_arm",
+                ),
+            ],
+            "My app",
+            "MIT",
+            "bin.install \"myapp\"",
+            "system \"#{bin}/myapp\", \"--version\"",
+        );
+
+        assert_eq!(formula.matches("on_macos do").count(), 1);
+        assert!(formula.contains("on_intel do"));
+        assert!(formula.contains("on_arm do"));
+        assert!(formula.contains("hash_intel"));
+        assert!(formula.contains("hash_arm"));
+        // No on_linux block since no linux archives
+        assert!(!formula.contains("on_linux"));
+    }
+
+    #[test]
+    fn test_formula_single_archive_no_os_blocks() {
+        // A single archive entry should use flat url/sha256, no on_macos/on_linux
+        let formula = generate_formula(
+            "simple",
+            "1.0.0",
+            &[(
+                "linux-amd64",
+                "https://example.com/simple.tar.gz",
+                "abc123",
+            )],
+            "Simple tool",
+            "MIT",
+            "bin.install \"simple\"",
+            "system \"#{bin}/simple\"",
+        );
+
+        assert!(!formula.contains("on_macos"));
+        assert!(!formula.contains("on_linux"));
+        assert!(formula.contains("  url \"https://example.com/simple.tar.gz\""));
+        assert!(formula.contains("  sha256 \"abc123\""));
+    }
+
+    #[test]
+    fn test_formula_class_name_underscores_to_pascal_case() {
+        let formula = generate_formula(
+            "my-cool-tool",
+            "1.0.0",
+            &[],
+            "desc",
+            "MIT",
+            "bin.install \"my-cool-tool\"",
+            "system \"#{bin}/my-cool-tool\"",
+        );
+        assert!(formula.contains("class MyCoolTool < Formula"));
+    }
 }
