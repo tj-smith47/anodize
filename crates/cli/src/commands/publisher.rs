@@ -132,7 +132,7 @@ pub fn build_publisher_command(
     base_vars: &TemplateVars,
     ) -> Result<(String, Vec<String>)> {
     // Clone the base vars and add artifact-scoped variables
-    let mut vars = clone_template_vars(base_vars);
+    let mut vars = base_vars.clone();
     vars.set("ArtifactPath", &artifact.path.to_string_lossy());
     vars.set(
         "ArtifactName",
@@ -176,56 +176,6 @@ fn format_command_line(cmd: &str, args: &[String]) -> String {
     } else {
         format!("{} {}", cmd, args.join(" "))
     }
-}
-
-/// Create a new `TemplateVars` from an existing one by copying all accessible
-/// variables. Since TemplateVars doesn't expose iteration, we build a new
-/// instance with the known keys. In practice the base_vars are from the
-/// Context, which sets a known set of keys.
-///
-/// We use a simpler approach: create a fresh TemplateVars. The caller adds
-/// artifact-specific vars on top. The base vars from the context's template
-/// engine are passed through as-is by using the render function that already
-/// has access to them.
-///
-/// Actually, since we need to use `template::render` with the merged vars,
-/// and TemplateVars doesn't support cloning, we take a different approach:
-/// we accept the base_vars by reference and create a new TemplateVars that
-/// the caller populates.
-fn clone_template_vars(base: &TemplateVars) -> TemplateVars {
-    // TemplateVars doesn't expose iteration, but we know the common keys.
-    // We'll copy known keys that are typically set by Context.
-    let mut vars = TemplateVars::new();
-    let known_keys = [
-        "ProjectName",
-        "Tag",
-        "Version",
-        "RawVersion",
-        "Major",
-        "Minor",
-        "Patch",
-        "Prerelease",
-        "FullCommit",
-        "Commit",
-        "ShortCommit",
-        "Branch",
-        "CommitDate",
-        "CommitTimestamp",
-        "IsGitDirty",
-        "GitTreeState",
-        "IsSnapshot",
-        "IsDraft",
-        "PreviousTag",
-        "Date",
-        "Timestamp",
-        "Now",
-    ];
-    for key in &known_keys {
-        if let Some(val) = base.get(key) {
-            vars.set(key, val);
-        }
-    }
-    vars
 }
 
 // ---------------------------------------------------------------------------

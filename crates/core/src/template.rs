@@ -69,6 +69,7 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     tera
 });
 
+#[derive(Clone)]
 pub struct TemplateVars {
     vars: HashMap<String, String>,
     env: HashMap<String, String>,
