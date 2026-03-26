@@ -1,4 +1,5 @@
 use std::process::Command;
+use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use std::fs;
 
@@ -196,6 +197,136 @@ fn test_check_with_config_flag_nonexistent() {
     assert!(
         stderr.contains("config file not found"),
         "expected 'config file not found' error, got: {}",
+        stderr
+    );
+}
+
+#[test]
+fn test_release_help_shows_timeout_flag() {
+    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+        .args(["release", "--help"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("--timeout"),
+        "release --help should show --timeout flag, got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn test_build_help_shows_timeout_flag() {
+    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+        .args(["build", "--help"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("--timeout"),
+        "build --help should show --timeout flag, got: {}",
+        stdout
+    );
+}
+
+#[test]
+fn test_timeout_kills_long_running_release() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+
+    // Config with a before-hook that sleeps for 60 seconds (much longer than our timeout)
+    create_config(tmp.path(), r#"
+project_name: test-project
+before:
+  hooks:
+    - "sleep 60"
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#);
+
+    let start = Instant::now();
+
+    // Use spawn + try_wait instead of output(). When std::process::exit(124)
+    // fires from the watchdog thread, the grandchild `sleep 60` may still
+    // hold inherited pipe fds open, causing output() to block until that
+    // process also exits. By discarding stdout/stderr with Stdio::null()
+    // and polling try_wait(), we detect the exit immediately.
+    let mut child = Command::new(env!("CARGO_BIN_EXE_anodize"))
+        .args(["release", "--timeout", "1s"])
+        .current_dir(tmp.path())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+
+    // Poll for completion with a generous timeout
+    let poll_deadline = Instant::now() + Duration::from_secs(10);
+    let exit_status = loop {
+        match child.try_wait().unwrap() {
+            Some(status) => break status,
+            None => {
+                if Instant::now() > poll_deadline {
+                    child.kill().ok();
+                    panic!("anodize process did not exit within 10s (timeout was 1s)");
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+    };
+    let elapsed = start.elapsed();
+
+    // Should have been killed by timeout
+    assert!(
+        !exit_status.success(),
+        "release with 1s timeout on a 60s sleep should fail"
+    );
+
+    // Verify exit code 124 (conventional timeout exit code)
+    assert_eq!(
+        exit_status.code(),
+        Some(124),
+        "expected exit code 124 for timeout, got {:?}",
+        exit_status.code()
+    );
+
+    // The process should finish in well under 10s (timeout is 1s)
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "process should have been killed by timeout quickly, but took {:?}",
+        elapsed
+    );
+}
+
+#[test]
+fn test_release_invalid_timeout_value() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    create_config(tmp.path(), r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+        .args(["release", "--timeout", "notavalidtimeout"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid --timeout value"),
+        "stderr should report invalid timeout, got: {}",
         stderr
     );
 }

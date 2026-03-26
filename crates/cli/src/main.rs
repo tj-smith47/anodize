@@ -4,6 +4,7 @@ use colored::Colorize;
 
 mod commands;
 mod pipeline;
+pub mod timeout;
 
 #[derive(Parser)]
 #[command(name = "anodize", version, about = "Release Rust projects with ease")]
@@ -38,11 +39,15 @@ enum Commands {
         skip: Vec<String>,
         #[arg(long)]
         token: Option<String>,
+        #[arg(long, default_value = "30m", help = "Pipeline timeout duration (e.g., 30m, 1h, 5s)")]
+        timeout: String,
     },
     /// Build binaries only
     Build {
         #[arg(long = "crate", action = clap::ArgAction::Append)]
         crate_names: Vec<String>,
+        #[arg(long, default_value = "30m", help = "Pipeline timeout duration (e.g., 30m, 1h, 5s)")]
+        timeout: String,
     },
     /// Validate configuration
     Check,
@@ -57,19 +62,33 @@ enum Commands {
 
 fn main() {
     let cli = Cli::parse();
-    let config_path = cli.config.as_deref();
     let result = match cli.command {
-        Commands::Release { crate_names, all, force, snapshot, dry_run, clean, skip, token } => {
-            commands::release::run(commands::release::ReleaseOpts {
-                crate_names, all, force, snapshot, dry_run, clean, skip, token,
-                verbose: cli.verbose, debug: cli.debug,
-                config_override: cli.config.clone(),
+        Commands::Release { crate_names, all, force, snapshot, dry_run, clean, skip, token, timeout } => {
+            let duration = timeout::parse_duration(&timeout).unwrap_or_else(|e| {
+                eprintln!("{} invalid --timeout value '{}': {}", "Error:".red().bold(), timeout, e);
+                std::process::exit(1);
+            });
+            timeout::run_with_timeout(duration, || {
+                commands::release::run(commands::release::ReleaseOpts {
+                    crate_names, all, force, snapshot, dry_run, clean, skip, token,
+                    verbose: cli.verbose, debug: cli.debug,
+                    config_override: cli.config.clone(),
+                })
             })
         }
-        Commands::Build { crate_names } => commands::build::run(crate_names, config_path),
-        Commands::Check => commands::check::run(config_path),
+        Commands::Build { crate_names, timeout } => {
+            let duration = timeout::parse_duration(&timeout).unwrap_or_else(|e| {
+                eprintln!("{} invalid --timeout value '{}': {}", "Error:".red().bold(), timeout, e);
+                std::process::exit(1);
+            });
+            let config_override = cli.config.clone();
+            timeout::run_with_timeout(duration, move || {
+                commands::build::run(crate_names, config_override.as_deref())
+            })
+        }
+        Commands::Check => commands::check::run(cli.config.as_deref()),
         Commands::Init => commands::init::run(),
-        Commands::Changelog { crate_name } => commands::changelog::run(crate_name, config_path),
+        Commands::Changelog { crate_name } => commands::changelog::run(crate_name, cli.config.as_deref()),
     };
     if let Err(e) = result {
         eprintln!("{} {}", "Error:".red().bold(), e);
