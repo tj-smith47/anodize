@@ -218,7 +218,7 @@ crates:
         description: "Kubernetes operator for cfgd"
         license: Apache-2.0
         bindir: /usr/bin
-        file_name_template: "{{ PackageName }}_{{ Version }}_{{ Arch }}"
+        file_name_template: "{{ ProjectName }}_{{ Version }}_{{ Arch }}"
         scripts:
           postinstall: scripts/postinstall.sh
           preremove: scripts/preremove.sh
@@ -271,17 +271,17 @@ changelog:
 # Singular `sign:` (object) or plural `signs:` (array) both work
 signs:
   - id: gpg-sign
-    artifacts: checksum  # none | all | checksum
+    artifacts: checksum  # none | all | checksum | source | archive | binary | package
     cmd: gpg
     args:
       - "--batch"
       - "--local-user"
       - "{{ Env.GPG_FINGERPRINT }}"
       - "--output"
-      - "{{ Signature }}"
+      - "{{ .Signature }}"
       - "--detach-sig"
-      - "{{ Artifact }}"
-    signature: "${artifact}.sig"
+      - "{{ .Artifact }}"
+    signature: "{{ .Artifact }}.sig"
     ids:
       - cfgd
     # stdin: "passphrase"
@@ -292,7 +292,7 @@ docker_signs:
     cmd: cosign
     args:
       - "sign"
-      - "{{ Artifact }}"
+      - "{{ .Artifact }}"
       - "--yes"
 
 publishers:
@@ -307,7 +307,7 @@ publishers:
       - archive
       - checksum
     env:
-      PUBLISH_TOKEN: "{{ Env.PUBLISH_TOKEN }}"
+      PUBLISH_TOKEN: "my-literal-token"  # env values are NOT template-rendered; use literal values
 
 snapshot:
   name_template: "{{ Tag | trimprefix(prefix='v') }}-SNAPSHOT-{{ ShortCommit }}"
@@ -536,7 +536,7 @@ format_overrides:
 | `abbrev` | int | `7` | Git commit hash abbreviation length |
 | `filters.exclude` | string[] | -- | Regex patterns to exclude commits |
 | `filters.include` | string[] | -- | Regex patterns to include commits (if set, only matching commits are included) |
-| `groups` | array | -- | Commit groups with `title`, `regexp`, `order` |
+| `groups` | array | -- | Commit groups with `title`, `regexp`, `order`. Groups are sorted by `order` (lower numbers first); groups without `order` appear after ordered groups |
 
 When `use: github-native` is set, anodize delegates changelog generation to the GitHub API (`generate_release_notes`). The `filters`, `groups`, `sort`, and `abbrev` fields are ignored in this mode.
 
@@ -547,7 +547,7 @@ Artifact signing configuration. Accepts either a single object (`sign:`) or an a
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `id` | string | -- | Unique identifier for this signing config |
-| `artifacts` | string | `none` | Which artifacts to sign: `none`, `all`, `checksum` |
+| `artifacts` | string | `none` | Which artifacts to sign: `none`, `all`, `checksum`, `source`, `archive`, `binary`, `package` |
 | `cmd` | string | -- | Signing command (e.g., `gpg`, `cosign`) |
 | `args` | string[] | -- | Arguments to the signing command (supports templates) |
 | `signature` | string | -- | Signature output filename pattern |
@@ -573,8 +573,8 @@ Custom publisher commands for generic post-release artifact publishing.
 | `cmd` | string | **required** | Command to execute |
 | `args` | string[] | -- | Arguments to the command (supports templates) |
 | `ids` | string[] | -- | Limit to artifacts with these IDs |
-| `artifact_types` | string[] | -- | Limit to specific artifact types (e.g., `archive`, `checksum`) |
-| `env` | map | -- | Additional environment variables for the command |
+| `artifact_types` | string[] | -- | Limit to specific artifact types. Valid values: `binary`, `archive`, `checksum`, `docker_image`, `linux_package` |
+| `env` | map | -- | Additional environment variables for the command (values are passed as-is, not template-rendered) |
 
 ### `snapshot`
 

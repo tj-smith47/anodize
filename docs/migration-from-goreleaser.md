@@ -250,11 +250,19 @@ changelog:
       order: 999
 ```
 
-**Anodize:**
+**Anodize (github-native):**
+```yaml
+changelog:
+  use: github-native
+```
+
+> **Note:** When `use: github-native` is set, the `filters`, `groups`, `sort`, and `abbrev` fields are all ignored. GitHub's `generate_release_notes` API handles changelog generation entirely.
+
+**Anodize (git-based with filters and groups):**
 ```yaml
 changelog:
   sort: asc
-  use: github-native
+  use: git
   abbrev: 7
   filters:
     exclude:
@@ -275,8 +283,8 @@ changelog:
 ```
 
 **Key differences:**
-- `use: github-native` delegates changelog generation to GitHub's `generate_release_notes` API.
-- When using `github-native`, filters/groups/sort/abbrev are ignored.
+- `use: github-native` delegates changelog generation to GitHub's `generate_release_notes` API. When using `github-native`, `filters`, `groups`, `sort`, and `abbrev` are ignored.
+- `use: git` (default) generates the changelog from commit history and supports `filters`, `groups`, `sort`, and `abbrev`.
 - `filters.include` is available to whitelist commits (GoReleaser uses `include` under filters too).
 - `header` and `footer` fields support template variables.
 
@@ -381,7 +389,7 @@ docker_signs:
 ```
 
 **Key differences:**
-- `${signature}` and `${artifact}` become `{{ Signature }}` and `{{ Artifact }}` (Tera template syntax).
+- `${signature}` and `${artifact}` become `{{ .Signature }}` and `{{ .Artifact }}` (Go-style dot prefix, replaced via string substitution).
 - `sign:` (singular object) and `signs:` (array) are both accepted.
 - `id` field allows referencing specific sign configs.
 - `stdin_file` is an alternative to `stdin` for piping file contents.
@@ -591,7 +599,7 @@ announce:
 3. Replace `goos`/`goarch` pairs with Rust target triples in `defaults.targets`.
 4. Replace `ldflags` with `flags: --release`.
 5. Replace `builds[].env` map with per-target env vars in `builds[].env`.
-6. Replace `${signature}`/`${artifact}` with `{{ Signature }}`/`{{ Artifact }}` in sign args.
+6. Replace `${signature}`/`${artifact}` with `{{ .Signature }}`/`{{ .Artifact }}` in sign args.
 7. Template syntax works as-is (`{{ .Field }}` is auto-converted), but consider migrating to native `{{ Field }}` syntax.
 8. Move `brews`/`scoops` to `crates[].publish.homebrew`/`scoop`.
 9. Move `nfpms` to `crates[].nfpm`.

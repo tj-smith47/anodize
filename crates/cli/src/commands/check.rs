@@ -48,14 +48,16 @@ pub fn run_checks(config: &Config, check_env: bool) -> Result<()> {
         errors.push(format!("depends_on cycle detected: {}", cycle.join(" → ")));
     }
 
-    // 3. tag_template must contain {{ .Version }}
+    // 3. tag_template must contain {{ .Version }} or {{ Version }} (Tera-native)
     for c in &config.crates {
         if !c.tag_template.is_empty()
             && !c.tag_template.contains("{{ .Version }}")
             && !c.tag_template.contains("{{.Version}}")
+            && !c.tag_template.contains("{{ Version }}")
+            && !c.tag_template.contains("{{Version}}")
         {
             errors.push(format!(
-                "crate '{}': tag_template '{}' must contain '{{{{ .Version }}}}'",
+                "crate '{}': tag_template '{}' must contain '{{{{ .Version }}}}' or '{{{{ Version }}}}'",
                 c.name, c.tag_template
             ));
         }
@@ -610,6 +612,20 @@ mod tests {
     fn test_tag_template_compact_version_accepted() {
         // {{.Version}} without spaces should also be accepted
         let config = make_config(vec![make_crate("a", "v{{.Version}}", None)]);
+        assert!(run_checks(&config, false).is_ok());
+    }
+
+    #[test]
+    fn test_tag_template_tera_native_version_accepted() {
+        // {{ Version }} (Tera-native, no dot) should also be accepted
+        let config = make_config(vec![make_crate("a", "v{{ Version }}", None)]);
+        assert!(run_checks(&config, false).is_ok());
+    }
+
+    #[test]
+    fn test_tag_template_tera_native_compact_version_accepted() {
+        // {{Version}} (Tera-native, no dot, no spaces) should also be accepted
+        let config = make_config(vec![make_crate("a", "v{{Version}}", None)]);
         assert!(run_checks(&config, false).is_ok());
     }
 

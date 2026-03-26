@@ -35,7 +35,7 @@ You can freely mix both styles in the same config file. The leading dot is strip
 | `Major` | Major version component | `1` |
 | `Minor` | Minor version component | `2` |
 | `Patch` | Patch version component | `3` |
-| `Prerelease` | Prerelease suffix (empty if none) | `rc.1` |
+| `Prerelease` | Prerelease suffix (empty string `""` when there is no prerelease suffix) | `rc.1` |
 
 ### Git Information
 
@@ -57,7 +57,6 @@ You can freely mix both styles in the same config file. The leading dot is strip
 |----------|-------------|---------|
 | `Os` | Mapped OS name (from target triple) | `linux`, `darwin`, `windows` |
 | `Arch` | Mapped architecture (from target triple) | `amd64`, `arm64` |
-| `Arm` | ARM version (if applicable) | `7` |
 | `Binary` | Name of the current binary being archived | `myapp` |
 | `ArtifactName` | Name of the current artifact | `myapp-1.0.0-linux-amd64.tar.gz` |
 | `ArtifactPath` | Full path to the current artifact | `/path/to/dist/myapp-1.0.0.tar.gz` |
@@ -96,12 +95,12 @@ sign:
 
 ### Sign-stage Variables
 
-These variables are only available within the `signs[]` configuration:
+These variables are only available within the `signs[]` configuration. They use the Go-style dot prefix and are replaced via string substitution (not Tera rendering):
 
 | Variable | Description |
 |----------|-------------|
-| `Signature` | Output path for the signature file |
-| `Artifact` | Input path of the artifact being signed |
+| `.Signature` | Output path for the signature file |
+| `.Artifact` | Input path of the artifact being signed |
 
 ## Filters
 
