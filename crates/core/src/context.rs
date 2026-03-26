@@ -409,6 +409,18 @@ mod tests {
     }
 
     #[test]
+    fn test_env_vars_accessible_in_templates() {
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set_env("MY_VAR", "hello-world");
+        ctx.template_vars_mut().set_env("DEPLOY_ENV", "staging");
+
+        let result = ctx.render_template("{{ .Env.MY_VAR }}-{{ .Env.DEPLOY_ENV }}").unwrap();
+        assert_eq!(result, "hello-world-staging");
+    }
+
+    #[test]
     fn test_populate_git_vars_without_git_info_still_sets_snapshot() {
         let config = Config::default();
         let opts = ContextOptions {

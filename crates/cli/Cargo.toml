@@ -23,6 +23,7 @@ anodize-stage-docker.workspace = true
 anodize-stage-sign.workspace = true
 anodize-stage-announce.workspace = true
 anyhow.workspace = true
+serde_json.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
 colored.workspace = true

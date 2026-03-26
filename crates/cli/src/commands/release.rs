@@ -1,7 +1,8 @@
 use std::path::PathBuf;
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use anodize_core::context::{Context, ContextOptions};
 use anodize_core::config::{CrateConfig, GitHubConfig};
+use anodize_core::artifact;
 use anodize_core::git;
 use crate::pipeline;
 
@@ -81,9 +82,37 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
     };
     let mut ctx = Context::new(config.clone(), ctx_opts);
     ctx.populate_time_vars();
+
+    // Populate user-defined env vars into template context
+    if let Some(ref env_map) = config.env {
+        for (key, value) in env_map {
+            ctx.template_vars_mut().set_env(key, value);
+        }
+    }
+
     // TODO: call detect_git_info() + ctx.populate_git_vars() once tag resolution is implemented
     let p = pipeline::build_release_pipeline();
     let result = p.run(&mut ctx);
+
+    // Post-pipeline: report sizes and write metadata (only if pipeline succeeded)
+    if result.is_ok() {
+        // Print artifact size table if configured
+        if config.report_sizes.unwrap_or(false) {
+            artifact::print_size_report(&ctx.artifacts);
+        }
+
+        // Write metadata.json to dist/
+        let metadata = ctx.artifacts.to_metadata_json();
+        let dist = &config.dist;
+        std::fs::create_dir_all(dist)
+            .with_context(|| format!("failed to create dist directory: {}", dist.display()))?;
+        let metadata_path = dist.join("metadata.json");
+        let json_str = serde_json::to_string_pretty(&metadata)
+            .context("failed to serialize metadata JSON")?;
+        std::fs::write(&metadata_path, &json_str)
+            .with_context(|| format!("failed to write {}", metadata_path.display()))?;
+        eprintln!("  wrote {}", metadata_path.display());
+    }
 
     // Run hooks after pipeline (only if pipeline succeeded)
     if result.is_ok()

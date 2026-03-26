@@ -23,6 +23,8 @@ pub struct Config {
     pub docker_signs: Option<Vec<DockerSignConfig>>,
     pub snapshot: Option<SnapshotConfig>,
     pub announce: Option<AnnounceConfig>,
+    pub report_sizes: Option<bool>,
+    pub env: Option<HashMap<String, String>>,
 }
 
 fn default_dist() -> PathBuf {
@@ -43,6 +45,8 @@ impl Default for Config {
             docker_signs: None,
             snapshot: None,
             announce: None,
+            report_sizes: None,
+            env: None,
         }
     }
 }
@@ -1359,5 +1363,101 @@ tag_template = "v{{ .Version }}"
     fn test_signs_default_config_has_empty_signs() {
         let config = Config::default();
         assert!(config.signs.is_empty());
+    }
+
+    // ---- report_sizes tests ----
+
+    #[test]
+    fn test_report_sizes_true() {
+        let yaml = r#"
+project_name: test
+report_sizes: true
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.report_sizes, Some(true));
+    }
+
+    #[test]
+    fn test_report_sizes_false() {
+        let yaml = r#"
+project_name: test
+report_sizes: false
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.report_sizes, Some(false));
+    }
+
+    #[test]
+    fn test_report_sizes_omitted() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.report_sizes, None);
+    }
+
+    // ---- env tests ----
+
+    #[test]
+    fn test_env_field_parsed() {
+        let yaml = r#"
+project_name: test
+env:
+  MY_VAR: hello
+  DEPLOY_ENV: staging
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let env = config.env.as_ref().unwrap();
+        assert_eq!(env.get("MY_VAR").unwrap(), "hello");
+        assert_eq!(env.get("DEPLOY_ENV").unwrap(), "staging");
+    }
+
+    #[test]
+    fn test_env_field_omitted() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.env, None);
+    }
+
+    #[test]
+    fn test_env_field_toml() {
+        let toml_str = r#"
+project_name = "test"
+
+[env]
+API_KEY = "secret123"
+STAGE = "prod"
+
+[[crates]]
+name = "a"
+path = "."
+tag_template = "v{{ .Version }}"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let env = config.env.as_ref().unwrap();
+        assert_eq!(env.get("API_KEY").unwrap(), "secret123");
+        assert_eq!(env.get("STAGE").unwrap(), "prod");
     }
 }
