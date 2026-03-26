@@ -136,13 +136,13 @@ after:
 crates:
   - name: cfgd-core
     path: crates/cfgd-core
-    tag_template: "cfgd-core-v{{ .Version }}"
+    tag_template: "cfgd-core-v{{ Version }}"
     publish:
       crates: true
 
   - name: cfgd
     path: crates/cfgd
-    tag_template: "v{{ .Version }}"
+    tag_template: "v{{ Version }}"
     depends_on:
       - cfgd-core
     builds:
@@ -167,16 +167,16 @@ crates:
     # When `binaries` is omitted from an archive config, all binaries
     # produced by this crate's builds are included.
     archives:
-      - name_template: "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+      - name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
         files:
           - LICENSE
           - README.md
-      - name_template: "kubectl-{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+      - name_template: "kubectl-{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
         binaries: [kubectl-cfgd]  # Only include kubectl-cfgd in this archive
         files:
           - LICENSE
     checksum:
-      name_template: "{{ .ProjectName }}-{{ .Version }}-checksums.txt"
+      name_template: "{{ ProjectName }}-{{ Version }}-checksums.txt"
       algorithm: sha256
     release:
       github:
@@ -184,7 +184,7 @@ crates:
         name: cfgd
       draft: false
       prerelease: auto  # true if tag contains -rc, -beta, etc.
-      name_template: "{{ .Tag }}"
+      name_template: "{{ Tag }}"
     publish:
       crates: true
       # Object form with options:
@@ -210,7 +210,7 @@ crates:
 
   - name: cfgd-operator
     path: crates/cfgd-operator
-    tag_template: "cfgd-operator-v{{ .Version }}"
+    tag_template: "cfgd-operator-v{{ Version }}"
     builds:
       - binary: cfgd-operator
         targets:
@@ -224,8 +224,8 @@ crates:
       crates: false
     docker:
       - image_templates:
-          - "ghcr.io/tj-smith47/cfgd-operator:{{ .Version }}"
-          - "ghcr.io/tj-smith47/cfgd-operator:{{ .Tag }}"
+          - "ghcr.io/tj-smith47/cfgd-operator:{{ Version }}"
+          - "ghcr.io/tj-smith47/cfgd-operator:{{ Tag }}"
         dockerfile: Dockerfile.operator.release
         platforms:
           - linux/amd64
@@ -235,7 +235,7 @@ crates:
 
   - name: cfgd-csi
     path: crates/cfgd-csi
-    tag_template: "cfgd-csi-v{{ .Version }}"
+    tag_template: "cfgd-csi-v{{ Version }}"
     builds:
       - binary: cfgd-csi
         targets:
@@ -246,8 +246,8 @@ crates:
       crates: false
     docker:
       - image_templates:
-          - "ghcr.io/tj-smith47/cfgd-csi:{{ .Version }}"
-          - "ghcr.io/tj-smith47/cfgd-csi:{{ .Tag }}"
+          - "ghcr.io/tj-smith47/cfgd-csi:{{ Version }}"
+          - "ghcr.io/tj-smith47/cfgd-csi:{{ Tag }}"
         dockerfile: Dockerfile.csi.release
         platforms:
           - linux/amd64
@@ -277,7 +277,7 @@ crates:
 #         - libc6
 #     overrides:
 #       rpm:
-#         file_name_template: "{{ .ProjectName }}-{{ .Version }}.{{ .Arch }}"
+#         file_name_template: "{{ ProjectName }}-{{ Version }}.{{ Arch }}"
 
 # Changelog config is workspace-wide (filters, groups, sort order), but at
 # runtime each crate's changelog is scoped to commits touching that crate's path.
@@ -306,12 +306,12 @@ signs:
     args:
       - "--batch"
       - "--local-user"
-      - "{{ .Env.GPG_FINGERPRINT }}"
+      - "{{ Env.GPG_FINGERPRINT }}"
       - "--output"
-      - "{{ .Signature }}"
+      - "{{ Signature }}"
       - "--detach-sig"
-      - "{{ .Artifact }}"
-    # signature: "{{ .Artifact }}.asc"  # optional: custom signature output path template
+      - "{{ Artifact }}"
+    # signature: "{{ Artifact }}.asc"  # optional: custom signature output path template
     # stdin: "passphrase"               # optional: pipe string to stdin
     # stdin_file: "/path/to/file"       # optional: pipe file contents to stdin
     # ids:                              # optional: filter by artifact IDs
@@ -322,28 +322,28 @@ docker_signs:
     cmd: cosign
     args:
       - "sign"
-      - "{{ .Artifact }}"
+      - "{{ Artifact }}"
       - "--yes"
 
 snapshot:
-  name_template: "{{ .Version }}-SNAPSHOT-{{ .ShortCommit }}"
+  name_template: "{{ Version }}-SNAPSHOT-{{ ShortCommit }}"
 
 announce:
   discord:
     enabled: false
-    webhook_url: "{{ .Env.DISCORD_WEBHOOK_URL }}"
-    message_template: "{{ .ProjectName }} {{ .Tag }} released! {{ .ReleaseURL }}"
+    webhook_url: "{{ Env.DISCORD_WEBHOOK_URL }}"
+    message_template: "{{ ProjectName }} {{ Tag }} released! {{ ReleaseURL }}"
   slack:
     enabled: false
-    webhook_url: "{{ .Env.SLACK_WEBHOOK_URL }}"
-    message_template: "{{ .ProjectName }} {{ .Tag }} released! {{ .ReleaseURL }}"
+    webhook_url: "{{ Env.SLACK_WEBHOOK_URL }}"
+    message_template: "{{ ProjectName }} {{ Tag }} released! {{ ReleaseURL }}"
   webhook:
     enabled: false
-    endpoint_url: "{{ .Env.WEBHOOK_URL }}"
+    endpoint_url: "{{ Env.WEBHOOK_URL }}"
     headers:
-      Authorization: "Bearer {{ .Env.WEBHOOK_TOKEN }}"
+      Authorization: "Bearer {{ Env.WEBHOOK_TOKEN }}"
     content_type: application/json
-    message_template: '{"project":"{{ .ProjectName }}","tag":"{{ .Tag }}","url":"{{ .ReleaseURL }}"}'
+    message_template: '{"project":"{{ ProjectName }}","tag":"{{ Tag }}","url":"{{ ReleaseURL }}"}'
 ```
 
 ---
