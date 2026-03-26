@@ -42,12 +42,14 @@ fn resolve_signature_path(
     ctx: &Context,
 ) -> String {
     if let Some(ref sig_template) = sign_cfg.signature {
-        ctx.render_template(
-            &sig_template
-                .replace("{{ .Artifact }}", artifact_path)
-                .replace("{{ Artifact }}", artifact_path),
-        )
-        .unwrap_or_else(|_| format!("{}.sig", artifact_path))
+        // Set Artifact as a template variable so Tera can resolve it natively.
+        // Also do a Go-compat string replacement for {{ .Artifact }} patterns
+        // that may appear alongside Tera expressions.
+        let preprocessed = sig_template
+            .replace("{{ .Artifact }}", artifact_path)
+            .replace("{{ Artifact }}", artifact_path);
+        ctx.render_template(&preprocessed)
+            .unwrap_or_else(|_| format!("{}.sig", artifact_path))
     } else {
         format!("{}.sig", artifact_path)
     }
@@ -197,6 +199,7 @@ impl Stage for SignStage {
                     child_stdin.write_all(&data).with_context(|| {
                         format!("sign: failed to write stdin for {}", artifact_str)
                     })?;
+                    drop(child_stdin); // Explicitly close stdin so child sees EOF
                 }
 
                 let status = child.wait().with_context(|| {

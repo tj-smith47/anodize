@@ -159,6 +159,20 @@ pub fn run_checks(config: &Config, check_env: bool) -> Result<()> {
         }
     }
 
+    // 10. Validate sign artifact filter values
+    let valid_artifact_filters = ["none", "all", "checksum", "source", "archive", "binary", "package"];
+    for sign_cfg in &config.signs {
+        if let Some(ref filter) = sign_cfg.artifacts
+            && !valid_artifact_filters.contains(&filter.as_str())
+        {
+            warnings.push(format!(
+                "signs: unrecognized artifacts filter '{}' (valid: {})",
+                filter,
+                valid_artifact_filters.join(", ")
+            ));
+        }
+    }
+
     // ------------------------------------------------------------------
     // Environment checks (warnings only)
     // ------------------------------------------------------------------
