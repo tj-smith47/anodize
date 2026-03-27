@@ -115,6 +115,7 @@ pub struct CrateConfig {
     pub nfpm: Option<Vec<NfpmConfig>>,
     pub binstall: Option<BinstallConfig>,
     pub version_sync: Option<VersionSyncConfig>,
+    pub universal_binaries: Option<Vec<UniversalBinaryConfig>>,
 }
 
 impl Default for CrateConfig {
@@ -134,8 +135,21 @@ impl Default for CrateConfig {
             nfpm: None,
             binstall: None,
             version_sync: None,
+            universal_binaries: None,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// UniversalBinaryConfig
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct UniversalBinaryConfig {
+    pub name_template: Option<String>,
+    pub replace: Option<bool>,
+    pub ids: Option<Vec<String>>,
 }
 
 // ---------------------------------------------------------------------------

@@ -6,7 +6,7 @@ use std::process::Command;
 use anyhow::{Context as _, Result};
 
 use anodize_core::artifact::{Artifact, ArtifactKind};
-use anodize_core::config::{BuildConfig, CrossStrategy};
+use anodize_core::config::{BuildConfig, CrossStrategy, UniversalBinaryConfig};
 use anodize_core::context::Context;
 use anodize_core::stage::Stage;
 use anodize_core::target::map_target;
@@ -186,6 +186,114 @@ pub fn detect_crate_type(crate_path: &str) -> Option<String> {
     let crate_types = lib.get("crate-type").or_else(|| lib.get("crate_type"))?;
     let arr = crate_types.as_array()?;
     arr.get(0).and_then(|v| v.as_str()).map(|s| s.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// build_universal_binary — run `lipo` to combine arm64 + x86_64 macOS binaries
+// ---------------------------------------------------------------------------
+
+fn build_universal_binary(
+    crate_name: &str,
+    ub: &UniversalBinaryConfig,
+    ctx: &mut Context,
+    dry_run: bool,
+) -> anyhow::Result<()> {
+    // Collect arm64 and x86_64 macOS binary artifacts for this crate
+    let binaries = ctx
+        .artifacts
+        .by_kind_and_crate(ArtifactKind::Binary, crate_name);
+
+    let arm64 = binaries.iter().find(|a| {
+        a.target.as_deref() == Some("aarch64-apple-darwin")
+    });
+    let x86_64 = binaries.iter().find(|a| {
+        a.target.as_deref() == Some("x86_64-apple-darwin")
+    });
+
+    let (arm64, x86_64) = match (arm64, x86_64) {
+        (Some(a), Some(x)) => (a.path.clone(), x.path.clone()),
+        _ => {
+            eprintln!(
+                "[build] universal_binaries: skipping {crate_name} — \
+                 both aarch64-apple-darwin and x86_64-apple-darwin binaries required"
+            );
+            return Ok(());
+        }
+    };
+
+    // Determine output path / name
+    let binary_name = arm64
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| crate_name.to_string());
+
+    let out_name = if let Some(ref tmpl) = ub.name_template {
+        ctx.render_template(tmpl).unwrap_or_else(|_| tmpl.clone())
+    } else {
+        binary_name.clone()
+    };
+
+    // Place the universal binary in the same directory as the arm64 binary
+    let out_path = arm64
+        .parent()
+        .map(|p| p.join(&out_name))
+        .unwrap_or_else(|| PathBuf::from(&out_name));
+
+    if dry_run {
+        eprintln!(
+            "[build] (dry-run) lipo -create -output {} {} {}",
+            out_path.display(),
+            arm64.display(),
+            x86_64.display()
+        );
+    } else {
+        // Check lipo is available
+        if !which("lipo") {
+            eprintln!(
+                "[build] warning: lipo not found, skipping universal binary for {crate_name}"
+            );
+            return Ok(());
+        }
+
+        eprintln!(
+            "[build] lipo -create -output {} {} {}",
+            out_path.display(),
+            arm64.display(),
+            x86_64.display()
+        );
+
+        let status = Command::new("lipo")
+            .args([
+                "-create",
+                "-output",
+                &out_path.to_string_lossy(),
+                &arm64.to_string_lossy(),
+                &x86_64.to_string_lossy(),
+            ])
+            .status()
+            .with_context(|| format!("failed to spawn lipo for {crate_name}"))?;
+
+        if !status.success() {
+            anyhow::bail!(
+                "lipo failed for {crate_name} universal binary (exit: {status})"
+            );
+        }
+    }
+
+    // Register the universal binary artifact
+    let mut metadata = HashMap::new();
+    metadata.insert("binary".to_string(), binary_name);
+    metadata.insert("universal".to_string(), "true".to_string());
+
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        path: out_path,
+        target: Some("darwin-universal".to_string()),
+        crate_name: crate_name.to_string(),
+        metadata,
+    });
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -507,6 +615,15 @@ impl Stage for BuildStage {
                             m
                         },
                     });
+                }
+            }
+        }
+
+        // --- Universal binaries (macOS lipo) ---
+        for crate_cfg in &crates {
+            if let Some(ref ub_configs) = crate_cfg.universal_binaries {
+                for ub in ub_configs {
+                    build_universal_binary(crate_cfg.name.as_str(), ub, ctx, dry_run)?;
                 }
             }
         }
@@ -1062,5 +1179,283 @@ crate_type = ["dylib"]
         let mut ctx = Context::new(config, opts);
         let stage = BuildStage;
         assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    // ---- Task 5F: universal binary tests ----
+
+    /// Helper: register a fake Binary artifact directly in the context.
+    fn register_binary(
+        ctx: &mut anodize_core::context::Context,
+        crate_name: &str,
+        target: &str,
+        path: std::path::PathBuf,
+    ) {
+        use anodize_core::artifact::{Artifact, ArtifactKind};
+        let mut meta = HashMap::new();
+        meta.insert(
+            "binary".to_string(),
+            path.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        );
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path,
+            target: Some(target.to_string()),
+            crate_name: crate_name.to_string(),
+            metadata: meta,
+        });
+    }
+
+    #[test]
+    fn test_universal_binary_dry_run_registers_artifact() {
+        use anodize_core::artifact::ArtifactKind;
+        use anodize_core::config::{Config, CrateConfig, UniversalBinaryConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let mut config = Config::default();
+        config.project_name = "test".to_string();
+        config.crates.push(CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            universal_binaries: Some(vec![UniversalBinaryConfig {
+                name_template: None,
+                replace: None,
+                ids: None,
+            }]),
+            ..Default::default()
+        });
+
+        let opts = ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+
+        // Pre-register both macOS arch binaries as already-built artifacts
+        register_binary(
+            &mut ctx,
+            "myapp",
+            "aarch64-apple-darwin",
+            std::path::PathBuf::from("target/aarch64-apple-darwin/release/myapp"),
+        );
+        register_binary(
+            &mut ctx,
+            "myapp",
+            "x86_64-apple-darwin",
+            std::path::PathBuf::from("target/x86_64-apple-darwin/release/myapp"),
+        );
+
+        let result = build_universal_binary(
+            "myapp",
+            &UniversalBinaryConfig {
+                name_template: None,
+                replace: None,
+                ids: None,
+            },
+            &mut ctx,
+            true, // dry_run
+        );
+        assert!(result.is_ok(), "dry-run universal binary should succeed");
+
+        // A universal artifact should have been registered
+        let universals: Vec<_> = ctx
+            .artifacts
+            .by_kind(ArtifactKind::Binary)
+            .into_iter()
+            .filter(|a| a.target.as_deref() == Some("darwin-universal"))
+            .collect();
+        assert_eq!(universals.len(), 1, "one universal artifact should be registered");
+        assert_eq!(
+            universals[0].metadata.get("universal").map(|s| s.as_str()),
+            Some("true")
+        );
+    }
+
+    #[test]
+    fn test_universal_binary_dry_run_uses_name_template() {
+        use anodize_core::artifact::ArtifactKind;
+        use anodize_core::config::UniversalBinaryConfig;
+        use anodize_core::context::{Context, ContextOptions};
+
+        let config = anodize_core::config::Config::default();
+        let opts = ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        ctx.template_vars_mut().set("ProjectName", "myapp");
+
+        register_binary(
+            &mut ctx,
+            "myapp",
+            "aarch64-apple-darwin",
+            std::path::PathBuf::from("target/aarch64-apple-darwin/release/myapp"),
+        );
+        register_binary(
+            &mut ctx,
+            "myapp",
+            "x86_64-apple-darwin",
+            std::path::PathBuf::from("target/x86_64-apple-darwin/release/myapp"),
+        );
+
+        let ub = UniversalBinaryConfig {
+            name_template: Some("{{ .ProjectName }}-universal".to_string()),
+            replace: None,
+            ids: None,
+        };
+
+        let result = build_universal_binary("myapp", &ub, &mut ctx, true);
+        assert!(result.is_ok());
+
+        let universals: Vec<_> = ctx
+            .artifacts
+            .by_kind(ArtifactKind::Binary)
+            .into_iter()
+            .filter(|a| a.target.as_deref() == Some("darwin-universal"))
+            .collect();
+        assert_eq!(universals.len(), 1);
+        assert!(
+            universals[0].path.to_string_lossy().contains("myapp-universal"),
+            "output path should use rendered name template, got: {}",
+            universals[0].path.display()
+        );
+    }
+
+    #[test]
+    fn test_universal_binary_skips_when_missing_arch() {
+        use anodize_core::artifact::ArtifactKind;
+        use anodize_core::config::UniversalBinaryConfig;
+        use anodize_core::context::{Context, ContextOptions};
+
+        let config = anodize_core::config::Config::default();
+        let opts = ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+
+        // Only arm64 — no x86_64
+        register_binary(
+            &mut ctx,
+            "myapp",
+            "aarch64-apple-darwin",
+            std::path::PathBuf::from("target/aarch64-apple-darwin/release/myapp"),
+        );
+
+        let ub = UniversalBinaryConfig {
+            name_template: None,
+            replace: None,
+            ids: None,
+        };
+
+        let result = build_universal_binary("myapp", &ub, &mut ctx, true);
+        assert!(result.is_ok(), "missing arch should not error, just skip");
+
+        // No universal artifact should have been registered
+        let universals: Vec<_> = ctx
+            .artifacts
+            .by_kind(ArtifactKind::Binary)
+            .into_iter()
+            .filter(|a| a.target.as_deref() == Some("darwin-universal"))
+            .collect();
+        assert!(universals.is_empty(), "no universal artifact when arch is missing");
+    }
+
+    #[test]
+    fn test_universal_binary_skips_for_different_crate() {
+        use anodize_core::artifact::ArtifactKind;
+        use anodize_core::config::UniversalBinaryConfig;
+        use anodize_core::context::{Context, ContextOptions};
+
+        let config = anodize_core::config::Config::default();
+        let opts = ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+
+        // Register binaries for "other-crate", not "myapp"
+        register_binary(
+            &mut ctx,
+            "other-crate",
+            "aarch64-apple-darwin",
+            std::path::PathBuf::from("target/aarch64-apple-darwin/release/other"),
+        );
+        register_binary(
+            &mut ctx,
+            "other-crate",
+            "x86_64-apple-darwin",
+            std::path::PathBuf::from("target/x86_64-apple-darwin/release/other"),
+        );
+
+        let ub = UniversalBinaryConfig {
+            name_template: None,
+            replace: None,
+            ids: None,
+        };
+
+        // Ask for "myapp" universal — should be skipped since myapp has no arch binaries
+        let result = build_universal_binary("myapp", &ub, &mut ctx, true);
+        assert!(result.is_ok());
+
+        let universals: Vec<_> = ctx
+            .artifacts
+            .by_kind(ArtifactKind::Binary)
+            .into_iter()
+            .filter(|a| a.target.as_deref() == Some("darwin-universal"))
+            .collect();
+        assert!(
+            universals.is_empty(),
+            "should not create universal for wrong crate"
+        );
+    }
+
+    #[test]
+    fn test_universal_binary_artifact_has_correct_metadata() {
+        use anodize_core::artifact::ArtifactKind;
+        use anodize_core::config::UniversalBinaryConfig;
+        use anodize_core::context::{Context, ContextOptions};
+
+        let config = anodize_core::config::Config::default();
+        let opts = ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+
+        register_binary(
+            &mut ctx,
+            "myapp",
+            "aarch64-apple-darwin",
+            std::path::PathBuf::from("target/aarch64-apple-darwin/release/myapp"),
+        );
+        register_binary(
+            &mut ctx,
+            "myapp",
+            "x86_64-apple-darwin",
+            std::path::PathBuf::from("target/x86_64-apple-darwin/release/myapp"),
+        );
+
+        let ub = UniversalBinaryConfig {
+            name_template: None,
+            replace: None,
+            ids: None,
+        };
+
+        build_universal_binary("myapp", &ub, &mut ctx, true).unwrap();
+
+        let universals: Vec<_> = ctx
+            .artifacts
+            .by_kind(ArtifactKind::Binary)
+            .into_iter()
+            .filter(|a| a.target.as_deref() == Some("darwin-universal"))
+            .collect();
+        assert_eq!(universals.len(), 1);
+        let art = universals[0];
+        assert_eq!(art.crate_name, "myapp");
+        assert_eq!(art.metadata.get("universal").map(|s| s.as_str()), Some("true"));
+        assert_eq!(art.metadata.get("binary").map(|s| s.as_str()), Some("myapp"));
     }
 }

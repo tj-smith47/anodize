@@ -4033,3 +4033,127 @@ fn test_parse_nightly_config_default_impl() {
     assert!(nightly.name_template.is_none());
     assert!(nightly.tag_name.is_none());
 }
+
+// ====================================================================
+// Task 5F: UniversalBinaryConfig parsing tests
+// ====================================================================
+
+#[test]
+fn test_parse_universal_binaries_basic() {
+    let yaml = r#"
+project_name: myapp
+crates:
+  - name: myapp
+    path: .
+    tag_template: "v{{ .Version }}"
+    universal_binaries:
+      - name_template: "myapp-universal"
+        replace: true
+"#;
+    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let ub = config.crates[0]
+        .universal_binaries
+        .as_ref()
+        .expect("universal_binaries should be present");
+    assert_eq!(ub.len(), 1);
+    assert_eq!(ub[0].name_template, Some("myapp-universal".to_string()));
+    assert_eq!(ub[0].replace, Some(true));
+    assert!(ub[0].ids.is_none());
+}
+
+#[test]
+fn test_parse_universal_binaries_with_ids() {
+    let yaml = r#"
+project_name: myapp
+crates:
+  - name: myapp
+    path: .
+    tag_template: "v{{ .Version }}"
+    universal_binaries:
+      - ids:
+          - build1
+          - build2
+"#;
+    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let ub = config.crates[0]
+        .universal_binaries
+        .as_ref()
+        .expect("universal_binaries should be present");
+    assert_eq!(ub.len(), 1);
+    let ids = ub[0].ids.as_ref().expect("ids should be set");
+    assert_eq!(ids, &["build1", "build2"]);
+    assert!(ub[0].name_template.is_none());
+    assert!(ub[0].replace.is_none());
+}
+
+#[test]
+fn test_parse_universal_binaries_omitted_is_none() {
+    let yaml = r#"
+project_name: myapp
+crates:
+  - name: myapp
+    path: .
+    tag_template: "v{{ .Version }}"
+"#;
+    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    assert!(
+        config.crates[0].universal_binaries.is_none(),
+        "universal_binaries should be None when omitted"
+    );
+}
+
+#[test]
+fn test_parse_universal_binaries_replace_false() {
+    let yaml = r#"
+project_name: myapp
+crates:
+  - name: myapp
+    path: .
+    tag_template: "v{{ .Version }}"
+    universal_binaries:
+      - replace: false
+"#;
+    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let ub = &config.crates[0].universal_binaries.as_ref().unwrap()[0];
+    assert_eq!(ub.replace, Some(false));
+}
+
+#[test]
+fn test_parse_universal_binaries_multiple_entries() {
+    let yaml = r#"
+project_name: myapp
+crates:
+  - name: myapp
+    path: .
+    tag_template: "v{{ .Version }}"
+    universal_binaries:
+      - name_template: "myapp-universal"
+        replace: true
+      - name_template: "myapp-fat"
+        ids:
+          - extra
+"#;
+    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let ub = config.crates[0].universal_binaries.as_ref().unwrap();
+    assert_eq!(ub.len(), 2);
+    assert_eq!(ub[0].name_template, Some("myapp-universal".to_string()));
+    assert_eq!(ub[1].name_template, Some("myapp-fat".to_string()));
+    assert_eq!(ub[1].ids.as_ref().unwrap(), &["extra"]);
+}
+
+#[test]
+fn test_universal_binary_config_default() {
+    let ub = UniversalBinaryConfig::default();
+    assert!(ub.name_template.is_none());
+    assert!(ub.replace.is_none());
+    assert!(ub.ids.is_none());
+}
+
+#[test]
+fn test_parse_crate_config_universal_binaries_in_default() {
+    let c = CrateConfig::default();
+    assert!(
+        c.universal_binaries.is_none(),
+        "universal_binaries should default to None"
+    );
+}
