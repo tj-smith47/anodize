@@ -982,6 +982,10 @@ pub struct AnnounceConfig {
     pub discord: Option<AnnounceProviderConfig>,
     pub slack: Option<AnnounceProviderConfig>,
     pub webhook: Option<WebhookConfig>,
+    pub telegram: Option<TelegramAnnounce>,
+    pub teams: Option<TeamsAnnounce>,
+    pub mattermost: Option<MattermostAnnounce>,
+    pub email: Option<EmailAnnounce>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1000,6 +1004,65 @@ pub struct WebhookConfig {
     pub headers: Option<HashMap<String, String>>,
     pub content_type: Option<String>,
     pub message_template: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct TelegramAnnounce {
+    pub enabled: Option<bool>,
+    pub bot_token: Option<String>,
+    pub chat_id: Option<String>,
+    pub message_template: Option<String>,
+    /// Optional parse mode: "MarkdownV2" or "HTML"
+    pub parse_mode: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct TeamsAnnounce {
+    pub enabled: Option<bool>,
+    pub webhook_url: Option<String>,
+    pub message_template: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct MattermostAnnounce {
+    pub enabled: Option<bool>,
+    pub webhook_url: Option<String>,
+    /// Optional channel override (e.g. "town-square")
+    pub channel: Option<String>,
+    /// Optional username override for the bot post
+    pub username: Option<String>,
+    /// Optional icon URL for the bot post
+    pub icon_url: Option<String>,
+    pub message_template: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct EmailAnnounce {
+    pub enabled: Option<bool>,
+    pub smtp_host: Option<String>,
+    #[serde(default = "default_smtp_port")]
+    pub smtp_port: u16,
+    pub username: Option<String>,
+    pub password: Option<String>,
+    pub from: Option<String>,
+    #[serde(default)]
+    pub to: Vec<String>,
+    pub subject_template: Option<String>,
+    pub message_template: Option<String>,
+    #[serde(default = "default_tls")]
+    pub tls: bool,
+}
+
+fn default_smtp_port() -> u16 {
+    587
+}
+
+fn default_tls() -> bool {
+    true
 }
 
 // ---------------------------------------------------------------------------
