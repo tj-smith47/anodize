@@ -1,14 +1,18 @@
+pub mod chocolatey;
 pub mod crates_io;
 pub mod homebrew;
 pub mod scoop;
+pub mod winget;
 
 use anodize_core::context::Context;
 use anodize_core::stage::Stage;
 use anyhow::Result;
 
+use chocolatey::publish_to_chocolatey;
 use crates_io::publish_to_crates_io;
 use homebrew::publish_to_homebrew;
 use scoop::publish_to_scoop;
+use winget::publish_to_winget;
 
 pub struct PublishStage;
 
@@ -56,6 +60,44 @@ impl Stage for PublishStage {
             publish_to_scoop(ctx, crate_name)?;
         }
 
+        // 4. Chocolatey — one call per crate that has a chocolatey config.
+        let chocolatey_crates: Vec<String> = ctx
+            .config
+            .crates
+            .iter()
+            .filter(|c| selected.is_empty() || selected.contains(&c.name))
+            .filter(|c| {
+                c.publish
+                    .as_ref()
+                    .and_then(|p| p.chocolatey.as_ref())
+                    .is_some()
+            })
+            .map(|c| c.name.clone())
+            .collect();
+
+        for crate_name in &chocolatey_crates {
+            publish_to_chocolatey(ctx, crate_name)?;
+        }
+
+        // 5. WinGet — one call per crate that has a winget config.
+        let winget_crates: Vec<String> = ctx
+            .config
+            .crates
+            .iter()
+            .filter(|c| selected.is_empty() || selected.contains(&c.name))
+            .filter(|c| {
+                c.publish
+                    .as_ref()
+                    .and_then(|p| p.winget.as_ref())
+                    .is_some()
+            })
+            .map(|c| c.name.clone())
+            .collect();
+
+        for crate_name in &winget_crates {
+            publish_to_winget(ctx, crate_name)?;
+        }
+
         Ok(())
     }
 }
@@ -69,8 +111,9 @@ impl Stage for PublishStage {
 mod tests {
     use super::*;
     use anodize_core::config::{
-        BucketConfig, Config, CrateConfig, CratesPublishConfig, HomebrewConfig, PublishConfig,
-        ScoopConfig, TapConfig,
+        BucketConfig, ChocolateyConfig, ChocolateyRepoConfig, Config, CrateConfig,
+        CratesPublishConfig, HomebrewConfig, PublishConfig, ScoopConfig, TapConfig, WingetConfig,
+        WingetManifestsRepoConfig,
     };
     use anodize_core::context::{Context, ContextOptions};
 
@@ -189,6 +232,7 @@ mod tests {
                     description: None,
                     ..Default::default()
                 }),
+                ..Default::default()
             }),
             ..Default::default()
         }];
@@ -227,12 +271,13 @@ mod tests {
                     description: Some("A multi-publisher tool".to_string()),
                     ..Default::default()
                 }),
+                ..Default::default()
             }),
             ..Default::default()
         }];
 
         let mut ctx = dry_run_ctx(config);
-        // All three publishers should succeed in dry-run mode
+        // All publishers should succeed in dry-run mode
         let result = PublishStage.run(&mut ctx);
         assert!(result.is_ok());
     }
@@ -338,6 +383,7 @@ mod tests {
                     description: Some("A tool".to_string()),
                     ..Default::default()
                 }),
+                ..Default::default()
             }),
             ..Default::default()
         }];
@@ -369,5 +415,179 @@ mod tests {
         // NOTE: Known limitation — there is no prerelease-skip logic in the
         // publish stage. GoReleaser's `brews[].skip_upload` defaults to "auto"
         // which skips for prereleases. Anodize currently publishes regardless.
+    }
+
+    // -----------------------------------------------------------------------
+    // Chocolatey integration tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_run_dry_run_chocolatey() {
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                chocolatey: Some(ChocolateyConfig {
+                    source_repo: Some(ChocolateyRepoConfig {
+                        owner: "myorg".to_string(),
+                        name: "mytool".to_string(),
+                    }),
+                    description: Some("My tool".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+
+        let mut ctx = dry_run_ctx(config);
+        assert!(PublishStage.run(&mut ctx).is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // WinGet integration tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_run_dry_run_winget() {
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                winget: Some(WingetConfig {
+                    manifests_repo: Some(WingetManifestsRepoConfig {
+                        owner: "myorg".to_string(),
+                        name: "winget-pkgs".to_string(),
+                    }),
+                    package_identifier: Some("MyOrg.MyTool".to_string()),
+                    description: Some("My tool".to_string()),
+                    publisher: Some("My Org".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+
+        let mut ctx = dry_run_ctx(config);
+        assert!(PublishStage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_run_dry_run_all_five_publishers() {
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: "allpub5".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                crates: Some(CratesPublishConfig::Bool(true)),
+                homebrew: Some(HomebrewConfig {
+                    tap: Some(TapConfig {
+                        owner: "org".to_string(),
+                        name: "homebrew-tap".to_string(),
+                    }),
+                    ..Default::default()
+                }),
+                scoop: Some(ScoopConfig {
+                    bucket: Some(BucketConfig {
+                        owner: "org".to_string(),
+                        name: "scoop-bucket".to_string(),
+                    }),
+                    description: None,
+                    ..Default::default()
+                }),
+                chocolatey: Some(ChocolateyConfig {
+                    source_repo: Some(ChocolateyRepoConfig {
+                        owner: "org".to_string(),
+                        name: "allpub5".to_string(),
+                    }),
+                    ..Default::default()
+                }),
+                winget: Some(WingetConfig {
+                    manifests_repo: Some(WingetManifestsRepoConfig {
+                        owner: "org".to_string(),
+                        name: "winget-pkgs".to_string(),
+                    }),
+                    package_identifier: Some("Org.Allpub5".to_string()),
+                    ..Default::default()
+                }),
+            }),
+            ..Default::default()
+        }];
+
+        let mut ctx = dry_run_ctx(config);
+        assert!(PublishStage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_selected_crates_filter_applies_to_chocolatey_and_winget() {
+        let mut config = Config::default();
+        config.crates = vec![
+            CrateConfig {
+                name: "included".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                publish: Some(PublishConfig {
+                    chocolatey: Some(ChocolateyConfig {
+                        source_repo: Some(ChocolateyRepoConfig {
+                            owner: "org".to_string(),
+                            name: "included".to_string(),
+                        }),
+                        ..Default::default()
+                    }),
+                    winget: Some(WingetConfig {
+                        manifests_repo: Some(WingetManifestsRepoConfig {
+                            owner: "org".to_string(),
+                            name: "winget-pkgs".to_string(),
+                        }),
+                        package_identifier: Some("Org.Included".to_string()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            CrateConfig {
+                name: "excluded".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                publish: Some(PublishConfig {
+                    chocolatey: Some(ChocolateyConfig {
+                        source_repo: Some(ChocolateyRepoConfig {
+                            owner: "org".to_string(),
+                            name: "excluded".to_string(),
+                        }),
+                        ..Default::default()
+                    }),
+                    winget: Some(WingetConfig {
+                        manifests_repo: Some(WingetManifestsRepoConfig {
+                            owner: "org".to_string(),
+                            name: "winget-pkgs".to_string(),
+                        }),
+                        package_identifier: Some("Org.Excluded".to_string()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        ];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                selected_crates: vec!["included".to_string()],
+                ..Default::default()
+            },
+        );
+
+        // Should only run for "included", not "excluded"
+        assert!(PublishStage.run(&mut ctx).is_ok());
     }
 }

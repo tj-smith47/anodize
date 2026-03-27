@@ -454,6 +454,8 @@ pub struct PublishConfig {
     pub crates: Option<CratesPublishConfig>,
     pub homebrew: Option<HomebrewConfig>,
     pub scoop: Option<ScoopConfig>,
+    pub chocolatey: Option<ChocolateyConfig>,
+    pub winget: Option<WingetConfig>,
 }
 
 impl PublishConfig {
@@ -538,6 +540,49 @@ pub struct TapConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BucketConfig {
+    pub owner: String,
+    pub name: String,
+}
+
+// ---------------------------------------------------------------------------
+// ChocolateyConfig
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ChocolateyConfig {
+    pub source_repo: Option<ChocolateyRepoConfig>,
+    pub description: Option<String>,
+    pub license: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub authors: Option<String>,
+    pub project_url: Option<String>,
+    pub icon_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChocolateyRepoConfig {
+    pub owner: String,
+    pub name: String,
+}
+
+// ---------------------------------------------------------------------------
+// WingetConfig
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct WingetConfig {
+    pub manifests_repo: Option<WingetManifestsRepoConfig>,
+    pub description: Option<String>,
+    pub license: Option<String>,
+    pub package_identifier: Option<String>,
+    pub publisher: Option<String>,
+    pub publisher_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WingetManifestsRepoConfig {
     pub owner: String,
     pub name: String,
 }
@@ -2199,4 +2244,285 @@ workspaces: []
         assert!(workspaces.is_empty());
     }
 
+    // ---- ChocolateyConfig tests ----
+
+    #[test]
+    fn test_chocolatey_config_yaml() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: mytool
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      chocolatey:
+        source_repo:
+          owner: myorg
+          name: mytool
+        description: "A great tool"
+        license: MIT
+        tags:
+          - cli
+          - tool
+        authors: "Test Author"
+        project_url: "https://github.com/myorg/mytool"
+        icon_url: "https://example.com/icon.png"
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let choco = config.crates[0]
+            .publish
+            .as_ref()
+            .unwrap()
+            .chocolatey
+            .as_ref()
+            .unwrap();
+
+        let repo = choco.source_repo.as_ref().unwrap();
+        assert_eq!(repo.owner, "myorg");
+        assert_eq!(repo.name, "mytool");
+        assert_eq!(choco.description, Some("A great tool".to_string()));
+        assert_eq!(choco.license, Some("MIT".to_string()));
+        assert_eq!(
+            choco.tags,
+            Some(vec!["cli".to_string(), "tool".to_string()])
+        );
+        assert_eq!(choco.authors, Some("Test Author".to_string()));
+        assert_eq!(
+            choco.project_url,
+            Some("https://github.com/myorg/mytool".to_string())
+        );
+        assert_eq!(
+            choco.icon_url,
+            Some("https://example.com/icon.png".to_string())
+        );
+    }
+
+    #[test]
+    fn test_chocolatey_config_minimal() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: mytool
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      chocolatey:
+        source_repo:
+          owner: myorg
+          name: mytool
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let choco = config.crates[0]
+            .publish
+            .as_ref()
+            .unwrap()
+            .chocolatey
+            .as_ref()
+            .unwrap();
+
+        let repo = choco.source_repo.as_ref().unwrap();
+        assert_eq!(repo.owner, "myorg");
+        assert_eq!(repo.name, "mytool");
+        assert!(choco.description.is_none());
+        assert!(choco.license.is_none());
+        assert!(choco.tags.is_none());
+        assert!(choco.authors.is_none());
+        assert!(choco.project_url.is_none());
+        assert!(choco.icon_url.is_none());
+    }
+
+    #[test]
+    fn test_chocolatey_config_toml() {
+        let toml_str = r#"
+project_name = "test"
+
+[[crates]]
+name = "mytool"
+path = "."
+tag_template = "v{{ .Version }}"
+
+[crates.publish.chocolatey]
+description = "A tool"
+license = "MIT"
+authors = "Author"
+tags = ["cli"]
+
+[crates.publish.chocolatey.source_repo]
+owner = "org"
+name = "tool"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let choco = config.crates[0]
+            .publish
+            .as_ref()
+            .unwrap()
+            .chocolatey
+            .as_ref()
+            .unwrap();
+
+        assert_eq!(choco.description, Some("A tool".to_string()));
+        let repo = choco.source_repo.as_ref().unwrap();
+        assert_eq!(repo.owner, "org");
+    }
+
+    // ---- WingetConfig tests ----
+
+    #[test]
+    fn test_winget_config_yaml() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: mytool
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      winget:
+        manifests_repo:
+          owner: myorg
+          name: winget-pkgs
+        description: "A great tool"
+        license: MIT
+        package_identifier: "MyOrg.MyTool"
+        publisher: "My Org"
+        publisher_url: "https://github.com/myorg"
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let winget = config.crates[0]
+            .publish
+            .as_ref()
+            .unwrap()
+            .winget
+            .as_ref()
+            .unwrap();
+
+        let repo = winget.manifests_repo.as_ref().unwrap();
+        assert_eq!(repo.owner, "myorg");
+        assert_eq!(repo.name, "winget-pkgs");
+        assert_eq!(winget.description, Some("A great tool".to_string()));
+        assert_eq!(winget.license, Some("MIT".to_string()));
+        assert_eq!(
+            winget.package_identifier,
+            Some("MyOrg.MyTool".to_string())
+        );
+        assert_eq!(winget.publisher, Some("My Org".to_string()));
+        assert_eq!(
+            winget.publisher_url,
+            Some("https://github.com/myorg".to_string())
+        );
+    }
+
+    #[test]
+    fn test_winget_config_minimal() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: mytool
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      winget:
+        manifests_repo:
+          owner: myorg
+          name: winget-pkgs
+        package_identifier: "MyOrg.MyTool"
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let winget = config.crates[0]
+            .publish
+            .as_ref()
+            .unwrap()
+            .winget
+            .as_ref()
+            .unwrap();
+
+        let repo = winget.manifests_repo.as_ref().unwrap();
+        assert_eq!(repo.owner, "myorg");
+        assert_eq!(repo.name, "winget-pkgs");
+        assert_eq!(
+            winget.package_identifier,
+            Some("MyOrg.MyTool".to_string())
+        );
+        assert!(winget.description.is_none());
+        assert!(winget.license.is_none());
+        assert!(winget.publisher.is_none());
+        assert!(winget.publisher_url.is_none());
+    }
+
+    #[test]
+    fn test_winget_config_toml() {
+        let toml_str = r#"
+project_name = "test"
+
+[[crates]]
+name = "mytool"
+path = "."
+tag_template = "v{{ .Version }}"
+
+[crates.publish.winget]
+description = "A tool"
+license = "MIT"
+package_identifier = "Org.Tool"
+publisher = "Org"
+
+[crates.publish.winget.manifests_repo]
+owner = "org"
+name = "winget-pkgs"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let winget = config.crates[0]
+            .publish
+            .as_ref()
+            .unwrap()
+            .winget
+            .as_ref()
+            .unwrap();
+
+        assert_eq!(winget.description, Some("A tool".to_string()));
+        assert_eq!(
+            winget.package_identifier,
+            Some("Org.Tool".to_string())
+        );
+        let repo = winget.manifests_repo.as_ref().unwrap();
+        assert_eq!(repo.owner, "org");
+    }
+
+    // ---- Combined Chocolatey + WinGet + others ----
+
+    #[test]
+    fn test_all_five_publishers_config() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: mytool
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      crates: true
+      homebrew:
+        tap:
+          owner: org
+          name: homebrew-tap
+      scoop:
+        bucket:
+          owner: org
+          name: scoop-bucket
+      chocolatey:
+        source_repo:
+          owner: org
+          name: mytool
+      winget:
+        manifests_repo:
+          owner: org
+          name: winget-pkgs
+        package_identifier: "Org.MyTool"
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let publish = config.crates[0].publish.as_ref().unwrap();
+
+        assert!(publish.crates.is_some());
+        assert!(publish.homebrew.is_some());
+        assert!(publish.scoop.is_some());
+        assert!(publish.chocolatey.is_some());
+        assert!(publish.winget.is_some());
+    }
 }
