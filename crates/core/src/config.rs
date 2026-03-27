@@ -112,12 +112,22 @@ pub fn load_env_files(files: &[String]) -> Result<(), String> {
             if trimmed.is_empty() || trimmed.starts_with('#') {
                 continue;
             }
+            // Strip `export ` prefix (common in .env files)
+            let trimmed = trimmed.strip_prefix("export ").unwrap_or(trimmed);
             if let Some((key, value)) = trimmed.split_once('=') {
                 let key = key.trim();
+                if key.is_empty() {
+                    eprintln!(
+                        "[env] warning: skipping line with empty key in '{}': {}",
+                        file_path, line.trim()
+                    );
+                    continue;
+                }
                 let value = value.trim();
                 // Strip surrounding quotes from value if present
-                let value = if (value.starts_with('"') && value.ends_with('"'))
-                    || (value.starts_with('\'') && value.ends_with('\''))
+                let value = if value.len() >= 2
+                    && ((value.starts_with('"') && value.ends_with('"'))
+                        || (value.starts_with('\'') && value.ends_with('\'')))
                 {
                     &value[1..value.len() - 1]
                 } else {
@@ -128,6 +138,11 @@ pub fn load_env_files(files: &[String]) -> Result<(), String> {
                 unsafe {
                     std::env::set_var(key, value);
                 }
+            } else {
+                eprintln!(
+                    "[env] warning: skipping line without '=' in '{}': {}",
+                    file_path, trimmed
+                );
             }
         }
     }
@@ -454,12 +469,46 @@ pub struct ReleaseConfig {
 
 /// Schema for prerelease: "auto" or boolean.
 fn prerelease_schema(_generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
-    schemars::schema::Schema::Bool(true)
+    use schemars::schema::{InstanceType, Schema, SchemaObject, SingleOrVec, SubschemaValidation};
+    Schema::Object(SchemaObject {
+        subschemas: Some(Box::new(SubschemaValidation {
+            one_of: Some(vec![
+                Schema::Object(SchemaObject {
+                    instance_type: Some(SingleOrVec::Single(Box::new(InstanceType::String))),
+                    enum_values: Some(vec![serde_json::json!("auto")]),
+                    ..Default::default()
+                }),
+                Schema::Object(SchemaObject {
+                    instance_type: Some(SingleOrVec::Single(Box::new(InstanceType::Boolean))),
+                    ..Default::default()
+                }),
+            ]),
+            ..Default::default()
+        })),
+        ..Default::default()
+    })
 }
 
 /// Schema for make_latest: "auto" or boolean.
 fn make_latest_schema(_generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
-    schemars::schema::Schema::Bool(true)
+    use schemars::schema::{InstanceType, Schema, SchemaObject, SingleOrVec, SubschemaValidation};
+    Schema::Object(SchemaObject {
+        subschemas: Some(Box::new(SubschemaValidation {
+            one_of: Some(vec![
+                Schema::Object(SchemaObject {
+                    instance_type: Some(SingleOrVec::Single(Box::new(InstanceType::String))),
+                    enum_values: Some(vec![serde_json::json!("auto")]),
+                    ..Default::default()
+                }),
+                Schema::Object(SchemaObject {
+                    instance_type: Some(SingleOrVec::Single(Box::new(InstanceType::Boolean))),
+                    ..Default::default()
+                }),
+            ]),
+            ..Default::default()
+        })),
+        ..Default::default()
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -3255,16 +3304,55 @@ crates: []
         writeln!(f, "").unwrap();
         writeln!(f, "TEST_ANODIZE_KEY=hello_world").unwrap();
         writeln!(f, "TEST_ANODIZE_QUOTED=\"with quotes\"").unwrap();
+        writeln!(f, "TEST_ANODIZE_SINGLE='single_quoted'").unwrap();
+        writeln!(f, "export TEST_ANODIZE_EXPORT=exported_val").unwrap();
         drop(f);
 
         load_env_files(&[env_path.to_string_lossy().to_string()]).unwrap();
         assert_eq!(std::env::var("TEST_ANODIZE_KEY").unwrap(), "hello_world");
         assert_eq!(std::env::var("TEST_ANODIZE_QUOTED").unwrap(), "with quotes");
+        assert_eq!(
+            std::env::var("TEST_ANODIZE_SINGLE").unwrap(),
+            "single_quoted",
+            "single-quoted values should have quotes stripped"
+        );
+        assert_eq!(
+            std::env::var("TEST_ANODIZE_EXPORT").unwrap(),
+            "exported_val",
+            "export prefix should be stripped"
+        );
 
         // Clean up
         unsafe {
             std::env::remove_var("TEST_ANODIZE_KEY");
             std::env::remove_var("TEST_ANODIZE_QUOTED");
+            std::env::remove_var("TEST_ANODIZE_SINGLE");
+            std::env::remove_var("TEST_ANODIZE_EXPORT");
+        }
+    }
+
+    #[test]
+    fn test_load_env_files_edge_cases() {
+        use std::io::Write;
+        let dir = tempfile::TempDir::new().unwrap();
+        let env_path = dir.path().join(".env-edge");
+        let mut f = std::fs::File::create(&env_path).unwrap();
+        // Single quote char as value should not panic
+        writeln!(f, "TEST_ANODIZE_SINGLEQ=\"").unwrap();
+        // Empty key line (=value) should be skipped
+        writeln!(f, "=orphan_value").unwrap();
+        // Line without = should be skipped with warning
+        writeln!(f, "NO_EQUALS_HERE").unwrap();
+        drop(f);
+
+        load_env_files(&[env_path.to_string_lossy().to_string()]).unwrap();
+        // The single-quote value should be kept as-is (not stripped, length < 2 for
+        // matching quotes)
+        assert_eq!(std::env::var("TEST_ANODIZE_SINGLEQ").unwrap(), "\"");
+
+        // Clean up
+        unsafe {
+            std::env::remove_var("TEST_ANODIZE_SINGLEQ");
         }
     }
 

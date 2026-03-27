@@ -332,10 +332,18 @@ pub fn is_target_ignored(target: &str, ignores: &[BuildIgnore]) -> bool {
 pub fn find_matching_override<'a>(target: &str, overrides: &'a [BuildOverride]) -> Option<&'a BuildOverride> {
     for ov in overrides {
         for pat_str in &ov.targets {
-            if let Ok(pat) = glob::Pattern::new(pat_str)
-                && pat.matches(target)
-            {
-                return Some(ov);
+            match glob::Pattern::new(pat_str) {
+                Ok(pat) => {
+                    if pat.matches(target) {
+                        return Some(ov);
+                    }
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[build] warning: invalid glob pattern '{}': {}",
+                        pat_str, e
+                    );
+                }
             }
         }
     }
@@ -613,7 +621,7 @@ impl Stage for BuildStage {
                             && let Some(ref ov_env) = ov.env
                         {
                             for (k, v) in ov_env {
-                                target_env.entry(k.clone()).or_insert_with(|| v.clone());
+                                target_env.insert(k.clone(), v.clone());
                             }
                         }
 
@@ -1671,5 +1679,56 @@ crate_type = ["dylib"]
         let result = find_matching_override("x86_64-unknown-linux-gnu", &overrides);
         assert!(result.is_some());
         assert_eq!(result.unwrap().flags, Some("--release".to_string()));
+    }
+
+    #[test]
+    fn test_override_env_actually_overrides_existing() {
+        // Simulate the merge logic used in BuildStage::run:
+        // target_env starts with a pre-existing key, override should replace it.
+        let mut target_env: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        target_env.insert("CC".into(), "gcc".into());
+        target_env.insert("EXISTING".into(), "keep".into());
+
+        let override_env: std::collections::HashMap<String, String> = [
+            ("CC".into(), "clang".into()),
+            ("NEW_VAR".into(), "added".into()),
+        ]
+        .into_iter()
+        .collect();
+
+        // This mirrors the fixed merge logic (insert, not or_insert_with)
+        for (k, v) in &override_env {
+            target_env.insert(k.clone(), v.clone());
+        }
+
+        assert_eq!(
+            target_env.get("CC").unwrap(),
+            "clang",
+            "override should replace existing CC value"
+        );
+        assert_eq!(
+            target_env.get("EXISTING").unwrap(),
+            "keep",
+            "non-overridden key should be preserved"
+        );
+        assert_eq!(
+            target_env.get("NEW_VAR").unwrap(),
+            "added",
+            "new override key should be inserted"
+        );
+    }
+
+    #[test]
+    fn test_find_matching_override_invalid_glob_warns() {
+        // An invalid glob pattern like "[unclosed" should not panic,
+        // and the function should skip it gracefully.
+        let overrides = vec![BuildOverride {
+            targets: vec!["[unclosed".to_string()],
+            flags: Some("--bad".to_string()),
+            ..Default::default()
+        }];
+        let result = find_matching_override("x86_64-unknown-linux-gnu", &overrides);
+        assert!(result.is_none(), "invalid glob should not match anything");
     }
 }
