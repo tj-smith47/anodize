@@ -1,6 +1,8 @@
+pub mod aur;
 pub mod chocolatey;
 pub mod crates_io;
 pub mod homebrew;
+pub mod krew;
 pub mod scoop;
 pub(crate) mod util;
 pub mod winget;
@@ -10,9 +12,11 @@ use anodize_core::context::Context;
 use anodize_core::stage::Stage;
 use anyhow::Result;
 
+use aur::publish_to_aur;
 use chocolatey::publish_to_chocolatey;
 use crates_io::publish_to_crates_io;
 use homebrew::publish_to_homebrew;
+use krew::publish_to_krew;
 use scoop::publish_to_scoop;
 use winget::publish_to_winget;
 
@@ -64,6 +68,16 @@ impl Stage for PublishStage {
             publish_to_winget(ctx, crate_name)?;
         }
 
+        // 6. AUR — one call per crate that has an aur config.
+        for crate_name in &crates_with_publisher(ctx, &selected, |p| p.aur.is_some()) {
+            publish_to_aur(ctx, crate_name)?;
+        }
+
+        // 7. Krew — one call per crate that has a krew config.
+        for crate_name in &crates_with_publisher(ctx, &selected, |p| p.krew.is_some()) {
+            publish_to_krew(ctx, crate_name)?;
+        }
+
         Ok(())
     }
 }
@@ -77,9 +91,9 @@ impl Stage for PublishStage {
 mod tests {
     use super::*;
     use anodize_core::config::{
-        BucketConfig, ChocolateyConfig, ChocolateyRepoConfig, Config, CrateConfig,
-        CratesPublishConfig, HomebrewConfig, PublishConfig, ScoopConfig, TapConfig, WingetConfig,
-        WingetManifestsRepoConfig,
+        AurConfig, BucketConfig, ChocolateyConfig, ChocolateyRepoConfig, Config, CrateConfig,
+        CratesPublishConfig, HomebrewConfig, KrewConfig, KrewManifestsRepoConfig, PublishConfig,
+        ScoopConfig, TapConfig, WingetConfig, WingetManifestsRepoConfig,
     };
     use anodize_core::context::{Context, ContextOptions};
 
@@ -482,6 +496,7 @@ mod tests {
                     package_identifier: Some("Org.Allpub5".to_string()),
                     ..Default::default()
                 }),
+                ..Default::default()
             }),
             ..Default::default()
         }];
@@ -554,6 +569,119 @@ mod tests {
         );
 
         // Should only run for "included", not "excluded"
+        assert!(PublishStage.run(&mut ctx).is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // AUR integration tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_run_dry_run_aur() {
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                aur: Some(AurConfig {
+                    git_url: Some("ssh://aur@aur.archlinux.org/mytool.git".to_string()),
+                    description: Some("My tool".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+
+        let mut ctx = dry_run_ctx(config);
+        assert!(PublishStage.run(&mut ctx).is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // Krew integration tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_run_dry_run_krew() {
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: "kubectl-mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                krew: Some(KrewConfig {
+                    manifests_repo: Some(KrewManifestsRepoConfig {
+                        owner: "myorg".to_string(),
+                        name: "krew-index".to_string(),
+                    }),
+                    short_description: Some("A kubectl plugin".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+
+        let mut ctx = dry_run_ctx(config);
+        assert!(PublishStage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_run_dry_run_all_seven_publishers() {
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: "allpub7".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                crates: Some(CratesPublishConfig::Bool(true)),
+                homebrew: Some(HomebrewConfig {
+                    tap: Some(TapConfig {
+                        owner: "org".to_string(),
+                        name: "homebrew-tap".to_string(),
+                    }),
+                    ..Default::default()
+                }),
+                scoop: Some(ScoopConfig {
+                    bucket: Some(BucketConfig {
+                        owner: "org".to_string(),
+                        name: "scoop-bucket".to_string(),
+                    }),
+                    description: None,
+                    ..Default::default()
+                }),
+                chocolatey: Some(ChocolateyConfig {
+                    project_repo: Some(ChocolateyRepoConfig {
+                        owner: "org".to_string(),
+                        name: "allpub7".to_string(),
+                    }),
+                    ..Default::default()
+                }),
+                winget: Some(WingetConfig {
+                    manifests_repo: Some(WingetManifestsRepoConfig {
+                        owner: "org".to_string(),
+                        name: "winget-pkgs".to_string(),
+                    }),
+                    package_identifier: Some("Org.Allpub7".to_string()),
+                    ..Default::default()
+                }),
+                aur: Some(AurConfig {
+                    git_url: Some("ssh://aur@aur.archlinux.org/allpub7.git".to_string()),
+                    ..Default::default()
+                }),
+                krew: Some(KrewConfig {
+                    manifests_repo: Some(KrewManifestsRepoConfig {
+                        owner: "org".to_string(),
+                        name: "krew-index".to_string(),
+                    }),
+                    ..Default::default()
+                }),
+            }),
+            ..Default::default()
+        }];
+
+        let mut ctx = dry_run_ctx(config);
         assert!(PublishStage.run(&mut ctx).is_ok());
     }
 }

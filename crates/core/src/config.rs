@@ -456,6 +456,8 @@ pub struct PublishConfig {
     pub scoop: Option<ScoopConfig>,
     pub chocolatey: Option<ChocolateyConfig>,
     pub winget: Option<WingetConfig>,
+    pub aur: Option<AurConfig>,
+    pub krew: Option<KrewConfig>,
 }
 
 impl PublishConfig {
@@ -592,6 +594,52 @@ pub struct WingetConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WingetManifestsRepoConfig {
+    pub owner: String,
+    pub name: String,
+}
+
+// ---------------------------------------------------------------------------
+// AurConfig
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct AurConfig {
+    /// AUR SSH git URL (e.g., `ssh://aur@aur.archlinux.org/<package>.git`).
+    pub git_url: Option<String>,
+    pub package_name: Option<String>,
+    pub description: Option<String>,
+    pub license: Option<String>,
+    pub maintainers: Option<Vec<String>>,
+    pub depends: Option<Vec<String>>,
+    pub optdepends: Option<Vec<String>>,
+    pub conflicts: Option<Vec<String>>,
+    pub provides: Option<Vec<String>>,
+    pub replaces: Option<Vec<String>>,
+    /// List of config files to preserve on upgrade (relative to `/`).
+    pub backup: Option<Vec<String>>,
+    pub url: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// KrewConfig
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct KrewConfig {
+    /// The krew-index fork repo (owner/name) to which the plugin manifest is
+    /// submitted, similar to winget's `manifests_repo`.
+    pub manifests_repo: Option<KrewManifestsRepoConfig>,
+    pub description: Option<String>,
+    pub short_description: Option<String>,
+    pub homepage: Option<String>,
+    /// Post-install message shown to the user.
+    pub caveats: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KrewManifestsRepoConfig {
     pub owner: String,
     pub name: String,
 }
@@ -2495,10 +2543,271 @@ name = "winget-pkgs"
         assert_eq!(repo.owner, "org");
     }
 
-    // ---- Combined Chocolatey + WinGet + others ----
+    // ---- AurConfig tests ----
 
     #[test]
-    fn test_all_five_publishers_config() {
+    fn test_aur_config_yaml() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: mytool
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      aur:
+        git_url: "ssh://aur@aur.archlinux.org/mytool.git"
+        package_name: mytool-bin
+        description: "A great tool"
+        license: MIT
+        maintainers:
+          - "Jane Doe <jane@example.com>"
+        depends:
+          - glibc
+          - openssl
+        optdepends:
+          - "git: for VCS support"
+        conflicts:
+          - mytool-git
+        provides:
+          - mytool
+        replaces:
+          - old-mytool
+        backup:
+          - etc/mytool/config.toml
+        url: "https://github.com/org/mytool"
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let aur = config.crates[0]
+            .publish
+            .as_ref()
+            .unwrap()
+            .aur
+            .as_ref()
+            .unwrap();
+
+        assert_eq!(
+            aur.git_url,
+            Some("ssh://aur@aur.archlinux.org/mytool.git".to_string())
+        );
+        assert_eq!(aur.package_name, Some("mytool-bin".to_string()));
+        assert_eq!(aur.description, Some("A great tool".to_string()));
+        assert_eq!(aur.license, Some("MIT".to_string()));
+        assert_eq!(
+            aur.maintainers,
+            Some(vec!["Jane Doe <jane@example.com>".to_string()])
+        );
+        assert_eq!(
+            aur.depends,
+            Some(vec!["glibc".to_string(), "openssl".to_string()])
+        );
+        assert_eq!(
+            aur.optdepends,
+            Some(vec!["git: for VCS support".to_string()])
+        );
+        assert_eq!(aur.conflicts, Some(vec!["mytool-git".to_string()]));
+        assert_eq!(aur.provides, Some(vec!["mytool".to_string()]));
+        assert_eq!(aur.replaces, Some(vec!["old-mytool".to_string()]));
+        assert_eq!(
+            aur.backup,
+            Some(vec!["etc/mytool/config.toml".to_string()])
+        );
+        assert_eq!(
+            aur.url,
+            Some("https://github.com/org/mytool".to_string())
+        );
+    }
+
+    #[test]
+    fn test_aur_config_minimal() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: mytool
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      aur:
+        git_url: "ssh://aur@aur.archlinux.org/mytool.git"
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let aur = config.crates[0]
+            .publish
+            .as_ref()
+            .unwrap()
+            .aur
+            .as_ref()
+            .unwrap();
+
+        assert_eq!(
+            aur.git_url,
+            Some("ssh://aur@aur.archlinux.org/mytool.git".to_string())
+        );
+        assert!(aur.package_name.is_none());
+        assert!(aur.description.is_none());
+        assert!(aur.license.is_none());
+        assert!(aur.maintainers.is_none());
+        assert!(aur.depends.is_none());
+        assert!(aur.optdepends.is_none());
+        assert!(aur.conflicts.is_none());
+        assert!(aur.provides.is_none());
+        assert!(aur.replaces.is_none());
+        assert!(aur.backup.is_none());
+    }
+
+    #[test]
+    fn test_aur_config_toml() {
+        let toml_str = r#"
+project_name = "test"
+
+[[crates]]
+name = "mytool"
+path = "."
+tag_template = "v{{ .Version }}"
+
+[crates.publish.aur]
+git_url = "ssh://aur@aur.archlinux.org/mytool.git"
+description = "A tool"
+license = "MIT"
+depends = ["glibc"]
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let aur = config.crates[0]
+            .publish
+            .as_ref()
+            .unwrap()
+            .aur
+            .as_ref()
+            .unwrap();
+
+        assert_eq!(
+            aur.git_url,
+            Some("ssh://aur@aur.archlinux.org/mytool.git".to_string())
+        );
+        assert_eq!(aur.description, Some("A tool".to_string()));
+        assert_eq!(aur.depends, Some(vec!["glibc".to_string()]));
+    }
+
+    // ---- KrewConfig tests ----
+
+    #[test]
+    fn test_krew_config_yaml() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: kubectl-mytool
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      krew:
+        manifests_repo:
+          owner: myorg
+          name: krew-index
+        description: "A comprehensive kubectl plugin"
+        short_description: "A kubectl plugin"
+        homepage: "https://github.com/myorg/kubectl-mytool"
+        caveats: "Run 'kubectl mytool init' after installation."
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let krew = config.crates[0]
+            .publish
+            .as_ref()
+            .unwrap()
+            .krew
+            .as_ref()
+            .unwrap();
+
+        let repo = krew.manifests_repo.as_ref().unwrap();
+        assert_eq!(repo.owner, "myorg");
+        assert_eq!(repo.name, "krew-index");
+        assert_eq!(
+            krew.description,
+            Some("A comprehensive kubectl plugin".to_string())
+        );
+        assert_eq!(
+            krew.short_description,
+            Some("A kubectl plugin".to_string())
+        );
+        assert_eq!(
+            krew.homepage,
+            Some("https://github.com/myorg/kubectl-mytool".to_string())
+        );
+        assert_eq!(
+            krew.caveats,
+            Some("Run 'kubectl mytool init' after installation.".to_string())
+        );
+    }
+
+    #[test]
+    fn test_krew_config_minimal() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: kubectl-mytool
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      krew:
+        manifests_repo:
+          owner: myorg
+          name: krew-index
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let krew = config.crates[0]
+            .publish
+            .as_ref()
+            .unwrap()
+            .krew
+            .as_ref()
+            .unwrap();
+
+        let repo = krew.manifests_repo.as_ref().unwrap();
+        assert_eq!(repo.owner, "myorg");
+        assert_eq!(repo.name, "krew-index");
+        assert!(krew.description.is_none());
+        assert!(krew.short_description.is_none());
+        assert!(krew.homepage.is_none());
+        assert!(krew.caveats.is_none());
+    }
+
+    #[test]
+    fn test_krew_config_toml() {
+        let toml_str = r#"
+project_name = "test"
+
+[[crates]]
+name = "kubectl-mytool"
+path = "."
+tag_template = "v{{ .Version }}"
+
+[crates.publish.krew]
+short_description = "A kubectl plugin"
+homepage = "https://example.com"
+
+[crates.publish.krew.manifests_repo]
+owner = "org"
+name = "krew-index"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let krew = config.crates[0]
+            .publish
+            .as_ref()
+            .unwrap()
+            .krew
+            .as_ref()
+            .unwrap();
+
+        assert_eq!(
+            krew.short_description,
+            Some("A kubectl plugin".to_string())
+        );
+        let repo = krew.manifests_repo.as_ref().unwrap();
+        assert_eq!(repo.owner, "org");
+    }
+
+    // ---- Combined all publishers ----
+
+    #[test]
+    fn test_all_seven_publishers_config() {
         let yaml = r#"
 project_name: test
 crates:
@@ -2524,6 +2833,12 @@ crates:
           owner: org
           name: winget-pkgs
         package_identifier: "Org.MyTool"
+      aur:
+        git_url: "ssh://aur@aur.archlinux.org/mytool.git"
+      krew:
+        manifests_repo:
+          owner: org
+          name: krew-index
 "#;
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         let publish = config.crates[0].publish.as_ref().unwrap();
@@ -2533,5 +2848,7 @@ crates:
         assert!(publish.scoop.is_some());
         assert!(publish.chocolatey.is_some());
         assert!(publish.winget.is_some());
+        assert!(publish.aur.is_some());
+        assert!(publish.krew.is_some());
     }
 }
