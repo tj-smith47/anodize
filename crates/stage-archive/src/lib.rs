@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::io::Write as IoWrite;
+use std::io::{Read as IoRead, Write as IoWrite};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
@@ -14,6 +14,43 @@ use anodize_core::stage::Stage;
 use anodize_core::target::map_target;
 
 // ---------------------------------------------------------------------------
+// append_tar_entry  (helper)
+// ---------------------------------------------------------------------------
+
+/// Append a single file to a tar archive, optionally overriding mtime.
+/// When `mtime` is Some, a header is built manually with that timestamp so
+/// that the archive is reproducible regardless of filesystem mtime.
+fn append_tar_entry<W: std::io::Write>(
+    tar: &mut tar::Builder<W>,
+    src: &Path,
+    archive_name: &Path,
+    mtime: Option<u64>,
+) -> Result<()> {
+    if let Some(ts) = mtime {
+        let metadata = fs::metadata(src)
+            .with_context(|| format!("read metadata: {}", src.display()))?;
+        let mut header = tar::Header::new_gnu();
+        header
+            .set_metadata(&metadata);
+        header.set_mtime(ts);
+        header.set_path(archive_name)
+            .with_context(|| format!("set tar path: {}", archive_name.display()))?;
+        header.set_cksum();
+        let mut file =
+            File::open(src).with_context(|| format!("open: {}", src.display()))?;
+        let mut data = Vec::new();
+        file.read_to_end(&mut data)
+            .with_context(|| format!("read: {}", src.display()))?;
+        tar.append_data(&mut header, archive_name, data.as_slice())
+            .with_context(|| format!("tar append: {}", archive_name.display()))?;
+    } else {
+        tar.append_path_with_name(src, archive_name)
+            .with_context(|| format!("tar append: {}", archive_name.display()))?;
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // create_tar_gz
 // ---------------------------------------------------------------------------
 
@@ -21,11 +58,13 @@ use anodize_core::target::map_target;
 /// Each file is stored under its own filename (no directory prefix) unless
 /// `base_dir` is provided, in which case files are stored relative to it.
 /// If `wrap_dir` is provided, all archive entries are prefixed with that directory.
+/// If `mtime` is provided, all entries are stored with that unix timestamp as mtime.
 pub fn create_tar_gz(
     files: &[&Path],
     output: &Path,
     base_dir: Option<&Path>,
     wrap_dir: Option<&str>,
+    mtime: Option<u64>,
 ) -> Result<()> {
     let out_file =
         File::create(output).with_context(|| format!("create tar.gz: {}", output.display()))?;
@@ -37,14 +76,13 @@ pub fn create_tar_gz(
             continue;
         }
         let archive_name = compute_archive_name(src, base_dir, wrap_dir);
-        tar.append_path_with_name(src, &archive_name)
-            .with_context(|| {
-                format!(
-                    "tar.gz: adding {} as {}",
-                    src.display(),
-                    archive_name.display()
-                )
-            })?;
+        append_tar_entry(&mut tar, src, &archive_name, mtime).with_context(|| {
+            format!(
+                "tar.gz: adding {} as {}",
+                src.display(),
+                archive_name.display()
+            )
+        })?;
     }
 
     tar.finish().context("tar.gz: finish")?;
@@ -57,11 +95,13 @@ pub fn create_tar_gz(
 
 /// Create a tar.xz archive containing the given files.
 /// If `wrap_dir` is provided, all archive entries are prefixed with that directory.
+/// If `mtime` is provided, all entries are stored with that unix timestamp as mtime.
 pub fn create_tar_xz(
     files: &[&Path],
     output: &Path,
     base_dir: Option<&Path>,
     wrap_dir: Option<&str>,
+    mtime: Option<u64>,
 ) -> Result<()> {
     let out_file =
         File::create(output).with_context(|| format!("create tar.xz: {}", output.display()))?;
@@ -73,14 +113,13 @@ pub fn create_tar_xz(
             continue;
         }
         let archive_name = compute_archive_name(src, base_dir, wrap_dir);
-        tar.append_path_with_name(src, &archive_name)
-            .with_context(|| {
-                format!(
-                    "tar.xz: adding {} as {}",
-                    src.display(),
-                    archive_name.display()
-                )
-            })?;
+        append_tar_entry(&mut tar, src, &archive_name, mtime).with_context(|| {
+            format!(
+                "tar.xz: adding {} as {}",
+                src.display(),
+                archive_name.display()
+            )
+        })?;
     }
 
     tar.finish().context("tar.xz: finish")?;
@@ -93,11 +132,13 @@ pub fn create_tar_xz(
 
 /// Create a tar.zst archive containing the given files.
 /// If `wrap_dir` is provided, all archive entries are prefixed with that directory.
+/// If `mtime` is provided, all entries are stored with that unix timestamp as mtime.
 pub fn create_tar_zst(
     files: &[&Path],
     output: &Path,
     base_dir: Option<&Path>,
     wrap_dir: Option<&str>,
+    mtime: Option<u64>,
 ) -> Result<()> {
     let out_file =
         File::create(output).with_context(|| format!("create tar.zst: {}", output.display()))?;
@@ -109,14 +150,13 @@ pub fn create_tar_zst(
             continue;
         }
         let archive_name = compute_archive_name(src, base_dir, wrap_dir);
-        tar.append_path_with_name(src, &archive_name)
-            .with_context(|| {
-                format!(
-                    "tar.zst: adding {} as {}",
-                    src.display(),
-                    archive_name.display()
-                )
-            })?;
+        append_tar_entry(&mut tar, src, &archive_name, mtime).with_context(|| {
+            format!(
+                "tar.zst: adding {} as {}",
+                src.display(),
+                archive_name.display()
+            )
+        })?;
     }
 
     let enc = tar.into_inner().context("tar.zst: finish tar")?;
@@ -456,6 +496,11 @@ impl Stage for ArchiveStage {
 
                     let path_refs: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
 
+                    // Check SOURCE_DATE_EPOCH for reproducible archive mtime
+                    let source_date_epoch: Option<u64> = std::env::var("SOURCE_DATE_EPOCH")
+                        .ok()
+                        .and_then(|v| v.parse::<u64>().ok());
+
                     if ctx.options.dry_run {
                         eprintln!(
                             "[archive] (dry-run) would create {} with {} files",
@@ -466,10 +511,34 @@ impl Stage for ArchiveStage {
                         eprintln!("[archive] creating {}", archive_path.display());
                         match format.as_str() {
                             "zip" => create_zip(&path_refs, &archive_path, wrap_dir)?,
-                            "tar.xz" => create_tar_xz(&path_refs, &archive_path, None, wrap_dir)?,
-                            "tar.zst" => create_tar_zst(&path_refs, &archive_path, None, wrap_dir)?,
+                            "tar.xz" => {
+                                create_tar_xz(
+                                    &path_refs,
+                                    &archive_path,
+                                    None,
+                                    wrap_dir,
+                                    source_date_epoch,
+                                )?
+                            }
+                            "tar.zst" => {
+                                create_tar_zst(
+                                    &path_refs,
+                                    &archive_path,
+                                    None,
+                                    wrap_dir,
+                                    source_date_epoch,
+                                )?
+                            }
                             "binary" => copy_binary(&path_refs, &archive_path)?,
-                            _ => create_tar_gz(&path_refs, &archive_path, None, wrap_dir)?,
+                            _ => {
+                                create_tar_gz(
+                                    &path_refs,
+                                    &archive_path,
+                                    None,
+                                    wrap_dir,
+                                    source_date_epoch,
+                                )?
+                            }
                         }
                     }
 
@@ -523,7 +592,7 @@ mod tests {
         fs::write(&bin_path, b"binary content").unwrap();
 
         let archive_path = tmp.path().join("mybin.tar.gz");
-        create_tar_gz(&[&bin_path], &archive_path, None, None).unwrap();
+        create_tar_gz(&[&bin_path], &archive_path, None, None, None).unwrap();
 
         assert!(archive_path.exists());
         assert!(fs::metadata(&archive_path).unwrap().len() > 0);
@@ -572,7 +641,7 @@ mod tests {
         fs::write(&bin_path, b"binary content for xz").unwrap();
 
         let archive_path = tmp.path().join("mybin.tar.xz");
-        create_tar_xz(&[&bin_path], &archive_path, None, None).unwrap();
+        create_tar_xz(&[&bin_path], &archive_path, None, None, None).unwrap();
 
         assert!(archive_path.exists());
         let len = fs::metadata(&archive_path).unwrap().len();
@@ -599,7 +668,7 @@ mod tests {
         fs::write(&bin_path, b"binary content for zstd").unwrap();
 
         let archive_path = tmp.path().join("mybin.tar.zst");
-        create_tar_zst(&[&bin_path], &archive_path, None, None).unwrap();
+        create_tar_zst(&[&bin_path], &archive_path, None, None, None).unwrap();
 
         assert!(archive_path.exists());
         let len = fs::metadata(&archive_path).unwrap().len();
@@ -721,6 +790,7 @@ mod tests {
             &archive_path,
             None,
             Some("myapp-1.0.0"),
+            None,
         )
         .unwrap();
 
@@ -763,7 +833,7 @@ mod tests {
         fs::write(&bin_path, b"binary").unwrap();
 
         let archive_path = tmp.path().join("wrapped.tar.xz");
-        create_tar_xz(&[&bin_path], &archive_path, None, Some("myapp-1.0.0")).unwrap();
+        create_tar_xz(&[&bin_path], &archive_path, None, Some("myapp-1.0.0"), None).unwrap();
 
         // Verify entry has the directory prefix
         let file = File::open(&archive_path).unwrap();
@@ -782,7 +852,7 @@ mod tests {
         fs::write(&bin_path, b"binary").unwrap();
 
         let archive_path = tmp.path().join("wrapped.tar.zst");
-        create_tar_zst(&[&bin_path], &archive_path, None, Some("myapp-1.0.0")).unwrap();
+        create_tar_zst(&[&bin_path], &archive_path, None, Some("myapp-1.0.0"), None).unwrap();
 
         // Verify entry has the directory prefix
         let file = File::open(&archive_path).unwrap();
@@ -1167,7 +1237,7 @@ crates:
         let (bin, license, readme) = create_realistic_file_tree(tmp.path());
 
         let archive_path = tmp.path().join("myapp-1.0.0-linux-amd64.tar.gz");
-        create_tar_gz(&[&bin, &license, &readme], &archive_path, None, None).unwrap();
+        create_tar_gz(&[&bin, &license, &readme], &archive_path, None, None, None).unwrap();
 
         // Open the archive and verify all files are present with correct names
         let file = File::open(&archive_path).unwrap();
@@ -1257,7 +1327,7 @@ crates:
         let (bin, license, readme) = create_realistic_file_tree(tmp.path());
 
         let archive_path = tmp.path().join("myapp-1.0.0-linux-amd64.tar.xz");
-        create_tar_xz(&[&bin, &license, &readme], &archive_path, None, None).unwrap();
+        create_tar_xz(&[&bin, &license, &readme], &archive_path, None, None, None).unwrap();
 
         // Open the archive and verify all files
         let file = File::open(&archive_path).unwrap();
@@ -1303,6 +1373,7 @@ crates:
             &archive_path,
             None,
             Some("myapp-1.0.0"),
+            None,
         )
         .unwrap();
 
@@ -1333,7 +1404,7 @@ crates:
         let (bin, license, readme) = create_realistic_file_tree(tmp.path());
 
         let archive_path = tmp.path().join("myapp-1.0.0-linux-amd64.tar.zst");
-        create_tar_zst(&[&bin, &license, &readme], &archive_path, None, None).unwrap();
+        create_tar_zst(&[&bin, &license, &readme], &archive_path, None, None, None).unwrap();
 
         // Open the archive and verify all files
         let file = File::open(&archive_path).unwrap();
@@ -1909,7 +1980,7 @@ crates:
         let archive_path = tmp.path().join("empty.tar.gz");
 
         // Create an archive with empty file list
-        let result = create_tar_gz(&[], &archive_path, None, None);
+        let result = create_tar_gz(&[], &archive_path, None, None, None);
         assert!(result.is_ok(), "creating archive with empty file list should succeed");
         assert!(archive_path.exists(), "archive file should be created");
     }
@@ -1995,6 +2066,103 @@ crates:
             result.is_ok(),
             "unknown format should fall back to tar.gz, got: {:?}",
             result.err()
+        );
+    }
+
+    // ---- Task 5E: reproducible archive mtime tests ----
+
+    #[test]
+    fn test_create_tar_gz_with_fixed_mtime() {
+        let tmp = TempDir::new().unwrap();
+        let bin_path = tmp.path().join("mybin");
+        fs::write(&bin_path, b"binary content").unwrap();
+
+        let archive_path = tmp.path().join("mybin-reproducible.tar.gz");
+        let fixed_mtime: u64 = 1_700_000_000;
+        create_tar_gz(&[&bin_path], &archive_path, None, None, Some(fixed_mtime)).unwrap();
+
+        assert!(archive_path.exists());
+
+        // Verify the stored mtime matches the fixed timestamp
+        let file = File::open(&archive_path).unwrap();
+        let dec = flate2::read::GzDecoder::new(file);
+        let mut tar = tar::Archive::new(dec);
+        let mut entries = tar.entries().unwrap();
+        let entry = entries.next().unwrap().unwrap();
+        assert_eq!(
+            entry.header().mtime().unwrap(),
+            fixed_mtime,
+            "tar.gz entry mtime should match SOURCE_DATE_EPOCH"
+        );
+    }
+
+    #[test]
+    fn test_create_tar_xz_with_fixed_mtime() {
+        let tmp = TempDir::new().unwrap();
+        let bin_path = tmp.path().join("mybin");
+        fs::write(&bin_path, b"binary content").unwrap();
+
+        let archive_path = tmp.path().join("mybin-reproducible.tar.xz");
+        let fixed_mtime: u64 = 1_700_000_000;
+        create_tar_xz(&[&bin_path], &archive_path, None, None, Some(fixed_mtime)).unwrap();
+
+        assert!(archive_path.exists());
+
+        let file = File::open(&archive_path).unwrap();
+        let dec = xz2::read::XzDecoder::new(file);
+        let mut tar = tar::Archive::new(dec);
+        let mut entries = tar.entries().unwrap();
+        let entry = entries.next().unwrap().unwrap();
+        assert_eq!(
+            entry.header().mtime().unwrap(),
+            fixed_mtime,
+            "tar.xz entry mtime should match SOURCE_DATE_EPOCH"
+        );
+    }
+
+    #[test]
+    fn test_create_tar_zst_with_fixed_mtime() {
+        let tmp = TempDir::new().unwrap();
+        let bin_path = tmp.path().join("mybin");
+        fs::write(&bin_path, b"binary content").unwrap();
+
+        let archive_path = tmp.path().join("mybin-reproducible.tar.zst");
+        let fixed_mtime: u64 = 1_700_000_000;
+        create_tar_zst(&[&bin_path], &archive_path, None, None, Some(fixed_mtime)).unwrap();
+
+        assert!(archive_path.exists());
+
+        let file = File::open(&archive_path).unwrap();
+        let dec = zstd::Decoder::new(file).unwrap();
+        let mut tar = tar::Archive::new(dec);
+        let mut entries = tar.entries().unwrap();
+        let entry = entries.next().unwrap().unwrap();
+        assert_eq!(
+            entry.header().mtime().unwrap(),
+            fixed_mtime,
+            "tar.zst entry mtime should match SOURCE_DATE_EPOCH"
+        );
+    }
+
+    #[test]
+    fn test_reproducible_archive_is_deterministic() {
+        // Two archives created with the same content and fixed mtime must be byte-identical
+        let tmp = TempDir::new().unwrap();
+        let bin_path = tmp.path().join("mybin");
+        fs::write(&bin_path, b"deterministic binary content").unwrap();
+
+        let fixed_mtime: u64 = 1_700_000_000;
+        let archive1 = tmp.path().join("archive1.tar.gz");
+        let archive2 = tmp.path().join("archive2.tar.gz");
+
+        create_tar_gz(&[&bin_path], &archive1, None, None, Some(fixed_mtime)).unwrap();
+        create_tar_gz(&[&bin_path], &archive2, None, None, Some(fixed_mtime)).unwrap();
+
+        let bytes1 = fs::read(&archive1).unwrap();
+        let bytes2 = fs::read(&archive2).unwrap();
+        assert_eq!(
+            bytes1, bytes2,
+            "archives with same content and fixed mtime should be byte-identical"
         );
     }
 }

@@ -152,6 +152,7 @@ pub struct BuildConfig {
     pub env: Option<HashMap<String, HashMap<String, String>>>,
     pub copy_from: Option<String>,
     pub flags: Option<String>,
+    pub reproducible: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2016,6 +2017,58 @@ crates:
             config.crates[0].checksum.as_ref().unwrap().algorithm,
             Some("sha256".to_string())
         );
+    }
+
+    // ---- BuildConfig reproducible field tests ----
+
+    #[test]
+    fn test_build_config_reproducible_true() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+    builds:
+      - binary: myapp
+        reproducible: true
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let build = &config.crates[0].builds.as_ref().unwrap()[0];
+        assert_eq!(build.reproducible, Some(true));
+    }
+
+    #[test]
+    fn test_build_config_reproducible_false() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+    builds:
+      - binary: myapp
+        reproducible: false
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let build = &config.crates[0].builds.as_ref().unwrap()[0];
+        assert_eq!(build.reproducible, Some(false));
+    }
+
+    #[test]
+    fn test_build_config_reproducible_omitted() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+    builds:
+      - binary: myapp
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let build = &config.crates[0].builds.as_ref().unwrap()[0];
+        assert_eq!(build.reproducible, None);
     }
 
 }
