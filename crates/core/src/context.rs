@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 pub struct ContextOptions {
     pub snapshot: bool,
+    pub nightly: bool,
     pub dry_run: bool,
     pub verbose: bool,
     pub debug: bool,
@@ -26,6 +27,7 @@ impl Default for ContextOptions {
     fn default() -> Self {
         Self {
             snapshot: false,
+            nightly: false,
             dry_run: false,
             verbose: false,
             debug: false,
@@ -88,6 +90,10 @@ impl Context {
 
     pub fn is_snapshot(&self) -> bool {
         self.options.snapshot
+    }
+
+    pub fn is_nightly(&self) -> bool {
+        self.options.nightly
     }
 
     /// Populate template variables from `self.git_info`.
@@ -162,6 +168,10 @@ impl Context {
             } else {
                 "false"
             },
+        );
+        self.template_vars.set(
+            "IsNightly",
+            if self.options.nightly { "true" } else { "false" },
         );
         self.template_vars.set("IsDraft", "false");
     }
@@ -439,5 +449,57 @@ mod tests {
         );
         // Git-specific vars should NOT be set
         assert_eq!(ctx.template_vars().get("Tag"), None);
+    }
+
+    #[test]
+    fn test_is_nightly_set_when_nightly_mode_active() {
+        let config = Config::default();
+        let opts = ContextOptions {
+            nightly: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        ctx.git_info = Some(make_git_info(false, None));
+        ctx.populate_git_vars();
+
+        assert_eq!(
+            ctx.template_vars().get("IsNightly"),
+            Some(&"true".to_string()),
+            "IsNightly should be 'true' when nightly mode is active"
+        );
+        assert!(ctx.is_nightly(), "is_nightly() should return true");
+    }
+
+    #[test]
+    fn test_is_nightly_false_by_default() {
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.git_info = Some(make_git_info(false, None));
+        ctx.populate_git_vars();
+
+        assert_eq!(
+            ctx.template_vars().get("IsNightly"),
+            Some(&"false".to_string()),
+            "IsNightly should default to 'false'"
+        );
+        assert!(!ctx.is_nightly(), "is_nightly() should return false by default");
+    }
+
+    #[test]
+    fn test_is_nightly_without_git_info() {
+        let config = Config::default();
+        let opts = ContextOptions {
+            nightly: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        // No git_info set — populate_git_vars still sets IsNightly
+        ctx.populate_git_vars();
+
+        assert_eq!(
+            ctx.template_vars().get("IsNightly"),
+            Some(&"true".to_string()),
+            "IsNightly should be set even without git info"
+        );
     }
 }

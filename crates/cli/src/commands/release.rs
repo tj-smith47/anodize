@@ -4,6 +4,7 @@ use anodize_core::config::{CrateConfig, GitHubConfig};
 use anodize_core::context::{Context, ContextOptions};
 use anodize_core::git;
 use anyhow::{Context as _, Result};
+use chrono::Utc;
 use std::path::PathBuf;
 
 pub struct ReleaseOpts {
@@ -11,6 +12,7 @@ pub struct ReleaseOpts {
     pub all: bool,
     pub force: bool,
     pub snapshot: bool,
+    pub nightly: bool,
     pub dry_run: bool,
     pub clean: bool,
     pub skip: Vec<String>,
@@ -74,6 +76,7 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
 
     let ctx_opts = ContextOptions {
         snapshot: opts.snapshot,
+        nightly: opts.nightly,
         dry_run: opts.dry_run,
         verbose: opts.verbose,
         debug: opts.debug,
@@ -130,6 +133,46 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
     } else {
         // No crates configured; populate non-git vars only
         ctx.populate_git_vars();
+    }
+
+    // Apply nightly overrides after git vars are populated.
+    if opts.nightly {
+        let nightly_cfg = config.nightly.as_ref();
+        let date_str = Utc::now().format("%Y%m%d").to_string();
+
+        // Build the nightly version: take existing Version (major.minor.patch) and append
+        // the nightly prerelease suffix.
+        let base_version = ctx
+            .template_vars()
+            .get("Version")
+            .cloned()
+            .unwrap_or_else(|| "0.1.0".to_string());
+        // Strip any existing prerelease suffix to get the numeric base.
+        let numeric_base = base_version
+            .split('-')
+            .next()
+            .unwrap_or(&base_version)
+            .to_string();
+        let nightly_version = format!("{}-nightly.{}", numeric_base, date_str);
+
+        // Override Version, RawVersion, and Tag to nightly values.
+        ctx.template_vars_mut().set("Version", &nightly_version);
+        ctx.template_vars_mut().set("RawVersion", &nightly_version);
+
+        let nightly_tag = nightly_cfg
+            .and_then(|c| c.tag_name.as_deref())
+            .unwrap_or("nightly")
+            .to_string();
+        ctx.template_vars_mut().set("Tag", &nightly_tag);
+
+        // IsNightly is already set by populate_git_vars via ctx.options.nightly,
+        // but set it explicitly here too for clarity.
+        ctx.template_vars_mut().set("IsNightly", "true");
+
+        eprintln!(
+            "[nightly] version={}, tag={}",
+            nightly_version, nightly_tag
+        );
     }
 
     let p = pipeline::build_release_pipeline();

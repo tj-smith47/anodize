@@ -3955,3 +3955,81 @@ crates:
     let config = result.unwrap();
     assert_eq!(config.crates[0].name, "");
 }
+
+// ---- NightlyConfig tests ----
+
+#[test]
+fn test_parse_nightly_omitted_defaults_to_none() {
+    let yaml = "project_name: test\ncrates: []";
+    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    assert!(config.nightly.is_none());
+}
+
+#[test]
+fn test_parse_nightly_empty_block_defaults() {
+    let yaml = r#"
+project_name: test
+nightly: {}
+crates: []
+"#;
+    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let nightly = config.nightly.expect("nightly block should be present");
+    assert!(nightly.name_template.is_none());
+    assert!(nightly.tag_name.is_none());
+}
+
+#[test]
+fn test_parse_nightly_name_template() {
+    let yaml = r#"
+project_name: test
+nightly:
+  name_template: "{{ .ProjectName }}-nightly"
+crates: []
+"#;
+    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let nightly = config.nightly.expect("nightly block should be present");
+    assert_eq!(
+        nightly.name_template,
+        Some("{{ .ProjectName }}-nightly".to_string())
+    );
+    assert!(nightly.tag_name.is_none());
+}
+
+#[test]
+fn test_parse_nightly_tag_name() {
+    let yaml = r#"
+project_name: test
+nightly:
+  tag_name: "nightly"
+crates: []
+"#;
+    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let nightly = config.nightly.expect("nightly block should be present");
+    assert!(nightly.name_template.is_none());
+    assert_eq!(nightly.tag_name, Some("nightly".to_string()));
+}
+
+#[test]
+fn test_parse_nightly_all_fields() {
+    let yaml = r#"
+project_name: myapp
+nightly:
+  name_template: "myapp-nightly-{{ .Version }}"
+  tag_name: "rolling-nightly"
+crates: []
+"#;
+    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let nightly = config.nightly.expect("nightly block should be present");
+    assert_eq!(
+        nightly.name_template,
+        Some("myapp-nightly-{{ .Version }}".to_string())
+    );
+    assert_eq!(nightly.tag_name, Some("rolling-nightly".to_string()));
+}
+
+#[test]
+fn test_parse_nightly_config_default_impl() {
+    let nightly = NightlyConfig::default();
+    assert!(nightly.name_template.is_none());
+    assert!(nightly.tag_name.is_none());
+}

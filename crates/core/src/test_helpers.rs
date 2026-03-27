@@ -259,6 +259,7 @@ impl TestContextBuilder {
 
         let options = ContextOptions {
             snapshot: self.snapshot,
+            nightly: false,
             dry_run: self.dry_run,
             verbose: self.verbose,
             debug: self.debug,

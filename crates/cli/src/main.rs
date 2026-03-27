@@ -37,6 +37,8 @@ enum Commands {
         force: bool,
         #[arg(long)]
         snapshot: bool,
+        #[arg(long, help = "Create a nightly release with date-based version")]
+        nightly: bool,
         #[arg(long)]
         dry_run: bool,
         #[arg(long)]
@@ -175,6 +177,7 @@ fn main() {
             all,
             force,
             snapshot,
+            nightly,
             dry_run,
             clean,
             skip,
@@ -214,6 +217,7 @@ fn main() {
                     all,
                     force,
                     snapshot: effective_snapshot,
+                    nightly,
                     dry_run,
                     clean,
                     skip,
@@ -513,6 +517,47 @@ mod tests {
             cli.is_ok(),
             "CLI should parse tag with all flags: {:?}",
             cli.err()
+        );
+    }
+
+    #[test]
+    fn test_cli_parses_release_nightly_flag() {
+        let cli = Cli::try_parse_from(["anodize", "release", "--nightly"]);
+        assert!(
+            cli.is_ok(),
+            "CLI should parse release --nightly: {:?}",
+            cli.err()
+        );
+        if let Commands::Release { nightly, .. } = cli.unwrap().command {
+            assert!(nightly, "--nightly flag should be true");
+        } else {
+            panic!("expected Release command");
+        }
+    }
+
+    #[test]
+    fn test_cli_nightly_defaults_false() {
+        let cli = Cli::try_parse_from(["anodize", "release"]).unwrap();
+        if let Commands::Release { nightly, .. } = cli.command {
+            assert!(!nightly, "--nightly should default to false");
+        } else {
+            panic!("expected Release command");
+        }
+    }
+
+    #[test]
+    fn test_help_output_contains_nightly_flag() {
+        let mut cmd = Cli::command();
+        // Check the release subcommand help for --nightly
+        let release_help = cmd
+            .find_subcommand_mut("release")
+            .expect("release subcommand should exist")
+            .render_help()
+            .to_string();
+        assert!(
+            release_help.contains("--nightly"),
+            "release help should mention --nightly flag, got: {}",
+            release_help
         );
     }
 }

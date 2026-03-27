@@ -22,6 +22,7 @@ pub struct Config {
     pub signs: Vec<SignConfig>,
     pub docker_signs: Option<Vec<DockerSignConfig>>,
     pub snapshot: Option<SnapshotConfig>,
+    pub nightly: Option<NightlyConfig>,
     pub announce: Option<AnnounceConfig>,
     pub report_sizes: Option<bool>,
     pub env: Option<HashMap<String, String>>,
@@ -46,6 +47,7 @@ impl Default for Config {
             signs: Vec::new(),
             docker_signs: None,
             snapshot: None,
+            nightly: None,
             announce: None,
             report_sizes: None,
             env: None,
@@ -682,6 +684,19 @@ pub struct DockerSignConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SnapshotConfig {
     pub name_template: String,
+}
+
+// ---------------------------------------------------------------------------
+// NightlyConfig
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct NightlyConfig {
+    /// Template for the release name. Default: "{{ .ProjectName }}-nightly"
+    pub name_template: Option<String>,
+    /// Tag name used for the nightly release. Default: "nightly"
+    pub tag_name: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
