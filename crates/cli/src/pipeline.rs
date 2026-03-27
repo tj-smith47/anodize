@@ -59,14 +59,18 @@ fn merge_yaml(base: &mut serde_yaml::Value, overlay: &serde_yaml::Value) {
 }
 
 /// Load config from a file, auto-detecting format by extension.
-/// For YAML files, processes `includes` by deep-merging included files into the base.
+///
+/// For YAML files, processes `includes` by deep-merging included files together as
+/// defaults, then merging the base (local) config on top. This means the base config
+/// always takes priority over values from included files — includes provide defaults,
+/// not overrides.
 pub fn load_config(path: &Path) -> Result<Config> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read config file: {}", path.display()))?;
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     match ext {
         "yaml" | "yml" => {
-            let mut base: serde_yaml::Value = serde_yaml::from_str(&content)
+            let base: serde_yaml::Value = serde_yaml::from_str(&content)
                 .with_context(|| format!("failed to parse YAML config: {}", path.display()))?;
 
             // Extract include paths before merging
@@ -80,8 +84,11 @@ pub fn load_config(path: &Path) -> Result<Config> {
                 })
                 .unwrap_or_default();
 
-            // Resolve includes relative to the base config's parent directory
+            // Accumulate all included files into a merged defaults value.
+            // The base config is then merged on top so its values always win.
             let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
+            let mut merged =
+                serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
             for include in &include_paths {
                 let include_path = base_dir.join(include);
                 let include_content = std::fs::read_to_string(&include_path).with_context(|| {
@@ -95,10 +102,12 @@ pub fn load_config(path: &Path) -> Result<Config> {
                     serde_yaml::from_str(&include_content).with_context(|| {
                         format!("failed to parse include file: {}", include_path.display())
                     })?;
-                merge_yaml(&mut base, &overlay);
+                merge_yaml(&mut merged, &overlay);
             }
+            // Merge base config on top of the accumulated defaults (base wins).
+            merge_yaml(&mut merged, &base);
 
-            Ok(serde_yaml::from_value(base)
+            Ok(serde_yaml::from_value(merged)
                 .with_context(|| format!("failed to deserialize config: {}", path.display()))?)
         }
         "toml" => Ok(toml::from_str(&content)?),
@@ -353,8 +362,34 @@ mod tests {
 
         let config = load_config(&cfg_path).unwrap();
         assert_eq!(config.crates.len(), 2);
-        assert_eq!(config.crates[0].name, "base-crate");
-        assert_eq!(config.crates[1].name, "extra-crate");
+        // Includes are accumulated as defaults first; base is merged on top,
+        // so base sequences are appended after include sequences.
+        assert_eq!(config.crates[0].name, "extra-crate");
+        assert_eq!(config.crates[1].name, "base-crate");
+    }
+
+    #[test]
+    fn test_load_config_base_wins_over_include_for_scalar() {
+        let tmp = TempDir::new().unwrap();
+
+        // Include file defines a dist that should be treated as a default.
+        let include_path = tmp.path().join("defaults.yaml");
+        fs::write(&include_path, "dist: /from-include\n").unwrap();
+
+        // Base config also defines dist — it should win.
+        let cfg_path = tmp.path().join("anodize.yaml");
+        fs::write(
+            &cfg_path,
+            "project_name: priority-test\nincludes:\n  - defaults.yaml\ndist: /from-base\ncrates: []\n",
+        )
+        .unwrap();
+
+        let config = load_config(&cfg_path).unwrap();
+        assert_eq!(
+            config.dist,
+            std::path::PathBuf::from("/from-base"),
+            "base config should override include for scalar values"
+        );
     }
 
     #[test]
