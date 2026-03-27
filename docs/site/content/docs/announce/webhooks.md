@@ -11,7 +11,8 @@ template = "docs.html"
 announce:
   webhook:
     enabled: true
-    webhook_url: "https://api.example.com/releases"
+    endpoint_url: "https://api.example.com/releases"
+    content_type: "application/json"
     message_template: |
       {"project": "{{ ProjectName }}", "version": "{{ Version }}", "url": "{{ ReleaseURL }}"}
 ```
@@ -21,5 +22,7 @@ Use webhooks to integrate with any service that accepts HTTP POST requests. The 
 | Field | Type | Description |
 |-------|------|-------------|
 | `enabled` | bool | Enable webhook notifications |
-| `webhook_url` | string | Endpoint URL |
+| `endpoint_url` | string | Endpoint URL |
+| `headers` | map | Custom HTTP headers |
+| `content_type` | string | Content-Type header (e.g., `application/json`) |
 | `message_template` | string | POST body (templates supported) |

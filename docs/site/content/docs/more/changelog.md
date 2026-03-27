@@ -16,7 +16,7 @@ Changelog generation works with no config — it collects all commits since the 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `sort` | string | `asc` | Sort order: `asc` or `desc` |
-| `use_source` | string | `git` | Source: `git` (commit parsing) or `github-native` (GitHub's generated notes) |
+| `use` | string | `git` | Source: `git` (commit parsing) or `github-native` (GitHub's generated notes) |
 | `abbrev` | int | none | Truncate commit hashes to this length |
 | `disable` | bool | `false` | Disable changelog generation |
 | `header` | string | none | Text prepended to changelog |

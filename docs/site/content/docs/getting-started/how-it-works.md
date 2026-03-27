@@ -75,3 +75,6 @@ Anodize searches for config files in this order:
 2. `.anodize.yaml` in the current directory
 3. `.anodize.yml` in the current directory
 4. `.anodize.toml` in the current directory
+5. `anodize.yaml` in the current directory
+6. `anodize.yml` in the current directory
+7. `anodize.toml` in the current directory

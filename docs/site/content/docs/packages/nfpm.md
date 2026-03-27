@@ -36,7 +36,7 @@ crates:
 | `bindir` | string | `/usr/bin` | Binary installation directory |
 | `file_name_template` | string | auto | Custom filename template |
 | `contents` | list | none | Additional files to include |
-| `dependencies` | list | none | Package dependencies |
+| `dependencies` | map | none | Package dependencies keyed by format (e.g., `deb: [git]`) |
 | `scripts` | object | none | Pre/post install/remove scripts |
 | `overrides` | map | none | Per-format field overrides |
 
@@ -83,7 +83,10 @@ crates:
         description: "A fast CLI tool"
         license: MIT
         dependencies:
-          - git
+          deb:
+            - git
+          rpm:
+            - git
         contents:
           - src: config.example.yaml
             dst: /etc/myapp/config.yaml
