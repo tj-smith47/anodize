@@ -1,4 +1,6 @@
+use anodize_core::template::{self, TemplateVars};
 use anyhow::{Context, Result};
+use chrono::Utc;
 use std::process::Command;
 
 // ---------------------------------------------------------------------------
@@ -17,16 +19,49 @@ pub struct EmailParams<'a> {
 // Message builder (RFC 2822)
 // ---------------------------------------------------------------------------
 
+/// Tera template for an RFC 2822 email message.
+///
+/// Headers are separated by `\r\n`; the blank line before the body is produced
+/// by the template's own newline after the `Date` header plus the `\r\n` that
+/// the post-processing step converts.  The body follows verbatim.
+const RFC2822_TEMPLATE: &str = "\
+From: {{ from }}\r
+To: {{ to }}\r
+Subject: {{ subject }}\r
+MIME-Version: 1.0\r
+Content-Type: text/plain; charset=utf-8\r
+Date: {{ date }}\r
+\r
+{{ body }}";
+
+/// Sanitise a header value by collapsing CR/LF to a single space.
+/// This prevents header-injection attacks where a value containing `\r\n`
+/// could forge extra headers.
+fn sanitize_header(value: &str) -> String {
+    value.replace(['\r', '\n'], " ")
+}
+
 /// Build a minimal RFC 2822 message suitable for piping to sendmail/msmtp.
-pub(crate) fn build_rfc2822_message(params: &EmailParams<'_>) -> String {
-    let to_header = params.to.join(", ");
-    format!(
-        "From: {from}\r\nTo: {to}\r\nSubject: {subject}\r\nContent-Type: text/plain; charset=utf-8\r\nMIME-Version: 1.0\r\n\r\n{body}",
-        from = params.from,
-        to = to_header,
-        subject = params.subject,
-        body = params.body,
-    )
+///
+/// Uses a Tera template so that the message format is declarative and
+/// easier to audit than string concatenation.
+pub(crate) fn build_rfc2822_message(params: &EmailParams<'_>) -> Result<String> {
+    let to_header = params
+        .to
+        .iter()
+        .map(|addr| sanitize_header(addr))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let mut vars = TemplateVars::new();
+    vars.set("from", &sanitize_header(params.from));
+    vars.set("to", &to_header);
+    vars.set("subject", &sanitize_header(params.subject));
+    vars.set("date", &Utc::now().format("%a, %d %b %Y %H:%M:%S +0000").to_string());
+    vars.set("body", params.body);
+
+    template::render(RFC2822_TEMPLATE, &vars)
+        .context("failed to render RFC 2822 email template")
 }
 
 // ---------------------------------------------------------------------------
@@ -38,7 +73,7 @@ pub(crate) fn build_rfc2822_message(params: &EmailParams<'_>) -> String {
 /// Tries `sendmail -t` first; falls back to `msmtp -t` if sendmail is not
 /// found. Both commands read recipients from the message headers via `-t`.
 pub fn send_email(params: &EmailParams<'_>) -> Result<()> {
-    let message = build_rfc2822_message(params);
+    let message = build_rfc2822_message(params)?;
 
     // Try sendmail first, then msmtp
     let (program, args) = if which_exists("sendmail") {
@@ -96,11 +131,13 @@ mod tests {
             subject: "myapp v1.0.0 released",
             body: "A new version is available!",
         };
-        let msg = build_rfc2822_message(&params);
+        let msg = build_rfc2822_message(&params).unwrap();
         assert!(msg.contains("From: release-bot@example.com"));
         assert!(msg.contains("To: dev@example.com"));
         assert!(msg.contains("Subject: myapp v1.0.0 released"));
         assert!(msg.contains("Content-Type: text/plain; charset=utf-8"));
+        assert!(msg.contains("MIME-Version: 1.0"));
+        assert!(msg.contains("Date: "));
         assert!(msg.contains("A new version is available!"));
     }
 
@@ -115,7 +152,7 @@ mod tests {
             subject: "Release",
             body: "Done",
         };
-        let msg = build_rfc2822_message(&params);
+        let msg = build_rfc2822_message(&params).unwrap();
         assert!(msg.contains("To: alice@example.com, bob@example.com"));
     }
 
@@ -127,8 +164,26 @@ mod tests {
             subject: "test",
             body: "body text here",
         };
-        let msg = build_rfc2822_message(&params);
+        let msg = build_rfc2822_message(&params).unwrap();
         // RFC 2822: headers and body separated by blank line (\r\n\r\n)
         assert!(msg.contains("\r\n\r\nbody text here"));
+    }
+
+    #[test]
+    fn test_sanitizes_newlines_in_headers() {
+        let params = EmailParams {
+            from: "bot@example.com",
+            to: &["dev@example.com".to_string()],
+            subject: "legit\r\nBcc: evil@attacker.com",
+            body: "body",
+        };
+        let msg = build_rfc2822_message(&params).unwrap();
+        // The injected CRLF must be stripped so "Bcc:" cannot appear as
+        // a standalone header line — it stays inside the Subject value.
+        assert!(
+            !msg.contains("\r\nBcc:"),
+            "header injection: Bcc appeared as a separate header line"
+        );
+        assert!(msg.contains("Subject: legit"));
     }
 }
