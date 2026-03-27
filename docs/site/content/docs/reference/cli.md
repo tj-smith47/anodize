@@ -14,8 +14,8 @@ Release Rust projects with ease
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--config` | `-f` | Path to config file (overrides auto-detection) |
-| `--verbose` | — |  |
-| `--debug` | — |  |
+| `--verbose` | — | Enable verbose output |
+| `--debug` | — | Enable debug output |
 
 
 ## Commands
@@ -28,15 +28,15 @@ Run the full release pipeline
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
-| `--crate` | — | — |  |
-| `--all` | — | — |  |
-| `--force` | — | — |  |
-| `--snapshot` | — | — |  |
+| `--crate` | — | — | Release a specific crate (repeatable) |
+| `--all` | — | — | Release all crates with unreleased changes |
+| `--force` | — | — | Force release even without unreleased changes |
+| `--snapshot` | — | — | Build without publishing (snapshot mode) |
 | `--nightly` | — | — | Create a nightly release with date-based version |
-| `--dry-run` | — | — |  |
-| `--clean` | — | — |  |
-| `--skip` | — | — |  |
-| `--token` | — | — |  |
+| `--dry-run` | — | — | Run full pipeline without side effects |
+| `--clean` | — | — | Remove dist directory before starting |
+| `--skip` | — | — | Skip stages (comma-separated, e.g. docker,announce) |
+| `--token` | — | — | GitHub token (overrides GITHUB_TOKEN env var) |
 | `--timeout` | — | `30m` | Pipeline timeout duration (e.g., 30m, 1h, 5s) |
 | `--parallelism` | `-p` | `12` | Maximum number of parallel build jobs |
 | `--auto-snapshot` | — | — | Automatically set --snapshot if the git repo is dirty |
@@ -52,7 +52,7 @@ Build binaries only
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
-| `--crate` | — | — |  |
+| `--crate` | — | — | Build a specific crate (repeatable) |
 | `--timeout` | — | `30m` | Pipeline timeout duration (e.g., 30m, 1h, 5s) |
 | `--parallelism` | `-p` | `12` | Maximum number of parallel build jobs |
 | `--single-target` | — | — | Build only for the host target triple |
@@ -81,7 +81,7 @@ Generate changelog only
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
-| `--crate` | — | — |  |
+| `--crate` | — | — | Generate changelog for a specific crate |
 
 
 ### `anodize completion`
@@ -106,7 +106,7 @@ Auto-tag based on commit message directives
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
-| `--dry-run` | — | — |  |
+| `--dry-run` | — | — | Show what tag would be created without pushing |
 | `--custom-tag` | — | — | Override bump logic with a specific tag value |
 | `--default-bump` | — | — | Override default bump type (patch/minor/major) |
 | `--crate` | — | — | Tag a specific crate in a workspace |

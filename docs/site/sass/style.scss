@@ -272,7 +272,30 @@ pre {
   top: 49px;
   height: calc(100vh - 49px);
 
-  @media (max-width: 768px) { display: none; }
+  @media (max-width: 768px) {
+    display: none;
+    position: fixed;
+    left: 0;
+    top: 49px;
+    width: 280px;
+    height: calc(100vh - 49px);
+    z-index: 50;
+
+    &.open { display: block; }
+  }
+}
+
+.sidebar-toggle {
+  display: none;
+  cursor: pointer;
+  background: none;
+  border: none;
+  color: var(--color-text-muted);
+  font-size: 20px;
+  padding: 0 8px;
+
+  &:hover { color: var(--color-text); }
+  @media (max-width: 768px) { display: inline-block; }
 }
 
 .sidebar-section {

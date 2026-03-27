@@ -12,9 +12,9 @@ pub struct Cli {
         help = "Path to config file (overrides auto-detection)"
     )]
     pub config: Option<PathBuf>,
-    #[arg(long, global = true)]
+    #[arg(long, global = true, help = "Enable verbose output")]
     pub verbose: bool,
-    #[arg(long, global = true)]
+    #[arg(long, global = true, help = "Enable debug output")]
     pub debug: bool,
     #[command(subcommand)]
     pub command: Commands,
@@ -24,23 +24,23 @@ pub struct Cli {
 pub enum Commands {
     /// Run the full release pipeline
     Release {
-        #[arg(long = "crate", action = clap::ArgAction::Append)]
+        #[arg(long = "crate", action = clap::ArgAction::Append, help = "Release a specific crate (repeatable)")]
         crate_names: Vec<String>,
-        #[arg(long)]
+        #[arg(long, help = "Release all crates with unreleased changes")]
         all: bool,
-        #[arg(long)]
+        #[arg(long, help = "Force release even without unreleased changes")]
         force: bool,
-        #[arg(long)]
+        #[arg(long, help = "Build without publishing (snapshot mode)")]
         snapshot: bool,
         #[arg(long, help = "Create a nightly release with date-based version")]
         nightly: bool,
-        #[arg(long)]
+        #[arg(long, help = "Run full pipeline without side effects")]
         dry_run: bool,
-        #[arg(long)]
+        #[arg(long, help = "Remove dist directory before starting")]
         clean: bool,
-        #[arg(long, value_delimiter = ',')]
+        #[arg(long, value_delimiter = ',', help = "Skip stages (comma-separated, e.g. docker,announce)")]
         skip: Vec<String>,
-        #[arg(long)]
+        #[arg(long, help = "GitHub token (overrides GITHUB_TOKEN env var)")]
         token: Option<String>,
         #[arg(
             long,
@@ -64,7 +64,7 @@ pub enum Commands {
     },
     /// Build binaries only
     Build {
-        #[arg(long = "crate", action = clap::ArgAction::Append)]
+        #[arg(long = "crate", action = clap::ArgAction::Append, help = "Build a specific crate (repeatable)")]
         crate_names: Vec<String>,
         #[arg(
             long,
@@ -88,7 +88,7 @@ pub enum Commands {
     Init,
     /// Generate changelog only
     Changelog {
-        #[arg(long = "crate")]
+        #[arg(long = "crate", help = "Generate changelog for a specific crate")]
         crate_name: Option<String>,
     },
     /// Generate shell completions
@@ -100,7 +100,7 @@ pub enum Commands {
     Healthcheck,
     /// Auto-tag based on commit message directives
     Tag {
-        #[arg(long)]
+        #[arg(long, help = "Show what tag would be created without pushing")]
         dry_run: bool,
         #[arg(long, help = "Override bump logic with a specific tag value")]
         custom_tag: Option<String>,

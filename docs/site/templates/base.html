@@ -10,8 +10,9 @@
 </head>
 <body>
   <a href="#main-content" class="skip-to-content">Skip to main content</a>
-  <nav class="top-nav">
+  <nav class="top-nav" aria-label="Main navigation">
     <div class="nav-inner">
+      <button class="sidebar-toggle" onclick="document.querySelector('.docs-sidebar')?.classList.toggle('open')" aria-label="Toggle navigation">&#9776;</button>
       <a href="{{ config.base_url }}" class="nav-brand">anodize</a>
       <div class="nav-links">
         <a href="{{ get_url(path='@/docs/_index.md') }}">Docs</a>
@@ -25,7 +26,7 @@
   </main>
   <footer class="site-footer">
     <div class="footer-inner">
-      <p>&copy; 2026 Anodize Contributors. MIT License.</p>
+      <p>&copy; {{ now() | date(format="%Y") }} Anodize Contributors. MIT License.</p>
       <p>Built with <a href="https://www.getzola.org/" target="_blank" rel="noopener">Zola</a>.</p>
     </div>
   </footer>
