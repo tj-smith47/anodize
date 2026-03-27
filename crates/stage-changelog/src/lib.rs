@@ -396,6 +396,7 @@ impl Stage for ChangelogStage {
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn test_parse_conventional_commit() {
@@ -1349,6 +1350,7 @@ abbrev: 10
     // -----------------------------------------------------------------------
 
     #[test]
+    #[serial]
     fn test_integration_changelog_stage_with_real_git_repo() {
         use anodize_core::config::{
             ChangelogConfig, ChangelogFilters, ChangelogGroup, Config, CrateConfig,
@@ -1687,6 +1689,7 @@ abbrev: 10
     }
 
     #[test]
+    #[serial]
     fn test_changelog_written_to_correct_output_location() {
         use anodize_core::config::{ChangelogConfig, Config, CrateConfig};
         use anodize_core::context::{Context, ContextOptions};
@@ -1864,6 +1867,7 @@ abbrev: 10
     }
 
     #[test]
+    #[serial]
     fn test_changelog_create_dist_dir_failure() {
         use anodize_core::config::{Config, CrateConfig};
         use anodize_core::context::{Context, ContextOptions};
@@ -1923,6 +1927,7 @@ abbrev: 10
     }
 
     #[test]
+    #[serial]
     fn test_changelog_write_failure_on_readonly_path() {
         use anodize_core::config::{Config, CrateConfig};
         use anodize_core::context::{Context, ContextOptions};
@@ -1987,6 +1992,7 @@ abbrev: 10
     }
 
     #[test]
+    #[serial]
     fn test_changelog_dry_run_skips_write_no_error() {
         use anodize_core::config::{Config, CrateConfig};
         use anodize_core::context::{Context, ContextOptions};

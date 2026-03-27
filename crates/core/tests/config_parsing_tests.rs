@@ -3915,13 +3915,12 @@ crates:
     tag_template: "v{{ .Version }}"
     unknown_field: some_value
 "#;
-    // This may or may not parse depending on serde config
+    // CrateConfig uses #[serde(default)] without deny_unknown_fields,
+    // so unknown fields are silently ignored.
     let result: Result<Config, _> = serde_yaml::from_str(yaml);
-    // Document the behavior: if it parses, unknown fields are ignored
-    if let Ok(config) = result {
-        assert_eq!(config.crates[0].name, "myapp");
-    }
-    // If it doesn't parse, that's also a valid behavior
+    assert!(result.is_ok(), "unknown fields should be silently ignored");
+    let config = result.unwrap();
+    assert_eq!(config.crates[0].name, "myapp");
 }
 
 // ---- Invalid format in archives config ----
@@ -3943,7 +3942,8 @@ crates:
 // ---- Missing required fields ----
 
 #[test]
-fn test_crate_missing_name_fails() {
+fn test_crate_missing_name_defaults_to_empty() {
+    // CrateConfig uses #[serde(default)], so missing `name` defaults to "".
     let yaml = r#"
 project_name: test
 crates:
@@ -3951,14 +3951,7 @@ crates:
     tag_template: "v{{ .Version }}"
 "#;
     let result: Result<Config, _> = serde_yaml::from_str(yaml);
-    // name has no default, so this should fail or default to empty
-    match result {
-        Ok(config) => {
-            // If it parses, name defaults to empty string
-            assert_eq!(config.crates[0].name, "");
-        }
-        Err(_) => {
-            // Also acceptable: parse error for missing required field
-        }
-    }
+    assert!(result.is_ok(), "missing name should parse due to #[serde(default)]");
+    let config = result.unwrap();
+    assert_eq!(config.crates[0].name, "");
 }

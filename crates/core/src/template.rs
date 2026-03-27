@@ -504,10 +504,16 @@ mod tests {
         let vars = test_vars();
         let result = render("{{ Env.NONEXISTENT_VAR_12345 }}", &vars);
         // Env is defined but NONEXISTENT_VAR_12345 is not a key in it.
-        // Tera may render this as empty or error — either is acceptable,
-        // but it must not panic.
-        // This tests that deeply nested access doesn't crash.
-        let _ = result;
+        // Tera treats this as an undefined variable and returns an error.
+        assert!(
+            result.is_err(),
+            "accessing a missing key in a map should produce an error"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("NONEXISTENT_VAR_12345") || err.contains("Env"),
+            "error should reference the undefined variable, got: {err}"
+        );
     }
 
     #[test]
