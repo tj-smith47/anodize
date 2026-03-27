@@ -107,6 +107,8 @@ pub struct CrateConfig {
     pub publish: Option<PublishConfig>,
     pub docker: Option<Vec<DockerConfig>>,
     pub nfpm: Option<Vec<NfpmConfig>>,
+    pub binstall: Option<BinstallConfig>,
+    pub version_sync: Option<VersionSyncConfig>,
 }
 
 impl Default for CrateConfig {
@@ -124,6 +126,8 @@ impl Default for CrateConfig {
             publish: None,
             docker: None,
             nfpm: None,
+            binstall: None,
+            version_sync: None,
         }
     }
 }
@@ -583,6 +587,30 @@ pub struct NfpmContent {
     #[serde(rename = "type")]
     pub content_type: Option<String>,
     pub file_info: Option<NfpmFileInfo>,
+}
+
+// ---------------------------------------------------------------------------
+// BinstallConfig
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct BinstallConfig {
+    pub enabled: Option<bool>,
+    pub pkg_url: Option<String>,
+    pub bin_dir: Option<String>,
+    pub pkg_fmt: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// VersionSyncConfig
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct VersionSyncConfig {
+    pub enabled: Option<bool>,
+    pub mode: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1691,6 +1719,183 @@ crates:
             std::path::PathBuf::from("./dist"),
             "default dist should be ./dist"
         );
+    }
+
+    // ---- Unknown fields tests ----
+
+    // ---- BinstallConfig / VersionSyncConfig tests ----
+
+    #[test]
+    fn test_binstall_config_parsed() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+    binstall:
+      enabled: true
+      pkg_url: "https://example.com/{{ .Version }}/{ target }"
+      bin_dir: "{ bin }{ binary-ext }"
+      pkg_fmt: tgz
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let bs = config.crates[0].binstall.as_ref().unwrap();
+        assert_eq!(bs.enabled, Some(true));
+        assert_eq!(
+            bs.pkg_url,
+            Some("https://example.com/{{ .Version }}/{ target }".to_string())
+        );
+        assert_eq!(bs.bin_dir, Some("{ bin }{ binary-ext }".to_string()));
+        assert_eq!(bs.pkg_fmt, Some("tgz".to_string()));
+    }
+
+    #[test]
+    fn test_binstall_config_omitted() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.crates[0].binstall.is_none());
+    }
+
+    #[test]
+    fn test_binstall_config_partial() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+    binstall:
+      enabled: true
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let bs = config.crates[0].binstall.as_ref().unwrap();
+        assert_eq!(bs.enabled, Some(true));
+        assert_eq!(bs.pkg_url, None);
+        assert_eq!(bs.bin_dir, None);
+        assert_eq!(bs.pkg_fmt, None);
+    }
+
+    #[test]
+    fn test_version_sync_config_parsed() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+    version_sync:
+      enabled: true
+      mode: tag
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let vs = config.crates[0].version_sync.as_ref().unwrap();
+        assert_eq!(vs.enabled, Some(true));
+        assert_eq!(vs.mode, Some("tag".to_string()));
+    }
+
+    #[test]
+    fn test_version_sync_config_explicit_mode() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+    version_sync:
+      enabled: true
+      mode: explicit
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        let vs = config.crates[0].version_sync.as_ref().unwrap();
+        assert_eq!(vs.mode, Some("explicit".to_string()));
+    }
+
+    #[test]
+    fn test_version_sync_config_omitted() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.crates[0].version_sync.is_none());
+    }
+
+    #[test]
+    fn test_binstall_and_version_sync_together() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+    binstall:
+      enabled: true
+      pkg_fmt: zip
+    version_sync:
+      enabled: true
+      mode: tag
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.crates[0].binstall.is_some());
+        assert!(config.crates[0].version_sync.is_some());
+    }
+
+    #[test]
+    fn test_binstall_config_toml() {
+        let toml_str = r#"
+project_name = "test"
+
+[[crates]]
+name = "myapp"
+path = "."
+tag_template = "v{{ .Version }}"
+
+[crates.binstall]
+enabled = true
+pkg_url = "https://example.com"
+pkg_fmt = "tgz"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let bs = config.crates[0].binstall.as_ref().unwrap();
+        assert_eq!(bs.enabled, Some(true));
+        assert_eq!(bs.pkg_url, Some("https://example.com".to_string()));
+    }
+
+    #[test]
+    fn test_version_sync_config_toml() {
+        let toml_str = r#"
+project_name = "test"
+
+[[crates]]
+name = "myapp"
+path = "."
+tag_template = "v{{ .Version }}"
+
+[crates.version_sync]
+enabled = true
+mode = "tag"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        let vs = config.crates[0].version_sync.as_ref().unwrap();
+        assert_eq!(vs.enabled, Some(true));
+        assert_eq!(vs.mode, Some("tag".to_string()));
+    }
+
+    #[test]
+    fn test_crate_config_default_has_none_binstall_version_sync() {
+        let config = CrateConfig::default();
+        assert!(config.binstall.is_none());
+        assert!(config.version_sync.is_none());
     }
 
     // ---- Unknown fields tests ----

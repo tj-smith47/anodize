@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -9,6 +10,9 @@ use anodize_core::config::{BuildConfig, CrossStrategy};
 use anodize_core::context::Context;
 use anodize_core::stage::Stage;
 use anodize_core::target::map_target;
+
+pub mod binstall;
+pub mod version_sync;
 
 // ---------------------------------------------------------------------------
 // BuildCommand — a description of the command to run
@@ -108,6 +112,83 @@ pub fn build_command(
 }
 
 // ---------------------------------------------------------------------------
+// build_lib_command
+// ---------------------------------------------------------------------------
+
+/// Build command for library targets (cdylib, staticlib, etc.).
+/// Uses `--lib` instead of `--bin`.
+#[allow(clippy::too_many_arguments)]
+pub fn build_lib_command(
+    crate_path: &str,
+    target: &str,
+    strategy: &CrossStrategy,
+    flags: Option<&str>,
+    features: &[String],
+    no_default_features: bool,
+    env: &HashMap<String, String>,
+) -> BuildCommand {
+    // Resolve Auto strategy
+    let resolved = if *strategy == CrossStrategy::Auto {
+        detect_cross_strategy()
+    } else {
+        strategy.clone()
+    };
+
+    let (program, subcommand) = match resolved {
+        CrossStrategy::Zigbuild => ("cargo".to_string(), "zigbuild".to_string()),
+        CrossStrategy::Cross => ("cross".to_string(), "build".to_string()),
+        _ => ("cargo".to_string(), "build".to_string()),
+    };
+
+    let mut args: Vec<String> = vec![
+        subcommand,
+        "--lib".to_string(),
+        "--target".to_string(),
+        target.to_string(),
+    ];
+
+    // Append flags (split on whitespace)
+    if let Some(f) = flags {
+        for part in f.split_whitespace() {
+            args.push(part.to_string());
+        }
+    }
+
+    // Features
+    if !features.is_empty() {
+        args.push("--features".to_string());
+        args.push(features.join(","));
+    }
+
+    if no_default_features {
+        args.push("--no-default-features".to_string());
+    }
+
+    BuildCommand {
+        program,
+        args,
+        env: env.clone(),
+        cwd: PathBuf::from(crate_path),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// detect_crate_type
+// ---------------------------------------------------------------------------
+
+/// Read a crate's Cargo.toml and return the first `crate-type` from [lib],
+/// if present (e.g. "cdylib", "staticlib", "rlib").
+pub fn detect_crate_type(crate_path: &str) -> Option<String> {
+    let cargo_toml_path = Path::new(crate_path).join("Cargo.toml");
+    let content = std::fs::read_to_string(&cargo_toml_path).ok()?;
+    let doc = content.parse::<toml_edit::DocumentMut>().ok()?;
+    let lib = doc.get("lib")?;
+    let crate_types = lib.get("crate-type").or_else(|| lib.get("crate_type"))?;
+    let arr = crate_types.as_array()?;
+    arr.get(0).and_then(|v| v.as_str()).map(|s| s.to_string())
+}
+
+// ---------------------------------------------------------------------------
 // BuildStage
 // ---------------------------------------------------------------------------
 
@@ -146,6 +227,30 @@ impl Stage for BuildStage {
             .filter(|c| selected.is_empty() || selected.contains(&c.name))
             .cloned()
             .collect();
+
+        // --- Version sync: update Cargo.toml versions before building ---
+        let version = ctx
+            .template_vars()
+            .get("Version")
+            .cloned()
+            .unwrap_or_default();
+        for crate_cfg in &crates {
+            if let Some(ref vs) = crate_cfg.version_sync
+                && vs.enabled.unwrap_or(false)
+                && !version.is_empty()
+            {
+                version_sync::sync_version(&crate_cfg.path, &version, dry_run)?;
+            }
+        }
+
+        // --- Binstall: generate cargo-binstall metadata before building ---
+        for crate_cfg in &crates {
+            if let Some(ref bs) = crate_cfg.binstall
+                && bs.enabled.unwrap_or(false)
+            {
+                binstall::generate_binstall_metadata(&crate_cfg.path, bs, ctx, dry_run)?;
+            }
+        }
 
         for crate_cfg in &crates {
             // Determine builds for this crate
@@ -197,6 +302,14 @@ impl Stage for BuildStage {
                 let features: Vec<String> = build.features.clone().unwrap_or_default();
                 let no_default_features: bool = build.no_default_features.unwrap_or(false);
 
+                // Detect crate type for cdylib/wasm awareness
+                let crate_type = detect_crate_type(&crate_cfg.path);
+                let is_wasm_crate = crate_type.as_deref() == Some("cdylib")
+                    || crate_type.as_deref() == Some("wasm");
+                let is_library = crate_type.as_deref() == Some("cdylib")
+                    || crate_type.as_deref() == Some("staticlib")
+                    || crate_type.as_deref() == Some("dylib");
+
                 // Per-target env (target-keyed map in BuildConfig.env)
                 for target in &targets {
                     // Determine the binary path
@@ -207,18 +320,43 @@ impl Stage for BuildStage {
                         "debug"
                     };
 
+                    let is_wasm_target = target.contains("wasm32");
                     let (os, _arch) = map_target(target);
-                    let bin_name = if os == "windows" {
-                        format!("{}.exe", build.binary)
+
+                    // Determine the output file name based on target and crate type
+                    let (output_name, artifact_kind) = if is_wasm_target && is_wasm_crate {
+                        // wasm32 target with cdylib — output is .wasm
+                        (
+                            format!("{}.wasm", build.binary),
+                            ArtifactKind::Wasm,
+                        )
+                    } else if is_library && !is_wasm_target {
+                        // Library target — output is .so/.dylib/.dll
+                        let ext = match os.as_str() {
+                            "windows" => "dll",
+                            "darwin" => "dylib",
+                            _ => "so",
+                        };
+                        let prefix = if os == "windows" { "" } else { "lib" };
+                        (
+                            format!("{}{}.{}", prefix, build.binary, ext),
+                            ArtifactKind::Library,
+                        )
                     } else {
-                        build.binary.clone()
+                        // Standard binary
+                        let name = if os == "windows" {
+                            format!("{}.exe", build.binary)
+                        } else {
+                            build.binary.clone()
+                        };
+                        (name, ArtifactKind::Binary)
                     };
 
                     // Workspace root target directory (not per-crate)
                     let bin_path = PathBuf::from("target")
                         .join(target)
                         .join(profile)
-                        .join(&bin_name);
+                        .join(&output_name);
 
                     // Handle copy_from: skip compilation, just copy from source binary
                     let final_path = if let Some(src_binary) = &build.copy_from {
@@ -272,16 +410,29 @@ impl Stage for BuildStage {
                             .cloned()
                             .unwrap_or_default();
 
-                        let cmd = build_command(
-                            &build.binary,
-                            &crate_cfg.path,
-                            target,
-                            &strategy,
-                            flags,
-                            &features,
-                            no_default_features,
-                            &target_env,
-                        );
+                        // For library/wasm targets, use --lib; otherwise --bin
+                        let cmd = if is_library || is_wasm_target {
+                            build_lib_command(
+                                &crate_cfg.path,
+                                target,
+                                &strategy,
+                                flags,
+                                &features,
+                                no_default_features,
+                                &target_env,
+                            )
+                        } else {
+                            build_command(
+                                &build.binary,
+                                &crate_cfg.path,
+                                target,
+                                &strategy,
+                                flags,
+                                &features,
+                                no_default_features,
+                                &target_env,
+                            )
+                        };
 
                         if dry_run {
                             eprintln!("[build] (dry-run) {} {}", cmd.program, cmd.args.join(" "));
@@ -316,9 +467,9 @@ impl Stage for BuildStage {
                     // Set stage-scoped Binary template var
                     ctx.template_vars_mut().set("Binary", &build.binary);
 
-                    // Register Binary artifact
+                    // Register artifact with appropriate kind
                     ctx.artifacts.add(Artifact {
-                        kind: ArtifactKind::Binary,
+                        kind: artifact_kind,
                         path: final_path,
                         target: Some(target.clone()),
                         crate_name: crate_cfg.name.clone(),
@@ -625,5 +776,151 @@ mod tests {
             cmd.env.get("RUSTFLAGS").unwrap(),
             "-C target-feature=+crt-static"
         );
+    }
+
+    // ---- Task 5A: cdylib detection tests ----
+
+    #[test]
+    fn test_detect_crate_type_cdylib() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cargo_toml = tmp.path().join("Cargo.toml");
+        std::fs::write(
+            &cargo_toml,
+            r#"[package]
+name = "my-lib"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+"#,
+        )
+        .unwrap();
+
+        let result = detect_crate_type(tmp.path().to_str().unwrap());
+        assert_eq!(result, Some("cdylib".to_string()));
+    }
+
+    #[test]
+    fn test_detect_crate_type_staticlib() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cargo_toml = tmp.path().join("Cargo.toml");
+        std::fs::write(
+            &cargo_toml,
+            r#"[package]
+name = "my-lib"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+"#,
+        )
+        .unwrap();
+
+        let result = detect_crate_type(tmp.path().to_str().unwrap());
+        assert_eq!(result, Some("staticlib".to_string()));
+    }
+
+    #[test]
+    fn test_detect_crate_type_no_lib_section() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cargo_toml = tmp.path().join("Cargo.toml");
+        std::fs::write(
+            &cargo_toml,
+            r#"[package]
+name = "my-bin"
+version = "0.1.0"
+edition = "2024"
+"#,
+        )
+        .unwrap();
+
+        let result = detect_crate_type(tmp.path().to_str().unwrap());
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_detect_crate_type_missing_cargo_toml() {
+        let tmp = tempfile::tempdir().unwrap();
+        let result = detect_crate_type(tmp.path().to_str().unwrap());
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_detect_crate_type_underscore_variant() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cargo_toml = tmp.path().join("Cargo.toml");
+        std::fs::write(
+            &cargo_toml,
+            r#"[package]
+name = "my-lib"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate_type = ["dylib"]
+"#,
+        )
+        .unwrap();
+
+        let result = detect_crate_type(tmp.path().to_str().unwrap());
+        assert_eq!(result, Some("dylib".to_string()));
+    }
+
+    // ---- Task 5A: build_lib_command tests ----
+
+    #[test]
+    fn test_build_lib_command_uses_lib_flag() {
+        let cmd = build_lib_command(
+            "crates/my-lib",
+            "x86_64-unknown-linux-gnu",
+            &CrossStrategy::Cargo,
+            Some("--release"),
+            &[],
+            false,
+            &Default::default(),
+        );
+        assert_eq!(cmd.program, "cargo");
+        assert!(cmd.args.contains(&"build".to_string()));
+        assert!(cmd.args.contains(&"--lib".to_string()));
+        assert!(cmd.args.contains(&"--target".to_string()));
+        assert!(cmd.args.contains(&"x86_64-unknown-linux-gnu".to_string()));
+        assert!(cmd.args.contains(&"--release".to_string()));
+        // Should NOT contain --bin
+        assert!(!cmd.args.contains(&"--bin".to_string()));
+    }
+
+    #[test]
+    fn test_build_lib_command_with_features() {
+        let cmd = build_lib_command(
+            "crates/my-lib",
+            "wasm32-unknown-unknown",
+            &CrossStrategy::Cargo,
+            None,
+            &["wasm-bindgen".to_string()],
+            true,
+            &Default::default(),
+        );
+        assert!(cmd.args.contains(&"--lib".to_string()));
+        assert!(cmd.args.contains(&"--features".to_string()));
+        assert!(cmd.args.contains(&"wasm-bindgen".to_string()));
+        assert!(cmd.args.contains(&"--no-default-features".to_string()));
+    }
+
+    #[test]
+    fn test_build_lib_command_zigbuild() {
+        let cmd = build_lib_command(
+            ".",
+            "aarch64-unknown-linux-gnu",
+            &CrossStrategy::Zigbuild,
+            Some("--release"),
+            &[],
+            false,
+            &Default::default(),
+        );
+        assert_eq!(cmd.program, "cargo");
+        assert!(cmd.args.contains(&"zigbuild".to_string()));
+        assert!(cmd.args.contains(&"--lib".to_string()));
     }
 }

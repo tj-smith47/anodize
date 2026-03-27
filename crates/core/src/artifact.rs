@@ -12,6 +12,8 @@ pub enum ArtifactKind {
     DockerImage,
     LinuxPackage,
     Metadata,
+    Library,
+    Wasm,
 }
 
 impl ArtifactKind {
@@ -24,6 +26,8 @@ impl ArtifactKind {
             ArtifactKind::DockerImage => "docker_image",
             ArtifactKind::LinuxPackage => "linux_package",
             ArtifactKind::Metadata => "metadata",
+            ArtifactKind::Library => "library",
+            ArtifactKind::Wasm => "wasm",
         }
     }
 }
@@ -267,5 +271,47 @@ mod tests {
         assert_eq!(json, "linux_package");
         let json = serde_json::to_value(ArtifactKind::Binary).unwrap();
         assert_eq!(json, "binary");
+    }
+
+    #[test]
+    fn test_artifact_kind_library_and_wasm() {
+        let json = serde_json::to_value(ArtifactKind::Library).unwrap();
+        assert_eq!(json, "library");
+        let json = serde_json::to_value(ArtifactKind::Wasm).unwrap();
+        assert_eq!(json, "wasm");
+    }
+
+    #[test]
+    fn test_artifact_kind_as_str_library_wasm() {
+        assert_eq!(ArtifactKind::Library.as_str(), "library");
+        assert_eq!(ArtifactKind::Wasm.as_str(), "wasm");
+    }
+
+    #[test]
+    fn test_query_by_library_and_wasm_kinds() {
+        let mut registry = ArtifactRegistry::new();
+        registry.add(Artifact {
+            kind: ArtifactKind::Library,
+            path: PathBuf::from("target/libmylib.so"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "mylib".to_string(),
+            metadata: Default::default(),
+        });
+        registry.add(Artifact {
+            kind: ArtifactKind::Wasm,
+            path: PathBuf::from("target/mylib.wasm"),
+            target: Some("wasm32-unknown-unknown".to_string()),
+            crate_name: "mylib".to_string(),
+            metadata: Default::default(),
+        });
+
+        assert_eq!(registry.by_kind(ArtifactKind::Library).len(), 1);
+        assert_eq!(registry.by_kind(ArtifactKind::Wasm).len(), 1);
+        assert_eq!(
+            registry
+                .by_kind_and_crate(ArtifactKind::Wasm, "mylib")
+                .len(),
+            1
+        );
     }
 }
