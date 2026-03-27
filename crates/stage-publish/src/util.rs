@@ -39,16 +39,6 @@ pub(crate) fn run_cmd_in(
 // YAML quoting (shared by winget, krew, and any other YAML-producing publisher)
 // ---------------------------------------------------------------------------
 
-/// Quote a YAML string value by wrapping it in double quotes and escaping
-/// backslashes and double-quote characters inside.
-///
-/// This is intentionally conservative: always quoting avoids issues with colons,
-/// hashes, brackets, and other YAML-special characters in user-provided strings.
-pub(crate) fn yaml_quote(value: &str) -> String {
-    let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
-    format!("\"{}\"", escaped)
-}
-
 // ---------------------------------------------------------------------------
 // OS / architecture inference from target triples
 // ---------------------------------------------------------------------------
@@ -379,22 +369,4 @@ mod tests {
         assert!(all.is_empty());
     }
 
-    // -----------------------------------------------------------------------
-    // yaml_quote tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_yaml_quote_simple() {
-        assert_eq!(yaml_quote("hello"), "\"hello\"");
-    }
-
-    #[test]
-    fn test_yaml_quote_special_chars() {
-        assert_eq!(yaml_quote("a: b # c"), "\"a: b # c\"");
-    }
-
-    #[test]
-    fn test_yaml_quote_backslash_and_quote() {
-        assert_eq!(yaml_quote(r#"a "b" c\d"#), r#""a \"b\" c\\d""#);
-    }
 }

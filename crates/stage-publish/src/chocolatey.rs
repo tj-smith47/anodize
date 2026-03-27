@@ -21,10 +21,52 @@ pub struct NuspecParams<'a> {
 }
 
 // ---------------------------------------------------------------------------
+// Tera templates for Chocolatey
+// ---------------------------------------------------------------------------
+
+/// Nuspec XML template.  Auto-escaping is disabled because URLs contain `/`
+/// which Tera escapes to `&#x2F;`.  The `description` field uses the
+/// `xml_escape` filter for safety.
+const NUSPEC_TEMPLATE: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>{{ name }}</id>
+    <version>{{ version }}</version>
+    <title>{{ name }}</title>
+    <authors>{{ authors }}</authors>
+    <description>{{ description | escape }}</description>
+    <projectUrl>{{ project_url }}</projectUrl>
+{% if icon_url %}    <iconUrl>{{ icon_url }}</iconUrl>
+{% endif %}    <licenseUrl>{{ license_url }}</licenseUrl>
+    <tags>{{ tags_str }}</tags>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>
+"#;
+
+/// PowerShell install script template.
+const INSTALL_SCRIPT_TEMPLATE: &str = r#"$ErrorActionPreference = 'Stop'
+
+$packageArgs = @{
+  packageName    = '{{ name }}'
+  url64bit       = '{{ url }}'
+  checksum64     = '{{ hash }}'
+  checksumType64 = 'sha256'
+  unzipLocation  = "$(Split-Path -Parent $MyInvocation.MyCommand.Definition)"
+}
+
+Install-ChocolateyZipPackage @packageArgs
+"#;
+
+// ---------------------------------------------------------------------------
 // generate_nuspec
 // ---------------------------------------------------------------------------
 
 /// Generate a Chocolatey `.nuspec` XML manifest string.
+///
+/// Uses a Tera template with automatic XML escaping.
 pub fn generate_nuspec(params: &NuspecParams<'_>) -> String {
     let tags_str = if params.tags.is_empty() {
         params.name.to_string()
@@ -32,54 +74,31 @@ pub fn generate_nuspec(params: &NuspecParams<'_>) -> String {
         params.tags.join(" ")
     };
 
-    // Escape XML special characters in user-provided strings.
-    let esc = |s: &str| -> String {
-        s.replace('&', "&amp;")
-            .replace('<', "&lt;")
-            .replace('>', "&gt;")
-            .replace('"', "&quot;")
-            .replace('\'', "&apos;")
-    };
-
     let license_url = match params.license_url {
         Some(url) if !url.is_empty() => url.to_string(),
         _ => format!("https://opensource.org/licenses/{}", params.license),
     };
 
-    let mut xml = String::new();
-    xml.push_str("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
-    xml.push_str("<package xmlns=\"http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd\">\n");
-    xml.push_str("  <metadata>\n");
-    xml.push_str(&format!("    <id>{}</id>\n", esc(params.name)));
-    xml.push_str(&format!("    <version>{}</version>\n", esc(params.version)));
-    xml.push_str(&format!("    <title>{}</title>\n", esc(params.name)));
-    xml.push_str(&format!("    <authors>{}</authors>\n", esc(params.authors)));
-    xml.push_str(&format!(
-        "    <description>{}</description>\n",
-        esc(params.description)
-    ));
-    xml.push_str(&format!(
-        "    <projectUrl>{}</projectUrl>\n",
-        esc(params.project_url)
-    ));
-    if !params.icon_url.is_empty() {
-        xml.push_str(&format!(
-            "    <iconUrl>{}</iconUrl>\n",
-            esc(params.icon_url)
-        ));
-    }
-    xml.push_str(&format!(
-        "    <licenseUrl>{}</licenseUrl>\n",
-        esc(&license_url)
-    ));
-    xml.push_str(&format!("    <tags>{}</tags>\n", esc(&tags_str)));
-    xml.push_str("  </metadata>\n");
-    xml.push_str("  <files>\n");
-    xml.push_str("    <file src=\"tools\\**\" target=\"tools\" />\n");
-    xml.push_str("  </files>\n");
-    xml.push_str("</package>\n");
+    let mut tera = tera::Tera::default();
+    tera.add_raw_template("nuspec", NUSPEC_TEMPLATE)
+        .expect("chocolatey: parse nuspec template");
 
-    xml
+    // Disable auto-escaping — URLs contain `/` which Tera encodes as &#x2F;.
+    // The description field uses the `| escape` filter explicitly in the template.
+    tera.autoescape_on(vec![]);
+
+    let mut ctx = tera::Context::new();
+    ctx.insert("name", params.name);
+    ctx.insert("version", params.version);
+    ctx.insert("authors", params.authors);
+    ctx.insert("description", params.description);
+    ctx.insert("project_url", params.project_url);
+    ctx.insert("icon_url", &(!params.icon_url.is_empty()).then_some(params.icon_url));
+    ctx.insert("license_url", &license_url);
+    ctx.insert("tags_str", &tags_str);
+
+    tera.render("nuspec", &ctx)
+        .expect("chocolatey: render nuspec template")
 }
 
 // ---------------------------------------------------------------------------
@@ -95,20 +114,20 @@ pub fn generate_nuspec(params: &NuspecParams<'_>) -> String {
 /// This is acceptable because Rust primarily targets x86_64 on Windows;
 /// 32-bit Windows support is uncommon for modern Rust CLI tools.
 pub fn generate_install_script(name: &str, _version: &str, url: &str, hash: &str) -> String {
-    let mut ps = String::new();
-    ps.push_str("$ErrorActionPreference = 'Stop'\n\n");
-    ps.push_str("$packageArgs = @{\n");
-    ps.push_str(&format!("  packageName    = '{}'\n", name));
-    ps.push_str(&format!("  url64bit       = '{}'\n", url));
-    ps.push_str(&format!("  checksum64     = '{}'\n", hash));
-    ps.push_str("  checksumType64 = 'sha256'\n");
-    ps.push_str(
-        "  unzipLocation  = \"$(Split-Path -Parent $MyInvocation.MyCommand.Definition)\"\n",
-    );
-    ps.push_str("}\n\n");
-    ps.push_str("Install-ChocolateyZipPackage @packageArgs\n");
+    let mut tera = tera::Tera::default();
+    tera.add_raw_template("install", INSTALL_SCRIPT_TEMPLATE)
+        .expect("chocolatey: parse install script template");
 
-    ps
+    // Disable autoescaping for PowerShell script
+    tera.autoescape_on(vec![]);
+
+    let mut ctx = tera::Context::new();
+    ctx.insert("name", name);
+    ctx.insert("url", url);
+    ctx.insert("hash", hash);
+
+    tera.render("install", &ctx)
+        .expect("chocolatey: render install script template")
 }
 
 // ---------------------------------------------------------------------------

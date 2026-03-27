@@ -1,5 +1,6 @@
 use anodize_core::context::Context;
 use anyhow::{Context as _, Result};
+use tera::Tera;
 
 use crate::util::{find_artifacts_by_os, run_cmd_in};
 
@@ -35,140 +36,89 @@ pub struct PkgbuildParams<'a> {
 // generate_pkgbuild
 // ---------------------------------------------------------------------------
 
+const PKGBUILD_TEMPLATE: &str = r#"{% for m in maintainers %}# Maintainer: {{ m }}
+{% endfor %}{% if maintainers | length > 0 %}
+{% endif %}pkgname={{ name }}
+pkgver={{ version }}
+pkgrel={{ pkgrel }}
+pkgdesc="{{ description }}"
+arch=({% for a in arches %}'{{ a }}'{% if not loop.last %} {% endif %}{% endfor %})
+url="{{ url }}"
+license=('{{ license }}')
+{% if depends | length > 0 %}depends=({% for d in depends %}'{{ d }}'{% if not loop.last %} {% endif %}{% endfor %})
+{% else %}depends=()
+{% endif %}{% if optdepends | length > 0 %}optdepends=({% for d in optdepends %}'{{ d }}'{% if not loop.last %} {% endif %}{% endfor %})
+{% endif %}{% if conflicts | length > 0 %}conflicts=({% for c in conflicts %}'{{ c }}'{% if not loop.last %} {% endif %}{% endfor %})
+{% endif %}{% if provides | length > 0 %}provides=({% for p in provides %}'{{ p }}'{% if not loop.last %} {% endif %}{% endfor %})
+{% endif %}{% if replaces | length > 0 %}replaces=({% for r in replaces %}'{{ r }}'{% if not loop.last %} {% endif %}{% endfor %})
+{% endif %}{% if backup | length > 0 %}backup=({% for b in backup %}'{{ b }}'{% if not loop.last %} {% endif %}{% endfor %})
+{% endif %}{% for s in sources %}source_{{ s.arch }}=("{{ s.url }}")
+sha256sums_{{ s.arch }}=('{{ s.hash }}')
+{% endfor %}
+package() {
+    {{ install_line }}
+}
+"#;
+
 /// Generate an Arch Linux PKGBUILD file string.
 pub fn generate_pkgbuild(params: &PkgbuildParams<'_>) -> String {
-    let mut out = String::new();
+    let mut tera = Tera::default();
+    tera.autoescape_on(vec![]); // PKGBUILD is shell, not HTML
+    tera.add_raw_template("pkgbuild", PKGBUILD_TEMPLATE)
+        .expect("aur: invalid PKGBUILD template");
 
-    // Maintainer comments.
-    for m in params.maintainers {
-        out.push_str(&format!("# Maintainer: {}\n", m));
-    }
-    if !params.maintainers.is_empty() {
-        out.push('\n');
-    }
+    let mut ctx = tera::Context::new();
+    ctx.insert("name", params.name);
+    ctx.insert("version", params.version);
+    ctx.insert("pkgrel", &params.pkgrel);
+    ctx.insert("description", params.description);
+    ctx.insert("url", params.url);
+    ctx.insert("license", params.license);
+    ctx.insert("maintainers", params.maintainers);
+    ctx.insert("depends", params.depends);
+    ctx.insert("optdepends", params.optdepends);
+    ctx.insert("conflicts", params.conflicts);
+    ctx.insert("provides", params.provides);
+    ctx.insert("replaces", params.replaces);
+    ctx.insert("backup", params.backup);
+    ctx.insert("binary_name", params.binary_name);
 
-    out.push_str(&format!("pkgname={}\n", params.name));
-    out.push_str(&format!("pkgver={}\n", params.version));
-    out.push_str(&format!("pkgrel={}\n", params.pkgrel));
-    out.push_str(&format!("pkgdesc=\"{}\"\n", params.description));
+    // Deduplicate architectures.
+    let mut arches: Vec<&str> = params
+        .sources
+        .iter()
+        .map(|(arch, _, _)| arch.as_str())
+        .collect();
+    arches.sort();
+    arches.dedup();
+    ctx.insert("arches", &arches);
 
-    // Collect unique architectures from sources.
-    let arches: Vec<&str> = {
-        let mut a: Vec<&str> = params.sources.iter().map(|(arch, _, _)| arch.as_str()).collect();
-        a.sort();
-        a.dedup();
-        a
-    };
-    out.push_str(&format!(
-        "arch=({})\n",
-        arches
-            .iter()
-            .map(|a| format!("'{}'", a))
-            .collect::<Vec<_>>()
-            .join(" ")
-    ));
+    // Sources as objects for template iteration.
+    let sources: Vec<std::collections::HashMap<&str, &str>> = params
+        .sources
+        .iter()
+        .map(|(arch, url, hash)| {
+            let mut m = std::collections::HashMap::new();
+            m.insert("arch", arch.as_str());
+            m.insert("url", url.as_str());
+            m.insert("hash", hash.as_str());
+            m
+        })
+        .collect();
+    ctx.insert("sources", &sources);
 
-    out.push_str(&format!("url=\"{}\"\n", params.url));
-    out.push_str(&format!("license=('{}')\n", params.license));
-
-    // depends
-    if !params.depends.is_empty() {
-        out.push_str(&format!(
-            "depends=({})\n",
-            params
-                .depends
-                .iter()
-                .map(|d| format!("'{}'", d))
-                .collect::<Vec<_>>()
-                .join(" ")
-        ));
-    } else {
-        out.push_str("depends=()\n");
-    }
-
-    // optdepends
-    if !params.optdepends.is_empty() {
-        out.push_str(&format!(
-            "optdepends=({})\n",
-            params
-                .optdepends
-                .iter()
-                .map(|d| format!("'{}'", d))
-                .collect::<Vec<_>>()
-                .join(" ")
-        ));
-    }
-
-    // conflicts
-    if !params.conflicts.is_empty() {
-        out.push_str(&format!(
-            "conflicts=({})\n",
-            params
-                .conflicts
-                .iter()
-                .map(|c| format!("'{}'", c))
-                .collect::<Vec<_>>()
-                .join(" ")
-        ));
-    }
-
-    // provides
-    if !params.provides.is_empty() {
-        out.push_str(&format!(
-            "provides=({})\n",
-            params
-                .provides
-                .iter()
-                .map(|p| format!("'{}'", p))
-                .collect::<Vec<_>>()
-                .join(" ")
-        ));
-    }
-
-    // replaces
-    if !params.replaces.is_empty() {
-        out.push_str(&format!(
-            "replaces=({})\n",
-            params
-                .replaces
-                .iter()
-                .map(|r| format!("'{}'", r))
-                .collect::<Vec<_>>()
-                .join(" ")
-        ));
-    }
-
-    // backup
-    if !params.backup.is_empty() {
-        out.push_str(&format!(
-            "backup=({})\n",
-            params
-                .backup
-                .iter()
-                .map(|b| format!("'{}'", b))
-                .collect::<Vec<_>>()
-                .join(" ")
-        ));
-    }
-
-    // Per-architecture source and sha256sums.
-    for (arch, url, hash) in params.sources {
-        out.push_str(&format!("source_{}=(\"{}\")\n", arch, url));
-        out.push_str(&format!("sha256sums_{}=('{}')\n", arch, hash));
-    }
-
-    // package() function.
     let install_line = if let Some(tmpl) = params.install_template {
-        format!("    {}", tmpl)
+        tmpl.to_string()
     } else {
         format!(
-            "    install -Dm755 \"$srcdir/{}\" \"$pkgdir/usr/bin/{}\"",
+            "install -Dm755 \"$srcdir/{}\" \"$pkgdir/usr/bin/{}\"",
             params.binary_name, params.binary_name
         )
     };
-    out.push_str(&format!("\npackage() {{\n{}\n}}\n", install_line));
+    ctx.insert("install_line", &install_line);
 
-    out
+    tera.render("pkgbuild", &ctx)
+        .expect("aur: failed to render PKGBUILD template")
 }
 
 // ---------------------------------------------------------------------------

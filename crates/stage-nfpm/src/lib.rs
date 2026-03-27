@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use anyhow::{Context as _, Result};
+use serde::Serialize;
 
 use anodize_core::artifact::{Artifact, ArtifactKind};
 use anodize_core::config::NfpmConfig;
@@ -11,142 +12,185 @@ use anodize_core::context::Context;
 use anodize_core::stage::Stage;
 
 // ---------------------------------------------------------------------------
+// Serde-serializable nfpm YAML model
+// ---------------------------------------------------------------------------
+
+fn is_empty_vec<T>(v: &[T]) -> bool {
+    v.is_empty()
+}
+
+#[derive(Serialize)]
+struct NfpmYamlConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vendor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    homepage: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    maintainer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    license: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scripts: Option<NfpmYamlScripts>,
+    #[serde(skip_serializing_if = "is_empty_vec")]
+    recommends: Vec<String>,
+    #[serde(skip_serializing_if = "is_empty_vec")]
+    suggests: Vec<String>,
+    #[serde(skip_serializing_if = "is_empty_vec")]
+    conflicts: Vec<String>,
+    #[serde(skip_serializing_if = "is_empty_vec")]
+    replaces: Vec<String>,
+    #[serde(skip_serializing_if = "is_empty_vec")]
+    provides: Vec<String>,
+    contents: Vec<NfpmYamlContent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    overrides: Option<HashMap<String, serde_yaml_ng::Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dependencies: Option<HashMap<String, Vec<String>>>,
+}
+
+#[derive(Serialize)]
+struct NfpmYamlScripts {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    preinstall: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    postinstall: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    preremove: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    postremove: Option<String>,
+}
+
+#[derive(Serialize)]
+struct NfpmYamlContent {
+    src: String,
+    dst: String,
+    #[serde(rename = "type")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file_info: Option<NfpmYamlFileInfo>,
+}
+
+#[derive(Serialize)]
+struct NfpmYamlFileInfo {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    owner: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    group: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mode: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
 // generate_nfpm_yaml
 // ---------------------------------------------------------------------------
 
 /// Generate an nfpm YAML configuration string from the anodize nfpm config.
 pub fn generate_nfpm_yaml(config: &NfpmConfig, version: &str, binary_path: &str) -> String {
-    let mut lines: Vec<String> = Vec::new();
-
-    // Required fields
-    if let Some(name) = &config.package_name {
-        lines.push(format!("name: {name}"));
-    }
-    lines.push(format!("version: {version}"));
-
-    // Optional metadata
-    if let Some(vendor) = &config.vendor {
-        lines.push(format!("vendor: {vendor}"));
-    }
-    if let Some(homepage) = &config.homepage {
-        lines.push(format!("homepage: {homepage}"));
-    }
-    if let Some(maintainer) = &config.maintainer {
-        lines.push(format!("maintainer: {maintainer}"));
-    }
-    if let Some(description) = &config.description {
-        lines.push(format!("description: {description}"));
-    }
-    if let Some(license) = &config.license {
-        lines.push(format!("license: {license}"));
-    }
-
-    // Scripts section
-    if let Some(scripts) = &config.scripts {
-        let mut has_script = false;
-        let mut script_lines: Vec<String> = Vec::new();
-        if let Some(pre) = &scripts.preinstall {
-            script_lines.push(format!("  preinstall: {pre}"));
-            has_script = true;
-        }
-        if let Some(post) = &scripts.postinstall {
-            script_lines.push(format!("  postinstall: {post}"));
-            has_script = true;
-        }
-        if let Some(pre) = &scripts.preremove {
-            script_lines.push(format!("  preremove: {pre}"));
-            has_script = true;
-        }
-        if let Some(post) = &scripts.postremove {
-            script_lines.push(format!("  postremove: {post}"));
-            has_script = true;
-        }
-        if has_script {
-            lines.push("scripts:".to_string());
-            lines.extend(script_lines);
-        }
-    }
-
-    // Package relationship metadata
-    fn push_string_list(lines: &mut Vec<String>, key: &str, items: &Option<Vec<String>>) {
-        if let Some(list) = items
-            && !list.is_empty()
-        {
-            lines.push(format!("{key}:"));
-            for item in list {
-                lines.push(format!("  - {item}"));
-            }
-        }
-    }
-    push_string_list(&mut lines, "recommends", &config.recommends);
-    push_string_list(&mut lines, "suggests", &config.suggests);
-    push_string_list(&mut lines, "conflicts", &config.conflicts);
-    push_string_list(&mut lines, "replaces", &config.replaces);
-    push_string_list(&mut lines, "provides", &config.provides);
-
-    // Contents section — always include the binary
-    lines.push("contents:".to_string());
+    // Build the binary content entry
     let bindir = config.bindir.as_deref().unwrap_or("/usr/local/bin");
     let binary_name = PathBuf::from(binary_path)
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("binary")
         .to_string();
-    lines.push(format!("  - src: {binary_path}"));
-    lines.push(format!("    dst: {bindir}/{binary_name}"));
+
+    let mut contents = vec![NfpmYamlContent {
+        src: binary_path.to_string(),
+        dst: format!("{bindir}/{binary_name}"),
+        content_type: None,
+        file_info: None,
+    }];
 
     // Extra contents from config
-    if let Some(contents) = &config.contents {
-        for entry in contents {
-            lines.push(format!("  - src: {}", entry.src));
-            lines.push(format!("    dst: {}", entry.dst));
-            if let Some(ct) = &entry.content_type {
-                lines.push(format!("    type: {ct}"));
-            }
-            if let Some(fi) = &entry.file_info {
-                lines.push("    file_info:".to_string());
-                if let Some(owner) = &fi.owner {
-                    lines.push(format!("      owner: {owner}"));
-                }
-                if let Some(group) = &fi.group {
-                    lines.push(format!("      group: {group}"));
-                }
-                if let Some(mode) = &fi.mode {
-                    lines.push(format!("      mode: \"{mode}\""));
-                }
-            }
+    if let Some(cfg_contents) = &config.contents {
+        for entry in cfg_contents {
+            contents.push(NfpmYamlContent {
+                src: entry.src.clone(),
+                dst: entry.dst.clone(),
+                content_type: entry.content_type.clone(),
+                file_info: entry.file_info.as_ref().map(|fi| NfpmYamlFileInfo {
+                    owner: fi.owner.clone(),
+                    group: fi.group.clone(),
+                    mode: fi.mode.clone(),
+                }),
+            });
         }
     }
 
-    // Per-format overrides
-    if let Some(overrides) = &config.overrides
-        && !overrides.is_empty()
-    {
-        lines.push("overrides:".to_string());
-        for (fmt, val) in overrides {
-            lines.push(format!("  {fmt}:"));
-            if let Some(obj) = val.as_object() {
-                for (k, v) in obj {
-                    lines.push(format!("    {k}: {v}"));
-                }
-            }
+    // Build scripts section (only if any script is set)
+    let scripts = config.scripts.as_ref().and_then(|s| {
+        if s.preinstall.is_some()
+            || s.postinstall.is_some()
+            || s.preremove.is_some()
+            || s.postremove.is_some()
+        {
+            Some(NfpmYamlScripts {
+                preinstall: s.preinstall.clone(),
+                postinstall: s.postinstall.clone(),
+                preremove: s.preremove.clone(),
+                postremove: s.postremove.clone(),
+            })
+        } else {
+            None
+        }
+    });
+
+    // Convert serde_json::Value overrides to serde_yaml_ng::Value
+    let overrides = config
+        .overrides
+        .as_ref()
+        .filter(|m| !m.is_empty())
+        .map(|m| {
+            m.iter()
+                .map(|(k, v)| {
+                    let yaml_val: serde_yaml_ng::Value =
+                        serde_yaml_ng::from_str(&serde_json::to_string(v).unwrap()).unwrap();
+                    (k.clone(), yaml_val)
+                })
+                .collect()
+        });
+
+    let dependencies = config
+        .dependencies
+        .as_ref()
+        .filter(|m| !m.is_empty())
+        .cloned();
+
+    fn unwrap_or_empty(opt: &Option<Vec<String>>) -> Vec<String> {
+        match opt {
+            Some(v) => v.clone(),
+            None => Vec::new(),
         }
     }
 
-    // Per-format dependencies
-    if let Some(deps) = &config.dependencies
-        && !deps.is_empty()
-    {
-        lines.push("dependencies:".to_string());
-        for (fmt, dep_list) in deps {
-            lines.push(format!("  {fmt}:"));
-            for dep in dep_list {
-                lines.push(format!("    - {dep}"));
-            }
-        }
-    }
+    let yaml_config = NfpmYamlConfig {
+        name: config.package_name.clone(),
+        version: version.to_string(),
+        vendor: config.vendor.clone(),
+        homepage: config.homepage.clone(),
+        maintainer: config.maintainer.clone(),
+        description: config.description.clone(),
+        license: config.license.clone(),
+        scripts,
+        recommends: unwrap_or_empty(&config.recommends),
+        suggests: unwrap_or_empty(&config.suggests),
+        conflicts: unwrap_or_empty(&config.conflicts),
+        replaces: unwrap_or_empty(&config.replaces),
+        provides: unwrap_or_empty(&config.provides),
+        contents,
+        overrides,
+        dependencies,
+    };
 
-    lines.join("\n")
+    let yaml = serde_yaml_ng::to_string(&yaml_config).expect("failed to serialize nfpm YAML");
+    // serde_yaml_ng emits a trailing newline; trim it for consistency
+    yaml.trim_end().to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -547,15 +591,15 @@ mod tests {
         };
         let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp");
         assert!(yaml.contains("recommends:"));
-        assert!(yaml.contains("  - libfoo"));
-        assert!(yaml.contains("  - libbar"));
+        assert!(yaml.contains("- libfoo"));
+        assert!(yaml.contains("- libbar"));
         assert!(yaml.contains("suggests:"));
-        assert!(yaml.contains("  - optional-pkg"));
+        assert!(yaml.contains("- optional-pkg"));
         assert!(yaml.contains("conflicts:"));
-        assert!(yaml.contains("  - old-myapp"));
+        assert!(yaml.contains("- old-myapp"));
         assert!(yaml.contains("replaces:"));
         assert!(yaml.contains("provides:"));
-        assert!(yaml.contains("  - myapp-bin"));
+        assert!(yaml.contains("- myapp-bin"));
     }
 
     #[test]
@@ -577,11 +621,11 @@ mod tests {
             ..Default::default()
         };
         let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp");
-        assert!(yaml.contains("    type: config"));
-        assert!(yaml.contains("    file_info:"));
-        assert!(yaml.contains("      owner: root"));
-        assert!(yaml.contains("      group: root"));
-        assert!(yaml.contains("      mode: \"0644\""));
+        assert!(yaml.contains("  type: config"));
+        assert!(yaml.contains("  file_info:"));
+        assert!(yaml.contains("    owner: root"));
+        assert!(yaml.contains("    group: root"));
+        assert!(yaml.contains("    mode: '0644'"));
     }
 
     #[test]
@@ -599,7 +643,7 @@ mod tests {
             ..Default::default()
         };
         let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp");
-        assert!(yaml.contains("    type: dir"));
+        assert!(yaml.contains("  type: dir"));
         assert!(!yaml.contains("file_info"));
     }
 
@@ -744,11 +788,11 @@ crates:
         let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp");
 
         // Each field should appear with its items
-        assert!(yaml.contains("recommends:\n  - libfoo\n  - libbar"));
-        assert!(yaml.contains("suggests:\n  - opt-pkg"));
-        assert!(yaml.contains("conflicts:\n  - old-myapp"));
-        assert!(yaml.contains("replaces:\n  - old-myapp"));
-        assert!(yaml.contains("provides:\n  - myapp-bin"));
+        assert!(yaml.contains("recommends:\n- libfoo\n- libbar"));
+        assert!(yaml.contains("suggests:\n- opt-pkg"));
+        assert!(yaml.contains("conflicts:\n- old-myapp"));
+        assert!(yaml.contains("replaces:\n- old-myapp"));
+        assert!(yaml.contains("provides:\n- myapp-bin"));
     }
 
     #[test]
@@ -780,17 +824,17 @@ crates:
         let yaml = generate_nfpm_yaml(&nfpm_cfg, "2.0.0", "/dist/myapp");
 
         // First content entry with type and file_info
-        assert!(yaml.contains("  - src: /src/config.toml"));
-        assert!(yaml.contains("    dst: /etc/myapp/config.toml"));
-        assert!(yaml.contains("    type: config"));
-        assert!(yaml.contains("    file_info:"));
-        assert!(yaml.contains("      owner: root"));
-        assert!(yaml.contains("      group: admin"));
-        assert!(yaml.contains("      mode: \"0640\""));
+        assert!(yaml.contains("- src: /src/config.toml"));
+        assert!(yaml.contains("  dst: /etc/myapp/config.toml"));
+        assert!(yaml.contains("  type: config"));
+        assert!(yaml.contains("  file_info:"));
+        assert!(yaml.contains("    owner: root"));
+        assert!(yaml.contains("    group: admin"));
+        assert!(yaml.contains("    mode: '0640'"));
 
         // Second content entry with type but no file_info
-        assert!(yaml.contains("  - src: /src/readme"));
-        assert!(yaml.contains("    type: doc"));
+        assert!(yaml.contains("- src: /src/readme"));
+        assert!(yaml.contains("  type: doc"));
     }
 
     #[test]
@@ -958,8 +1002,8 @@ crates:
 
         // Binary should appear in the contents section
         assert!(yaml.contains("contents:"));
-        assert!(yaml.contains("  - src: /build/myapp"));
-        assert!(yaml.contains("    dst: /usr/local/bin/myapp"));
+        assert!(yaml.contains("- src: /build/myapp"));
+        assert!(yaml.contains("dst: /usr/local/bin/myapp"));
     }
 
     #[test]
@@ -971,7 +1015,7 @@ crates:
             ..Default::default()
         };
         let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/build/myapp");
-        assert!(yaml.contains("    dst: /opt/myapp/bin/myapp"));
+        assert!(yaml.contains("dst: /opt/myapp/bin/myapp"));
     }
 
     // ---- Error path tests (Task 4D) ----
@@ -1052,8 +1096,8 @@ crates:
         let yaml = generate_nfpm_yaml(&nfpm_cfg, "0.1.0", "/bin/test");
         assert!(yaml.contains("version: 0.1.0"));
         assert!(yaml.contains("contents:"));
-        assert!(yaml.contains("  - src: /bin/test"));
-        assert!(yaml.contains("    dst: /usr/local/bin/test"));
+        assert!(yaml.contains("- src: /bin/test"));
+        assert!(yaml.contains("dst: /usr/local/bin/test"));
     }
 
     #[test]

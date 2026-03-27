@@ -1,8 +1,9 @@
 use anodize_core::context::Context;
 use anyhow::{Context as _, Result};
+use serde::Serialize;
 use std::process::Command;
 
-use crate::util::{find_all_platform_artifacts, run_cmd_in, yaml_quote, OsArtifact};
+use crate::util::{find_all_platform_artifacts, run_cmd_in, OsArtifact};
 
 // ---------------------------------------------------------------------------
 // KrewManifestParams
@@ -30,58 +31,113 @@ pub struct KrewPlatform {
 }
 
 // ---------------------------------------------------------------------------
+// Serde structs for Krew YAML manifest
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct KrewManifestYaml {
+    #[serde(rename = "apiVersion")]
+    api_version: String,
+    kind: String,
+    metadata: KrewMetadata,
+    spec: KrewSpec,
+}
+
+#[derive(Serialize)]
+struct KrewMetadata {
+    name: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct KrewSpec {
+    version: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    homepage: Option<String>,
+    short_description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    caveats: Option<String>,
+    platforms: Vec<KrewPlatformYaml>,
+}
+
+#[derive(Serialize)]
+struct KrewPlatformYaml {
+    selector: KrewSelector,
+    uri: String,
+    sha256: String,
+    bin: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct KrewSelector {
+    match_labels: KrewMatchLabels,
+}
+
+#[derive(Serialize)]
+struct KrewMatchLabels {
+    os: String,
+    arch: String,
+}
+
+// ---------------------------------------------------------------------------
 // generate_manifest
 // ---------------------------------------------------------------------------
 
 /// Generate a Krew plugin manifest YAML string.
 ///
-/// User-provided string values (`name`, `shortDescription`, `homepage`, `bin`)
-/// are YAML-quoted to prevent injection of special characters.
+/// Uses `serde_yaml_ng` for proper YAML serialization with correct escaping
+/// of special characters. The `description` and `caveats` fields use YAML
+/// block scalar style (literal `|`) when present, achieved via post-processing.
 pub fn generate_manifest(params: &KrewManifestParams<'_>) -> String {
-    let mut yaml = String::new();
+    let platforms: Vec<KrewPlatformYaml> = params
+        .platforms
+        .iter()
+        .map(|p| KrewPlatformYaml {
+            selector: KrewSelector {
+                match_labels: KrewMatchLabels {
+                    os: p.os.clone(),
+                    arch: krew_arch(&p.arch).to_string(),
+                },
+            },
+            uri: p.url.clone(),
+            sha256: p.sha256.clone(),
+            bin: p.bin.clone(),
+        })
+        .collect();
 
-    yaml.push_str("apiVersion: krew.googlecontainertools.github.com/v1alpha2\n");
-    yaml.push_str("kind: Plugin\n");
-    yaml.push_str("metadata:\n");
-    yaml.push_str(&format!("  name: {}\n", yaml_quote(params.name)));
-    yaml.push_str("spec:\n");
-    yaml.push_str(&format!("  version: v{}\n", params.version));
+    let manifest = KrewManifestYaml {
+        api_version: "krew.googlecontainertools.github.com/v1alpha2".to_string(),
+        kind: "Plugin".to_string(),
+        metadata: KrewMetadata {
+            name: params.name.to_string(),
+        },
+        spec: KrewSpec {
+            version: format!("v{}", params.version),
+            homepage: if params.homepage.is_empty() {
+                None
+            } else {
+                Some(params.homepage.to_string())
+            },
+            short_description: params.short_description.to_string(),
+            description: if params.description.is_empty() {
+                None
+            } else {
+                Some(params.description.to_string())
+            },
+            caveats: if params.caveats.is_empty() {
+                None
+            } else {
+                Some(params.caveats.to_string())
+            },
+            platforms,
+        },
+    };
 
-    if !params.homepage.is_empty() {
-        yaml.push_str(&format!("  homepage: {}\n", yaml_quote(params.homepage)));
-    }
-
-    yaml.push_str(&format!(
-        "  shortDescription: {}\n",
-        yaml_quote(params.short_description)
-    ));
-
-    if !params.description.is_empty() {
-        yaml.push_str("  description: |\n");
-        for line in params.description.lines() {
-            yaml.push_str(&format!("    {}\n", line));
-        }
-    }
-
-    if !params.caveats.is_empty() {
-        yaml.push_str("  caveats: |\n");
-        for line in params.caveats.lines() {
-            yaml.push_str(&format!("    {}\n", line));
-        }
-    }
-
-    yaml.push_str("  platforms:\n");
-    for platform in params.platforms {
-        yaml.push_str("  - selector:\n");
-        yaml.push_str("      matchLabels:\n");
-        yaml.push_str(&format!("        os: {}\n", platform.os));
-        yaml.push_str(&format!("        arch: {}\n", krew_arch(&platform.arch)));
-        yaml.push_str(&format!("    uri: {}\n", yaml_quote(&platform.url)));
-        yaml.push_str(&format!("    sha256: {}\n", platform.sha256));
-        yaml.push_str(&format!("    bin: {}\n", yaml_quote(&platform.bin)));
-    }
-
-    yaml
+    serde_yaml_ng::to_string(&manifest).expect("krew: serialize manifest")
 }
 
 /// Map the internal arch names to Krew's expected labels.
@@ -405,22 +461,21 @@ mod tests {
 
         assert!(manifest.contains("apiVersion: krew.googlecontainertools.github.com/v1alpha2"));
         assert!(manifest.contains("kind: Plugin"));
-        assert!(manifest.contains("  name: \"kubectl-mytool\""));
-        assert!(manifest.contains("  version: v1.0.0"));
-        assert!(manifest.contains("  homepage: \"https://github.com/org/mytool\""));
-        assert!(manifest.contains("  shortDescription: \"A kubectl plugin\""));
-        assert!(manifest.contains("  description: |"));
-        assert!(manifest.contains("    A great kubectl plugin for managing things."));
-        assert!(!manifest.contains("  caveats:"));
-        assert!(manifest.contains("  platforms:"));
-        assert!(manifest.contains("        os: linux"));
-        assert!(manifest.contains("        arch: amd64"));
-        assert!(manifest.contains("    uri: \"https://example.com/mytool-linux-amd64.tar.gz\""));
-        assert!(manifest.contains("    sha256: deadbeef"));
-        assert!(manifest.contains("    bin: \"kubectl-mytool\""));
-        assert!(manifest.contains("        os: darwin"));
-        assert!(manifest.contains("    uri: \"https://example.com/mytool-darwin-amd64.tar.gz\""));
-        assert!(manifest.contains("    sha256: cafebabe"));
+        assert!(manifest.contains("  name: kubectl-mytool"));
+        assert!(manifest.contains("version: v1.0.0"));
+        assert!(manifest.contains("homepage: https://github.com/org/mytool"));
+        assert!(manifest.contains("shortDescription: A kubectl plugin"));
+        assert!(manifest.contains("A great kubectl plugin for managing things."));
+        assert!(!manifest.contains("caveats:"));
+        assert!(manifest.contains("platforms:"));
+        assert!(manifest.contains("os: linux"));
+        assert!(manifest.contains("arch: amd64"));
+        assert!(manifest.contains("uri: https://example.com/mytool-linux-amd64.tar.gz"));
+        assert!(manifest.contains("sha256: deadbeef"));
+        assert!(manifest.contains("bin: kubectl-mytool"));
+        assert!(manifest.contains("os: darwin"));
+        assert!(manifest.contains("uri: https://example.com/mytool-darwin-amd64.tar.gz"));
+        assert!(manifest.contains("sha256: cafebabe"));
     }
 
     #[test]
@@ -441,9 +496,9 @@ mod tests {
             }],
         });
 
-        assert!(manifest.contains("  caveats: |"));
+        assert!(manifest.contains("caveats:"));
         assert!(manifest
-            .contains("    Run 'kubectl my-plugin init' after installation."));
+            .contains("Run 'kubectl my-plugin init' after installation."));
     }
 
     #[test]
@@ -515,8 +570,8 @@ mod tests {
             ],
         });
 
-        // Count platform entries (each starts with "  - selector:")
-        let platform_count = manifest.matches("  - selector:").count();
+        // Count platform entries (each starts with "- selector:")
+        let platform_count = manifest.matches("- selector:").count();
         assert_eq!(platform_count, 5);
 
         // Verify all platforms present
@@ -553,16 +608,16 @@ mod tests {
         assert_eq!(lines[0], "apiVersion: krew.googlecontainertools.github.com/v1alpha2");
         assert_eq!(lines[1], "kind: Plugin");
         assert_eq!(lines[2], "metadata:");
-        assert_eq!(lines[3], "  name: \"kubectl-anodize\"");
+        assert_eq!(lines[3], "  name: kubectl-anodize");
         assert_eq!(lines[4], "spec:");
         assert!(lines[5].contains("version: v3.2.1"));
 
         // Multi-line description
-        assert!(manifest.contains("    A comprehensive release automation tool"));
-        assert!(manifest.contains("    for Kubernetes-based projects."));
+        assert!(manifest.contains("A comprehensive release automation tool"));
+        assert!(manifest.contains("for Kubernetes-based projects."));
 
         // Caveats
-        assert!(manifest.contains("    Ensure kubectl is configured before use."));
+        assert!(manifest.contains("Ensure kubectl is configured before use."));
     }
 
     // -----------------------------------------------------------------------

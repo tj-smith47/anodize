@@ -4,6 +4,48 @@ use anyhow::{Context as _, Result};
 use crate::util::{run_cmd, run_cmd_in};
 
 // ---------------------------------------------------------------------------
+// Homebrew formula Tera template
+// ---------------------------------------------------------------------------
+
+const FORMULA_TEMPLATE: &str = r#"class {{ class_name }} < Formula
+  desc "{{ description }}"
+  homepage "https://github.com/{{ name }}"
+  license "{{ license }}"
+  version "{{ version }}"
+
+{% if single_archive %}  url "{{ single_url }}"
+  sha256 "{{ single_sha256 }}"
+{% endif %}{% for entry in unknown_entries %}  # platform: {{ entry.platform }}
+  url "{{ entry.url }}"
+  sha256 "{{ entry.sha256 }}"
+{% endfor %}{% if has_macos %}  on_macos do
+{% if macos_has_arch %}{% for entry in macos_entries %}    {{ entry.arch_block }} do
+      url "{{ entry.url }}"
+      sha256 "{{ entry.sha256 }}"
+    end
+{% endfor %}{% else %}{% for entry in macos_entries %}    url "{{ entry.url }}"
+    sha256 "{{ entry.sha256 }}"
+{% endfor %}{% endif %}  end
+{% endif %}{% if has_linux %}  on_linux do
+{% if linux_has_arch %}{% for entry in linux_entries %}    {{ entry.arch_block }} do
+      url "{{ entry.url }}"
+      sha256 "{{ entry.sha256 }}"
+    end
+{% endfor %}{% else %}{% for entry in linux_entries %}    url "{{ entry.url }}"
+    sha256 "{{ entry.sha256 }}"
+{% endfor %}{% endif %}  end
+{% endif %}
+  def install
+{% for line in install_lines %}    {{ line }}
+{% endfor %}  end
+
+  test do
+{% for line in test_lines %}    {{ line }}
+{% endfor %}  end
+end
+"#;
+
+// ---------------------------------------------------------------------------
 // generate_formula
 // ---------------------------------------------------------------------------
 
@@ -24,9 +66,8 @@ pub fn generate_formula(
 ) -> String {
     // Ruby class name: capitalise first letter, replace hyphens.
     let class_name: String = {
-        let mut chars = name.replace('-', "_");
-        // PascalCase each segment
-        chars = chars
+        let chars = name.replace('-', "_");
+        chars
             .split('_')
             .map(|seg| {
                 let mut c = seg.chars();
@@ -36,110 +77,130 @@ pub fn generate_formula(
                 }
             })
             .collect::<Vec<_>>()
-            .join("");
-        chars
+            .join("")
     };
 
-    let mut f = String::new();
-    f.push_str(&format!("class {} < Formula\n", class_name));
-    f.push_str(&format!("  desc \"{}\"\n", description));
-    f.push_str(&format!("  homepage \"https://github.com/{}\"\n", name));
-    f.push_str(&format!("  license \"{}\"\n", license));
-    f.push_str(&format!("  version \"{}\"\n", version));
-    f.push('\n');
+    let mut tera = tera::Tera::default();
+    tera.add_raw_template("formula", FORMULA_TEMPLATE)
+        .expect("homebrew: parse formula template");
 
-    match archives {
-        [] => {}
-        [(_, url, sha256)] => {
-            f.push_str(&format!("  url \"{}\"\n", url));
-            f.push_str(&format!("  sha256 \"{}\"\n", sha256));
-        }
-        entries => {
-            // Group entries by OS block so that multiple arches for the same
-            // OS (e.g. darwin-amd64 and darwin-arm64) end up inside a single
-            // `on_macos do` block with nested `on_arm`/`on_intel` sub-blocks.
+    // Disable autoescaping (we're generating Ruby, not HTML)
+    tera.autoescape_on(vec![]);
 
-            // Collect unknown-platform entries first so they are emitted as
-            // comments before the OS blocks.
-            let mut unknown: Vec<(&str, &str, &str)> = Vec::new();
-            let mut macos_entries: Vec<(&str, &str, &str)> = Vec::new();
-            let mut linux_entries: Vec<(&str, &str, &str)> = Vec::new();
+    let mut ctx = tera::Context::new();
+    ctx.insert("class_name", &class_name);
+    ctx.insert("name", name);
+    ctx.insert("version", version);
+    ctx.insert("description", description);
+    ctx.insert("license", license);
 
-            for entry @ (platform, _url, _sha256) in entries {
-                if platform.contains("darwin") || platform.contains("macos") {
-                    macos_entries.push(*entry);
-                } else if platform.contains("linux") {
-                    linux_entries.push(*entry);
-                } else {
-                    unknown.push(*entry);
-                }
-            }
+    // Determine archive layout
+    let single_archive = archives.len() == 1;
+    ctx.insert("single_archive", &single_archive);
 
-            for (platform, url, sha256) in &unknown {
-                f.push_str(&format!(
-                    "  # platform: {}\n  url \"{}\"\n  sha256 \"{}\"\n",
-                    platform, url, sha256
-                ));
-            }
-
-            for (os_block, os_entries) in
-                [("on_macos", &macos_entries), ("on_linux", &linux_entries)]
-            {
-                if os_entries.is_empty() {
-                    continue;
-                }
-
-                // Determine whether any entry has an explicit arch tag.
-                let any_arch = os_entries.iter().any(|(platform, _, _)| {
-                    platform.contains("arm64")
-                        || platform.contains("aarch64")
-                        || platform.contains("amd64")
-                        || platform.contains("x86_64")
-                });
-
-                f.push_str(&format!("  {} do\n", os_block));
-
-                if any_arch {
-                    for (platform, url, sha256) in os_entries {
-                        let arch_block =
-                            if platform.contains("arm64") || platform.contains("aarch64") {
-                                "on_arm"
-                            } else {
-                                "on_intel"
-                            };
-                        f.push_str(&format!("    {} do\n", arch_block));
-                        f.push_str(&format!("      url \"{}\"\n", url));
-                        f.push_str(&format!("      sha256 \"{}\"\n", sha256));
-                        f.push_str("    end\n");
-                    }
-                } else {
-                    // Single entry without explicit arch.
-                    for (_platform, url, sha256) in os_entries {
-                        f.push_str(&format!("    url \"{}\"\n", url));
-                        f.push_str(&format!("    sha256 \"{}\"\n", sha256));
-                    }
-                }
-
-                f.push_str("  end\n");
-            }
-        }
+    if single_archive {
+        ctx.insert("single_url", archives[0].1);
+        ctx.insert("single_sha256", archives[0].2);
+    } else {
+        ctx.insert("single_url", "");
+        ctx.insert("single_sha256", "");
     }
 
-    f.push('\n');
-    f.push_str("  def install\n");
-    for line in install.lines() {
-        f.push_str(&format!("    {}\n", line));
-    }
-    f.push_str("  end\n");
-    f.push('\n');
-    f.push_str("  test do\n");
-    for line in test.lines() {
-        f.push_str(&format!("    {}\n", line));
-    }
-    f.push_str("  end\n");
-    f.push_str("end\n");
+    // Build per-OS entry lists only for multi-archive layout
+    let empty_vec: Vec<std::collections::HashMap<&str, &str>> = Vec::new();
+    let (unknown_vals, macos_vals, linux_vals, macos_has_arch, linux_has_arch) =
+        if single_archive {
+            (empty_vec.clone(), empty_vec.clone(), empty_vec, false, false)
+        } else {
+            let has_arch = |entries: &[(&str, &str, &str)]| -> bool {
+                entries.iter().any(|(p, _, _)| {
+                    p.contains("arm64")
+                        || p.contains("aarch64")
+                        || p.contains("amd64")
+                        || p.contains("x86_64")
+                })
+            };
 
-    f
+            let unknown: Vec<_> = archives
+                .iter()
+                .filter(|(p, _, _)| {
+                    !p.contains("darwin")
+                        && !p.contains("macos")
+                        && !p.contains("linux")
+                })
+                .map(|(platform, url, sha256)| {
+                    let mut m = std::collections::HashMap::new();
+                    m.insert("platform", *platform);
+                    m.insert("url", *url);
+                    m.insert("sha256", *sha256);
+                    m
+                })
+                .collect();
+
+            let macos_archives: Vec<_> = archives
+                .iter()
+                .filter(|(p, _, _)| p.contains("darwin") || p.contains("macos"))
+                .copied()
+                .collect();
+            let macos_has = !macos_archives.is_empty() && has_arch(&macos_archives);
+            let macos: Vec<_> = macos_archives
+                .iter()
+                .map(|(platform, url, sha256)| {
+                    let arch_block =
+                        if platform.contains("arm64") || platform.contains("aarch64") {
+                            "on_arm"
+                        } else {
+                            "on_intel"
+                        };
+                    let mut m = std::collections::HashMap::new();
+                    m.insert("url", *url);
+                    m.insert("sha256", *sha256);
+                    m.insert("arch_block", arch_block);
+                    m
+                })
+                .collect();
+
+            let linux_archives: Vec<_> = archives
+                .iter()
+                .filter(|(p, _, _)| p.contains("linux"))
+                .copied()
+                .collect();
+            let linux_has = !linux_archives.is_empty() && has_arch(&linux_archives);
+            let linux: Vec<_> = linux_archives
+                .iter()
+                .map(|(platform, url, sha256)| {
+                    let arch_block =
+                        if platform.contains("arm64") || platform.contains("aarch64") {
+                            "on_arm"
+                        } else {
+                            "on_intel"
+                        };
+                    let mut m = std::collections::HashMap::new();
+                    m.insert("url", *url);
+                    m.insert("sha256", *sha256);
+                    m.insert("arch_block", arch_block);
+                    m
+                })
+                .collect();
+
+            (unknown, macos, linux, macos_has, linux_has)
+        };
+
+    ctx.insert("unknown_entries", &unknown_vals);
+    ctx.insert("has_macos", &!macos_vals.is_empty());
+    ctx.insert("macos_has_arch", &macos_has_arch);
+    ctx.insert("macos_entries", &macos_vals);
+    ctx.insert("has_linux", &!linux_vals.is_empty());
+    ctx.insert("linux_has_arch", &linux_has_arch);
+    ctx.insert("linux_entries", &linux_vals);
+
+    let install_lines: Vec<&str> = install.lines().collect();
+    let test_lines: Vec<&str> = test.lines().collect();
+    ctx.insert("install_lines", &install_lines);
+    ctx.insert("test_lines", &test_lines);
+
+    tera.render("formula", &ctx)
+        .expect("homebrew: render formula template")
 }
 
 // ---------------------------------------------------------------------------
@@ -629,7 +690,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Task 4C: Additional behavior tests — config fields actually do things
+    // Task 4C: Additional behavior tests -- config fields actually do things
     // -----------------------------------------------------------------------
 
     #[test]

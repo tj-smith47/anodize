@@ -1,8 +1,9 @@
 use anodize_core::context::Context;
 use anyhow::{Context as _, Result};
+use serde::Serialize;
 use std::process::Command;
 
-use crate::util::{find_windows_artifact, run_cmd_in, yaml_quote};
+use crate::util::{find_windows_artifact, run_cmd_in};
 
 // ---------------------------------------------------------------------------
 // WingetManifestParams
@@ -22,48 +23,68 @@ pub struct WingetManifestParams<'a> {
 }
 
 // ---------------------------------------------------------------------------
+// Serde structs for WinGet YAML manifest
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct WingetManifest {
+    package_identifier: String,
+    package_version: String,
+    package_name: String,
+    publisher: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    publisher_url: Option<String>,
+    license: String,
+    short_description: String,
+    installers: Vec<WingetInstaller>,
+    manifest_type: String,
+    manifest_version: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct WingetInstaller {
+    architecture: String,
+    installer_url: String,
+    #[serde(rename = "InstallerSha256")]
+    installer_sha256: String,
+    installer_type: String,
+}
+
+// ---------------------------------------------------------------------------
 // generate_manifest
 // ---------------------------------------------------------------------------
 
 /// Generate a WinGet YAML manifest string.
 ///
 /// Produces a singleton-style manifest with the minimum required fields for
-/// winget-pkgs submission. All string values are quoted to avoid YAML
-/// parsing issues with special characters.
+/// winget-pkgs submission. Uses `serde_yaml_ng` for proper YAML serialization
+/// with correct escaping of special characters.
 pub fn generate_manifest(params: &WingetManifestParams<'_>) -> String {
-    let mut yaml = String::new();
-    yaml.push_str(&format!(
-        "PackageIdentifier: {}\n",
-        yaml_quote(params.package_id)
-    ));
-    yaml.push_str(&format!(
-        "PackageVersion: {}\n",
-        yaml_quote(params.version)
-    ));
-    yaml.push_str(&format!("PackageName: {}\n", yaml_quote(params.name)));
-    yaml.push_str(&format!("Publisher: {}\n", yaml_quote(params.publisher)));
-    if !params.publisher_url.is_empty() {
-        yaml.push_str(&format!(
-            "PublisherUrl: {}\n",
-            yaml_quote(params.publisher_url)
-        ));
-    }
-    yaml.push_str(&format!("License: {}\n", yaml_quote(params.license)));
-    yaml.push_str(&format!(
-        "ShortDescription: {}\n",
-        yaml_quote(params.description)
-    ));
-    yaml.push_str("Installers:\n");
-    yaml.push_str("  - Architecture: x64\n");
-    yaml.push_str(&format!("    InstallerUrl: {}\n", yaml_quote(params.url)));
-    yaml.push_str(&format!(
-        "    InstallerSha256: {}\n",
-        yaml_quote(params.hash)
-    ));
-    yaml.push_str("    InstallerType: zip\n");
-    yaml.push_str("ManifestType: singleton\nManifestVersion: 1.6.0\n");
+    let manifest = WingetManifest {
+        package_identifier: params.package_id.to_string(),
+        package_version: params.version.to_string(),
+        package_name: params.name.to_string(),
+        publisher: params.publisher.to_string(),
+        publisher_url: if params.publisher_url.is_empty() {
+            None
+        } else {
+            Some(params.publisher_url.to_string())
+        },
+        license: params.license.to_string(),
+        short_description: params.description.to_string(),
+        installers: vec![WingetInstaller {
+            architecture: "x64".to_string(),
+            installer_url: params.url.to_string(),
+            installer_sha256: params.hash.to_string(),
+            installer_type: "zip".to_string(),
+        }],
+        manifest_type: "singleton".to_string(),
+        manifest_version: "1.6.0".to_string(),
+    };
 
-    yaml
+    serde_yaml_ng::to_string(&manifest).expect("winget: serialize manifest")
 }
 
 // ---------------------------------------------------------------------------
@@ -135,17 +156,10 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str) -> Result<()> {
     let (url, hash) = if let Some(found) = find_windows_artifact(ctx, crate_name) {
         found
     } else {
-        eprintln!(
-            "[publish] winget: no windows artifact found for '{}', using placeholder URL",
+        anyhow::bail!(
+            "winget: no Windows archive artifact found for crate '{}'",
             crate_name
         );
-        (
-            format!(
-                "https://github.com/{0}/{1}/releases/download/v{2}/{1}-{2}-windows-amd64.zip",
-                manifests_repo.owner, crate_name, version
-            ),
-            String::new(),
-        )
     };
 
     let manifest = generate_manifest(&WingetManifestParams {
@@ -344,20 +358,20 @@ mod tests {
             hash: "deadbeef1234567890abcdef",
         });
 
-        assert!(manifest.contains("PackageIdentifier: \"Org.MyTool\""));
-        assert!(manifest.contains("PackageVersion: \"1.0.0\""));
-        assert!(manifest.contains("PackageName: \"mytool\""));
-        assert!(manifest.contains("Publisher: \"My Org\""));
-        assert!(manifest.contains("PublisherUrl: \"https://example.com\""));
-        assert!(manifest.contains("License: \"MIT\""));
-        assert!(manifest.contains("ShortDescription: \"A great tool\""));
+        assert!(manifest.contains("PackageIdentifier: Org.MyTool"));
+        assert!(manifest.contains("PackageVersion: 1.0.0"));
+        assert!(manifest.contains("PackageName: mytool"));
+        assert!(manifest.contains("Publisher: My Org"));
+        assert!(manifest.contains("PublisherUrl: https://example.com"));
+        assert!(manifest.contains("License: MIT"));
+        assert!(manifest.contains("ShortDescription: A great tool"));
         assert!(manifest.contains("Installers:"));
-        assert!(manifest.contains("  - Architecture: x64"));
+        assert!(manifest.contains("Architecture: x64"));
         assert!(manifest.contains(
-            "    InstallerUrl: \"https://example.com/mytool-1.0.0-windows-amd64.zip\""
+            "InstallerUrl: https://example.com/mytool-1.0.0-windows-amd64.zip"
         ));
-        assert!(manifest.contains("    InstallerSha256: \"deadbeef1234567890abcdef\""));
-        assert!(manifest.contains("    InstallerType: zip"));
+        assert!(manifest.contains("InstallerSha256: deadbeef1234567890abcdef"));
+        assert!(manifest.contains("InstallerType: zip"));
         assert!(manifest.contains("ManifestType: singleton"));
         assert!(manifest.contains("ManifestVersion: 1.6.0"));
     }
@@ -377,7 +391,7 @@ mod tests {
         });
 
         assert!(!manifest.contains("PublisherUrl:"));
-        assert!(manifest.contains("Publisher: \"My Org\""));
+        assert!(manifest.contains("Publisher: My Org"));
     }
 
     #[test]
@@ -423,12 +437,12 @@ mod tests {
         });
 
         // The Installers section should have proper YAML list format
-        assert!(manifest.contains("Installers:\n  - Architecture: x64"));
+        assert!(manifest.contains("Installers:\n- Architecture: x64"));
 
         // InstallerUrl, InstallerSha256, InstallerType should be indented under the list item
-        assert!(manifest.contains("    InstallerUrl:"));
-        assert!(manifest.contains("    InstallerSha256:"));
-        assert!(manifest.contains("    InstallerType: zip"));
+        assert!(manifest.contains("  InstallerUrl:"));
+        assert!(manifest.contains("  InstallerSha256:"));
+        assert!(manifest.contains("  InstallerType: zip"));
     }
 
     #[test]
@@ -445,10 +459,10 @@ mod tests {
             hash: "hash",
         });
 
-        // Values with special YAML characters should be quoted
-        assert!(manifest.contains("PackageName: \"tool: the best\""));
+        // Values with special YAML characters should be quoted by serde_yaml_ng
+        assert!(manifest.contains("PackageName: 'tool: the best'"));
         assert!(manifest
-            .contains("ShortDescription: \"A tool with #special: characters & more\""));
+            .contains("ShortDescription: 'A tool with #special: characters & more'"));
     }
 
     // -----------------------------------------------------------------------

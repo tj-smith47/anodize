@@ -100,17 +100,10 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str) -> Result<()> {
     let (url, hash) = if let Some(found) = find_windows_artifact(ctx, crate_name) {
         found
     } else {
-        eprintln!(
-            "[publish] scoop: no windows artifact found for '{}', using placeholder URL",
+        anyhow::bail!(
+            "scoop: no Windows archive artifact found for crate '{}'",
             crate_name
         );
-        (
-            format!(
-                "https://github.com/{0}/{0}/releases/download/v{1}/{0}-{1}-windows-amd64.zip",
-                crate_name, version
-            ),
-            String::new(),
-        )
     };
 
     let manifest = generate_manifest(crate_name, &version, &url, &hash, &description, &license);

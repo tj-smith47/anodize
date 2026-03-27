@@ -74,15 +74,11 @@ Most projects strip debug symbols from release binaries to reduce size (often 50
 
 **Possible implementation:** Add `strip: true` to build config (default false). When enabled, either pass `-C strip=symbols` to rustc via RUSTFLAGS, or run the platform-appropriate `strip` command post-build. Per-target strip configuration may be needed for cross-compilation.
 
-### 4. Prerelease Detection from Tag Format
+### 4. ~~Prerelease Detection from Tag Format~~ — ALREADY IMPLEMENTED
 
 **Used by:** gitui, git-cliff, just, starship (4 projects)
 
-Tags containing `-` (e.g., `v1.0.0-rc1`, `v2.0.0-beta.3`) automatically mark the GitHub release as a prerelease. This is distinct from the explicit `prerelease: true` config — it's automatic based on semver prerelease semantics.
-
-**anodize gap:** Has `prerelease: auto` but this currently maps to a config value, not tag-format detection.
-
-**Possible implementation:** When `prerelease: auto`, parse the tag for semver prerelease segments (anything after `-`). If present, mark as prerelease automatically.
+**anodize status:** Already implemented. `prerelease: auto` in release config triggers `should_mark_prerelease()` in `crates/stage-release/src/lib.rs` which parses the tag for semver prerelease segments (rc, alpha, beta, dev). Case-insensitive. Tests confirm `v1.0.0-rc.1`, `v1.0.0-alpha.1`, `v2.0.0-beta`, `v1.0.0-dev.5` all auto-detect. **No gap here.**
 
 ### 5. Changelog Extraction from Existing CHANGELOG.md
 
@@ -132,7 +128,7 @@ Generates separate musl and glibc deb packages with `Conflicts:` declarations so
 
 **Candidate feature:** Enhance nfpm config to support `conflicts`, `provides`, and variant-aware packaging.
 
-**Note:** anodize's nfpm stage already has `conflicts` in its config schema (added in Session 2F). Verify this is actually wired through.
+**Note:** anodize's nfpm stage already has `conflicts`, `provides`, `replaces`, `recommends`, and `suggests` fully wired through — config, YAML generation, and tests. **No gap here** for the nfpm side. The bat-specific concern is about generating *separate* musl/glibc deb variants with cross-variant conflicts, which is a packaging strategy issue rather than a missing field.
 
 ### From starship: macOS Code Signing + Notarization
 

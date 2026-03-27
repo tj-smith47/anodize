@@ -124,10 +124,12 @@ fn poll_crates_io_index(crate_name: &str, version: &str, timeout_secs: u64) -> R
         match client.get(&url).send() {
             Ok(resp) if resp.status().is_success() => {
                 let body = resp.text().unwrap_or_default();
-                // Each line of the sparse index is a JSON object; look for our version.
+                // Each line of the sparse index is a JSON object; parse and check vers field.
                 if body.lines().any(|line| {
-                    line.contains(&format!("\"vers\":\"{}\"", version))
-                        || line.contains(&format!("\"vers\": \"{}\"", version))
+                    serde_json::from_str::<serde_json::Value>(line)
+                        .ok()
+                        .and_then(|v| v.get("vers")?.as_str().map(|s| s == version))
+                        .unwrap_or(false)
                 }) {
                     eprintln!(
                         "[publish] crates.io index confirmed {}-{}",
