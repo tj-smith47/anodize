@@ -4,10 +4,41 @@ use anyhow::{Result, bail};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-pub fn run(config_override: Option<&Path>) -> Result<()> {
+pub fn run(config_override: Option<&Path>, workspace: Option<&str>) -> Result<()> {
     let path = pipeline::find_config(config_override)?;
     let config = pipeline::load_config(&path)?;
-    run_checks(&config, true)
+
+    // Always validate the raw config first
+    run_checks(&config, true)?;
+
+    // When --workspace is specified, also validate the resolved (overlaid) config
+    if let Some(ws_name) = workspace {
+        let ws = super::release::resolve_workspace(&config, ws_name)?;
+        let mut resolved = config.clone();
+        resolved.crates = ws.crates.clone();
+        if ws.changelog.is_some() {
+            resolved.changelog = ws.changelog.clone();
+        }
+        if !ws.signs.is_empty() {
+            resolved.signs = ws.signs.clone();
+        }
+        if ws.before.is_some() {
+            resolved.before = ws.before.clone();
+        }
+        if ws.after.is_some() {
+            resolved.after = ws.after.clone();
+        }
+        if let Some(ref env_map) = ws.env {
+            let merged = resolved.env.get_or_insert_with(HashMap::new);
+            for (k, v) in env_map {
+                merged.insert(k.clone(), v.clone());
+            }
+        }
+        eprintln!("  Validating resolved config for workspace '{}'...", ws_name);
+        run_checks(&resolved, true)?;
+    }
+
+    Ok(())
 }
 
 /// Core validation logic. `check_env` controls whether env/tool checks are run

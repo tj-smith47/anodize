@@ -339,7 +339,7 @@ fn check_workspace_files_changed(tag: &str) -> Result<bool> {
 
 /// Resolve a workspace by name from the config. Returns an error if
 /// `workspaces` is not configured or the given name is not found.
-fn resolve_workspace<'a>(config: &'a Config, name: &str) -> Result<&'a WorkspaceConfig> {
+pub fn resolve_workspace<'a>(config: &'a Config, name: &str) -> Result<&'a WorkspaceConfig> {
     let workspaces = config
         .workspaces
         .as_ref()

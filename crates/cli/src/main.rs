@@ -81,9 +81,14 @@ enum Commands {
         parallelism: usize,
         #[arg(long, help = "Build only for the host target triple")]
         single_target: bool,
+        #[arg(long, help = "Build a specific workspace in a monorepo config")]
+        workspace: Option<String>,
     },
     /// Validate configuration
-    Check,
+    Check {
+        #[arg(long, help = "Validate a specific workspace in a monorepo config")]
+        workspace: Option<String>,
+    },
     /// Generate starter config
     Init,
     /// Generate changelog only
@@ -240,6 +245,7 @@ fn main() {
             timeout,
             parallelism,
             single_target,
+            workspace,
         } => {
             let duration = timeout::parse_duration(&timeout).unwrap_or_else(|e| {
                 eprintln!(
@@ -259,10 +265,13 @@ fn main() {
                     config_override,
                     parallelism,
                     single_target: resolved_single_target,
+                    workspace,
                 })
             })
         }
-        Commands::Check => commands::check::run(cli.config.as_deref()),
+        Commands::Check { workspace } => {
+            commands::check::run(cli.config.as_deref(), workspace.as_deref())
+        }
         Commands::Init => commands::init::run(),
         Commands::Changelog { crate_name } => {
             commands::changelog::run(crate_name, cli.config.as_deref())
@@ -606,6 +615,96 @@ mod tests {
             release_help.contains("--workspace"),
             "release help should mention --workspace flag, got: {}",
             release_help
+        );
+    }
+
+    // ---- Build --workspace tests ----
+
+    #[test]
+    fn test_cli_parses_build_workspace_flag() {
+        let cli = Cli::try_parse_from(["anodize", "build", "--workspace", "frontend"]);
+        assert!(
+            cli.is_ok(),
+            "CLI should parse build --workspace: {:?}",
+            cli.err()
+        );
+        if let Commands::Build { workspace, .. } = cli.unwrap().command {
+            assert_eq!(workspace, Some("frontend".to_string()));
+        } else {
+            panic!("expected Build command");
+        }
+    }
+
+    #[test]
+    fn test_cli_build_workspace_defaults_none() {
+        let cli = Cli::try_parse_from(["anodize", "build"]).unwrap();
+        if let Commands::Build { workspace, .. } = cli.command {
+            assert!(
+                workspace.is_none(),
+                "build --workspace should default to None"
+            );
+        } else {
+            panic!("expected Build command");
+        }
+    }
+
+    #[test]
+    fn test_help_output_build_contains_workspace_flag() {
+        let mut cmd = Cli::command();
+        let build_help = cmd
+            .find_subcommand_mut("build")
+            .expect("build subcommand should exist")
+            .render_help()
+            .to_string();
+        assert!(
+            build_help.contains("--workspace"),
+            "build help should mention --workspace flag, got: {}",
+            build_help
+        );
+    }
+
+    // ---- Check --workspace tests ----
+
+    #[test]
+    fn test_cli_parses_check_workspace_flag() {
+        let cli = Cli::try_parse_from(["anodize", "check", "--workspace", "backend"]);
+        assert!(
+            cli.is_ok(),
+            "CLI should parse check --workspace: {:?}",
+            cli.err()
+        );
+        if let Commands::Check { workspace } = cli.unwrap().command {
+            assert_eq!(workspace, Some("backend".to_string()));
+        } else {
+            panic!("expected Check command");
+        }
+    }
+
+    #[test]
+    fn test_cli_check_workspace_defaults_none() {
+        let cli = Cli::try_parse_from(["anodize", "check"]).unwrap();
+        if let Commands::Check { workspace } = cli.command {
+            assert!(
+                workspace.is_none(),
+                "check --workspace should default to None"
+            );
+        } else {
+            panic!("expected Check command");
+        }
+    }
+
+    #[test]
+    fn test_help_output_check_contains_workspace_flag() {
+        let mut cmd = Cli::command();
+        let check_help = cmd
+            .find_subcommand_mut("check")
+            .expect("check subcommand should exist")
+            .render_help()
+            .to_string();
+        assert!(
+            check_help.contains("--workspace"),
+            "check help should mention --workspace flag, got: {}",
+            check_help
         );
     }
 }

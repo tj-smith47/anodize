@@ -7,6 +7,7 @@ pub struct BuildOpts {
     pub config_override: Option<PathBuf>,
     pub parallelism: usize,
     pub single_target: Option<String>,
+    pub workspace: Option<String>,
 }
 
 pub fn run(opts: BuildOpts) -> Result<()> {
@@ -26,9 +27,11 @@ mod tests {
             config_override: None,
             parallelism: 4,
             single_target: None,
+            workspace: None,
         };
         assert_eq!(opts.parallelism, 4);
         assert!(opts.single_target.is_none());
+        assert!(opts.workspace.is_none());
     }
 
     #[test]
@@ -38,11 +41,24 @@ mod tests {
             config_override: None,
             parallelism: 2,
             single_target: Some("x86_64-unknown-linux-gnu".to_string()),
+            workspace: None,
         };
         assert_eq!(
             opts.single_target.as_deref(),
             Some("x86_64-unknown-linux-gnu")
         );
+    }
+
+    #[test]
+    fn test_build_opts_with_workspace() {
+        let opts = BuildOpts {
+            crate_names: vec![],
+            config_override: None,
+            parallelism: 4,
+            single_target: None,
+            workspace: Some("frontend".to_string()),
+        };
+        assert_eq!(opts.workspace.as_deref(), Some("frontend"));
     }
 
     #[test]
@@ -52,6 +68,7 @@ mod tests {
             config_override: None,
             parallelism: 1,
             single_target: None,
+            workspace: None,
         };
         let result = run(opts);
         assert!(result.is_ok());
