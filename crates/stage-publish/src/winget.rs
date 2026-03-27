@@ -2,7 +2,7 @@ use anodize_core::context::Context;
 use anyhow::{Context as _, Result};
 use std::process::Command;
 
-use crate::util::{find_windows_artifact, run_cmd_in};
+use crate::util::{find_windows_artifact, run_cmd_in, yaml_quote};
 
 // ---------------------------------------------------------------------------
 // WingetManifestParams
@@ -24,15 +24,6 @@ pub struct WingetManifestParams<'a> {
 // ---------------------------------------------------------------------------
 // generate_manifest
 // ---------------------------------------------------------------------------
-
-/// Quote a YAML string value if it contains special characters, or always
-/// wrap in double quotes for safety.
-fn yaml_quote(value: &str) -> String {
-    // Always double-quote string values to avoid issues with colons, hashes,
-    // brackets, and other YAML-special characters.
-    let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
-    format!("\"{}\"", escaped)
-}
 
 /// Generate a WinGet YAML manifest string.
 ///

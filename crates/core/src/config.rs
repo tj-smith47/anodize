@@ -606,6 +606,10 @@ pub struct WingetManifestsRepoConfig {
 #[serde(default)]
 pub struct AurConfig {
     /// AUR SSH git URL (e.g., `ssh://aur@aur.archlinux.org/<package>.git`).
+    ///
+    /// Required for publishing. The field is `Option` for serde compatibility
+    /// (omitted in config means "no AUR publishing"), but `publish_to_aur`
+    /// will return an error if it is `None` at publish time.
     pub git_url: Option<String>,
     pub package_name: Option<String>,
     pub description: Option<String>,
@@ -619,6 +623,18 @@ pub struct AurConfig {
     /// List of config files to preserve on upgrade (relative to `/`).
     pub backup: Option<Vec<String>>,
     pub url: Option<String>,
+    /// Custom install template for the PKGBUILD `package()` function.
+    ///
+    /// When omitted, defaults to:
+    /// ```text
+    /// install -Dm755 "$srcdir/<binary>" "$pkgdir/usr/bin/<binary>"
+    /// ```
+    ///
+    /// Use this when the archive has a subdirectory structure, e.g.:
+    /// ```text
+    /// install -Dm755 "$srcdir/<binary>-${pkgver}/<binary>" "$pkgdir/usr/bin/<binary>"
+    /// ```
+    pub install_template: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -636,6 +652,10 @@ pub struct KrewConfig {
     pub homepage: Option<String>,
     /// Post-install message shown to the user.
     pub caveats: Option<String>,
+    /// The upstream repo to submit the PR against (e.g. `kubernetes-sigs/krew-index`).
+    /// When omitted, defaults to `manifests_repo` owner/name, which is the fork.
+    /// Set this when your `manifests_repo` is a fork and PRs should target the upstream.
+    pub upstream_repo: Option<KrewManifestsRepoConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

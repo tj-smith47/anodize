@@ -25,6 +25,10 @@ pub struct PkgbuildParams<'a> {
     /// `(arch, url, sha256)` tuples — e.g. `("x86_64", url, hash)`.
     pub sources: &'a [(String, String, String)],
     pub binary_name: &'a str,
+    /// Custom install template for the `package()` function body.
+    /// When `None`, defaults to `install -Dm755 "$srcdir/<binary>" "$pkgdir/usr/bin/<binary>"`.
+    /// Use this when the archive places binaries in a subdirectory.
+    pub install_template: Option<&'a str>,
 }
 
 // ---------------------------------------------------------------------------
@@ -154,10 +158,15 @@ pub fn generate_pkgbuild(params: &PkgbuildParams<'_>) -> String {
     }
 
     // package() function.
-    out.push_str(&format!(
-        "\npackage() {{\n    install -Dm755 \"$srcdir/{}\" \"$pkgdir/usr/bin/{}\"\n}}\n",
-        params.binary_name, params.binary_name
-    ));
+    let install_line = if let Some(tmpl) = params.install_template {
+        format!("    {}", tmpl)
+    } else {
+        format!(
+            "    install -Dm755 \"$srcdir/{}\" \"$pkgdir/usr/bin/{}\"",
+            params.binary_name, params.binary_name
+        )
+    };
+    out.push_str(&format!("\npackage() {{\n{}\n}}\n", install_line));
 
     out
 }
@@ -215,9 +224,17 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str) -> Result<()> {
         .license
         .clone()
         .unwrap_or_else(|| "MIT".to_string());
-    let url = aur_cfg.url.clone().unwrap_or_else(|| {
-        format!("https://github.com/{}", crate_name)
-    });
+    let url = if let Some(ref u) = aur_cfg.url {
+        u.clone()
+    } else if let Some(gh) = crate_cfg.release.as_ref().and_then(|r| r.github.as_ref()) {
+        format!("https://github.com/{}/{}", gh.owner, gh.name)
+    } else {
+        anyhow::bail!(
+            "aur: no url configured for '{}' and no release.github owner/name available. \
+             Set `publish.aur.url` or configure `release.github` with owner and name.",
+            crate_name
+        );
+    };
     let maintainers = aur_cfg.maintainers.clone().unwrap_or_default();
     let depends = aur_cfg.depends.clone().unwrap_or_default();
     let optdepends = aur_cfg.optdepends.clone().unwrap_or_default();
@@ -245,15 +262,23 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str) -> Result<()> {
             ),
         ]
     } else {
+        // Deduplicate by architecture — AUR -bin packages expect one source per
+        // architecture. When multiple artifacts share the same arch (e.g.
+        // multiple linux-amd64 archives), keep only the first match.
+        let mut seen_arches = std::collections::HashSet::new();
         linux_artifacts
             .iter()
-            .map(|a| {
+            .filter_map(|a| {
                 let pkgbuild_arch = if a.arch == "arm64" {
                     "aarch64".to_string()
                 } else {
                     "x86_64".to_string()
                 };
-                (pkgbuild_arch, a.url.clone(), a.sha256.clone())
+                if seen_arches.insert(pkgbuild_arch.clone()) {
+                    Some((pkgbuild_arch, a.url.clone(), a.sha256.clone()))
+                } else {
+                    None
+                }
             })
             .collect()
     };
@@ -274,6 +299,7 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str) -> Result<()> {
         backup: &backup,
         sources: &sources,
         binary_name: crate_name,
+        install_template: aur_cfg.install_template.as_deref(),
     });
 
     // Clone AUR repo, write PKGBUILD, commit, push.
@@ -281,7 +307,7 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str) -> Result<()> {
     let repo_path = tmp_dir.path();
 
     let status = std::process::Command::new("git")
-        .args(["clone", git_url, &repo_path.to_string_lossy()])
+        .args(["clone", "--depth=1", git_url, &repo_path.to_string_lossy()])
         .status()
         .context("aur: git clone: spawn")?;
     if !status.success() {
@@ -374,6 +400,7 @@ mod tests {
                 "deadbeef1234".to_string(),
             )],
             binary_name: "mytool",
+            install_template: None,
         });
 
         assert!(pkgbuild.contains("# Maintainer: Jane Doe <jane@example.com>"));
@@ -422,6 +449,7 @@ mod tests {
                 ),
             ],
             binary_name: "mytool",
+            install_template: None,
         });
 
         assert!(pkgbuild.contains("arch=('aarch64' 'x86_64')"));
@@ -453,6 +481,7 @@ mod tests {
                 "hash".to_string(),
             )],
             binary_name: "mytool",
+            install_template: None,
         });
 
         assert!(pkgbuild.contains("depends=('glibc' 'openssl')"));
@@ -485,6 +514,7 @@ mod tests {
                 "hash".to_string(),
             )],
             binary_name: "tool",
+            install_template: None,
         });
 
         assert!(!pkgbuild.contains("# Maintainer:"));
@@ -520,6 +550,7 @@ mod tests {
                 ),
             ],
             binary_name: "anodize",
+            install_template: None,
         });
 
         // Starts with maintainer comment
@@ -536,6 +567,68 @@ mod tests {
 
         // Ends with closing brace
         assert!(pkgbuild.trim_end().ends_with('}'));
+    }
+
+    #[test]
+    fn test_generate_pkgbuild_custom_install_template() {
+        let pkgbuild = generate_pkgbuild(&PkgbuildParams {
+            name: "mytool",
+            version: "1.0.0",
+            pkgrel: 1,
+            description: "A tool with subdirectory archive",
+            url: "https://example.com",
+            license: "MIT",
+            maintainers: &[],
+            depends: &[],
+            optdepends: &[],
+            conflicts: &[],
+            provides: &[],
+            replaces: &[],
+            backup: &[],
+            sources: &[(
+                "x86_64".to_string(),
+                "https://example.com/mytool.tar.gz".to_string(),
+                "hash".to_string(),
+            )],
+            binary_name: "mytool",
+            install_template: Some(
+                r#"install -Dm755 "$srcdir/mytool-${pkgver}/mytool" "$pkgdir/usr/bin/mytool""#,
+            ),
+        });
+
+        assert!(pkgbuild.contains("package() {"));
+        assert!(pkgbuild.contains(
+            r#"install -Dm755 "$srcdir/mytool-${pkgver}/mytool" "$pkgdir/usr/bin/mytool""#
+        ));
+        // Should NOT contain the default install line
+        assert!(!pkgbuild.contains("\"$srcdir/mytool\" \"$pkgdir/usr/bin/mytool\""));
+    }
+
+    #[test]
+    fn test_generate_pkgbuild_duplicate_arch_sources() {
+        // Regression test: when sources have duplicate architectures, the
+        // PKGBUILD should only contain one source per arch.
+        let sources = vec![
+            (
+                "x86_64".to_string(),
+                "https://example.com/first-amd64.tar.gz".to_string(),
+                "hash1".to_string(),
+            ),
+            (
+                "x86_64".to_string(),
+                "https://example.com/second-amd64.tar.gz".to_string(),
+                "hash2".to_string(),
+            ),
+        ];
+        // Simulate the deduplication that publish_to_aur does before
+        // calling generate_pkgbuild (finding #1).
+        let mut seen = std::collections::HashSet::new();
+        let deduped: Vec<_> = sources
+            .into_iter()
+            .filter(|(arch, _, _)| seen.insert(arch.clone()))
+            .collect();
+        assert_eq!(deduped.len(), 1);
+        assert_eq!(deduped[0].1, "https://example.com/first-amd64.tar.gz");
     }
 
     // -----------------------------------------------------------------------

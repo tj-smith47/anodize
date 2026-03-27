@@ -2,7 +2,7 @@ use anodize_core::context::Context;
 use anyhow::{Context as _, Result};
 use std::process::Command;
 
-use crate::util::{find_all_platform_artifacts, run_cmd_in, OsArtifact};
+use crate::util::{find_all_platform_artifacts, run_cmd_in, yaml_quote, OsArtifact};
 
 // ---------------------------------------------------------------------------
 // KrewManifestParams
@@ -34,23 +34,26 @@ pub struct KrewPlatform {
 // ---------------------------------------------------------------------------
 
 /// Generate a Krew plugin manifest YAML string.
+///
+/// User-provided string values (`name`, `shortDescription`, `homepage`, `bin`)
+/// are YAML-quoted to prevent injection of special characters.
 pub fn generate_manifest(params: &KrewManifestParams<'_>) -> String {
     let mut yaml = String::new();
 
     yaml.push_str("apiVersion: krew.googlecontainertools.github.com/v1alpha2\n");
     yaml.push_str("kind: Plugin\n");
     yaml.push_str("metadata:\n");
-    yaml.push_str(&format!("  name: {}\n", params.name));
+    yaml.push_str(&format!("  name: {}\n", yaml_quote(params.name)));
     yaml.push_str("spec:\n");
     yaml.push_str(&format!("  version: v{}\n", params.version));
 
     if !params.homepage.is_empty() {
-        yaml.push_str(&format!("  homepage: {}\n", params.homepage));
+        yaml.push_str(&format!("  homepage: {}\n", yaml_quote(params.homepage)));
     }
 
     yaml.push_str(&format!(
-        "  shortDescription: \"{}\"\n",
-        params.short_description
+        "  shortDescription: {}\n",
+        yaml_quote(params.short_description)
     ));
 
     if !params.description.is_empty() {
@@ -73,15 +76,22 @@ pub fn generate_manifest(params: &KrewManifestParams<'_>) -> String {
         yaml.push_str("      matchLabels:\n");
         yaml.push_str(&format!("        os: {}\n", platform.os));
         yaml.push_str(&format!("        arch: {}\n", krew_arch(&platform.arch)));
-        yaml.push_str(&format!("    uri: {}\n", platform.url));
+        yaml.push_str(&format!("    uri: {}\n", yaml_quote(&platform.url)));
         yaml.push_str(&format!("    sha256: {}\n", platform.sha256));
-        yaml.push_str(&format!("    bin: {}\n", platform.bin));
+        yaml.push_str(&format!("    bin: {}\n", yaml_quote(&platform.bin)));
     }
 
     yaml
 }
 
 /// Map the internal arch names to Krew's expected labels.
+///
+/// This is a publisher-specific mapping layer on top of the generic
+/// `infer_arch` in `util.rs`. The util layer produces canonical short
+/// forms (`"amd64"`, `"arm64"`), and this function translates them
+/// to whatever Krew expects. Today the mapping is a no-op for the
+/// common cases, but keeping a separate layer allows adapting to
+/// future Krew label changes without touching the shared inference.
 fn krew_arch(arch: &str) -> &str {
     match arch {
         "amd64" | "x86_64" => "amd64",
@@ -91,6 +101,9 @@ fn krew_arch(arch: &str) -> &str {
 }
 
 /// Map the internal OS names to Krew's expected labels.
+///
+/// See `krew_arch` for the rationale behind keeping a separate mapping
+/// layer on top of `infer_os` in `util.rs`.
 fn krew_os(os: &str) -> &str {
     match os {
         "darwin" | "macos" => "darwin",
@@ -296,6 +309,16 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str) -> Result<()> {
         manifests_repo.owner, manifests_repo.name, branch_name
     );
 
+    // Determine the upstream repo to submit the PR against.
+    // Use the configured upstream_repo if available, otherwise fall back to
+    // the manifests_repo itself (which works when it is the canonical repo
+    // rather than a fork).
+    let upstream = krew_cfg
+        .upstream_repo
+        .as_ref()
+        .unwrap_or(manifests_repo);
+    let upstream_slug = format!("{}/{}", upstream.owner, upstream.name);
+
     // Submit PR via GitHub CLI (gh) if available.
     let pr_result = Command::new("gh")
         .current_dir(repo_path)
@@ -303,7 +326,7 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str) -> Result<()> {
             "pr",
             "create",
             "--repo",
-            "kubernetes-sigs/krew-index",
+            &upstream_slug,
             "--title",
             &format!("Add/update {} plugin to v{}", crate_name, version),
             "--body",
@@ -382,9 +405,9 @@ mod tests {
 
         assert!(manifest.contains("apiVersion: krew.googlecontainertools.github.com/v1alpha2"));
         assert!(manifest.contains("kind: Plugin"));
-        assert!(manifest.contains("  name: kubectl-mytool"));
+        assert!(manifest.contains("  name: \"kubectl-mytool\""));
         assert!(manifest.contains("  version: v1.0.0"));
-        assert!(manifest.contains("  homepage: https://github.com/org/mytool"));
+        assert!(manifest.contains("  homepage: \"https://github.com/org/mytool\""));
         assert!(manifest.contains("  shortDescription: \"A kubectl plugin\""));
         assert!(manifest.contains("  description: |"));
         assert!(manifest.contains("    A great kubectl plugin for managing things."));
@@ -392,11 +415,11 @@ mod tests {
         assert!(manifest.contains("  platforms:"));
         assert!(manifest.contains("        os: linux"));
         assert!(manifest.contains("        arch: amd64"));
-        assert!(manifest.contains("    uri: https://example.com/mytool-linux-amd64.tar.gz"));
+        assert!(manifest.contains("    uri: \"https://example.com/mytool-linux-amd64.tar.gz\""));
         assert!(manifest.contains("    sha256: deadbeef"));
-        assert!(manifest.contains("    bin: kubectl-mytool"));
+        assert!(manifest.contains("    bin: \"kubectl-mytool\""));
         assert!(manifest.contains("        os: darwin"));
-        assert!(manifest.contains("    uri: https://example.com/mytool-darwin-amd64.tar.gz"));
+        assert!(manifest.contains("    uri: \"https://example.com/mytool-darwin-amd64.tar.gz\""));
         assert!(manifest.contains("    sha256: cafebabe"));
     }
 
@@ -530,7 +553,7 @@ mod tests {
         assert_eq!(lines[0], "apiVersion: krew.googlecontainertools.github.com/v1alpha2");
         assert_eq!(lines[1], "kind: Plugin");
         assert_eq!(lines[2], "metadata:");
-        assert_eq!(lines[3], "  name: kubectl-anodize");
+        assert_eq!(lines[3], "  name: \"kubectl-anodize\"");
         assert_eq!(lines[4], "spec:");
         assert!(lines[5].contains("version: v3.2.1"));
 
