@@ -33,6 +33,10 @@ fn append_tar_entry<W: std::io::Write>(
         header
             .set_metadata(&metadata);
         header.set_mtime(ts);
+        header.set_uid(0);
+        header.set_gid(0);
+        header.set_username("").ok();
+        header.set_groupname("").ok();
         header.set_path(archive_name)
             .with_context(|| format!("set tar path: {}", archive_name.display()))?;
         header.set_cksum();
@@ -496,10 +500,24 @@ impl Stage for ArchiveStage {
 
                     let path_refs: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
 
-                    // Check SOURCE_DATE_EPOCH for reproducible archive mtime
-                    let source_date_epoch: Option<u64> = std::env::var("SOURCE_DATE_EPOCH")
-                        .ok()
-                        .and_then(|v| v.parse::<u64>().ok());
+                    // Determine reproducible mtime: prefer CommitTimestamp from context
+                    // when any crate has reproducible: true, fall back to SOURCE_DATE_EPOCH.
+                    let source_date_epoch: Option<u64> = {
+                        let any_reproducible = ctx.config.crates.iter().any(|c| {
+                            c.builds.as_ref().is_some_and(|builds| {
+                                builds.iter().any(|b| b.reproducible.unwrap_or(false))
+                            })
+                        });
+                        if any_reproducible {
+                            ctx.template_vars()
+                                .get("CommitTimestamp")
+                                .and_then(|ts| ts.parse::<u64>().ok())
+                        } else {
+                            std::env::var("SOURCE_DATE_EPOCH")
+                                .ok()
+                                .and_then(|s| s.parse::<u64>().ok())
+                        }
+                    };
 
                     if ctx.options.dry_run {
                         eprintln!(
