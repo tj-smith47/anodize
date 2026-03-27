@@ -1,0 +1,748 @@
+use std::process::Command;
+
+use anyhow::{Context as _, Result};
+
+use anodize_core::artifact::ArtifactKind;
+use anodize_core::config::UpxConfig;
+use anodize_core::context::Context;
+use anodize_core::stage::Stage;
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Check whether the UPX binary can be found on the system.
+/// For absolute paths, checks if the file exists. For bare names,
+/// uses `which` to search the PATH.
+fn find_upx_binary(binary: &str) -> bool {
+    if binary.contains('/') {
+        std::path::Path::new(binary).exists()
+    } else {
+        Command::new("which")
+            .arg(binary)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+}
+
+/// Match a target string against a glob-style pattern.
+/// Supports `*` as a wildcard that matches any sequence of characters.
+pub fn target_matches_pattern(target: &str, pattern: &str) -> bool {
+    glob::Pattern::new(pattern)
+        .map(|p| p.matches(target))
+        .unwrap_or(false)
+}
+
+/// Check if an artifact should be compressed by this UPX config.
+/// Returns `true` if the artifact matches the ids and targets filters.
+pub fn should_compress(
+    upx_cfg: &UpxConfig,
+    artifact_target: Option<&str>,
+    artifact_metadata_id: Option<&str>,
+    artifact_metadata_name: Option<&str>,
+) -> bool {
+    // Filter by ids: if ids is set, at least one must match the artifact metadata
+    if let Some(ref ids) = upx_cfg.ids {
+        let matches_id = artifact_metadata_id
+            .map(|id| ids.contains(&id.to_string()))
+            .unwrap_or(false);
+        let matches_name = artifact_metadata_name
+            .map(|name| ids.contains(&name.to_string()))
+            .unwrap_or(false);
+        if !matches_id && !matches_name {
+            return false;
+        }
+    }
+
+    // Filter by targets: if targets is set, at least one pattern must match
+    if let Some(ref targets) = upx_cfg.targets {
+        if let Some(target) = artifact_target {
+            if !targets.iter().any(|pat| target_matches_pattern(target, pat)) {
+                return false;
+            }
+        } else {
+            // No target on artifact but targets filter is set => skip
+            return false;
+        }
+    }
+
+    true
+}
+
+// ---------------------------------------------------------------------------
+// UpxStage
+// ---------------------------------------------------------------------------
+
+pub struct UpxStage;
+
+impl Stage for UpxStage {
+    fn name(&self) -> &str {
+        "upx"
+    }
+
+    fn run(&self, ctx: &mut Context) -> Result<()> {
+        let upx_configs = ctx.config.upx.clone();
+
+        if upx_configs.is_empty() {
+            return Ok(());
+        }
+
+        for upx_cfg in &upx_configs {
+            if !upx_cfg.enabled {
+                continue;
+            }
+
+            let binary = &upx_cfg.binary;
+
+            // Check if UPX binary exists
+            if !ctx.is_dry_run() && !find_upx_binary(binary) {
+                if upx_cfg.required {
+                    anyhow::bail!(
+                        "upx: binary '{}' not found and this config is marked as required",
+                        binary
+                    );
+                }
+                eprintln!(
+                    "[upx] warning: binary '{}' not found, skipping compression",
+                    binary
+                );
+                continue;
+            }
+
+            // Collect matching Binary artifacts
+            let matching_artifacts: Vec<(std::path::PathBuf, Option<String>)> = ctx
+                .artifacts
+                .by_kind(ArtifactKind::Binary)
+                .iter()
+                .filter(|a| {
+                    should_compress(
+                        upx_cfg,
+                        a.target.as_deref(),
+                        a.metadata.get("id").map(|s| s.as_str()),
+                        a.metadata.get("name").map(|s| s.as_str()),
+                    )
+                })
+                .map(|a| (a.path.clone(), a.target.clone()))
+                .collect();
+
+            if matching_artifacts.is_empty() {
+                let id_label = upx_cfg.id.as_deref().unwrap_or("default");
+                eprintln!("[upx:{}] no matching binary artifacts to compress", id_label);
+                continue;
+            }
+
+            for (artifact_path, target) in &matching_artifacts {
+                let artifact_str = artifact_path.to_string_lossy();
+                let id_label = upx_cfg.id.as_deref().unwrap_or("default");
+                let target_label = target.as_deref().unwrap_or("unknown");
+
+                if ctx.is_dry_run() {
+                    eprintln!(
+                        "[upx:{}] (dry-run) would run: {} {} {}",
+                        id_label,
+                        binary,
+                        upx_cfg.args.join(" "),
+                        artifact_str,
+                    );
+                    continue;
+                }
+
+                eprintln!(
+                    "[upx:{}] compressing {} (target: {})",
+                    id_label, artifact_str, target_label,
+                );
+
+                let status = Command::new(binary)
+                    .args(&upx_cfg.args)
+                    .arg(artifact_path)
+                    .status()
+                    .with_context(|| {
+                        format!(
+                            "upx: failed to spawn '{}' for {}",
+                            binary, artifact_str
+                        )
+                    })?;
+
+                if !status.success() {
+                    anyhow::bail!(
+                        "upx: '{}' exited with non-zero status for {}",
+                        binary,
+                        artifact_str,
+                    );
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anodize_core::artifact::{Artifact, ArtifactKind};
+    use anodize_core::config::UpxConfig;
+    use anodize_core::test_helpers::TestContextBuilder;
+
+    // -----------------------------------------------------------------------
+    // target_matches_pattern tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_target_matches_exact() {
+        assert!(target_matches_pattern(
+            "x86_64-unknown-linux-gnu",
+            "x86_64-unknown-linux-gnu"
+        ));
+    }
+
+    #[test]
+    fn test_target_matches_prefix_wildcard() {
+        assert!(target_matches_pattern(
+            "x86_64-unknown-linux-gnu",
+            "x86_64-*"
+        ));
+    }
+
+    #[test]
+    fn test_target_matches_suffix_wildcard() {
+        assert!(target_matches_pattern(
+            "x86_64-unknown-linux-gnu",
+            "*-linux-gnu"
+        ));
+    }
+
+    #[test]
+    fn test_target_matches_middle_wildcard() {
+        assert!(target_matches_pattern(
+            "x86_64-unknown-linux-gnu",
+            "*-linux-*"
+        ));
+    }
+
+    #[test]
+    fn test_target_no_match() {
+        assert!(!target_matches_pattern(
+            "x86_64-unknown-linux-gnu",
+            "aarch64-*"
+        ));
+    }
+
+    #[test]
+    fn test_target_matches_star_matches_all() {
+        assert!(target_matches_pattern(
+            "x86_64-unknown-linux-gnu",
+            "*"
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // should_compress tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_should_compress_no_filters() {
+        let cfg = UpxConfig::default();
+        assert!(should_compress(&cfg, Some("x86_64-unknown-linux-gnu"), None, None));
+    }
+
+    #[test]
+    fn test_should_compress_no_filters_no_target() {
+        let cfg = UpxConfig::default();
+        assert!(should_compress(&cfg, None, None, None));
+    }
+
+    #[test]
+    fn test_should_compress_ids_filter_matches_id() {
+        let cfg = UpxConfig {
+            ids: Some(vec!["myapp".to_string()]),
+            ..Default::default()
+        };
+        assert!(should_compress(&cfg, Some("x86_64-unknown-linux-gnu"), Some("myapp"), None));
+    }
+
+    #[test]
+    fn test_should_compress_ids_filter_matches_name() {
+        let cfg = UpxConfig {
+            ids: Some(vec!["myapp".to_string()]),
+            ..Default::default()
+        };
+        assert!(should_compress(&cfg, Some("x86_64-unknown-linux-gnu"), None, Some("myapp")));
+    }
+
+    #[test]
+    fn test_should_compress_ids_filter_no_match() {
+        let cfg = UpxConfig {
+            ids: Some(vec!["myapp".to_string()]),
+            ..Default::default()
+        };
+        assert!(!should_compress(
+            &cfg,
+            Some("x86_64-unknown-linux-gnu"),
+            Some("other"),
+            Some("other-name"),
+        ));
+    }
+
+    #[test]
+    fn test_should_compress_ids_filter_no_metadata() {
+        let cfg = UpxConfig {
+            ids: Some(vec!["myapp".to_string()]),
+            ..Default::default()
+        };
+        assert!(!should_compress(&cfg, Some("x86_64-unknown-linux-gnu"), None, None));
+    }
+
+    #[test]
+    fn test_should_compress_targets_filter_matches() {
+        let cfg = UpxConfig {
+            targets: Some(vec!["x86_64-*".to_string()]),
+            ..Default::default()
+        };
+        assert!(should_compress(&cfg, Some("x86_64-unknown-linux-gnu"), None, None));
+    }
+
+    #[test]
+    fn test_should_compress_targets_filter_no_match() {
+        let cfg = UpxConfig {
+            targets: Some(vec!["aarch64-*".to_string()]),
+            ..Default::default()
+        };
+        assert!(!should_compress(&cfg, Some("x86_64-unknown-linux-gnu"), None, None));
+    }
+
+    #[test]
+    fn test_should_compress_targets_filter_no_target() {
+        let cfg = UpxConfig {
+            targets: Some(vec!["x86_64-*".to_string()]),
+            ..Default::default()
+        };
+        assert!(!should_compress(&cfg, None, None, None));
+    }
+
+    #[test]
+    fn test_should_compress_multiple_targets() {
+        let cfg = UpxConfig {
+            targets: Some(vec!["x86_64-*".to_string(), "aarch64-*".to_string()]),
+            ..Default::default()
+        };
+        assert!(should_compress(&cfg, Some("x86_64-unknown-linux-gnu"), None, None));
+        assert!(should_compress(&cfg, Some("aarch64-apple-darwin"), None, None));
+        assert!(!should_compress(&cfg, Some("armv7-unknown-linux-gnueabihf"), None, None));
+    }
+
+    #[test]
+    fn test_should_compress_both_filters() {
+        let cfg = UpxConfig {
+            ids: Some(vec!["myapp".to_string()]),
+            targets: Some(vec!["x86_64-*".to_string()]),
+            ..Default::default()
+        };
+        // Both filters must match
+        assert!(should_compress(
+            &cfg,
+            Some("x86_64-unknown-linux-gnu"),
+            Some("myapp"),
+            None,
+        ));
+        // Correct id but wrong target
+        assert!(!should_compress(
+            &cfg,
+            Some("aarch64-apple-darwin"),
+            Some("myapp"),
+            None,
+        ));
+        // Correct target but wrong id
+        assert!(!should_compress(
+            &cfg,
+            Some("x86_64-unknown-linux-gnu"),
+            Some("other"),
+            None,
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // Config parsing tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_config_parse_single_upx_object() {
+        let yaml = r#"
+project_name: test
+upx:
+  binary: /usr/bin/upx
+  args:
+    - "--best"
+    - "--lzma"
+crates: []
+"#;
+        let config: anodize_core::config::Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.upx.len(), 1);
+        assert_eq!(config.upx[0].binary, "/usr/bin/upx");
+        assert_eq!(config.upx[0].args, vec!["--best", "--lzma"]);
+        assert!(config.upx[0].enabled);
+        assert!(!config.upx[0].required);
+    }
+
+    #[test]
+    fn test_config_parse_upx_array() {
+        let yaml = r#"
+project_name: test
+upx:
+  - id: linux
+    args: ["--best"]
+    targets: ["x86_64-*", "aarch64-*-linux-*"]
+  - id: windows
+    args: ["--lzma"]
+    targets: ["*-windows-*"]
+crates: []
+"#;
+        let config: anodize_core::config::Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.upx.len(), 2);
+        assert_eq!(config.upx[0].id, Some("linux".to_string()));
+        assert_eq!(config.upx[0].targets.as_ref().unwrap().len(), 2);
+        assert_eq!(config.upx[1].id, Some("windows".to_string()));
+    }
+
+    #[test]
+    fn test_config_parse_upx_defaults() {
+        let yaml = r#"
+project_name: test
+upx:
+  - {}
+crates: []
+"#;
+        let config: anodize_core::config::Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.upx.len(), 1);
+        assert!(config.upx[0].enabled);
+        assert_eq!(config.upx[0].binary, "upx");
+        assert!(config.upx[0].args.is_empty());
+        assert!(!config.upx[0].required);
+        assert!(config.upx[0].ids.is_none());
+        assert!(config.upx[0].targets.is_none());
+    }
+
+    #[test]
+    fn test_config_parse_no_upx() {
+        let yaml = r#"
+project_name: test
+crates: []
+"#;
+        let config: anodize_core::config::Config = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.upx.is_empty());
+    }
+
+    #[test]
+    fn test_config_parse_upx_with_ids() {
+        let yaml = r#"
+project_name: test
+upx:
+  ids: ["myapp", "helper"]
+  args: ["--best"]
+crates: []
+"#;
+        let config: anodize_core::config::Config = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.upx.len(), 1);
+        let ids = config.upx[0].ids.as_ref().unwrap();
+        assert_eq!(ids, &["myapp", "helper"]);
+    }
+
+    #[test]
+    fn test_config_parse_upx_required() {
+        let yaml = r#"
+project_name: test
+upx:
+  required: true
+  args: ["--best"]
+crates: []
+"#;
+        let config: anodize_core::config::Config = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.upx[0].required);
+    }
+
+    #[test]
+    fn test_config_parse_upx_disabled() {
+        let yaml = r#"
+project_name: test
+upx:
+  enabled: false
+crates: []
+"#;
+        let config: anodize_core::config::Config = serde_yaml::from_str(yaml).unwrap();
+        assert!(!config.upx[0].enabled);
+    }
+
+    // -----------------------------------------------------------------------
+    // Stage behavior tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_stage_skips_without_upx_config() {
+        let mut ctx = TestContextBuilder::new().build();
+        let stage = UpxStage;
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_stage_skips_disabled_config() {
+        let upx = vec![UpxConfig {
+            enabled: false,
+            binary: "/nonexistent/binary".to_string(),
+            args: vec!["--best".to_string()],
+            ..Default::default()
+        }];
+
+        let mut ctx = TestContextBuilder::new().upx(upx).build();
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: std::path::PathBuf::from("/tmp/myapp"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "test".to_string(),
+            metadata: Default::default(),
+        });
+
+        let stage = UpxStage;
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_stage_skips_with_warning_when_upx_not_found() {
+        let upx = vec![UpxConfig {
+            binary: "/nonexistent/upx-binary-that-does-not-exist".to_string(),
+            required: false,
+            ..Default::default()
+        }];
+
+        let mut ctx = TestContextBuilder::new().upx(upx).build();
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: std::path::PathBuf::from("/tmp/myapp"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "test".to_string(),
+            metadata: Default::default(),
+        });
+
+        let stage = UpxStage;
+        // Should succeed (skip with warning, not error)
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_stage_errors_when_required_and_upx_not_found() {
+        let upx = vec![UpxConfig {
+            binary: "/nonexistent/upx-binary-that-does-not-exist".to_string(),
+            required: true,
+            ..Default::default()
+        }];
+
+        let mut ctx = TestContextBuilder::new().upx(upx).build();
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: std::path::PathBuf::from("/tmp/myapp"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "test".to_string(),
+            metadata: Default::default(),
+        });
+
+        let stage = UpxStage;
+        let result = stage.run(&mut ctx);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("not found") && err.contains("required"),
+            "error should mention 'not found' and 'required', got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_dry_run_logs_without_executing() {
+        let upx = vec![UpxConfig {
+            binary: "/nonexistent/upx-binary".to_string(),
+            args: vec!["--best".to_string(), "--lzma".to_string()],
+            ..Default::default()
+        }];
+
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(true)
+            .upx(upx)
+            .build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: std::path::PathBuf::from("/tmp/myapp"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "test".to_string(),
+            metadata: Default::default(),
+        });
+
+        let stage = UpxStage;
+        // In dry-run, we skip the binary existence check and just log
+        let result = stage.run(&mut ctx);
+        assert!(
+            result.is_ok(),
+            "dry-run must not execute upx; got error: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_stage_only_processes_binary_artifacts() {
+        let upx = vec![UpxConfig {
+            binary: "/nonexistent/upx-binary".to_string(),
+            ..Default::default()
+        }];
+
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(true)
+            .upx(upx)
+            .build();
+
+        // Add a non-Binary artifact — should be ignored
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from("/tmp/myapp.tar.gz"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "test".to_string(),
+            metadata: Default::default(),
+        });
+
+        let stage = UpxStage;
+        // Should complete without processing any artifacts
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_artifact_filtering_by_ids_in_stage() {
+        let upx = vec![UpxConfig {
+            ids: Some(vec!["myapp".to_string()]),
+            binary: "/nonexistent/upx-binary".to_string(),
+            ..Default::default()
+        }];
+
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(true)
+            .upx(upx)
+            .build();
+
+        // Matching artifact
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: std::path::PathBuf::from("/tmp/myapp"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "test".to_string(),
+            metadata: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("id".to_string(), "myapp".to_string());
+                m
+            },
+        });
+
+        // Non-matching artifact
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: std::path::PathBuf::from("/tmp/other"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "test".to_string(),
+            metadata: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("id".to_string(), "other".to_string());
+                m
+            },
+        });
+
+        let stage = UpxStage;
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_artifact_filtering_by_targets_in_stage() {
+        let upx = vec![UpxConfig {
+            targets: Some(vec!["x86_64-*".to_string()]),
+            binary: "/nonexistent/upx-binary".to_string(),
+            ..Default::default()
+        }];
+
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(true)
+            .upx(upx)
+            .build();
+
+        // Matching target
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: std::path::PathBuf::from("/tmp/myapp-linux"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "test".to_string(),
+            metadata: Default::default(),
+        });
+
+        // Non-matching target
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: std::path::PathBuf::from("/tmp/myapp-arm"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "test".to_string(),
+            metadata: Default::default(),
+        });
+
+        let stage = UpxStage;
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_multiple_upx_configs_run_independently() {
+        let upx = vec![
+            UpxConfig {
+                id: Some("linux".to_string()),
+                targets: Some(vec!["*-linux-*".to_string()]),
+                args: vec!["--best".to_string()],
+                binary: "/nonexistent/upx".to_string(),
+                ..Default::default()
+            },
+            UpxConfig {
+                id: Some("windows".to_string()),
+                targets: Some(vec!["*-windows-*".to_string()]),
+                args: vec!["--lzma".to_string()],
+                binary: "/nonexistent/upx".to_string(),
+                ..Default::default()
+            },
+        ];
+
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(true)
+            .upx(upx)
+            .build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: std::path::PathBuf::from("/tmp/myapp-linux"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "test".to_string(),
+            metadata: Default::default(),
+        });
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: std::path::PathBuf::from("/tmp/myapp.exe"),
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "test".to_string(),
+            metadata: Default::default(),
+        });
+
+        let stage = UpxStage;
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_stage_name() {
+        let stage = UpxStage;
+        assert_eq!(stage.name(), "upx");
+    }
+}

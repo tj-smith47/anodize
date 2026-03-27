@@ -17,7 +17,7 @@
 //! - [`make_git_info`] — creates a [`GitInfo`] with sensible defaults
 //! - [`create_fake_binary`] — creates a dummy binary file for archive/checksum tests
 
-use crate::config::{Config, CrateConfig, Defaults, SignConfig};
+use crate::config::{Config, CrateConfig, Defaults, SignConfig, UpxConfig};
 use crate::context::{Context, ContextOptions};
 use crate::git::{GitInfo, SemVer};
 use std::fs;
@@ -68,6 +68,7 @@ pub struct TestContextBuilder {
     populate_git_vars: bool,
     dist: Option<PathBuf>,
     signs: Vec<SignConfig>,
+    upx: Vec<UpxConfig>,
     defaults: Option<Defaults>,
     source: Option<crate::config::SourceConfig>,
     sbom: Option<crate::config::SbomConfig>,
@@ -104,6 +105,7 @@ impl Default for TestContextBuilder {
             populate_git_vars: true,
             dist: None,
             signs: Vec::new(),
+            upx: Vec::new(),
             defaults: None,
             source: None,
             sbom: None,
@@ -243,6 +245,12 @@ impl TestContextBuilder {
         self
     }
 
+    /// Set UPX configurations.
+    pub fn upx(mut self, upx: Vec<UpxConfig>) -> Self {
+        self.upx = upx;
+        self
+    }
+
     /// Set default configuration (e.g. global checksum disable).
     pub fn defaults(mut self, defaults: Defaults) -> Self {
         self.defaults = Some(defaults);
@@ -268,6 +276,7 @@ impl TestContextBuilder {
         config.project_name = self.project_name;
         config.crates = self.crates;
         config.signs = self.signs;
+        config.upx = self.upx;
         config.defaults = self.defaults;
         config.source = self.source;
         config.sbom = self.sbom;

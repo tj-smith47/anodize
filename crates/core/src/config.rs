@@ -22,6 +22,8 @@ pub struct Config {
     #[serde(default, alias = "sign", deserialize_with = "deserialize_signs")]
     pub signs: Vec<SignConfig>,
     pub docker_signs: Option<Vec<DockerSignConfig>>,
+    #[serde(default, deserialize_with = "deserialize_upx")]
+    pub upx: Vec<UpxConfig>,
     pub snapshot: Option<SnapshotConfig>,
     pub nightly: Option<NightlyConfig>,
     pub announce: Option<AnnounceConfig>,
@@ -51,6 +53,7 @@ impl Default for Config {
             changelog: None,
             signs: Vec::new(),
             docker_signs: None,
+            upx: Vec::new(),
             snapshot: None,
             nightly: None,
             announce: None,
@@ -868,6 +871,81 @@ pub struct DockerSignConfig {
     pub artifacts: Option<String>,
     pub cmd: Option<String>,
     pub args: Option<Vec<String>>,
+}
+
+// ---------------------------------------------------------------------------
+// UpxConfig
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpxConfig {
+    pub id: Option<String>,
+    pub ids: Option<Vec<String>>,
+    pub enabled: bool,
+    pub binary: String,
+    pub args: Vec<String>,
+    pub required: bool,
+    pub targets: Option<Vec<String>>,
+}
+
+impl Default for UpxConfig {
+    fn default() -> Self {
+        UpxConfig {
+            id: None,
+            ids: None,
+            enabled: true,
+            binary: "upx".to_string(),
+            args: Vec::new(),
+            required: false,
+            targets: None,
+        }
+    }
+}
+
+/// Custom deserializer for the `upx` field.
+/// Accepts:
+///   - null/missing -> empty vec (via serde default)
+///   - a single object -> vec of one UpxConfig
+///   - an array -> vec of UpxConfig
+fn deserialize_upx<'de, D>(deserializer: D) -> Result<Vec<UpxConfig>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::{self, Visitor};
+
+    struct UpxVisitor;
+
+    impl<'de> Visitor<'de> for UpxVisitor {
+        type Value = Vec<UpxConfig>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a upx config object or an array of upx config objects")
+        }
+
+        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut configs = Vec::new();
+            while let Some(item) = seq.next_element::<UpxConfig>()? {
+                configs.push(item);
+            }
+            Ok(configs)
+        }
+
+        fn visit_map<M: de::MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
+            let config = UpxConfig::deserialize(de::value::MapAccessDeserializer::new(map))?;
+            Ok(vec![config])
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+    }
+
+    deserializer.deserialize_any(UpxVisitor)
 }
 
 // ---------------------------------------------------------------------------
