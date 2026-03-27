@@ -7,7 +7,7 @@ generate_feeds = false
 
 [markdown]
 highlight_code = true
-highlight_theme = "base16-ocean-dark"
+highlight_theme = "dracula"
 extra_syntaxes_and_themes = []
 
 [extra]
