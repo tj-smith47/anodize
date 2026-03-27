@@ -315,6 +315,8 @@ Expand E2E coverage beyond the current 6 tests:
 
 **Session 4 exit criteria:** 800+ tests. Every config field has parsing + behavior tests. Every stage has error path tests. 15+ E2E tests. Coverage report shows no major untested code paths. Test infrastructure supports efficient test development going forward.
 
+**Session 4 actual results:** 812 tests, 80.4% line coverage. Config parsing (265 tests) exceeds GoReleaser. But GoReleaser still has ~2,000 tests — gaps remain in build (37 vs 261), sign (22 vs 75), changelog (58 vs 107), Homebrew (17 vs 94), and no golden file / fuzz tests. Full parity deferred to Session 7 (after all features are implemented).
+
 ---
 
 ## Session 5: Extended Features — Completeness Pass
@@ -399,32 +401,102 @@ Eliminate the need for a separate tagging action (like `anothrNick/github-tag-ac
 
 ---
 
-## Session 7: Full Audit — Code Quality Gate
+## Session 7: Test Parity Completion — Match GoReleaser's Coverage
 
-**Depends on:** Session 6 complete.
+**Depends on:** Session 6 complete (all features implemented, all feature gaps closed).
 
-**Why before publish:** Sessions 1-6 were built fast across many parallel agents. Code quality, consistency, and dead code accumulate. A systematic audit before publishing catches design drift, duplication, unwired features, and cohesion issues that individual task reviews miss. The comprehensive test suite from Sessions 4 and 6 provides a safety net for refactoring.
+**Why here:** Session 4 built test infrastructure and raised coverage from 441 to 812 tests, but the final comparison (`.claude/specs/test-coverage-comparison.md`) showed GoReleaser still ahead ~2,000 vs 812. After Session 6, every feature gap is closed — there is no excuse for missing tests. This session systematically closes the remaining test gap using the comparison spec as the authoritative input.
 
-### Task 7A: Run `/full-audit`
+**Reference:** `.claude/specs/test-coverage-comparison.md` — the per-stage, per-category comparison with concrete numbers.
+
+> **Before starting this session:** Re-run the GoReleaser comparison against anodize's current state (post-Sessions 5+6). The comparison spec was written after Session 4 and does not reflect features/tests added in Sessions 5-6. Update the numbers, then use the updated spec as the task list.
+
+### Task 7A: Update the comparison spec
+- Re-run `cargo tarpaulin --workspace` for current coverage numbers
+- Re-count tests per stage/module
+- Browse GoReleaser's current test suite for any new tests since the last audit
+- Update `.claude/specs/test-coverage-comparison.md` with current numbers
+- Identify every row where anodize is behind and compute the exact delta
+
+**Done when:** Updated comparison spec with current numbers. Every deficit has a concrete test count target.
+
+### Task 7B: Build stage test parity (biggest gap)
+- GoReleaser: ~261 tests. Target: match or exceed for shared feature scope
+- Add tests for: multiple builder backends, cross-compilation targets, build hooks (pre/post), build output types, ldflags/flags templates, artifact registration, dry-run behavior, build failure error paths, parallelism, copy_from behavior, Windows .exe suffix, selected_crates filter
+- Use real cargo builds with minimal fixture crates where needed
+
+**Done when:** Build stage test count reaches parity with GoReleaser's shared-feature scope (excluding Go/Zig/Bun/Deno-specific tests).
+
+### Task 7C: Golden file testing infrastructure + publisher tests
+- Implement golden file test pattern: compare generated output against reference files, with `UPDATE_GOLDEN=1` env var for regeneration
+- Add golden file tests for: Homebrew formula generation, Scoop manifest generation, nfpm YAML generation
+- Close Homebrew gap (17 vs 94): formula variations, dependencies, caveats, test stanzas, multi-arch, PR creation logic
+- Close Scoop gap (14 vs 34): manifest variations, autoupdate, architecture blocks
+
+**Done when:** Golden file infrastructure exists. Homebrew and Scoop test counts reach parity with GoReleaser.
+
+### Task 7D: Sign + changelog + release stage parity
+- Sign (22 vs 75): multiple signature types, docker signing, GPG config, template vars in args, stdin piping, cosign-style signing, error paths for each
+- Changelog (58 vs 107): git log parsing edge cases, merge commit handling, special characters, multiple SCM formats, commit grouping depth
+- Release (53 vs 125): mock-client pipeline tests (create + upload + verify), draft/prerelease combinations, replace_existing behavior, artifact upload errors, IDs filter, name_template rendering through mock
+
+**Done when:** Each stage's test count is within 80% of GoReleaser's count for shared features.
+
+### Task 7E: Announce, docker, nfpm stage parity
+- Announce (20 vs 104): each provider individually tested, message template rendering, custom headers, error paths per provider, multi-error collection
+- Docker (29 vs 66): image template rendering, manifest creation, digest handling, multi-platform builds, binary staging verification
+- NFpm (35 vs 75): multiple format generation, template expressions in fields, contents glob expansion, format-specific overrides, artifact registration
+
+**Done when:** Each stage reaches parity for shared-feature scope.
+
+### Task 7F: Fuzz testing + httptest API mocks
+- Add fuzz tests for: template engine (random template strings), config parser (random YAML), artifact registry operations
+- Replace MockGitHubClient trait-only mocking with httptest-style server mocking (use `wiremock` or `mockito` crate) to test real HTTP serialization, headers, status codes
+- Add release stage tests that exercise the full HTTP path through the mock server
+
+**Done when:** At least 5 fuzz test functions exist. HTTP-level mock tests exist for release stage. `cargo fuzz` or `cargo test` with fuzz-like property tests pass.
+
+### Task 7G: Final comparison + coverage gate
+- Re-run `cargo tarpaulin --workspace` — target 85%+ line coverage
+- Re-run GoReleaser comparison — update the spec
+- For every stage where anodize is still behind, document whether the gap is:
+  - (a) Closed — test counts match for shared features
+  - (b) Intentionally smaller — feature not in scope, with justification
+  - (c) Still open — with specific plan for next session
+- No category (c) items allowed for session completion
+
+**Done when:** Updated comparison shows parity or justified omission for every stage. Coverage ≥85%. No unjustified test gaps remain.
+
+**Session 7 exit criteria:** Test count reaches GoReleaser parity for all shared features (adjusted for feature scope). Golden file tests for all generated manifests. Fuzz tests for parsers. HTTP-level mock tests for API stages. ≥85% line coverage. Updated comparison spec shows no unjustified gaps.
+
+---
+
+## Session 8: Full Audit — Code Quality Gate
+
+**Depends on:** Session 7 complete.
+
+**Why before publish:** Sessions 1-7 were built fast across many parallel agents. Code quality, consistency, and dead code accumulate. A systematic audit before publishing catches design drift, duplication, unwired features, and cohesion issues that individual task reviews miss. The comprehensive test suite from Sessions 4, 6, and 7 provides a safety net for refactoring.
+
+### Task 8A: Run `/full-audit`
 - Run the full-audit skill which dispatches three parallel agents:
   - **Design + Cohesion review** — inconsistent error handling, parameter styles, logging, naming conventions, cohesion issues across all 12 crates
   - **Duplication scan** — duplicated logic across stage crates, shared code that should be in `core`
   - **Gap analysis** — config fields parsed but never consumed, public functions with no production callers, error variants never constructed
 - All automated checks (fmt, clippy, test) must pass before and after
 
-### Task 7B: Fix all Round 1 findings
+### Task 8B: Fix all Round 1 findings
 - Create task list from aggregated findings
 - Fix all findings in priority order (critical → important → minor)
 - Run test suite after each logical group of changes
 
-### Task 7C: Round 2 verification
+### Task 8C: Round 2 verification
 - Re-run full-audit to catch regressions and issues missed in Round 1
 - Fix any new findings
 - Continue until a round returns zero findings or 3 rounds complete
 
 **Done when:** Full audit returns zero findings. All automated checks pass. No dead code, no duplication, no design inconsistencies across crates.
 
-**Session 7 exit criteria:** Clean full-audit (zero findings across all three scopes). `cargo fmt --check`, `cargo clippy -- -D warnings`, and `cargo test --workspace` all pass. Codebase is publish-ready.
+**Session 8 exit criteria:** Clean full-audit (zero findings across all three scopes). `cargo fmt --check`, `cargo clippy -- -D warnings`, and `cargo test --workspace` all pass. Codebase is publish-ready.
 
 ---
 
