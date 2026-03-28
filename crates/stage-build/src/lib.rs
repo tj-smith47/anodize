@@ -34,7 +34,7 @@ pub struct BuildCommand {
 // detect_cross_strategy
 // ---------------------------------------------------------------------------
 
-pub fn detect_cross_strategy() -> CrossStrategy {
+pub(crate) fn detect_cross_strategy() -> CrossStrategy {
     if find_binary("cargo-zigbuild") {
         return CrossStrategy::Zigbuild;
     }
@@ -49,7 +49,7 @@ pub fn detect_cross_strategy() -> CrossStrategy {
 // ---------------------------------------------------------------------------
 
 #[allow(clippy::too_many_arguments)]
-pub fn build_command(
+pub(crate) fn build_command(
     binary: &str,
     crate_path: &str,
     target: &str,
@@ -113,7 +113,7 @@ pub fn build_command(
 /// Build command for library targets (cdylib, staticlib, etc.).
 /// Uses `--lib` instead of `--bin`.
 #[allow(clippy::too_many_arguments)]
-pub fn build_lib_command(
+pub(crate) fn build_lib_command(
     crate_path: &str,
     target: &str,
     strategy: &CrossStrategy,
@@ -173,7 +173,7 @@ pub fn build_lib_command(
 
 /// Read a crate's Cargo.toml and return the first `crate-type` from [lib],
 /// if present (e.g. "cdylib", "staticlib", "rlib").
-pub fn detect_crate_type(crate_path: &str) -> Option<String> {
+pub(crate) fn detect_crate_type(crate_path: &str) -> Option<String> {
     let cargo_toml_path = Path::new(crate_path).join("Cargo.toml");
     let content = std::fs::read_to_string(&cargo_toml_path).ok()?;
     let doc = content.parse::<toml_edit::DocumentMut>().ok()?;
@@ -321,7 +321,7 @@ fn build_universal_binary(
 
 /// Check if a target triple matches any entry in the ignore list.
 /// Matching is done by comparing the os and arch components of the target triple.
-pub fn is_target_ignored(target: &str, ignores: &[BuildIgnore]) -> bool {
+pub(crate) fn is_target_ignored(target: &str, ignores: &[BuildIgnore]) -> bool {
     if ignores.is_empty() {
         return false;
     }
@@ -331,7 +331,7 @@ pub fn is_target_ignored(target: &str, ignores: &[BuildIgnore]) -> bool {
 
 /// Find the first matching override for a target triple.
 /// Override `targets` are glob patterns matched against the full triple string.
-pub fn find_matching_override<'a>(
+pub(crate) fn find_matching_override<'a>(
     target: &str,
     overrides: &'a [BuildOverride],
     log: &anodize_core::log::StageLogger,
@@ -511,7 +511,15 @@ impl Stage for BuildStage {
 
                 // --single-target: filter targets to only the specified triple
                 if let Some(ref single) = ctx.options.single_target {
+                    let had_targets = !targets.is_empty();
                     targets.retain(|t| t == single);
+                    if had_targets && targets.is_empty() {
+                        log.warn(&format!(
+                            "--single-target: host triple '{}' not in configured targets for {}/{}, skipping",
+                            single, crate_cfg.name, build.binary
+                        ));
+                        continue;
+                    }
                 }
 
                 // If no targets configured, skip (caller should ensure defaults)

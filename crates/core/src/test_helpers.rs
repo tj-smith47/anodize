@@ -288,6 +288,7 @@ impl TestContextBuilder {
             snapshot: self.snapshot,
             nightly: false,
             dry_run: self.dry_run,
+            quiet: false,
             verbose: self.verbose,
             debug: self.debug,
             skip_stages: self.skip_stages,

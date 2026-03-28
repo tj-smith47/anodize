@@ -1,13 +1,13 @@
+use super::helpers;
 use crate::pipeline;
 use anodize_core::artifact;
-use anodize_core::config::{Config, CrateConfig, GitHubConfig, WorkspaceConfig};
+use anodize_core::config::{Config, CrateConfig, WorkspaceConfig};
 use anodize_core::context::{Context, ContextOptions};
 use anodize_core::git;
 use anodize_core::log::{StageLogger, Verbosity};
 use anodize_core::template;
 use anyhow::{Context as _, Result};
 use chrono::Utc;
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 pub struct ReleaseOpts {
@@ -52,44 +52,11 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
     // onto the top-level config (replacing crates, changelog, signs, etc.).
     if let Some(ref ws_name) = opts.workspace {
         let ws = resolve_workspace(&config, ws_name)?.clone();
-        config.crates = ws.crates;
-        if ws.changelog.is_some() {
-            config.changelog = ws.changelog;
-        }
-        if !ws.signs.is_empty() {
-            config.signs = ws.signs;
-        }
-        if ws.before.is_some() {
-            config.before = ws.before;
-        }
-        if ws.after.is_some() {
-            config.after = ws.after;
-        }
-        if let Some(env_map) = ws.env {
-            let merged = config.env.get_or_insert_with(HashMap::new);
-            for (k, v) in env_map {
-                merged.insert(k, v);
-            }
-        }
+        helpers::apply_workspace_overlay(&mut config, &ws);
     }
 
-    // Auto-detect GitHub owner/name from git remote when release config is
-    // present but the `github` section is omitted. Detect once and reuse.
-    let detected_github = git::detect_github_repo().ok();
-    for crate_cfg in &mut config.crates {
-        if let Some(ref mut release) = crate_cfg.release
-            && release.github.is_none()
-        {
-            if let Some((ref owner, ref name)) = detected_github {
-                release.github = Some(GitHubConfig {
-                    owner: owner.clone(),
-                    name: name.clone(),
-                });
-            } else {
-                log.warn("could not auto-detect GitHub repo from git remote");
-            }
-        }
-    }
+    // Auto-detect GitHub owner/name from git remote
+    helpers::auto_detect_github(&mut config, &log);
 
     if opts.clean {
         let dist = &config.dist;
@@ -115,13 +82,14 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
 
     // Run hooks before pipeline
     if let Some(before) = &config.before {
-        pipeline::run_hooks(&before.hooks, "before", opts.dry_run)?;
+        pipeline::run_hooks(&before.hooks, "before", opts.dry_run, &log)?;
     }
 
     let ctx_opts = ContextOptions {
         snapshot: opts.snapshot,
         nightly: opts.nightly,
         dry_run: opts.dry_run,
+        quiet: opts.quiet,
         verbose: opts.verbose,
         debug: opts.debug,
         skip_stages: opts.skip,
@@ -135,49 +103,10 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
     ctx.populate_time_vars();
 
     // Populate user-defined env vars into template context
-    if let Some(ref env_map) = config.env {
-        for (key, value) in env_map {
-            ctx.template_vars_mut().set_env(key, value);
-        }
-    }
+    helpers::setup_env(&mut ctx, &config)?;
 
     // Resolve tag and populate git variables before running the pipeline.
-    // Each selected crate gets its own tag via tag_template; for now we resolve
-    // the first selected crate's tag (monorepo support will iterate later).
-    let first_crate = ctx
-        .options
-        .selected_crates
-        .first()
-        .and_then(|name| config.crates.iter().find(|c| &c.name == name))
-        .or_else(|| config.crates.first());
-
-    if let Some(crate_cfg) = first_crate {
-        // Find latest existing tag matching this crate's tag_template
-        let latest_tag = git::find_latest_tag_matching(&crate_cfg.tag_template)
-            .ok()
-            .flatten();
-
-        // Determine the tag to use for git info.
-        // Use latest existing tag as base, or fall back to v0.0.0 for first release.
-        let tag = latest_tag.clone().unwrap_or_else(|| "v0.0.0".to_string());
-
-        match git::detect_git_info(&tag) {
-            Ok(mut git_info) => {
-                // Set previous tag
-                git_info.previous_tag = latest_tag;
-                ctx.git_info = Some(git_info);
-                ctx.populate_git_vars();
-            }
-            Err(e) => {
-                log.warn(&format!("could not detect git info: {e}"));
-                // Still populate snapshot/draft vars even without git info
-                ctx.populate_git_vars();
-            }
-        }
-    } else {
-        // No crates configured; populate non-git vars only
-        ctx.populate_git_vars();
-    }
+    helpers::resolve_git_context(&mut ctx, &config, &log);
 
     // Apply nightly overrides after git vars are populated.
     if ctx.is_nightly() {
@@ -243,7 +172,7 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
     }
 
     let p = pipeline::build_release_pipeline();
-    let result = p.run(&mut ctx);
+    let result = p.run(&mut ctx, &log);
 
     // Post-pipeline: report sizes and write metadata (only if pipeline succeeded, not in dry-run)
     if result.is_ok() && !ctx.is_dry_run() {
@@ -279,6 +208,7 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
             ctx.artifacts.all(),
             ctx.template_vars(),
             opts.dry_run,
+            &log,
         )?;
     }
 
@@ -286,7 +216,7 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
     if result.is_ok()
         && let Some(after) = &config.after
     {
-        pipeline::run_hooks(&after.hooks, "after", opts.dry_run)?;
+        pipeline::run_hooks(&after.hooks, "after", opts.dry_run, &log)?;
     }
 
     result
@@ -330,6 +260,10 @@ fn detect_changed_crates(crates: &[CrateConfig]) -> Result<Vec<String>> {
         }
     }
 
+    // Propagate changes transitively via depends_on: if crate B depends on
+    // changed crate A, include B too. Use a fixed-point loop.
+    changed = propagate_dependents(crates, changed);
+
     // Check workspace-level files against the oldest tag
     if let Some(ref tag) = oldest_tag {
         let ws_changed = check_workspace_files_changed(tag)?;
@@ -340,6 +274,49 @@ fn detect_changed_crates(crates: &[CrateConfig]) -> Result<Vec<String>> {
     }
 
     Ok(changed)
+}
+
+/// Transitively propagate changed crates via `depends_on`.
+///
+/// If crate B depends on changed crate A, B is also included. Repeats until
+/// the set stabilises (fixed-point loop).
+fn propagate_dependents(crates: &[CrateConfig], changed: Vec<String>) -> Vec<String> {
+    use std::collections::HashSet;
+
+    let changed_set: HashSet<String> = changed.iter().cloned().collect();
+    let mut result_set = changed_set;
+
+    loop {
+        let mut added = false;
+        for c in crates {
+            if result_set.contains(&c.name) {
+                continue;
+            }
+            if let Some(deps) = &c.depends_on
+                && deps.iter().any(|dep| result_set.contains(dep))
+            {
+                result_set.insert(c.name.clone());
+                added = true;
+            }
+        }
+        if !added {
+            break;
+        }
+    }
+
+    // Preserve original order from `changed`, then append newly added crates
+    let mut propagated: Vec<String> = Vec::new();
+    for name in &changed {
+        if result_set.contains(name) {
+            propagated.push(name.clone());
+        }
+    }
+    for c in crates {
+        if result_set.contains(&c.name) && !changed.contains(&c.name) {
+            propagated.push(c.name.clone());
+        }
+    }
+    propagated
 }
 
 /// Check if workspace-level files (Cargo.toml, Cargo.lock) changed since tag.
@@ -444,6 +421,7 @@ fn topo_sort_selected(all_crates: &[CrateConfig], selected: &[String]) -> Vec<St
 mod tests {
     use super::*;
     use anodize_core::config::{CrateConfig, WorkspaceConfig};
+    use std::collections::HashMap;
 
     fn make_crate(name: &str, deps: Option<Vec<&str>>) -> CrateConfig {
         CrateConfig {
@@ -610,7 +588,7 @@ mod tests {
             ..Default::default()
         };
 
-        // Simulate the overlay logic from run() for --workspace=ws
+        // Apply the overlay using the shared helper
         let ws = config
             .workspaces
             .as_ref()
@@ -619,20 +597,7 @@ mod tests {
             .find(|w| w.name == "ws")
             .unwrap()
             .clone();
-
-        config.crates = ws.crates;
-        if ws.changelog.is_some() {
-            config.changelog = ws.changelog;
-        }
-        if !ws.signs.is_empty() {
-            config.signs = ws.signs;
-        }
-        if let Some(env_map) = ws.env {
-            let merged = config.env.get_or_insert_with(HashMap::new);
-            for (k, v) in env_map {
-                merged.insert(k, v);
-            }
-        }
+        helpers::apply_workspace_overlay(&mut config, &ws);
 
         // Verify crates were replaced
         assert_eq!(config.crates.len(), 1);
@@ -671,5 +636,60 @@ mod tests {
             Some("desc"),
             "changelog should be replaced by workspace"
         );
+    }
+
+    // ---- depends_on propagation tests ----
+
+    #[test]
+    fn test_propagate_dependents_direct() {
+        // B depends on A. If A changed, B should be included too.
+        let crates = vec![
+            make_crate("a", None),
+            make_crate("b", Some(vec!["a"])),
+            make_crate("c", None),
+        ];
+        let changed = vec!["a".to_string()];
+        let result = propagate_dependents(&crates, changed);
+        assert!(result.contains(&"a".to_string()));
+        assert!(result.contains(&"b".to_string()));
+        assert!(!result.contains(&"c".to_string()));
+    }
+
+    #[test]
+    fn test_propagate_dependents_transitive() {
+        // C depends on B, B depends on A. If A changed, both B and C should be included.
+        let crates = vec![
+            make_crate("a", None),
+            make_crate("b", Some(vec!["a"])),
+            make_crate("c", Some(vec!["b"])),
+        ];
+        let changed = vec!["a".to_string()];
+        let result = propagate_dependents(&crates, changed);
+        assert!(result.contains(&"a".to_string()));
+        assert!(result.contains(&"b".to_string()));
+        assert!(result.contains(&"c".to_string()));
+    }
+
+    #[test]
+    fn test_propagate_dependents_no_deps() {
+        let crates = vec![make_crate("a", None), make_crate("b", None)];
+        let changed = vec!["a".to_string()];
+        let result = propagate_dependents(&crates, changed);
+        assert_eq!(result, vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn test_propagate_dependents_preserves_order() {
+        let crates = vec![
+            make_crate("a", None),
+            make_crate("b", Some(vec!["a"])),
+            make_crate("c", Some(vec!["a"])),
+        ];
+        let changed = vec!["a".to_string()];
+        let result = propagate_dependents(&crates, changed);
+        // a should come first (from original changed), then b and c (propagated, in crate order)
+        assert_eq!(result[0], "a");
+        assert!(result.contains(&"b".to_string()));
+        assert!(result.contains(&"c".to_string()));
     }
 }

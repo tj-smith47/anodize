@@ -25,6 +25,7 @@ struct CargoPackage {
     name: Option<String>,
 }
 
+// Empty struct -- only used to detect presence of [[bin]] entries in Cargo.toml
 #[derive(Debug, serde::Deserialize)]
 struct CargoBin {}
 

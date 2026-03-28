@@ -437,17 +437,7 @@ crates:
 
 /// Detect the host target triple (e.g., "x86_64-unknown-linux-gnu").
 fn detect_host_target() -> String {
-    let output = Command::new("rustc")
-        .arg("-vV")
-        .output()
-        .expect("rustc should be available");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for line in stdout.lines() {
-        if let Some(triple) = line.strip_prefix("host: ") {
-            return triple.trim().to_string();
-        }
-    }
-    panic!("could not detect host target triple from rustc -vV");
+    anodize_cli::detect_host_target().expect("failed to detect host target triple")
 }
 
 /// Create a workspace Cargo project with multiple crates.
@@ -1297,17 +1287,16 @@ crates:
         stderr
     );
 
-    // helper-lib and myapp were NOT modified, so they should NOT appear.
-    // Note: depends_on propagation is not implemented in detect_changed_crates(),
-    // so dependents of core-lib are not automatically included.
+    // helper-lib and myapp depend on core-lib, so they should be transitively
+    // included via depends_on propagation.
     assert!(
-        !stderr.contains("helper-lib"),
-        "stderr should NOT mention helper-lib (unchanged crate), got:\n{}",
+        stderr.contains("helper-lib"),
+        "stderr should mention helper-lib (depends on changed core-lib), got:\n{}",
         stderr
     );
     assert!(
-        !stderr.contains("myapp"),
-        "stderr should NOT mention myapp (unchanged crate), got:\n{}",
+        stderr.contains("myapp"),
+        "stderr should mention myapp (depends on changed core-lib), got:\n{}",
         stderr
     );
 }

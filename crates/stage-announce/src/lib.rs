@@ -6,6 +6,7 @@ use anyhow::Result;
 
 pub mod discord;
 pub mod email;
+mod http;
 pub mod mattermost;
 pub mod slack;
 pub mod teams;

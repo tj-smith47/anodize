@@ -11,15 +11,18 @@ use std::sync::LazyLock;
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
-pub struct CommitInfo {
+pub(crate) struct CommitInfo {
     pub raw_message: String,
+    /// Conventional commit type (feat, fix, chore, etc.). Used in tests for
+    /// assertion and available for future group-by-kind functionality.
+    #[allow(dead_code)]
     pub kind: String,
     pub description: String,
     pub hash: String,
 }
 
 #[derive(Debug, Clone)]
-pub struct GroupedCommits {
+pub(crate) struct GroupedCommits {
     pub title: String,
     pub commits: Vec<CommitInfo>,
 }
@@ -34,7 +37,7 @@ static CONVENTIONAL_COMMIT_RE: LazyLock<Regex> =
 /// Parse a conventional commit message of the form `type(scope): description`
 /// or `type: description`. Falls back to `kind = "other"` for non-conventional
 /// messages.
-pub fn parse_commit_message(msg: &str) -> CommitInfo {
+pub(crate) fn parse_commit_message(msg: &str) -> CommitInfo {
     let re = &*CONVENTIONAL_COMMIT_RE;
     if let Some(caps) = re.captures(msg) {
         CommitInfo {
@@ -59,7 +62,7 @@ pub fn parse_commit_message(msg: &str) -> CommitInfo {
 
 /// Filter out commits whose `raw_message` matches any of the exclude regex
 /// patterns. Returns a new `Vec` of commits that did NOT match any pattern.
-pub fn apply_filters(
+pub(crate) fn apply_filters(
     commits: &[CommitInfo],
     exclude: &[String],
     log: &anodize_core::log::StageLogger,
@@ -88,7 +91,7 @@ pub fn apply_filters(
 
 /// Keep only commits whose `raw_message` matches at least one of the include
 /// regex patterns. If `include` is empty, all commits are kept (no-op).
-pub fn apply_include_filters(
+pub(crate) fn apply_include_filters(
     commits: &[CommitInfo],
     include: &[String],
     log: &anodize_core::log::StageLogger,
@@ -120,7 +123,7 @@ pub fn apply_include_filters(
 
 /// Sort commits in-place by description. `order` must be `"asc"` or `"desc"`.
 /// Any other value is treated as ascending.
-pub fn sort_commits(commits: &mut [CommitInfo], order: &str) {
+pub(crate) fn sort_commits(commits: &mut [CommitInfo], order: &str) {
     if order == "desc" {
         commits.sort_by(|a, b| b.description.cmp(&a.description));
     } else {
@@ -136,7 +139,7 @@ pub fn sort_commits(commits: &mut [CommitInfo], order: &str) {
 /// Groups are emitted in `order` (ascending). Commits that do not match any
 /// group are collected into an implicit "Others" group appended at the end.
 /// Groups with zero matching commits are omitted from the output.
-pub fn group_commits(
+pub(crate) fn group_commits(
     commits: &[CommitInfo],
     groups: &[ChangelogGroup],
     log: &anodize_core::log::StageLogger,
@@ -206,7 +209,7 @@ pub fn group_commits(
 /// section, and each commit is a `- description (short_hash)` bullet.
 ///
 /// `abbrev` controls the hash abbreviation length (default 7).
-pub fn render_changelog(grouped: &[GroupedCommits], abbrev: usize) -> String {
+pub(crate) fn render_changelog(grouped: &[GroupedCommits], abbrev: usize) -> String {
     let abbrev = abbrev.max(1); // Enforce minimum of 1 to avoid empty hashes
     let mut out = String::new();
     for group in grouped {
@@ -238,6 +241,47 @@ impl Stage for ChangelogStage {
     fn run(&self, ctx: &mut Context) -> Result<()> {
         let log = ctx.logger("changelog");
         let changelog_cfg = ctx.config.changelog.clone();
+
+        // If --release-notes was provided, read the file and use it directly,
+        // bypassing all git-based changelog generation.
+        if let Some(ref notes_path) = ctx.options.release_notes_path {
+            let content = std::fs::read_to_string(notes_path).with_context(|| {
+                format!(
+                    "changelog: failed to read release notes file: {}",
+                    notes_path.display()
+                )
+            })?;
+            log.status(&format!(
+                "using custom release notes from {}",
+                notes_path.display()
+            ));
+
+            // Store the same content for every selected crate.
+            let selected = ctx.options.selected_crates.clone();
+            let crates: Vec<_> = ctx
+                .config
+                .crates
+                .iter()
+                .filter(|c| selected.is_empty() || selected.contains(&c.name))
+                .cloned()
+                .collect();
+            for crate_cfg in &crates {
+                ctx.changelogs
+                    .insert(crate_cfg.name.clone(), content.clone());
+            }
+
+            // Write to dist/RELEASE_NOTES.md (skip during dry-run).
+            if !ctx.is_dry_run() {
+                let dist = ctx.config.dist.clone();
+                std::fs::create_dir_all(&dist)
+                    .with_context(|| format!("changelog: create dist dir {}", dist.display()))?;
+                let notes_out = dist.join("RELEASE_NOTES.md");
+                std::fs::write(&notes_out, &content)
+                    .with_context(|| format!("changelog: write {}", notes_out.display()))?;
+                log.status(&format!("wrote {}", notes_out.display()));
+            }
+            return Ok(());
+        }
 
         // If disabled, skip the stage entirely.
         if changelog_cfg

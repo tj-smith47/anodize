@@ -1,4 +1,4 @@
-use anodize_cli::{Cli, Commands};
+use anodize_cli::{Cli, Commands, detect_host_target};
 
 use clap::Parser;
 use colored::Colorize;
@@ -7,31 +7,22 @@ mod commands;
 mod pipeline;
 pub mod timeout;
 
-/// Detect the host target triple by parsing `rustc -vV` output.
-fn detect_host_target() -> anyhow::Result<String> {
-    let output = std::process::Command::new("rustc")
-        .arg("-vV")
-        .output()
-        .map_err(|e| anyhow::anyhow!("failed to run rustc: {}", e))?;
-    if !output.status.success() {
-        anyhow::bail!("rustc -vV failed");
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for line in stdout.lines() {
-        if let Some(triple) = line.strip_prefix("host: ") {
-            return Ok(triple.trim().to_string());
-        }
-    }
-    anyhow::bail!("could not find 'host:' line in rustc -vV output")
-}
-
 /// Check if the git working tree is dirty using `git status --porcelain`.
 fn is_git_dirty() -> bool {
-    std::process::Command::new("git")
-        .args(["status", "--porcelain"])
-        .output()
-        .map(|o| o.status.success() && !o.stdout.is_empty())
-        .unwrap_or(false)
+    anodize_core::git::is_git_dirty()
+}
+
+/// Parse a --timeout value or exit with an error message.
+fn parse_timeout_or_exit(timeout: &str) -> std::time::Duration {
+    timeout::parse_duration(timeout).unwrap_or_else(|e| {
+        eprintln!(
+            "{} invalid --timeout value '{}': {}",
+            "Error:".red().bold(),
+            timeout,
+            e
+        );
+        std::process::exit(1);
+    })
 }
 
 /// Resolve --single-target flag to the actual host target triple.
@@ -80,15 +71,7 @@ fn main() {
             release_notes,
             workspace,
         } => {
-            let duration = timeout::parse_duration(&timeout).unwrap_or_else(|e| {
-                eprintln!(
-                    "{} invalid --timeout value '{}': {}",
-                    "Error:".red().bold(),
-                    timeout,
-                    e
-                );
-                std::process::exit(1);
-            });
+            let duration = parse_timeout_or_exit(&timeout);
 
             // Resolve --auto-snapshot: if set and repo is dirty, force snapshot mode
             let effective_snapshot = if !snapshot && auto_snapshot && is_git_dirty() {
@@ -127,21 +110,12 @@ fn main() {
         }
         Commands::Build {
             crate_names,
-            snapshot,
             timeout,
             parallelism,
             single_target,
             workspace,
         } => {
-            let duration = timeout::parse_duration(&timeout).unwrap_or_else(|e| {
-                eprintln!(
-                    "{} invalid --timeout value '{}': {}",
-                    "Error:".red().bold(),
-                    timeout,
-                    e
-                );
-                std::process::exit(1);
-            });
+            let duration = parse_timeout_or_exit(&timeout);
             let config_override = cli.config.clone();
             let resolved_single_target = resolve_single_target(single_target);
             let verbose = cli.verbose;
@@ -151,7 +125,6 @@ fn main() {
             timeout::run_with_timeout(duration, move || {
                 commands::build::run(commands::build::BuildOpts {
                     crate_names,
-                    snapshot,
                     config_override,
                     verbose,
                     debug,
@@ -614,5 +587,22 @@ mod tests {
             "check help should mention --workspace flag, got: {}",
             check_help
         );
+    }
+
+    #[test]
+    fn test_cli_parses_quiet_flag() {
+        // --quiet long form
+        let cli = Cli::try_parse_from(["anodize", "--quiet", "release"]);
+        assert!(cli.is_ok(), "CLI should parse --quiet: {:?}", cli.err());
+        assert!(cli.unwrap().quiet, "--quiet should set quiet to true");
+
+        // -q short form
+        let cli = Cli::try_parse_from(["anodize", "-q", "release"]);
+        assert!(cli.is_ok(), "CLI should parse -q: {:?}", cli.err());
+        assert!(cli.unwrap().quiet, "-q should set quiet to true");
+
+        // quiet defaults to false
+        let cli = Cli::try_parse_from(["anodize", "release"]).unwrap();
+        assert!(!cli.quiet, "quiet should default to false");
     }
 }

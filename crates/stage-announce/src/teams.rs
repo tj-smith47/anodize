@@ -1,6 +1,8 @@
 use anyhow::Result;
 use serde_json::json;
 
+use crate::http::post_json;
+
 // ---------------------------------------------------------------------------
 // Payload builder
 // ---------------------------------------------------------------------------
@@ -34,18 +36,7 @@ pub(crate) fn teams_payload(message: &str) -> String {
 /// POST to a Microsoft Teams incoming webhook using an Adaptive Card.
 pub fn send_teams(webhook_url: &str, message: &str) -> Result<()> {
     let payload = teams_payload(message);
-    let client = reqwest::blocking::Client::new();
-    let resp = client
-        .post(webhook_url)
-        .header("Content-Type", "application/json")
-        .body(payload)
-        .send()?;
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().unwrap_or_default();
-        anyhow::bail!("teams webhook returned non-success status {status}: {body}");
-    }
-    Ok(())
+    post_json(webhook_url, &payload, "teams")
 }
 
 // ---------------------------------------------------------------------------

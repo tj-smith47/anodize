@@ -2,8 +2,9 @@ use std::process::Command;
 
 use anodize_core::artifact::{Artifact, ArtifactKind};
 use anodize_core::config::PublisherConfig;
+use anodize_core::log::StageLogger;
 use anodize_core::template::{self, TemplateVars};
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result};
 
 /// Run all configured publishers against matching artifacts.
 ///
@@ -15,13 +16,14 @@ pub fn run_publishers(
     artifacts: &[Artifact],
     base_vars: &TemplateVars,
     dry_run: bool,
+    log: &StageLogger,
 ) -> Result<()> {
     for (i, publisher) in publishers.iter().enumerate() {
         let default_label = format!("publisher[{}]", i);
         let label = publisher.name.as_deref().unwrap_or(&default_label);
 
         if publisher.cmd.is_empty() {
-            eprintln!("  [publisher] skipping {} — empty cmd", label);
+            log.verbose(&format!("[publisher] skipping {} -- empty cmd", label));
             continue;
         }
 
@@ -31,7 +33,7 @@ pub fn run_publishers(
             .collect();
 
         if matching.is_empty() {
-            eprintln!("  [publisher] {} — no matching artifacts", label);
+            log.verbose(&format!("[publisher] {} -- no matching artifacts", label));
             continue;
         }
 
@@ -46,13 +48,13 @@ pub fn run_publishers(
 
             if dry_run {
                 let full_cmd = format_command_line(&rendered_cmd, &rendered_args);
-                eprintln!("  [dry-run] [publisher] {} — {}", label, full_cmd);
+                log.status(&format!("[dry-run] [publisher] {} -- {}", label, full_cmd));
             } else {
-                eprintln!(
-                    "  [publisher] {} — running for {}",
+                log.status(&format!(
+                    "[publisher] {} -- running for {}",
                     label,
                     artifact.path.display()
-                );
+                ));
                 let mut cmd = Command::new("sh");
                 cmd.arg("-c");
 
@@ -67,18 +69,11 @@ pub fn run_publishers(
                     }
                 }
 
-                let status = cmd
-                    .status()
+                let output = cmd
+                    .output()
                     .with_context(|| format!("failed to spawn publisher command: {}", full_cmd))?;
 
-                if !status.success() {
-                    bail!(
-                        "publisher {} failed (exit {}): {}",
-                        label,
-                        status.code().unwrap_or(-1),
-                        full_cmd
-                    );
-                }
+                log.check_output(output, &format!("publisher {}", label))?;
             }
         }
     }
@@ -223,6 +218,11 @@ mod tests {
         vars
     }
 
+    fn test_logger() -> StageLogger {
+        use anodize_core::log::Verbosity;
+        StageLogger::new("test", Verbosity::Normal)
+    }
+
     // --- Artifact filtering tests ---
 
     #[test]
@@ -364,7 +364,7 @@ mod tests {
 
         // In dry-run mode, the command is never executed, so a non-existent
         // command should not cause an error.
-        let result = run_publishers(&publishers, &artifacts, &vars, true);
+        let result = run_publishers(&publishers, &artifacts, &vars, true, &test_logger());
         assert!(
             result.is_ok(),
             "dry-run should not execute commands: {:?}",
@@ -379,7 +379,7 @@ mod tests {
         let vars = base_vars();
         let artifacts = vec![make_artifact(ArtifactKind::Binary, "/dist/myapp", None)];
 
-        let result = run_publishers(&[], &artifacts, &vars, false);
+        let result = run_publishers(&[], &artifacts, &vars, false, &test_logger());
         assert!(result.is_ok());
     }
 
@@ -398,7 +398,7 @@ mod tests {
             env: None,
         }];
 
-        let result = run_publishers(&publishers, &artifacts, &vars, false);
+        let result = run_publishers(&publishers, &artifacts, &vars, false, &test_logger());
         assert!(result.is_ok());
     }
 

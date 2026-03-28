@@ -16,7 +16,7 @@ pub struct Cli {
     pub verbose: bool,
     #[arg(long, global = true, help = "Enable debug output")]
     pub debug: bool,
-    #[arg(long, global = true, help = "Suppress non-error output")]
+    #[arg(long, short = 'q', global = true, help = "Suppress non-error output")]
     pub quiet: bool,
     #[command(subcommand)]
     pub command: Commands,
@@ -68,15 +68,10 @@ pub enum Commands {
         #[arg(long, help = "Release a specific workspace in a monorepo config")]
         workspace: Option<String>,
     },
-    /// Build binaries only
+    /// Build binaries only (always runs in snapshot mode)
     Build {
         #[arg(long = "crate", action = clap::ArgAction::Append, help = "Build a specific crate (repeatable)")]
         crate_names: Vec<String>,
-        #[arg(
-            long,
-            help = "Build without publishing (snapshot mode, default for build)"
-        )]
-        snapshot: bool,
         #[arg(
             long,
             default_value = "30m",
@@ -122,6 +117,24 @@ pub enum Commands {
         #[arg(long = "crate", help = "Tag a specific crate in a workspace")]
         crate_name: Option<String>,
     },
+}
+
+/// Detect the host target triple by parsing `rustc -vV` output.
+pub fn detect_host_target() -> anyhow::Result<String> {
+    let output = std::process::Command::new("rustc")
+        .arg("-vV")
+        .output()
+        .map_err(|e| anyhow::anyhow!("failed to run rustc: {}", e))?;
+    if !output.status.success() {
+        anyhow::bail!("rustc -vV failed");
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        if let Some(triple) = line.strip_prefix("host: ") {
+            return Ok(triple.trim().to_string());
+        }
+    }
+    anyhow::bail!("could not find 'host:' line in rustc -vV output")
 }
 
 /// Return a sensible default parallelism value (number of logical CPUs, minimum 1).

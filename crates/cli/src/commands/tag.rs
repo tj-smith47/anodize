@@ -299,15 +299,24 @@ fn load_crate_tag_prefix(opts: &TagOpts, crate_name: &str) -> Option<String> {
     let crate_cfg = config.crates.iter().find(|c| c.name == crate_name)?;
 
     // Extract the prefix by finding the version placeholder and taking everything before it.
-    let placeholders = [
+    // These must stay in sync with anodize_core::git::VERSION_PLACEHOLDERS (which is crate-private).
+    extract_tag_prefix(&crate_cfg.tag_template)
+}
+
+/// Extract the prefix portion of a tag template by locating the version placeholder.
+///
+/// Returns the substring before the first recognised placeholder, or `None` if no
+/// placeholder is found. The placeholder list mirrors `anodize_core::git::VERSION_PLACEHOLDERS`.
+fn extract_tag_prefix(template: &str) -> Option<String> {
+    const VERSION_PLACEHOLDERS: &[&str] = &[
         "{{ .Version }}",
         "{{.Version}}",
         "{{ Version }}",
         "{{Version}}",
     ];
-    for ph in &placeholders {
-        if let Some(idx) = crate_cfg.tag_template.find(ph) {
-            return Some(crate_cfg.tag_template[..idx].to_string());
+    for ph in VERSION_PLACEHOLDERS {
+        if let Some(idx) = template.find(ph) {
+            return Some(template[..idx].to_string());
         }
     }
     None
@@ -355,7 +364,7 @@ fn get_messages_for_bump(cfg: &ResolvedConfig, prev_tag: Option<&str>) -> Result
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BumpKind {
+pub(crate) enum BumpKind {
     Major,
     Minor,
     Patch,
@@ -374,7 +383,7 @@ fn detect_bump(messages: &[String], cfg: &ResolvedConfig) -> BumpKind {
 }
 
 /// Core bump detection logic, separated for unit testing without needing the full config.
-pub fn detect_bump_from_tokens(
+pub(crate) fn detect_bump_from_tokens(
     messages: &[String],
     major_token: &str,
     minor_token: &str,
@@ -429,7 +438,7 @@ pub fn detect_bump_from_tokens(
 }
 
 /// Apply a bump to semver components. Returns (major, minor, patch).
-pub fn apply_bump(major: u64, minor: u64, patch: u64, bump: &BumpKind) -> (u64, u64, u64) {
+pub(crate) fn apply_bump(major: u64, minor: u64, patch: u64, bump: &BumpKind) -> (u64, u64, u64) {
     match bump {
         BumpKind::Major => (major + 1, 0, 0),
         BumpKind::Minor => (major, minor + 1, 0),

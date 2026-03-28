@@ -14,7 +14,7 @@ use anyhow::{Context as _, Result};
 /// - `Auto`     – inspect the tag for common pre-release suffixes.
 /// - `Bool(b)`  – use the explicit value regardless of the tag.
 /// - `None`     – default to `false`.
-pub fn should_mark_prerelease(config: &Option<PrereleaseConfig>, tag: &str) -> bool {
+pub(crate) fn should_mark_prerelease(config: &Option<PrereleaseConfig>, tag: &str) -> bool {
     match config {
         Some(PrereleaseConfig::Auto) => git::parse_semver(tag)
             .map(|sv| sv.is_prerelease())
@@ -30,7 +30,7 @@ pub fn should_mark_prerelease(config: &Option<PrereleaseConfig>, tag: &str) -> b
 
 /// Construct the release body by wrapping the changelog with optional
 /// header and footer from the release config.
-pub fn build_release_body(
+pub(crate) fn build_release_body(
     changelog_body: &str,
     header: Option<&str>,
     footer: Option<&str>,
@@ -62,7 +62,7 @@ pub fn build_release_body(
 
 /// Resolve `extra_files` glob patterns into concrete file paths.
 /// Invalid glob patterns are silently skipped (callers log through StageLogger).
-pub fn collect_extra_files(patterns: &[String]) -> Vec<std::path::PathBuf> {
+pub(crate) fn collect_extra_files(patterns: &[String]) -> Vec<std::path::PathBuf> {
     let mut paths = Vec::new();
     for pattern in patterns {
         match glob::glob(pattern) {
@@ -86,7 +86,7 @@ pub fn collect_extra_files(patterns: &[String]) -> Vec<std::path::PathBuf> {
 // ---------------------------------------------------------------------------
 
 /// Convert our config's `MakeLatestConfig` into octocrab's `MakeLatest` enum.
-pub fn resolve_make_latest(
+pub(crate) fn resolve_make_latest(
     config: &Option<MakeLatestConfig>,
 ) -> Option<octocrab::repos::releases::MakeLatest> {
     use octocrab::repos::releases::MakeLatest;

@@ -1,6 +1,8 @@
 use anyhow::Result;
 use serde_json::json;
 
+use crate::http::post_json;
+
 // ---------------------------------------------------------------------------
 // Payload builder
 // ---------------------------------------------------------------------------
@@ -29,18 +31,7 @@ pub fn send_telegram(
 ) -> Result<()> {
     let url = format!("https://api.telegram.org/bot{bot_token}/sendMessage");
     let payload = telegram_payload(chat_id, message, parse_mode);
-    let client = reqwest::blocking::Client::new();
-    let resp = client
-        .post(&url)
-        .header("Content-Type", "application/json")
-        .body(payload)
-        .send()?;
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().unwrap_or_default();
-        anyhow::bail!("telegram sendMessage returned non-success status {status}: {body}");
-    }
-    Ok(())
+    post_json(&url, &payload, "telegram")
 }
 
 // ---------------------------------------------------------------------------

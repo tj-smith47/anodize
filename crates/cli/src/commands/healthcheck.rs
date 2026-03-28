@@ -1,3 +1,4 @@
+use anodize_core::log::{StageLogger, Verbosity};
 use anyhow::Result;
 use colored::Colorize;
 
@@ -67,9 +68,10 @@ fn tool_version(name: &str) -> Option<String> {
 }
 
 pub fn run() -> Result<()> {
-    eprintln!("{}", "Anodize Environment Health Check".bold());
-    eprintln!("{}", "=".repeat(40));
-    eprintln!();
+    let log = StageLogger::new("healthcheck", Verbosity::Normal);
+
+    log.status(&format!("{}", "Anodize Environment Health Check".bold()));
+    log.status(&"=".repeat(40));
 
     let mut available_count = 0;
     let mut missing_count = 0;
@@ -77,31 +79,30 @@ pub fn run() -> Result<()> {
     for tool in TOOLS {
         if tool_available(tool.name) {
             let version = tool_version(tool.name).unwrap_or_else(|| "unknown version".to_string());
-            eprintln!(
-                "  {} {:<20} {} ({})",
+            log.status(&format!(
+                "{} {:<20} {} ({})",
                 "\u{2713}".green().bold(),
                 tool.name,
                 tool.description.dimmed(),
                 version.dimmed()
-            );
+            ));
             available_count += 1;
         } else {
-            eprintln!(
-                "  {} {:<20} {}",
+            log.status(&format!(
+                "{} {:<20} {}",
                 "\u{2717}".red().bold(),
                 tool.name,
                 tool.description.dimmed()
-            );
+            ));
             missing_count += 1;
         }
     }
 
-    eprintln!();
-    eprintln!(
-        "  {} available, {} missing",
+    log.status(&format!(
+        "{} available, {} missing",
         available_count.to_string().green().bold(),
         missing_count.to_string().yellow().bold()
-    );
+    ));
 
     Ok(())
 }

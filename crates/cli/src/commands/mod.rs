@@ -3,6 +3,7 @@ pub mod changelog;
 pub mod check;
 pub mod completion;
 pub mod healthcheck;
+pub mod helpers;
 pub mod init;
 pub mod jsonschema;
 pub mod publisher;

@@ -1,3 +1,4 @@
+use super::helpers;
 use crate::pipeline;
 use anodize_core::config::{Config, CrateConfig};
 use anodize_core::log::{StageLogger, Verbosity};
@@ -26,25 +27,7 @@ pub fn run(
     if let Some(ws_name) = workspace {
         let ws = super::release::resolve_workspace(&config, ws_name)?;
         let mut resolved = config.clone();
-        resolved.crates = ws.crates.clone();
-        if ws.changelog.is_some() {
-            resolved.changelog = ws.changelog.clone();
-        }
-        if !ws.signs.is_empty() {
-            resolved.signs = ws.signs.clone();
-        }
-        if ws.before.is_some() {
-            resolved.before = ws.before.clone();
-        }
-        if ws.after.is_some() {
-            resolved.after = ws.after.clone();
-        }
-        if let Some(ref env_map) = ws.env {
-            let merged = resolved.env.get_or_insert_with(HashMap::new);
-            for (k, v) in env_map {
-                merged.insert(k.clone(), v.clone());
-            }
-        }
+        helpers::apply_workspace_overlay(&mut resolved, ws);
         log.status(&format!(
             "validating resolved config for workspace '{}'",
             ws_name

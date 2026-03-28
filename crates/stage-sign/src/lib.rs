@@ -23,7 +23,7 @@ use anodize_core::stage::Stage;
 /// - `"binary"`   → only `ArtifactKind::Binary`
 /// - `"package"`  → only `ArtifactKind::LinuxPackage`
 /// - `"checksum"` (default) → only `ArtifactKind::Checksum`
-pub fn should_sign_artifact(kind: ArtifactKind, filter: &str) -> bool {
+pub(crate) fn should_sign_artifact(kind: ArtifactKind, filter: &str) -> bool {
     match filter {
         "none" => false,
         "all" => true,
@@ -66,7 +66,7 @@ fn prepare_stdin(sign_cfg: &SignConfig) -> Result<(Stdio, Option<Vec<u8>>)> {
 }
 
 /// Replace `{{ .Artifact }}` and `{{ .Signature }}` placeholders in each arg.
-pub fn resolve_sign_args(
+pub(crate) fn resolve_sign_args(
     args: &[String],
     artifact_path: &str,
     signature_path: &str,

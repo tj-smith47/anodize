@@ -1,16 +1,13 @@
+use super::helpers;
 use crate::pipeline;
-use anodize_core::config::GitHubConfig;
 use anodize_core::context::{Context, ContextOptions};
-use anodize_core::git;
 use anodize_core::log::{StageLogger, Verbosity};
 use anodize_core::stage::Stage;
 use anyhow::Result;
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 pub struct BuildOpts {
     pub crate_names: Vec<String>,
-    pub snapshot: bool,
     pub config_override: Option<PathBuf>,
     pub verbose: bool,
     pub debug: bool,
@@ -37,50 +34,17 @@ pub fn run(opts: BuildOpts) -> Result<()> {
     // Resolve workspace if specified
     if let Some(ref ws_name) = opts.workspace {
         let ws = super::release::resolve_workspace(&config, ws_name)?.clone();
-        config.crates = ws.crates;
-        if ws.changelog.is_some() {
-            config.changelog = ws.changelog;
-        }
-        if !ws.signs.is_empty() {
-            config.signs = ws.signs;
-        }
-        if ws.before.is_some() {
-            config.before = ws.before;
-        }
-        if ws.after.is_some() {
-            config.after = ws.after;
-        }
-        if let Some(env_map) = ws.env {
-            let merged = config.env.get_or_insert_with(HashMap::new);
-            for (k, v) in env_map {
-                merged.insert(k, v);
-            }
-        }
+        helpers::apply_workspace_overlay(&mut config, &ws);
     }
 
     // Auto-detect GitHub owner/name from git remote
-    let detected_github = git::detect_github_repo().ok();
-    for crate_cfg in &mut config.crates {
-        if let Some(ref mut release) = crate_cfg.release
-            && release.github.is_none()
-            && let Some((ref owner, ref name)) = detected_github
-        {
-            release.github = Some(GitHubConfig {
-                owner: owner.clone(),
-                name: name.clone(),
-            });
-        }
-    }
+    helpers::auto_detect_github(&mut config, &log);
 
-    // Build always implies snapshot mode unless explicitly overridden
-    let snapshot = true; // build command is always snapshot
-    log.status(&format!(
-        "building{}",
-        if opts.snapshot { " (snapshot)" } else { "" }
-    ));
+    log.status("building (snapshot)");
 
     let ctx_opts = ContextOptions {
-        snapshot,
+        snapshot: true, // build command always runs in snapshot mode
+        quiet: opts.quiet,
         verbose: opts.verbose,
         debug: opts.debug,
         selected_crates: opts.crate_names,
@@ -92,40 +56,10 @@ pub fn run(opts: BuildOpts) -> Result<()> {
     ctx.populate_time_vars();
 
     // Populate user-defined env vars
-    if let Some(ref env_map) = config.env {
-        for (key, value) in env_map {
-            ctx.template_vars_mut().set_env(key, value);
-        }
-    }
+    helpers::setup_env(&mut ctx, &config)?;
 
-    // Resolve git info (same pattern as release.rs)
-    let first_crate = ctx
-        .options
-        .selected_crates
-        .first()
-        .and_then(|name| config.crates.iter().find(|c| &c.name == name))
-        .or_else(|| config.crates.first());
-
-    if let Some(crate_cfg) = first_crate {
-        let latest_tag = git::find_latest_tag_matching(&crate_cfg.tag_template)
-            .ok()
-            .flatten();
-        let tag = latest_tag.clone().unwrap_or_else(|| "v0.0.0".to_string());
-
-        match git::detect_git_info(&tag) {
-            Ok(mut git_info) => {
-                git_info.previous_tag = latest_tag;
-                ctx.git_info = Some(git_info);
-                ctx.populate_git_vars();
-            }
-            Err(e) => {
-                log.warn(&format!("could not detect git info: {e}"));
-                ctx.populate_git_vars();
-            }
-        }
-    } else {
-        ctx.populate_git_vars();
-    }
+    // Resolve git info
+    helpers::resolve_git_context(&mut ctx, &config, &log);
 
     // Run build stage
     let build_stage = anodize_stage_build::BuildStage;
@@ -149,7 +83,7 @@ mod tests {
     fn test_build_opts_defaults() {
         let opts = BuildOpts {
             crate_names: vec![],
-            snapshot: false,
+
             config_override: None,
             verbose: false,
             debug: false,
@@ -167,7 +101,7 @@ mod tests {
     fn test_build_opts_with_single_target() {
         let opts = BuildOpts {
             crate_names: vec!["myapp".to_string()],
-            snapshot: false,
+
             config_override: None,
             verbose: false,
             debug: false,
@@ -186,7 +120,7 @@ mod tests {
     fn test_build_opts_with_workspace() {
         let opts = BuildOpts {
             crate_names: vec![],
-            snapshot: false,
+
             config_override: None,
             verbose: false,
             debug: false,

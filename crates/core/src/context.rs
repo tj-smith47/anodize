@@ -11,6 +11,7 @@ pub struct ContextOptions {
     pub snapshot: bool,
     pub nightly: bool,
     pub dry_run: bool,
+    pub quiet: bool,
     pub verbose: bool,
     pub debug: bool,
     pub skip_stages: Vec<String>,
@@ -30,6 +31,7 @@ impl Default for ContextOptions {
             snapshot: false,
             nightly: false,
             dry_run: false,
+            quiet: false,
             verbose: false,
             debug: false,
             skip_stages: Vec::new(),
@@ -99,7 +101,7 @@ impl Context {
 
     /// Derive the verbosity level from context options.
     pub fn verbosity(&self) -> Verbosity {
-        Verbosity::from_flags(false, self.options.verbose, self.options.debug)
+        Verbosity::from_flags(self.options.quiet, self.options.verbose, self.options.debug)
     }
 
     /// Create a [`StageLogger`] for the given stage name.

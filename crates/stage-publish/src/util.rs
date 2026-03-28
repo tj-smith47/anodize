@@ -1,36 +1,36 @@
 use anodize_core::artifact::{Artifact, ArtifactKind};
 use anodize_core::context::Context;
 use anyhow::{Context as _, Result};
+use std::path::Path;
 use std::process::Command;
 
-/// Run a command with the given program and arguments, failing with `context_msg`
+/// Run a command with the given program and arguments, failing with `label`
 /// on spawn failure or non-zero exit.
-pub(crate) fn run_cmd(program: &str, args: &[&str], context_msg: &str) -> Result<()> {
-    let status = Command::new(program)
-        .args(args)
-        .status()
-        .with_context(|| format!("{}: spawn", context_msg))?;
-    if !status.success() {
-        anyhow::bail!("{}: exited with {}", context_msg, status);
-    }
-    Ok(())
+pub(crate) fn run_cmd(program: &str, args: &[&str], label: &str) -> Result<()> {
+    run_cmd_in(Path::new("."), program, args, label)
 }
 
-/// Run a command in a specific working directory, failing with `context_msg`
-/// on spawn failure or non-zero exit.
-pub(crate) fn run_cmd_in(
-    dir: &std::path::Path,
-    program: &str,
-    args: &[&str],
-    context_msg: &str,
-) -> Result<()> {
-    let status = Command::new(program)
-        .current_dir(dir)
+/// Run a command in a specific working directory, failing with `label`
+/// on spawn failure or non-zero exit.  Captures stdout/stderr so that
+/// diagnostics are included in the error message.
+pub(crate) fn run_cmd_in(dir: &Path, program: &str, args: &[&str], label: &str) -> Result<()> {
+    let output = Command::new(program)
         .args(args)
-        .status()
-        .with_context(|| format!("{}: spawn", context_msg))?;
-    if !status.success() {
-        anyhow::bail!("{}: exited with {}", context_msg, status);
+        .current_dir(dir)
+        .output()
+        .with_context(|| format!("{}: failed to run {} {}", label, program, args.join(" ")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        anyhow::bail!(
+            "{}: {} {} failed (exit {})\nstderr: {}\nstdout: {}",
+            label,
+            program,
+            args.join(" "),
+            output.status.code().unwrap_or(-1),
+            stderr,
+            stdout
+        );
     }
     Ok(())
 }
@@ -62,46 +62,23 @@ pub(crate) fn run_cmd_in(
 
 /// Infer the canonical OS string from a target triple.
 ///
-/// Returns one of `"linux"`, `"darwin"`, `"windows"`, or the provided
-/// `fallback` when the triple does not match any known pattern.
-pub(crate) fn infer_os<'a>(target: &str, fallback: &'a str) -> &'a str {
-    if target.contains("linux") {
-        // Returns a 'static str that trivially outlives 'a
-        return known_os_str("linux");
+/// Delegates to [`anodize_core::target::map_target`] for the actual parsing.
+/// Returns the mapped OS, or `fallback` when the OS is `"unknown"`.
+pub(crate) fn infer_os(target: &str, fallback: &str) -> String {
+    let (os, _) = anodize_core::target::map_target(target);
+    if os == "unknown" {
+        fallback.to_string()
+    } else {
+        os
     }
-    if target.contains("darwin") || target.contains("apple") {
-        return known_os_str("darwin");
-    }
-    if target.contains("windows") {
-        return known_os_str("windows");
-    }
-    fallback
 }
 
 /// Infer the canonical architecture string from a target triple.
 ///
-/// Returns one of `"arm64"`, `"amd64"`, or `"unknown"`.
-pub(crate) fn infer_arch(target: &str) -> &'static str {
-    if target.contains("aarch64") || target.contains("arm64") {
-        "arm64"
-    } else if target.contains("x86_64") || target.contains("amd64") {
-        "amd64"
-    } else {
-        "unknown"
-    }
-}
-
-/// Map a known OS name to a `&'static str` literal.
-///
-/// Only handles the fixed set `"linux"`, `"darwin"`, `"windows"`; anything
-/// else maps to `"unknown"`.
-fn known_os_str(s: &str) -> &'static str {
-    match s {
-        "linux" => "linux",
-        "darwin" => "darwin",
-        "windows" => "windows",
-        _ => "unknown",
-    }
+/// Delegates to [`anodize_core::target::map_target`] for the actual parsing.
+pub(crate) fn infer_arch(target: &str) -> String {
+    let (_, arch) = anodize_core::target::map_target(target);
+    arch
 }
 
 /// Describes the OS + architecture of an artifact match.
@@ -128,8 +105,8 @@ fn artifact_to_os_artifact(a: &Artifact, os_fallback: &str) -> OsArtifact {
     OsArtifact {
         url,
         sha256,
-        os: infer_os(target, os_fallback).to_string(),
-        arch: infer_arch(target).to_string(),
+        os: infer_os(target, os_fallback),
+        arch: infer_arch(target),
     }
 }
 
@@ -286,7 +263,8 @@ mod tests {
 
     #[test]
     fn test_infer_arch_unknown() {
-        assert_eq!(infer_arch("wasm32-unknown-unknown"), "unknown");
+        // map_target passes unrecognised arch prefixes through verbatim
+        assert_eq!(infer_arch("wasm32-unknown-unknown"), "wasm32");
     }
 
     // -----------------------------------------------------------------------

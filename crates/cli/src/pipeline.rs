@@ -1,5 +1,6 @@
 use anodize_core::config::Config;
 use anodize_core::context::Context;
+use anodize_core::log::StageLogger;
 use anodize_core::stage::Stage;
 use anyhow::{Context as _, Result, bail};
 use colored::Colorize;
@@ -122,12 +123,12 @@ pub fn load_config(path: &Path) -> Result<Config> {
 
 /// Execute a list of shell hook commands.
 /// In dry-run mode, log but do not execute.
-pub fn run_hooks(hooks: &[String], label: &str, dry_run: bool) -> Result<()> {
+pub fn run_hooks(hooks: &[String], label: &str, dry_run: bool, log: &StageLogger) -> Result<()> {
     for hook in hooks {
         if dry_run {
-            eprintln!("  [dry-run] {} hook: {}", label, hook);
+            log.status(&format!("[dry-run] {} hook: {}", label, hook));
         } else {
-            eprintln!("  running {} hook: {}", label, hook);
+            log.status(&format!("running {} hook: {}", label, hook));
             let status = Command::new("sh")
                 .arg("-c")
                 .arg(hook)
@@ -159,18 +160,23 @@ impl Pipeline {
         self.stages.push(stage);
     }
 
-    pub fn run(&self, ctx: &mut Context) -> Result<()> {
+    pub fn run(&self, ctx: &mut Context, log: &StageLogger) -> Result<()> {
         for stage in &self.stages {
-            let name = stage.name().bold();
-            if ctx.should_skip(stage.name()) {
-                eprintln!("  {} {}", name, "skipped".yellow());
+            let name = stage.name();
+            if ctx.should_skip(name) {
+                log.status(&format!("{} {}", name.bold(), "skipped".yellow()));
                 continue;
             }
-            eprintln!("  \u{2022} {}...", name);
+            log.status(&format!("\u{2022} {}...", name.bold()));
             match stage.run(ctx) {
-                Ok(()) => eprintln!("  {} {}", "\u{2713}".green().bold(), name),
+                Ok(()) => log.status(&format!("{} {}", "\u{2713}".green().bold(), name.bold())),
                 Err(e) => {
-                    eprintln!("  {} {} — {}", "\u{2717}".red().bold(), name, e);
+                    log.status(&format!(
+                        "{} {} \u{2014} {}",
+                        "\u{2717}".red().bold(),
+                        name.bold(),
+                        e
+                    ));
                     return Err(e);
                 }
             }

@@ -16,6 +16,38 @@ impl SemVer {
     }
 }
 
+impl PartialEq for SemVer {
+    fn eq(&self, other: &Self) -> bool {
+        self.major == other.major
+            && self.minor == other.minor
+            && self.patch == other.patch
+            && self.prerelease == other.prerelease
+    }
+}
+
+impl Eq for SemVer {}
+
+impl PartialOrd for SemVer {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for SemVer {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.major
+            .cmp(&other.major)
+            .then(self.minor.cmp(&other.minor))
+            .then(self.patch.cmp(&other.patch))
+            .then(match (&self.prerelease, &other.prerelease) {
+                (Some(_), None) => std::cmp::Ordering::Less, // prerelease < release
+                (None, Some(_)) => std::cmp::Ordering::Greater, // release > prerelease
+                (Some(a), Some(b)) => a.cmp(b),
+                (None, None) => std::cmp::Ordering::Equal,
+            })
+    }
+}
+
 /// Parse a semver version from a tag string like "v1.2.3", "v1.0.0-rc.1", or "cfgd-core-v2.1.0"
 pub fn parse_semver(tag: &str) -> Result<SemVer> {
     let re = Regex::new(r"v?(\d+)\.(\d+)\.(\d+)(?:-(.+))?$")?;
@@ -64,12 +96,19 @@ fn git_output(args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Check whether the working tree has uncommitted changes.
+pub fn is_git_dirty() -> bool {
+    git_output(&["status", "--porcelain"])
+        .map(|s| !s.is_empty())
+        .unwrap_or(false)
+}
+
 /// Detect git info for a given tag.
 pub fn detect_git_info(tag: &str) -> Result<GitInfo> {
     let commit = git_output(&["rev-parse", "HEAD"])?;
     let short_commit = git_output(&["rev-parse", "--short", "HEAD"])?;
     let branch = git_output(&["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
-    let dirty = !git_output(&["status", "--porcelain"])?.is_empty();
+    let dirty = is_git_dirty();
     let commit_date = git_output(&["log", "-1", "--format=%aI"]).unwrap_or_default();
     let commit_timestamp = git_output(&["log", "-1", "--format=%at"]).unwrap_or_default();
     let semver = parse_semver(tag)?;
@@ -119,19 +158,31 @@ pub fn find_latest_tag_matching(tag_template: &str) -> Result<Option<String>> {
         .filter_map(|t| parse_semver(t).ok().map(|v| (v, t.to_string())))
         .collect();
 
-    matching.sort_by(|a, b| {
-        a.0.major
-            .cmp(&b.0.major)
-            .then(a.0.minor.cmp(&b.0.minor))
-            .then(a.0.patch.cmp(&b.0.patch))
-            .then(match (&a.0.prerelease, &b.0.prerelease) {
-                (Some(_), None) => std::cmp::Ordering::Less, // prerelease < release
-                (None, Some(_)) => std::cmp::Ordering::Greater, // release > prerelease
-                _ => std::cmp::Ordering::Equal,
-            })
-    });
+    matching.sort_by(|a, b| a.0.cmp(&b.0));
 
     Ok(matching.last().map(|(_, tag)| tag.clone()))
+}
+
+/// Parse git log output (formatted as `%H%n%h%n%s`) into a vec of [`Commit`]s.
+fn parse_commit_output(output: &str) -> Vec<Commit> {
+    if output.is_empty() {
+        return vec![];
+    }
+    let lines: Vec<&str> = output.lines().collect();
+    lines
+        .chunks(3)
+        .filter_map(|chunk| {
+            if chunk.len() == 3 {
+                Some(Commit {
+                    hash: chunk[0].to_string(),
+                    short_hash: chunk[1].to_string(),
+                    message: chunk[2].to_string(),
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// Get commits between two refs, optionally filtered to a path.
@@ -143,21 +194,7 @@ pub fn get_commits_between(from: &str, to: &str, path_filter: Option<&str>) -> R
         args.push(path);
     }
     let output = git_output(&args)?;
-    if output.is_empty() {
-        return Ok(vec![]);
-    }
-    let lines: Vec<&str> = output.lines().collect();
-    let mut commits = vec![];
-    for chunk in lines.chunks(3) {
-        if chunk.len() == 3 {
-            commits.push(Commit {
-                hash: chunk[0].to_string(),
-                short_hash: chunk[1].to_string(),
-                message: chunk[2].to_string(),
-            });
-        }
-    }
-    Ok(commits)
+    Ok(parse_commit_output(&output))
 }
 
 /// Get all commits reachable from HEAD, optionally filtered to a path.
@@ -169,75 +206,35 @@ pub fn get_all_commits(path_filter: Option<&str>) -> Result<Vec<Commit>> {
         args.push(path);
     }
     let output = git_output(&args)?;
-    if output.is_empty() {
+    Ok(parse_commit_output(&output))
+}
+
+/// Collect semver tags from the output of the given `git` arguments, filtered
+/// by `prefix` and sorted descending by version.
+fn collect_semver_tags(git_args: &[&str], prefix: &str) -> Result<Vec<String>> {
+    let tags_output = git_output(git_args)?;
+    if tags_output.is_empty() {
         return Ok(vec![]);
     }
-    let lines: Vec<&str> = output.lines().collect();
-    let mut commits = vec![];
-    for chunk in lines.chunks(3) {
-        if chunk.len() == 3 {
-            commits.push(Commit {
-                hash: chunk[0].to_string(),
-                short_hash: chunk[1].to_string(),
-                message: chunk[2].to_string(),
-            });
-        }
-    }
-    Ok(commits)
+    let mut matching: Vec<(SemVer, String)> = tags_output
+        .lines()
+        .filter(|t| t.starts_with(prefix))
+        .filter_map(|t| parse_semver(t).ok().map(|v| (v, t.to_string())))
+        .collect();
+    matching.sort_by(|a, b| b.0.cmp(&a.0));
+    Ok(matching.into_iter().map(|(_, tag)| tag).collect())
 }
 
 /// Get all semver tags in the repo, sorted descending by version.
 /// Prerelease tags sort after release tags of the same major.minor.patch.
 pub fn get_all_semver_tags(prefix: &str) -> Result<Vec<String>> {
-    let tags_output = git_output(&["tag", "--list"])?;
-    if tags_output.is_empty() {
-        return Ok(vec![]);
-    }
-    let mut matching: Vec<(SemVer, String)> = tags_output
-        .lines()
-        .filter(|t| t.starts_with(prefix))
-        .filter_map(|t| parse_semver(t).ok().map(|v| (v, t.to_string())))
-        .collect();
-    matching.sort_by(|a, b| {
-        b.0.major
-            .cmp(&a.0.major)
-            .then(b.0.minor.cmp(&a.0.minor))
-            .then(b.0.patch.cmp(&a.0.patch))
-            .then(match (&a.0.prerelease, &b.0.prerelease) {
-                // descending: release (None) > prerelease (Some)
-                (Some(_), None) => std::cmp::Ordering::Greater,
-                (None, Some(_)) => std::cmp::Ordering::Less,
-                _ => std::cmp::Ordering::Equal,
-            })
-    });
-    Ok(matching.into_iter().map(|(_, tag)| tag).collect())
+    collect_semver_tags(&["tag", "--list"], prefix)
 }
 
 /// Get semver tags reachable from HEAD, sorted descending by version.
 /// Prerelease tags sort after release tags of the same major.minor.patch.
 pub fn get_branch_semver_tags(prefix: &str) -> Result<Vec<String>> {
-    let tags_output = git_output(&["tag", "--merged", "HEAD", "--list"])?;
-    if tags_output.is_empty() {
-        return Ok(vec![]);
-    }
-    let mut matching: Vec<(SemVer, String)> = tags_output
-        .lines()
-        .filter(|t| t.starts_with(prefix))
-        .filter_map(|t| parse_semver(t).ok().map(|v| (v, t.to_string())))
-        .collect();
-    matching.sort_by(|a, b| {
-        b.0.major
-            .cmp(&a.0.major)
-            .then(b.0.minor.cmp(&a.0.minor))
-            .then(b.0.patch.cmp(&a.0.patch))
-            .then(match (&a.0.prerelease, &b.0.prerelease) {
-                // descending: release (None) > prerelease (Some)
-                (Some(_), None) => std::cmp::Ordering::Greater,
-                (None, Some(_)) => std::cmp::Ordering::Less,
-                _ => std::cmp::Ordering::Equal,
-            })
-    });
-    Ok(matching.into_iter().map(|(_, tag)| tag).collect())
+    collect_semver_tags(&["tag", "--merged", "HEAD", "--list"], prefix)
 }
 
 /// Create an annotated tag and push it if an `origin` remote exists.
@@ -262,6 +259,39 @@ pub fn create_and_push_tag(tag: &str, message: &str, dry_run: bool) -> Result<()
     Ok(())
 }
 
+/// POST a JSON body to a GitHub API endpoint via the `gh` CLI.
+///
+/// Returns the parsed JSON response on success. The caller is responsible for
+/// ensuring that `gh` is installed and authenticated.
+fn gh_api_post(endpoint: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
+    use std::io::Write;
+
+    let body_str = serde_json::to_string(body)?;
+
+    let mut child = Command::new("gh")
+        .args(["api", "--method", "POST", endpoint, "--input", "-"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("failed to spawn gh CLI")?;
+
+    if let Some(ref mut stdin) = child.stdin {
+        stdin.write_all(body_str.as_bytes())?;
+    }
+    child.stdin.take(); // close stdin
+
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("gh api POST {} failed: {}", endpoint, stderr.trim());
+    }
+
+    let response: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .with_context(|| format!("failed to parse GitHub API response from {}", endpoint))?;
+    Ok(response)
+}
+
 /// Create a tag via the GitHub API (using the `gh` CLI).
 ///
 /// This avoids the need for local git push access. Requires the `gh` CLI to be
@@ -284,7 +314,7 @@ pub fn create_tag_via_github_api(tag: &str, message: &str, dry_run: bool) -> Res
     // Get the current HEAD SHA to point the tag at.
     let sha = git_output(&["rev-parse", "HEAD"])?;
 
-    // Use `gh api` to create the tag via the GitHub REST API.
+    // Step 1: Create the tag object
     let body = serde_json::json!({
         "tag": tag,
         "message": message,
@@ -297,49 +327,18 @@ pub fn create_tag_via_github_api(tag: &str, message: &str, dry_run: bool) -> Res
         }
     });
 
-    let body_str = serde_json::to_string(&body)?;
-
-    // Step 1: Create the tag object
-    let output = Command::new("gh")
-        .args([
-            "api",
-            "--method",
-            "POST",
-            &format!("/repos/{owner}/{repo}/git/tags"),
-            "--input",
-            "-",
-        ])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn();
-
-    let mut child = match output {
-        Ok(child) => child,
-        Err(_) => {
-            // gh CLI not available, fall back to local git
-            eprintln!("[tag] gh CLI not found, falling back to local git tag + push");
-            return create_and_push_tag(tag, message, dry_run);
+    let tag_endpoint = format!("/repos/{owner}/{repo}/git/tags");
+    let response = match gh_api_post(&tag_endpoint, &body) {
+        Ok(resp) => resp,
+        Err(e) => {
+            if e.to_string().contains("failed to spawn gh CLI") {
+                eprintln!("[tag] gh CLI not found, falling back to local git tag + push");
+                return create_and_push_tag(tag, message, dry_run);
+            }
+            return Err(e);
         }
     };
 
-    {
-        use std::io::Write;
-        if let Some(ref mut stdin) = child.stdin {
-            stdin.write_all(body_str.as_bytes())?;
-        }
-    }
-    child.stdin.take(); // close stdin
-
-    let child_output = child.wait_with_output()?;
-    if !child_output.status.success() {
-        let stderr = String::from_utf8_lossy(&child_output.stderr);
-        bail!("gh api (create tag object) failed: {}", stderr.trim());
-    }
-
-    // Parse the tag SHA from the response
-    let response: serde_json::Value = serde_json::from_slice(&child_output.stdout)
-        .context("failed to parse GitHub API response for tag object")?;
     let tag_sha = response["sha"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("GitHub API response missing 'sha' field"))?;
@@ -349,36 +348,9 @@ pub fn create_tag_via_github_api(tag: &str, message: &str, dry_run: bool) -> Res
         "ref": format!("refs/tags/{}", tag),
         "sha": tag_sha,
     });
-    let ref_body_str = serde_json::to_string(&ref_body)?;
 
-    let mut ref_child = Command::new("gh")
-        .args([
-            "api",
-            "--method",
-            "POST",
-            &format!("/repos/{owner}/{repo}/git/refs"),
-            "--input",
-            "-",
-        ])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .context("failed to spawn gh for ref creation")?;
-
-    {
-        use std::io::Write;
-        if let Some(ref mut stdin) = ref_child.stdin {
-            stdin.write_all(ref_body_str.as_bytes())?;
-        }
-    }
-    ref_child.stdin.take(); // close stdin
-
-    let ref_output = ref_child.wait_with_output()?;
-    if !ref_output.status.success() {
-        let stderr = String::from_utf8_lossy(&ref_output.stderr);
-        bail!("gh api (create ref) failed: {}", stderr.trim());
-    }
+    let ref_endpoint = format!("/repos/{owner}/{repo}/git/refs");
+    gh_api_post(&ref_endpoint, &ref_body)?;
 
     Ok(())
 }
