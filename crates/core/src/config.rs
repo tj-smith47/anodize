@@ -103,7 +103,14 @@ pub fn validate_version(config: &Config) -> Result<(), String> {
 
 /// Load environment variables from .env-style files.
 /// Each file is read as KEY=VALUE lines. Lines starting with # and empty lines are skipped.
-pub fn load_env_files(files: &[String], log: &crate::log::StageLogger) -> Result<(), String> {
+/// Returns a HashMap of parsed key-value pairs. Does NOT mutate the process
+/// environment — callers should inject these into the template context via
+/// `set_env()` and pass them to subprocesses via `Command::envs()`.
+pub fn load_env_files(
+    files: &[String],
+    log: &crate::log::StageLogger,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    let mut vars = std::collections::HashMap::new();
     for file_path in files {
         let content = std::fs::read_to_string(file_path)
             .map_err(|e| format!("failed to read env file '{}': {}", file_path, e))?;
@@ -134,11 +141,7 @@ pub fn load_env_files(files: &[String], log: &crate::log::StageLogger) -> Result
                 } else {
                     value
                 };
-                // SAFETY: set_var is unsafe since Rust 1.66 in multi-threaded contexts,
-                // but we call this early before spawning threads.
-                unsafe {
-                    std::env::set_var(key, value);
-                }
+                vars.insert(key.to_string(), value.to_string());
             } else {
                 log.warn(&format!(
                     "skipping line without '=' in '{}': {}",
@@ -147,7 +150,7 @@ pub fn load_env_files(files: &[String], log: &crate::log::StageLogger) -> Result
             }
         }
     }
-    Ok(())
+    Ok(vars)
 }
 
 // ---------------------------------------------------------------------------
@@ -3311,27 +3314,19 @@ crates: []
         drop(f);
 
         let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Normal);
-        load_env_files(&[env_path.to_string_lossy().to_string()], &log).unwrap();
-        assert_eq!(std::env::var("TEST_ANODIZE_KEY").unwrap(), "hello_world");
-        assert_eq!(std::env::var("TEST_ANODIZE_QUOTED").unwrap(), "with quotes");
+        let vars = load_env_files(&[env_path.to_string_lossy().to_string()], &log).unwrap();
+        assert_eq!(vars.get("TEST_ANODIZE_KEY").unwrap(), "hello_world");
+        assert_eq!(vars.get("TEST_ANODIZE_QUOTED").unwrap(), "with quotes");
         assert_eq!(
-            std::env::var("TEST_ANODIZE_SINGLE").unwrap(),
+            vars.get("TEST_ANODIZE_SINGLE").unwrap(),
             "single_quoted",
             "single-quoted values should have quotes stripped"
         );
         assert_eq!(
-            std::env::var("TEST_ANODIZE_EXPORT").unwrap(),
+            vars.get("TEST_ANODIZE_EXPORT").unwrap(),
             "exported_val",
             "export prefix should be stripped"
         );
-
-        // Clean up
-        unsafe {
-            std::env::remove_var("TEST_ANODIZE_KEY");
-            std::env::remove_var("TEST_ANODIZE_QUOTED");
-            std::env::remove_var("TEST_ANODIZE_SINGLE");
-            std::env::remove_var("TEST_ANODIZE_EXPORT");
-        }
     }
 
     #[test]
@@ -3349,15 +3344,12 @@ crates: []
         drop(f);
 
         let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Normal);
-        load_env_files(&[env_path.to_string_lossy().to_string()], &log).unwrap();
+        let vars = load_env_files(&[env_path.to_string_lossy().to_string()], &log).unwrap();
         // The single-quote value should be kept as-is (not stripped, length < 2 for
         // matching quotes)
-        assert_eq!(std::env::var("TEST_ANODIZE_SINGLEQ").unwrap(), "\"");
-
-        // Clean up
-        unsafe {
-            std::env::remove_var("TEST_ANODIZE_SINGLEQ");
-        }
+        assert_eq!(vars.get("TEST_ANODIZE_SINGLEQ").unwrap(), "\"");
+        // Empty key and no-equals lines should have been skipped
+        assert!(!vars.contains_key(""), "empty key should be skipped");
     }
 
     #[test]

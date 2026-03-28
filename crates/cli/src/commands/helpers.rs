@@ -73,10 +73,13 @@ pub fn setup_env(
     config: &Config,
     log: &anodize_core::log::StageLogger,
 ) -> anyhow::Result<()> {
-    // Load .env files early (before template expansion)
+    // Load .env files into template context (not the process environment)
     if let Some(ref env_files) = config.env_files {
-        anodize_core::config::load_env_files(env_files, log)
+        let env_vars = anodize_core::config::load_env_files(env_files, log)
             .map_err(|e| anyhow::anyhow!("{}", e))?;
+        for (key, value) in &env_vars {
+            ctx.template_vars_mut().set_env(key, value);
+        }
     }
 
     // Populate user-defined env vars into template context
