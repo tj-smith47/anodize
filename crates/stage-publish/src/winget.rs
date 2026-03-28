@@ -198,7 +198,6 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
     let repo_path_str = repo_path.to_string_lossy();
     clone_args.push(&repo_path_str);
 
-    // We need to use run_cmd without a working dir (not run_cmd_in) for clone.
     let output = Command::new("git")
         .args(&clone_args)
         .output()

@@ -2,7 +2,7 @@ use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
 use anyhow::{Context as _, Result};
 
-use crate::util::{find_windows_artifact, run_cmd, run_cmd_in};
+use crate::util::{find_windows_artifact, run_cmd_in};
 
 // ---------------------------------------------------------------------------
 // generate_manifest
@@ -114,31 +114,45 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         .options
         .token
         .clone()
-        .or_else(|| std::env::var("HOMEBREW_TAP_TOKEN").ok())
+        .or_else(|| std::env::var("SCOOP_BUCKET_TOKEN").ok())
         .or_else(|| std::env::var("GITHUB_TOKEN").ok());
 
-    let clone_url = if let Some(ref tok) = token {
-        format!(
-            "https://{}@github.com/{}/{}.git",
-            tok, bucket.owner, bucket.name
-        )
-    } else {
-        format!("https://github.com/{}/{}.git", bucket.owner, bucket.name)
-    };
+    let repo_url = format!("https://github.com/{}/{}.git", bucket.owner, bucket.name);
 
     let tmp_dir = tempfile::tempdir().context("scoop: create temp dir")?;
     let repo_path = tmp_dir.path();
 
-    run_cmd(
-        "git",
-        &[
-            "clone",
-            "--depth=1",
-            &clone_url,
-            &repo_path.to_string_lossy(),
-        ],
-        "scoop: git clone",
-    )?;
+    // Clone using http.extraheader for auth instead of embedding the token
+    // in the URL (avoids leaking secrets in process lists and logs).
+    let auth_header;
+    let mut clone_args: Vec<&str> = vec!["clone", "--depth=1"];
+    if let Some(ref tok) = token {
+        auth_header = format!("http.extraheader=Authorization: bearer {}", tok);
+        clone_args.extend_from_slice(&["-c", &auth_header]);
+    }
+    clone_args.push(&repo_url);
+    let repo_path_str = repo_path.to_string_lossy();
+    clone_args.push(&repo_path_str);
+
+    let output = std::process::Command::new("git")
+        .args(&clone_args)
+        .output()
+        .context("scoop: git clone: spawn")?;
+    log.check_output(output, "scoop: git clone")?;
+
+    // Configure auth for subsequent push operations in this repo clone.
+    if let Some(ref tok) = token {
+        run_cmd_in(
+            repo_path,
+            "git",
+            &[
+                "config",
+                "http.extraheader",
+                &format!("Authorization: bearer {}", tok),
+            ],
+            "scoop: git config auth",
+        )?;
+    }
 
     let manifest_path = repo_path.join(format!("{}.json", crate_name));
     std::fs::write(&manifest_path, &manifest)

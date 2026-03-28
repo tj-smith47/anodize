@@ -4,12 +4,6 @@ use anyhow::{Context as _, Result};
 use std::path::Path;
 use std::process::Command;
 
-/// Run a command with the given program and arguments, failing with `label`
-/// on spawn failure or non-zero exit.
-pub(crate) fn run_cmd(program: &str, args: &[&str], label: &str) -> Result<()> {
-    run_cmd_in(Path::new("."), program, args, label)
-}
-
 /// Run a command in a specific working directory, failing with `label`
 /// on spawn failure or non-zero exit.  Captures stdout/stderr so that
 /// diagnostics are included in the error message.
