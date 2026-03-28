@@ -148,10 +148,12 @@ pub fn generate_nfpm_yaml(config: &NfpmConfig, version: &str, binary_path: &str)
         .filter(|m| !m.is_empty())
         .map(|m| {
             m.iter()
-                .map(|(k, v)| {
-                    let yaml_val: serde_yaml_ng::Value =
-                        serde_yaml_ng::from_str(&serde_json::to_string(v).unwrap()).unwrap();
-                    (k.clone(), yaml_val)
+                .filter_map(|(k, v)| {
+                    // Convert JSON Value -> string -> YAML Value.
+                    // Skip entries that fail serialisation rather than panicking.
+                    let json_str = serde_json::to_string(v).ok()?;
+                    let yaml_val: serde_yaml_ng::Value = serde_yaml_ng::from_str(&json_str).ok()?;
+                    Some((k.clone(), yaml_val))
                 })
                 .collect()
         });
@@ -188,6 +190,10 @@ pub fn generate_nfpm_yaml(config: &NfpmConfig, version: &str, binary_path: &str)
         dependencies,
     };
 
+    // SAFETY: serde_yaml_ng::to_string can only fail if the type contains
+    // un-serialisable values (e.g. maps with non-string keys). NfpmYamlConfig
+    // is composed entirely of Strings, Vecs, and Options thereof, so
+    // serialisation is infallible in practice.
     let yaml = serde_yaml_ng::to_string(&yaml_config).expect("failed to serialize nfpm YAML");
     // serde_yaml_ng emits a trailing newline; trim it for consistency
     yaml.trim_end().to_string()

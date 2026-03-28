@@ -138,6 +138,8 @@ pub fn generate_manifest(params: &KrewManifestParams<'_>) -> String {
         },
     };
 
+    // SAFETY: The manifest struct is composed entirely of Strings and Vecs;
+    // YAML serialisation is infallible for these types.
     serde_yaml_ng::to_string(&manifest).expect("krew: serialize manifest")
 }
 

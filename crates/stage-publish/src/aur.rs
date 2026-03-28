@@ -65,6 +65,7 @@ package() {
 pub fn generate_pkgbuild(params: &PkgbuildParams<'_>) -> String {
     let mut tera = Tera::default();
     tera.autoescape_on(vec![]); // PKGBUILD is shell, not HTML
+    // SAFETY: PKGBUILD_TEMPLATE is a compile-time constant; parse cannot fail.
     tera.add_raw_template("pkgbuild", PKGBUILD_TEMPLATE)
         .expect("aur: invalid PKGBUILD template");
 
@@ -118,6 +119,7 @@ pub fn generate_pkgbuild(params: &PkgbuildParams<'_>) -> String {
     };
     ctx.insert("install_line", &install_line);
 
+    // SAFETY: All context variables are inserted above; rendering is infallible.
     tera.render("pkgbuild", &ctx)
         .expect("aur: failed to render PKGBUILD template")
 }

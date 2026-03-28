@@ -31,6 +31,7 @@ pub(crate) struct GroupedCommits {
 // parse_commit_message
 // ---------------------------------------------------------------------------
 
+// SAFETY: This is a compile-time regex literal; it is known to be valid.
 static CONVENTIONAL_COMMIT_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^([a-zA-Z]+)(?:\([^)]*\))?!?:\s*(.+)$").unwrap());
 

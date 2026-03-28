@@ -13,6 +13,7 @@ use tera::Value;
 /// Regex to find Go-style dot-prefixed references inside `{{ }}` blocks.
 /// Matches `{{ .Field }}`, `{{.Field}}`, `{{ .Env.VAR }}`, and also expressions
 /// like `{{ .Field | filter }}`. We only strip the dot from the variable name.
+// SAFETY: This is a compile-time regex literal; it is known to be valid.
 static GO_DOT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\{\{(\s*)\.(\w+)").unwrap());
 
 /// Base Tera instance with custom filters pre-registered.

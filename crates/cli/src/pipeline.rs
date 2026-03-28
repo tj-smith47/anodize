@@ -90,6 +90,14 @@ pub fn load_config(path: &Path) -> Result<Config> {
             let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
             let mut merged = serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new());
             for include in &include_paths {
+                // Reject absolute paths in includes to prevent unexpected file reads.
+                if Path::new(include).is_absolute() {
+                    bail!(
+                        "includes: absolute paths are not allowed (got '{}' in {})",
+                        include,
+                        path.display()
+                    );
+                }
                 let include_path = base_dir.join(include);
                 let include_content =
                     std::fs::read_to_string(&include_path).with_context(|| {

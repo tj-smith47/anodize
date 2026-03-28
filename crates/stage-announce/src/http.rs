@@ -2,6 +2,9 @@ use anyhow::{Context as _, Result};
 
 /// POST a JSON payload to `url`, returning an error that includes the
 /// provider name, HTTP status, and response body on failure.
+///
+/// The URL is intentionally NOT included in error messages because it may
+/// contain secrets (e.g. Telegram bot tokens embedded in the path).
 pub(crate) fn post_json(url: &str, payload: &str, provider: &str) -> Result<()> {
     let client = reqwest::blocking::Client::new();
     let resp = client
@@ -9,7 +12,7 @@ pub(crate) fn post_json(url: &str, payload: &str, provider: &str) -> Result<()> 
         .header("Content-Type", "application/json")
         .body(payload.to_string())
         .send()
-        .with_context(|| format!("{}: failed to send POST to {}", provider, url))?;
+        .with_context(|| format!("{}: failed to send POST request", provider))?;
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().unwrap_or_default();

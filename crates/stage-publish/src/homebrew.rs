@@ -82,6 +82,7 @@ pub fn generate_formula(
     };
 
     let mut tera = tera::Tera::default();
+    // SAFETY: FORMULA_TEMPLATE is a compile-time constant; parse cannot fail.
     tera.add_raw_template("formula", FORMULA_TEMPLATE)
         .expect("homebrew: parse formula template");
 
@@ -201,6 +202,7 @@ pub fn generate_formula(
     ctx.insert("install_lines", &install_lines);
     ctx.insert("test_lines", &test_lines);
 
+    // SAFETY: All context variables are inserted above; rendering is infallible.
     tera.render("formula", &ctx)
         .expect("homebrew: render formula template")
 }

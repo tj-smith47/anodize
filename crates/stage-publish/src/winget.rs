@@ -85,6 +85,8 @@ pub fn generate_manifest(params: &WingetManifestParams<'_>) -> String {
         manifest_version: "1.6.0".to_string(),
     };
 
+    // SAFETY: The manifest struct is composed entirely of Strings;
+    // YAML serialisation is infallible for these types.
     serde_yaml_ng::to_string(&manifest).expect("winget: serialize manifest")
 }
 

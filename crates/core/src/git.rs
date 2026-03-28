@@ -154,10 +154,17 @@ pub fn extract_tag_prefix(template: &str) -> Option<String> {
 /// Find the latest tag matching a template pattern.
 /// E.g., tag_template "cfgd-core-v{{ .Version }}" → matches tags like "cfgd-core-v1.2.3"
 pub fn find_latest_tag_matching(tag_template: &str) -> Result<Option<String>> {
-    let mut pattern = tag_template.to_string();
+    // Replace version placeholders with a sentinel, regex-escape everything
+    // else, then swap the sentinel back to the version regex pattern.
+    // This prevents regex metacharacters in the prefix (e.g. dots in
+    // project names) from being interpreted as regex operators.
+    const SENTINEL: &str = "\x00VERSION_PLACEHOLDER\x00";
+    let mut tmp = tag_template.to_string();
     for placeholder in VERSION_PLACEHOLDERS {
-        pattern = pattern.replace(placeholder, r"\d+\.\d+\.\d+(?:-.+)?");
+        tmp = tmp.replace(placeholder, SENTINEL);
     }
+    let escaped = regex::escape(&tmp);
+    let pattern = escaped.replace(SENTINEL, r"\d+\.\d+\.\d+(?:-.+)?");
     let re = Regex::new(&format!("^{}$", pattern))?;
 
     let tags_output = git_output(&["tag", "--list"])?;

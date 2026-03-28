@@ -44,8 +44,15 @@ fn resolve_signature_path(sign_cfg: &SignConfig, artifact_path: &str, ctx: &Cont
         let preprocessed = sig_template
             .replace("{{ .Artifact }}", artifact_path)
             .replace("{{ Artifact }}", artifact_path);
-        ctx.render_template(&preprocessed)
-            .unwrap_or_else(|_| format!("{}.sig", artifact_path))
+        ctx.render_template(&preprocessed).unwrap_or_else(|e| {
+            // Log a warning instead of silently falling back, so users know
+            // their custom signature template failed to render.
+            eprintln!(
+                "Warning: [sign] failed to render signature template '{}': {}, falling back to {}.sig",
+                sig_template, e, artifact_path
+            );
+            format!("{}.sig", artifact_path)
+        })
     } else {
         format!("{}.sig", artifact_path)
     }
@@ -156,7 +163,15 @@ impl Stage for SignStage {
                 // Also resolve any remaining template variables (e.g., {{ .Env.GPG_FINGERPRINT }})
                 let fully_resolved: Vec<String> = resolved
                     .iter()
-                    .map(|arg| ctx.render_template(arg).unwrap_or_else(|_| arg.clone()))
+                    .map(|arg| {
+                        ctx.render_template(arg).unwrap_or_else(|e| {
+                            log.warn(&format!(
+                                "failed to render sign arg '{}': {}, using raw value",
+                                arg, e
+                            ));
+                            arg.clone()
+                        })
+                    })
                     .collect();
 
                 if ctx.is_dry_run() {
@@ -242,7 +257,15 @@ impl Stage for SignStage {
 
                     let fully_resolved: Vec<String> = resolved
                         .iter()
-                        .map(|arg| ctx.render_template(arg).unwrap_or_else(|_| arg.clone()))
+                        .map(|arg| {
+                            ctx.render_template(arg).unwrap_or_else(|e| {
+                                log.warn(&format!(
+                                    "failed to render docker-sign arg '{}': {}, using raw value",
+                                    arg, e
+                                ));
+                                arg.clone()
+                            })
+                        })
                         .collect();
 
                     if ctx.is_dry_run() {

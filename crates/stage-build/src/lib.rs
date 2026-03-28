@@ -239,7 +239,13 @@ fn build_universal_binary(
         .unwrap_or_else(|| crate_name.to_string());
 
     let out_name = if let Some(ref tmpl) = ub.name_template {
-        ctx.render_template(tmpl).unwrap_or_else(|_| tmpl.clone())
+        ctx.render_template(tmpl).unwrap_or_else(|e| {
+            log.warn(&format!(
+                "failed to render universal binary name_template '{}': {}, using raw template",
+                tmpl, e
+            ));
+            tmpl.clone()
+        })
     } else {
         binary_name.clone()
     };
@@ -870,7 +876,13 @@ impl Stage for BuildStage {
                         })
                         .collect();
 
-                    handles.into_iter().map(|h| h.join().unwrap()).collect()
+                    handles
+                        .into_iter()
+                        .map(|h| {
+                            h.join()
+                                .unwrap_or_else(|_| Err(anyhow::anyhow!("build thread panicked")))
+                        })
+                        .collect()
                 });
 
                 // Register artifacts sequentially after the chunk completes.

@@ -42,6 +42,8 @@ pub fn generate_manifest(
         }
     });
 
+    // SAFETY: The manifest is a serde_json::Value constructed from string
+    // literals and function parameters; serialisation to JSON is infallible.
     serde_json::to_string_pretty(&manifest).expect("scoop: serialize manifest")
 }
 

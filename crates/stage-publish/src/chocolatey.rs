@@ -81,6 +81,7 @@ pub fn generate_nuspec(params: &NuspecParams<'_>) -> String {
     };
 
     let mut tera = tera::Tera::default();
+    // SAFETY: NUSPEC_TEMPLATE is a compile-time constant; parse cannot fail.
     tera.add_raw_template("nuspec", NUSPEC_TEMPLATE)
         .expect("chocolatey: parse nuspec template");
 
@@ -101,6 +102,8 @@ pub fn generate_nuspec(params: &NuspecParams<'_>) -> String {
     ctx.insert("license_url", &license_url);
     ctx.insert("tags_str", &tags_str);
 
+    // SAFETY: All context variables are inserted above; the template only
+    // references variables we just set, so rendering is infallible.
     tera.render("nuspec", &ctx)
         .expect("chocolatey: render nuspec template")
 }
@@ -116,6 +119,7 @@ pub fn generate_nuspec(params: &NuspecParams<'_>) -> String {
 /// 32-bit Windows support is uncommon for modern Rust CLI tools.
 pub fn generate_install_script(name: &str, url: &str, hash: &str) -> String {
     let mut tera = tera::Tera::default();
+    // SAFETY: INSTALL_SCRIPT_TEMPLATE is a compile-time constant; parse cannot fail.
     tera.add_raw_template("install", INSTALL_SCRIPT_TEMPLATE)
         .expect("chocolatey: parse install script template");
 
@@ -127,6 +131,7 @@ pub fn generate_install_script(name: &str, url: &str, hash: &str) -> String {
     ctx.insert("url", url);
     ctx.insert("hash", hash);
 
+    // SAFETY: All context variables are inserted above; rendering is infallible.
     tera.render("install", &ctx)
         .expect("chocolatey: render install script template")
 }
