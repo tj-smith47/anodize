@@ -138,6 +138,19 @@ pub fn has_version_placeholder(template: &str) -> bool {
     VERSION_PLACEHOLDERS.iter().any(|p| template.contains(p))
 }
 
+/// Extract the prefix portion of a tag template by locating the version placeholder.
+///
+/// Returns the substring before the first recognised placeholder, or `None` if no
+/// placeholder is found.
+pub fn extract_tag_prefix(template: &str) -> Option<String> {
+    for ph in VERSION_PLACEHOLDERS {
+        if let Some(idx) = template.find(ph) {
+            return Some(template[..idx].to_string());
+        }
+    }
+    None
+}
+
 /// Find the latest tag matching a template pattern.
 /// E.g., tag_template "cfgd-core-v{{ .Version }}" → matches tags like "cfgd-core-v1.2.3"
 pub fn find_latest_tag_matching(tag_template: &str) -> Result<Option<String>> {
@@ -238,9 +251,17 @@ pub fn get_branch_semver_tags(prefix: &str) -> Result<Vec<String>> {
 }
 
 /// Create an annotated tag and push it if an `origin` remote exists.
-pub fn create_and_push_tag(tag: &str, message: &str, dry_run: bool) -> Result<()> {
+pub fn create_and_push_tag(
+    tag: &str,
+    message: &str,
+    dry_run: bool,
+    log: &crate::log::StageLogger,
+) -> Result<()> {
     if dry_run {
-        eprintln!("  [dry-run] would create tag: {} (\"{}\")", tag, message);
+        log.status(&format!(
+            "(dry-run) would create tag: {} (\"{}\")",
+            tag, message
+        ));
         return Ok(());
     }
     git_output(&["tag", "-a", tag, "-m", message])?;
@@ -254,7 +275,7 @@ pub fn create_and_push_tag(tag: &str, message: &str, dry_run: bool) -> Result<()
     if has_remote {
         git_output(&["push", "origin", tag])?;
     } else {
-        eprintln!("[tag] no 'origin' remote found, skipping push");
+        log.warn("no 'origin' remote found, skipping push");
     }
     Ok(())
 }
@@ -299,12 +320,17 @@ fn gh_api_post(endpoint: &str, body: &serde_json::Value) -> Result<serde_json::V
 /// lightweight tag object pointing at the HEAD commit on the default branch.
 ///
 /// Falls back to [`create_and_push_tag`] if `gh` is not available.
-pub fn create_tag_via_github_api(tag: &str, message: &str, dry_run: bool) -> Result<()> {
+pub fn create_tag_via_github_api(
+    tag: &str,
+    message: &str,
+    dry_run: bool,
+    log: &crate::log::StageLogger,
+) -> Result<()> {
     if dry_run {
-        eprintln!(
-            "  [dry-run] would create tag via GitHub API: {} (\"{}\")",
+        log.status(&format!(
+            "(dry-run) would create tag via GitHub API: {} (\"{}\")",
             tag, message
-        );
+        ));
         return Ok(());
     }
 
@@ -332,8 +358,8 @@ pub fn create_tag_via_github_api(tag: &str, message: &str, dry_run: bool) -> Res
         Ok(resp) => resp,
         Err(e) => {
             if e.to_string().contains("failed to spawn gh CLI") {
-                eprintln!("[tag] gh CLI not found, falling back to local git tag + push");
-                return create_and_push_tag(tag, message, dry_run);
+                log.warn("gh CLI not found, falling back to local git tag + push");
+                return create_and_push_tag(tag, message, dry_run, log);
             }
             return Err(e);
         }

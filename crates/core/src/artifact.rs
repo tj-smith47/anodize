@@ -105,7 +105,7 @@ pub fn format_size(bytes: u64) -> String {
 
 /// Print a formatted size table for all artifacts in the registry.
 /// Only includes artifacts whose files exist on disk.
-pub fn print_size_report(registry: &ArtifactRegistry) {
+pub fn print_size_report(registry: &ArtifactRegistry, log: &crate::log::StageLogger) {
     let mut entries: Vec<(String, u64)> = Vec::new();
     let mut total: u64 = 0;
 
@@ -128,22 +128,22 @@ pub fn print_size_report(registry: &ArtifactRegistry) {
 
     let max_name_len = entries.iter().map(|(n, _)| n.len()).max().unwrap_or(0);
 
-    eprintln!();
-    eprintln!("Artifact Sizes:");
+    log.status("");
+    log.status("Artifact Sizes:");
     for (name, size) in &entries {
-        eprintln!(
+        log.status(&format!(
             "  {:<width$}  {}",
             name,
             format_size(*size),
             width = max_name_len
-        );
+        ));
     }
-    eprintln!(
+    log.status(&format!(
         "  {:<width$}  {}",
         "Total:",
         format_size(total),
         width = max_name_len
-    );
+    ));
 }
 
 #[cfg(test)]

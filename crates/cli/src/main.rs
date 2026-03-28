@@ -7,11 +7,6 @@ mod commands;
 mod pipeline;
 pub mod timeout;
 
-/// Check if the git working tree is dirty using `git status --porcelain`.
-fn is_git_dirty() -> bool {
-    anodize_core::git::is_git_dirty()
-}
-
 /// Parse a --timeout value or exit with an error message.
 fn parse_timeout_or_exit(timeout: &str) -> std::time::Duration {
     timeout::parse_duration(timeout).unwrap_or_else(|e| {
@@ -74,15 +69,16 @@ fn main() {
             let duration = parse_timeout_or_exit(&timeout);
 
             // Resolve --auto-snapshot: if set and repo is dirty, force snapshot mode
-            let effective_snapshot = if !snapshot && auto_snapshot && is_git_dirty() {
-                eprintln!(
-                    "{} repo is dirty, automatically enabling snapshot mode",
-                    "Note:".yellow().bold()
-                );
-                true
-            } else {
-                snapshot
-            };
+            let effective_snapshot =
+                if !snapshot && auto_snapshot && anodize_core::git::is_git_dirty() {
+                    eprintln!(
+                        "{} repo is dirty, automatically enabling snapshot mode",
+                        "Note:".yellow().bold()
+                    );
+                    true
+                } else {
+                    snapshot
+                };
 
             let resolved_single_target = resolve_single_target(single_target);
 

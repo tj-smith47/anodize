@@ -118,9 +118,9 @@ pub fn run(opts: TagOpts) -> Result<()> {
     let create_tag = |tag: &str, message: &str, dry_run: bool| -> Result<()> {
         if cfg.git_api_tagging {
             log.verbose("using GitHub API for tagging (git_api_tagging=true)");
-            git::create_tag_via_github_api(tag, message, dry_run)
+            git::create_tag_via_github_api(tag, message, dry_run, &log)
         } else {
-            git::create_and_push_tag(tag, message, dry_run)
+            git::create_and_push_tag(tag, message, dry_run, &log)
         }
     };
 
@@ -257,9 +257,9 @@ pub fn run(opts: TagOpts) -> Result<()> {
     Ok(())
 }
 
-fn load_tag_config(opts: &TagOpts) -> TagConfig {
-    let config_path = opts
-        .config_override
+/// Resolve the config file path from CLI overrides or auto-detection.
+fn resolve_config_path(opts: &TagOpts) -> Option<std::path::PathBuf> {
+    opts.config_override
         .as_deref()
         .and_then(|p| {
             if p.exists() {
@@ -268,9 +268,11 @@ fn load_tag_config(opts: &TagOpts) -> TagConfig {
                 None
             }
         })
-        .or_else(|| crate::pipeline::find_config(None).ok());
+        .or_else(|| crate::pipeline::find_config(None).ok())
+}
 
-    if let Some(path) = config_path
+fn load_tag_config(opts: &TagOpts) -> TagConfig {
+    if let Some(path) = resolve_config_path(opts)
         && let Ok(config) = crate::pipeline::load_config(&path)
     {
         return config.tag.unwrap_or_default();
@@ -282,44 +284,11 @@ fn load_tag_config(opts: &TagOpts) -> TagConfig {
 /// crate's `tag_template` by stripping the version placeholder suffix.
 /// E.g. `mylib-v{{ .Version }}` -> `mylib-v`.
 fn load_crate_tag_prefix(opts: &TagOpts, crate_name: &str) -> Option<String> {
-    let config_path = opts
-        .config_override
-        .as_deref()
-        .and_then(|p| {
-            if p.exists() {
-                Some(p.to_path_buf())
-            } else {
-                None
-            }
-        })
-        .or_else(|| crate::pipeline::find_config(None).ok());
-
-    let config_path = config_path?;
+    let config_path = resolve_config_path(opts)?;
     let config = crate::pipeline::load_config(&config_path).ok()?;
     let crate_cfg = config.crates.iter().find(|c| c.name == crate_name)?;
 
-    // Extract the prefix by finding the version placeholder and taking everything before it.
-    // These must stay in sync with anodize_core::git::VERSION_PLACEHOLDERS (which is crate-private).
-    extract_tag_prefix(&crate_cfg.tag_template)
-}
-
-/// Extract the prefix portion of a tag template by locating the version placeholder.
-///
-/// Returns the substring before the first recognised placeholder, or `None` if no
-/// placeholder is found. The placeholder list mirrors `anodize_core::git::VERSION_PLACEHOLDERS`.
-fn extract_tag_prefix(template: &str) -> Option<String> {
-    const VERSION_PLACEHOLDERS: &[&str] = &[
-        "{{ .Version }}",
-        "{{.Version}}",
-        "{{ Version }}",
-        "{{Version}}",
-    ];
-    for ph in VERSION_PLACEHOLDERS {
-        if let Some(idx) = template.find(ph) {
-            return Some(template[..idx].to_string());
-        }
-    }
-    None
+    git::extract_tag_prefix(&crate_cfg.tag_template)
 }
 
 fn find_previous_tag(cfg: &ResolvedConfig) -> Result<Option<String>> {

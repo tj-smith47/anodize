@@ -26,11 +26,6 @@ pub fn run(opts: BuildOpts) -> Result<()> {
     let mut config =
         pipeline::load_config(&pipeline::find_config(opts.config_override.as_deref())?)?;
 
-    // Load .env files early
-    if let Some(ref env_files) = config.env_files {
-        anodize_core::config::load_env_files(env_files).map_err(|e| anyhow::anyhow!("{}", e))?;
-    }
-
     // Resolve workspace if specified
     if let Some(ref ws_name) = opts.workspace {
         let ws = super::release::resolve_workspace(&config, ws_name)?.clone();
@@ -56,7 +51,7 @@ pub fn run(opts: BuildOpts) -> Result<()> {
     ctx.populate_time_vars();
 
     // Populate user-defined env vars
-    helpers::setup_env(&mut ctx, &config)?;
+    helpers::setup_env(&mut ctx, &config, &log)?;
 
     // Resolve git info
     helpers::resolve_git_context(&mut ctx, &config, &log);

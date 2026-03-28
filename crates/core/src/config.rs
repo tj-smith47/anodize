@@ -103,7 +103,7 @@ pub fn validate_version(config: &Config) -> Result<(), String> {
 
 /// Load environment variables from .env-style files.
 /// Each file is read as KEY=VALUE lines. Lines starting with # and empty lines are skipped.
-pub fn load_env_files(files: &[String]) -> Result<(), String> {
+pub fn load_env_files(files: &[String], log: &crate::log::StageLogger) -> Result<(), String> {
     for file_path in files {
         let content = std::fs::read_to_string(file_path)
             .map_err(|e| format!("failed to read env file '{}': {}", file_path, e))?;
@@ -117,11 +117,11 @@ pub fn load_env_files(files: &[String]) -> Result<(), String> {
             if let Some((key, value)) = trimmed.split_once('=') {
                 let key = key.trim();
                 if key.is_empty() {
-                    eprintln!(
-                        "[env] warning: skipping line with empty key in '{}': {}",
+                    log.warn(&format!(
+                        "skipping line with empty key in '{}': {}",
                         file_path,
                         line.trim()
-                    );
+                    ));
                     continue;
                 }
                 let value = value.trim();
@@ -140,10 +140,10 @@ pub fn load_env_files(files: &[String]) -> Result<(), String> {
                     std::env::set_var(key, value);
                 }
             } else {
-                eprintln!(
-                    "[env] warning: skipping line without '=' in '{}': {}",
+                log.warn(&format!(
+                    "skipping line without '=' in '{}': {}",
                     file_path, trimmed
-                );
+                ));
             }
         }
     }
@@ -3310,7 +3310,8 @@ crates: []
         writeln!(f, "export TEST_ANODIZE_EXPORT=exported_val").unwrap();
         drop(f);
 
-        load_env_files(&[env_path.to_string_lossy().to_string()]).unwrap();
+        let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Normal);
+        load_env_files(&[env_path.to_string_lossy().to_string()], &log).unwrap();
         assert_eq!(std::env::var("TEST_ANODIZE_KEY").unwrap(), "hello_world");
         assert_eq!(std::env::var("TEST_ANODIZE_QUOTED").unwrap(), "with quotes");
         assert_eq!(
@@ -3347,7 +3348,8 @@ crates: []
         writeln!(f, "NO_EQUALS_HERE").unwrap();
         drop(f);
 
-        load_env_files(&[env_path.to_string_lossy().to_string()]).unwrap();
+        let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Normal);
+        load_env_files(&[env_path.to_string_lossy().to_string()], &log).unwrap();
         // The single-quote value should be kept as-is (not stripped, length < 2 for
         // matching quotes)
         assert_eq!(std::env::var("TEST_ANODIZE_SINGLEQ").unwrap(), "\"");
@@ -3360,7 +3362,11 @@ crates: []
 
     #[test]
     fn test_load_env_files_nonexistent_returns_error() {
-        let result = load_env_files(&["/tmp/nonexistent_anodize_env_file_12345".to_string()]);
+        let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Normal);
+        let result = load_env_files(
+            &["/tmp/nonexistent_anodize_env_file_12345".to_string()],
+            &log,
+        );
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("failed to read env file"));
     }

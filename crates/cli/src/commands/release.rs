@@ -43,11 +43,6 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
     let mut config =
         pipeline::load_config(&pipeline::find_config(opts.config_override.as_deref())?)?;
 
-    // Load .env files early (before template expansion)
-    if let Some(ref env_files) = config.env_files {
-        anodize_core::config::load_env_files(env_files).map_err(|e| anyhow::anyhow!("{}", e))?;
-    }
-
     // If --workspace is specified, resolve the workspace and overlay its config
     // onto the top-level config (replacing crates, changelog, signs, etc.).
     if let Some(ref ws_name) = opts.workspace {
@@ -103,7 +98,7 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
     ctx.populate_time_vars();
 
     // Populate user-defined env vars into template context
-    helpers::setup_env(&mut ctx, &config)?;
+    helpers::setup_env(&mut ctx, &config, &log)?;
 
     // Resolve tag and populate git variables before running the pipeline.
     helpers::resolve_git_context(&mut ctx, &config, &log);
@@ -178,7 +173,7 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
     if result.is_ok() && !ctx.is_dry_run() {
         // Print artifact size table if configured
         if config.report_sizes.unwrap_or(false) {
-            artifact::print_size_report(&ctx.artifacts);
+            artifact::print_size_report(&ctx.artifacts, &log);
         }
 
         // Write metadata.json to dist/

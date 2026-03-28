@@ -68,10 +68,15 @@ pub fn resolve_git_context(ctx: &mut Context, config: &Config, log: &StageLogger
 
 /// Load `.env` files and populate user-defined env vars into the context's
 /// template variables.
-pub fn setup_env(ctx: &mut Context, config: &Config) -> anyhow::Result<()> {
+pub fn setup_env(
+    ctx: &mut Context,
+    config: &Config,
+    log: &anodize_core::log::StageLogger,
+) -> anyhow::Result<()> {
     // Load .env files early (before template expansion)
     if let Some(ref env_files) = config.env_files {
-        anodize_core::config::load_env_files(env_files).map_err(|e| anyhow::anyhow!("{}", e))?;
+        anodize_core::config::load_env_files(env_files, log)
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
     }
 
     // Populate user-defined env vars into template context

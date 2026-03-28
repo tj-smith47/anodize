@@ -129,19 +129,12 @@ pub fn run_hooks(hooks: &[String], label: &str, dry_run: bool, log: &StageLogger
             log.status(&format!("[dry-run] {} hook: {}", label, hook));
         } else {
             log.status(&format!("running {} hook: {}", label, hook));
-            let status = Command::new("sh")
+            let output = Command::new("sh")
                 .arg("-c")
                 .arg(hook)
-                .status()
+                .output()
                 .with_context(|| format!("failed to spawn {} hook: {}", label, hook))?;
-            if !status.success() {
-                bail!(
-                    "{} hook failed (exit {}): {}",
-                    label,
-                    status.code().unwrap_or(-1),
-                    hook
-                );
-            }
+            log.check_output(output, &format!("{} hook: {}", label, hook))?;
         }
     }
     Ok(())

@@ -1,6 +1,6 @@
+use super::helpers;
 use crate::pipeline;
 use anodize_core::context::{Context, ContextOptions};
-use anodize_core::git;
 use anodize_core::log::{StageLogger, Verbosity};
 use anodize_core::stage::Stage;
 use anyhow::Result;
@@ -35,34 +35,8 @@ pub fn run(
     let mut ctx = Context::new(config.clone(), ctx_opts);
     ctx.populate_time_vars();
 
-    // Resolve git info (same pattern as release.rs)
-    let first_crate = ctx
-        .options
-        .selected_crates
-        .first()
-        .and_then(|name| config.crates.iter().find(|c| &c.name == name))
-        .or_else(|| config.crates.first());
-
-    if let Some(crate_cfg) = first_crate {
-        let latest_tag = git::find_latest_tag_matching(&crate_cfg.tag_template)
-            .ok()
-            .flatten();
-        let tag = latest_tag.clone().unwrap_or_else(|| "v0.0.0".to_string());
-
-        match git::detect_git_info(&tag) {
-            Ok(mut git_info) => {
-                git_info.previous_tag = latest_tag;
-                ctx.git_info = Some(git_info);
-                ctx.populate_git_vars();
-            }
-            Err(e) => {
-                log.warn(&format!("could not detect git info: {e}"));
-                ctx.populate_git_vars();
-            }
-        }
-    } else {
-        ctx.populate_git_vars();
-    }
+    // Resolve git info (shared with release.rs and build.rs)
+    helpers::resolve_git_context(&mut ctx, &config, &log);
 
     // Run the changelog stage
     let stage = anodize_stage_changelog::ChangelogStage;
