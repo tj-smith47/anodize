@@ -36,11 +36,15 @@ dependencies = [
  "anodize-stage-build",
  "anodize-stage-changelog",
  "anodize-stage-checksum",
+ "anodize-stage-dmg",
  "anodize-stage-docker",
+ "anodize-stage-msi",
  "anodize-stage-nfpm",
+ "anodize-stage-pkg",
  "anodize-stage-publish",
  "anodize-stage-release",
  "anodize-stage-sign",
+ "anodize-stage-snapcraft",
  "anodize-stage-source",
  "anodize-stage-upx",
  "anyhow",
@@ -140,7 +144,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "anodize-stage-dmg"
+version = "0.1.0"
+dependencies = [
+ "anodize-core",
+ "anyhow",
+ "serde_yaml_ng",
+ "tempfile",
+]
+
+[[package]]
 name = "anodize-stage-docker"
+version = "0.1.0"
+dependencies = [
+ "anodize-core",
+ "anyhow",
+ "serde_yaml_ng",
+ "tempfile",
+]
+
+[[package]]
+name = "anodize-stage-msi"
 version = "0.1.0"
 dependencies = [
  "anodize-core",
@@ -157,6 +181,16 @@ dependencies = [
  "anyhow",
  "serde",
  "serde_json",
+ "serde_yaml_ng",
+ "tempfile",
+]
+
+[[package]]
+name = "anodize-stage-pkg"
+version = "0.1.0"
+dependencies = [
+ "anodize-core",
+ "anyhow",
  "serde_yaml_ng",
  "tempfile",
 ]
@@ -184,6 +218,7 @@ dependencies = [
  "glob",
  "octocrab",
  "serde_json",
+ "serde_yaml_ng",
  "tokio",
 ]
 
@@ -193,6 +228,19 @@ version = "0.1.0"
 dependencies = [
  "anodize-core",
  "anyhow",
+ "serde_yaml_ng",
+ "tempfile",
+]
+
+[[package]]
+name = "anodize-stage-snapcraft"
+version = "0.1.0"
+dependencies = [
+ "anodize-core",
+ "anyhow",
+ "serde",
+ "serde_yaml_ng",
+ "tempfile",
 ]
 
 [[package]]

@@ -43,6 +43,7 @@ pub struct Config {
     pub workspaces: Option<Vec<WorkspaceConfig>>,
     pub source: Option<SourceConfig>,
     pub sbom: Option<SbomConfig>,
+    pub release: Option<ReleaseConfig>,
 }
 
 /// Helper schema function for the signs field (accepts object or array).
@@ -85,6 +86,7 @@ impl Default for Config {
             workspaces: None,
             source: None,
             sbom: None,
+            release: None,
         }
     }
 }
@@ -241,6 +243,10 @@ pub struct CrateConfig {
     pub publish: Option<PublishConfig>,
     pub docker: Option<Vec<DockerConfig>>,
     pub nfpm: Option<Vec<NfpmConfig>>,
+    pub snapcrafts: Option<Vec<SnapcraftConfig>>,
+    pub dmgs: Option<Vec<DmgConfig>>,
+    pub msis: Option<Vec<MsiConfig>>,
+    pub pkgs: Option<Vec<PkgConfig>>,
     pub binstall: Option<BinstallConfig>,
     pub version_sync: Option<VersionSyncConfig>,
     pub universal_binaries: Option<Vec<UniversalBinaryConfig>>,
@@ -266,6 +272,10 @@ impl Default for CrateConfig {
             publish: None,
             docker: None,
             nfpm: None,
+            snapcrafts: None,
+            dmgs: None,
+            msis: None,
+            pkgs: None,
             binstall: None,
             version_sync: None,
             universal_binaries: None,
@@ -459,6 +469,7 @@ pub struct ChecksumConfig {
     pub disable: Option<bool>,
     pub extra_files: Option<Vec<String>>,
     pub ids: Option<Vec<String>>,
+    pub split: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -481,6 +492,7 @@ pub struct ReleaseConfig {
     pub skip_upload: Option<bool>,
     pub replace_existing_draft: Option<bool>,
     pub replace_existing_artifacts: Option<bool>,
+    pub disable: Option<bool>,
 }
 
 /// Schema for prerelease: "auto" or boolean.
@@ -537,6 +549,59 @@ pub struct GitHubConfig {
     pub name: String,
 }
 
+// ---------------------------------------------------------------------------
+// "auto" | bool enum — shared serde implementation
+// ---------------------------------------------------------------------------
+
+/// Generates `Serialize` and `Deserialize` impls for enums with `Auto` and
+/// `Bool(bool)` variants that accept the string `"auto"` or a boolean in YAML.
+macro_rules! impl_auto_or_bool_serde {
+    ($ty:ty, $auto:path, $bool_variant:path) => {
+        impl Serialize for $ty {
+            fn serialize<S: serde::Serializer>(
+                &self,
+                serializer: S,
+            ) -> std::result::Result<S::Ok, S::Error> {
+                match self {
+                    $auto => serializer.serialize_str("auto"),
+                    $bool_variant(b) => serializer.serialize_bool(*b),
+                }
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $ty {
+            fn deserialize<D: serde::Deserializer<'de>>(
+                deserializer: D,
+            ) -> std::result::Result<Self, D::Error> {
+                struct Visitor;
+                impl serde::de::Visitor<'_> for Visitor {
+                    type Value = $ty;
+                    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                        write!(f, "\"auto\" or a boolean")
+                    }
+                    fn visit_bool<E: serde::de::Error>(
+                        self,
+                        v: bool,
+                    ) -> std::result::Result<$ty, E> {
+                        Ok($bool_variant(v))
+                    }
+                    fn visit_str<E: serde::de::Error>(
+                        self,
+                        v: &str,
+                    ) -> std::result::Result<$ty, E> {
+                        if v == "auto" {
+                            Ok($auto)
+                        } else {
+                            Err(E::custom(format!("expected \"auto\", got \"{}\"", v)))
+                        }
+                    }
+                }
+                deserializer.deserialize_any(Visitor)
+            }
+        }
+    };
+}
+
 /// `prerelease` can be the string `"auto"` or a boolean.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PrereleaseConfig {
@@ -544,48 +609,11 @@ pub enum PrereleaseConfig {
     Bool(bool),
 }
 
-impl Serialize for PrereleaseConfig {
-    fn serialize<S: serde::Serializer>(
-        &self,
-        serializer: S,
-    ) -> std::result::Result<S::Ok, S::Error> {
-        match self {
-            PrereleaseConfig::Auto => serializer.serialize_str("auto"),
-            PrereleaseConfig::Bool(b) => serializer.serialize_bool(*b),
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for PrereleaseConfig {
-    fn deserialize<D: serde::Deserializer<'de>>(
-        deserializer: D,
-    ) -> std::result::Result<Self, D::Error> {
-        struct PrereleaseVisitor;
-        impl serde::de::Visitor<'_> for PrereleaseVisitor {
-            type Value = PrereleaseConfig;
-            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "\"auto\" or a boolean")
-            }
-            fn visit_bool<E: serde::de::Error>(
-                self,
-                v: bool,
-            ) -> std::result::Result<PrereleaseConfig, E> {
-                Ok(PrereleaseConfig::Bool(v))
-            }
-            fn visit_str<E: serde::de::Error>(
-                self,
-                v: &str,
-            ) -> std::result::Result<PrereleaseConfig, E> {
-                if v == "auto" {
-                    Ok(PrereleaseConfig::Auto)
-                } else {
-                    Err(E::custom(format!("expected \"auto\", got \"{}\"", v)))
-                }
-            }
-        }
-        deserializer.deserialize_any(PrereleaseVisitor)
-    }
-}
+impl_auto_or_bool_serde!(
+    PrereleaseConfig,
+    PrereleaseConfig::Auto,
+    PrereleaseConfig::Bool
+);
 
 /// `make_latest` can be the string `"auto"` or a boolean.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -594,48 +622,11 @@ pub enum MakeLatestConfig {
     Bool(bool),
 }
 
-impl Serialize for MakeLatestConfig {
-    fn serialize<S: serde::Serializer>(
-        &self,
-        serializer: S,
-    ) -> std::result::Result<S::Ok, S::Error> {
-        match self {
-            MakeLatestConfig::Auto => serializer.serialize_str("auto"),
-            MakeLatestConfig::Bool(b) => serializer.serialize_bool(*b),
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for MakeLatestConfig {
-    fn deserialize<D: serde::Deserializer<'de>>(
-        deserializer: D,
-    ) -> std::result::Result<Self, D::Error> {
-        struct MakeLatestVisitor;
-        impl serde::de::Visitor<'_> for MakeLatestVisitor {
-            type Value = MakeLatestConfig;
-            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                write!(f, "\"auto\" or a boolean")
-            }
-            fn visit_bool<E: serde::de::Error>(
-                self,
-                v: bool,
-            ) -> std::result::Result<MakeLatestConfig, E> {
-                Ok(MakeLatestConfig::Bool(v))
-            }
-            fn visit_str<E: serde::de::Error>(
-                self,
-                v: &str,
-            ) -> std::result::Result<MakeLatestConfig, E> {
-                if v == "auto" {
-                    Ok(MakeLatestConfig::Auto)
-                } else {
-                    Err(E::custom(format!("expected \"auto\", got \"{}\"", v)))
-                }
-            }
-        }
-        deserializer.deserialize_any(MakeLatestVisitor)
-    }
-}
+impl_auto_or_bool_serde!(
+    MakeLatestConfig,
+    MakeLatestConfig::Auto,
+    MakeLatestConfig::Bool
+);
 
 // ---------------------------------------------------------------------------
 // PublishConfig
@@ -725,6 +716,59 @@ pub struct HomebrewConfig {
     pub license: Option<String>,
     pub install: Option<String>,
     pub test: Option<String>,
+    /// Project homepage URL. Falls back to the GitHub release URL when unset.
+    pub homepage: Option<String>,
+    /// Package dependencies (e.g. `openssl`, `libgit2`).
+    pub dependencies: Option<Vec<HomebrewDependency>>,
+    /// Conflicting formula names with optional reason.
+    pub conflicts: Option<Vec<HomebrewConflict>>,
+    /// Post-install user-facing notes shown by `brew info`.
+    pub caveats: Option<String>,
+    /// Skip publishing the formula.  `"true"` always skips; `"auto"` skips
+    /// for prerelease versions.
+    pub skip_upload: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, JsonSchema)]
+#[serde(default)]
+pub struct HomebrewDependency {
+    pub name: String,
+    /// Restrict to a specific OS: `"mac"` or `"linux"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub os: Option<String>,
+    /// Dependency type, e.g. `"optional"`.
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub dep_type: Option<String>,
+}
+
+/// A Homebrew conflict entry, supporting both a bare name string and a
+/// structured object with an optional `because` reason.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema)]
+#[serde(untagged)]
+pub enum HomebrewConflict {
+    /// Just the formula name (e.g. `"other-tool"`).
+    Name(String),
+    /// Name with reason (e.g. `{name: "other-tool", because: "both install a bin/foo binary"}`).
+    WithReason {
+        name: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        because: Option<String>,
+    },
+}
+
+impl HomebrewConflict {
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Name(n) => n,
+            Self::WithReason { name, .. } => name,
+        }
+    }
+    pub fn because(&self) -> Option<&str> {
+        match self {
+            Self::Name(_) => None,
+            Self::WithReason { because, .. } => because.as_deref(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -733,6 +777,21 @@ pub struct ScoopConfig {
     pub bucket: Option<BucketConfig>,
     pub description: Option<String>,
     pub license: Option<String>,
+    /// Project homepage URL. Falls back to the GitHub-derived URL when unset.
+    pub homepage: Option<String>,
+    /// Data paths persisted between Scoop updates.
+    pub persist: Option<Vec<String>>,
+    /// Application dependencies (other Scoop packages).
+    pub depends: Option<Vec<String>>,
+    /// Commands to run before installation.
+    pub pre_install: Option<Vec<String>>,
+    /// Commands to run after installation.
+    pub post_install: Option<Vec<String>>,
+    /// Start menu shortcuts as `[executable, label]` pairs.
+    pub shortcuts: Option<Vec<Vec<String>>>,
+    /// Skip publishing the manifest.  `"true"` always skips; `"auto"` skips
+    /// for prerelease versions.
+    pub skip_upload: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -872,6 +931,7 @@ pub struct KrewManifestsRepoConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct DockerConfig {
+    pub id: Option<String>,
     pub image_templates: Vec<String>,
     pub dockerfile: String,
     pub platforms: Option<Vec<String>>,
@@ -880,6 +940,10 @@ pub struct DockerConfig {
     pub skip_push: Option<bool>,
     pub extra_files: Option<Vec<String>>,
     pub push_flags: Option<Vec<String>>,
+    /// Build IDs filter: only include binary artifacts whose metadata `id` is in this list.
+    pub ids: Option<Vec<String>>,
+    /// OCI labels to apply to the image via `--label key=value` flags.
+    pub labels: Option<HashMap<String, String>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -933,6 +997,166 @@ pub struct NfpmContent {
     #[serde(rename = "type")]
     pub content_type: Option<String>,
     pub file_info: Option<NfpmFileInfo>,
+}
+
+// ---------------------------------------------------------------------------
+// SnapcraftConfig
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct SnapcraftConfig {
+    /// Unique identifier for this snapcraft config.
+    pub id: Option<String>,
+    /// Build IDs to include. Empty means all builds.
+    pub ids: Option<Vec<String>>,
+    /// The snap package name in the store.
+    pub name: Option<String>,
+    /// Canonical application title (user-facing in store).
+    pub title: Option<String>,
+    /// Single-line elevator pitch (max 79 characters).
+    pub summary: Option<String>,
+    /// Extended description (user-facing in store).
+    pub description: Option<String>,
+    /// Path to icon image file.
+    pub icon: Option<String>,
+    /// Runtime base snap: core, core18, core20, core22, core24, bare.
+    pub base: Option<String>,
+    /// Release stability level: stable, devel.
+    pub grade: Option<String>,
+    /// License identifier (SPDX format).
+    pub license: Option<String>,
+    /// Whether to publish to the snapcraft store.
+    pub publish: Option<bool>,
+    /// Distribution channels: edge, beta, candidate, stable.
+    pub channel_templates: Option<Vec<String>>,
+    /// Security confinement level: strict, devmode, classic.
+    pub confinement: Option<String>,
+    /// Required interface permissions (e.g. home, network, personal-files).
+    pub plugs: Option<Vec<String>>,
+    /// Shared code/data interface slots for other snaps.
+    pub slots: Option<Vec<String>>,
+    /// Required snapd features/versions.
+    pub assumes: Option<Vec<String>>,
+    /// Application configurations defining daemons, commands, env vars.
+    pub apps: Option<HashMap<String, SnapcraftApp>>,
+    /// Directory mappings for sandbox accessibility.
+    pub layouts: Option<HashMap<String, SnapcraftLayout>>,
+    /// Additional static files to bundle.
+    pub extra_files: Option<Vec<String>>,
+    /// Template for the output snap filename.
+    pub name_template: Option<String>,
+    /// Disable this snapcraft config.
+    pub disable: Option<bool>,
+    /// Remove source archives from artifacts, keeping only snap.
+    pub replace: Option<bool>,
+    /// Output timestamp for reproducible builds.
+    pub mod_timestamp: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct SnapcraftApp {
+    /// Command to run (relative to snap root).
+    pub command: Option<String>,
+    /// Daemon type: simple, forking, oneshot, notify.
+    pub daemon: Option<String>,
+    /// How to stop the daemon: sigterm, sigkill, etc.
+    pub stop_mode: Option<String>,
+    /// Interface plugs the app needs.
+    pub plugs: Option<Vec<String>>,
+    /// Environment variables for the app.
+    pub environment: Option<HashMap<String, String>>,
+    /// Additional arguments passed to the command.
+    pub args: Option<String>,
+    /// Restart condition: on-failure, always, on-success, on-abnormal, on-abort, on-watchdog, never.
+    pub restart_condition: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct SnapcraftLayout {
+    /// Bind-mount a directory to the snap's layout.
+    pub bind: Option<String>,
+    /// Symlink a path to a location in the snap.
+    pub symlink: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// DmgConfig
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct DmgConfig {
+    /// Unique identifier for this DMG config.
+    pub id: Option<String>,
+    /// Build IDs to include. Empty means all builds.
+    pub ids: Option<Vec<String>>,
+    /// Output DMG filename (supports templates).
+    pub name: Option<String>,
+    /// Additional files to include in the DMG.
+    pub extra_files: Option<Vec<String>>,
+    /// Remove source archives from artifacts, keeping only DMG.
+    pub replace: Option<bool>,
+    /// Output timestamp for reproducible builds.
+    pub mod_timestamp: Option<String>,
+    /// Disable this DMG config.
+    pub disable: Option<bool>,
+}
+
+// ---------------------------------------------------------------------------
+// MsiConfig
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct MsiConfig {
+    /// Unique identifier for this MSI config.
+    pub id: Option<String>,
+    /// Build IDs to include. Empty means all builds.
+    pub ids: Option<Vec<String>>,
+    /// Path to the WiX source file (.wxs). Goes through template engine. Required.
+    pub wxs: Option<String>,
+    /// Output MSI filename (supports templates).
+    pub name: Option<String>,
+    /// WiX schema version: v3 or v4 (auto-detected from .wxs if omitted).
+    pub version: Option<String>,
+    /// Remove source archives from artifacts, keeping only MSI.
+    pub replace: Option<bool>,
+    /// Output timestamp for reproducible builds.
+    pub mod_timestamp: Option<String>,
+    /// Disable this MSI config.
+    pub disable: Option<bool>,
+}
+
+// ---------------------------------------------------------------------------
+// PkgConfig (macOS .pkg installer)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct PkgConfig {
+    /// Unique identifier for this PKG config.
+    pub id: Option<String>,
+    /// Build IDs to include. Empty means all builds.
+    pub ids: Option<Vec<String>>,
+    /// Package identifier in reverse-domain notation (e.g. com.example.myapp). Required.
+    pub identifier: Option<String>,
+    /// Output PKG filename (supports templates).
+    pub name: Option<String>,
+    /// Installation path. Default: /usr/local/bin.
+    pub install_location: Option<String>,
+    /// Path to scripts directory containing preinstall/postinstall scripts.
+    pub scripts: Option<String>,
+    /// Additional files to include in the package.
+    pub extra_files: Option<Vec<String>>,
+    /// Remove source archives from artifacts, keeping only PKG.
+    pub replace: Option<bool>,
+    /// Output timestamp for reproducible builds.
+    pub mod_timestamp: Option<String>,
+    /// Disable this PKG config.
+    pub disable: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1025,6 +1249,11 @@ pub struct ChangelogConfig {
     pub use_source: Option<String>,
     /// Hash abbreviation length (default 7).
     pub abbrev: Option<usize>,
+    /// Template for each changelog commit line.
+    /// Available variables: SHA (full hash), ShortSHA (abbreviated), Message (commit subject),
+    /// AuthorName, AuthorEmail.
+    /// Default: `"{{ ShortSHA }} {{ Message }}"`
+    pub format: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -1057,6 +1286,8 @@ pub struct SignConfig {
     pub stdin: Option<String>,
     pub stdin_file: Option<String>,
     pub ids: Option<Vec<String>>,
+    pub env: Option<HashMap<String, String>>,
+    pub certificate: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -1065,6 +1296,9 @@ pub struct DockerSignConfig {
     pub artifacts: Option<String>,
     pub cmd: Option<String>,
     pub args: Option<Vec<String>>,
+    pub ids: Option<Vec<String>>,
+    pub stdin: Option<String>,
+    pub stdin_file: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1255,6 +1489,10 @@ pub struct PublisherConfig {
     pub ids: Option<Vec<String>>,
     pub artifact_types: Option<Vec<String>>,
     pub env: Option<HashMap<String, String>>,
+    /// Working directory for the publisher command.
+    pub dir: Option<String>,
+    /// Template-conditional disable: if rendered result is `"true"`, skip this publisher.
+    pub disable: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -3463,5 +3701,188 @@ crates: []
         assert!(json.contains("version"));
         assert!(json.contains("BuildIgnore"));
         assert!(json.contains("BuildOverride"));
+    }
+
+    // ---- Homebrew new fields parsing tests ----
+
+    #[test]
+    fn test_homebrew_config_new_fields() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      homebrew:
+        tap:
+          owner: myorg
+          name: homebrew-tap
+        homepage: "https://example.com"
+        dependencies:
+          - name: openssl
+          - name: libgit2
+            os: mac
+          - name: zlib
+            type: optional
+        conflicts:
+          - other-tool
+          - old-tool
+        caveats: "Run `tool init` after installing."
+        skip_upload: "auto"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let hb = config.crates[0]
+            .publish
+            .as_ref()
+            .unwrap()
+            .homebrew
+            .as_ref()
+            .unwrap();
+        assert_eq!(hb.homepage.as_deref(), Some("https://example.com"));
+        assert_eq!(hb.skip_upload.as_deref(), Some("auto"));
+        assert_eq!(
+            hb.caveats.as_deref(),
+            Some("Run `tool init` after installing.")
+        );
+
+        let conflicts = hb.conflicts.as_ref().unwrap();
+        assert_eq!(
+            conflicts,
+            &[
+                HomebrewConflict::Name("other-tool".to_string()),
+                HomebrewConflict::Name("old-tool".to_string()),
+            ]
+        );
+
+        let deps = hb.dependencies.as_ref().unwrap();
+        assert_eq!(deps.len(), 3);
+        assert_eq!(deps[0].name, "openssl");
+        assert_eq!(deps[0].os, None);
+        assert_eq!(deps[0].dep_type, None);
+        assert_eq!(deps[1].name, "libgit2");
+        assert_eq!(deps[1].os.as_deref(), Some("mac"));
+        assert_eq!(deps[2].name, "zlib");
+        assert_eq!(deps[2].dep_type.as_deref(), Some("optional"));
+    }
+
+    #[test]
+    fn test_homebrew_config_defaults_when_new_fields_omitted() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      homebrew:
+        tap:
+          owner: myorg
+          name: homebrew-tap
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let hb = config.crates[0]
+            .publish
+            .as_ref()
+            .unwrap()
+            .homebrew
+            .as_ref()
+            .unwrap();
+        assert!(hb.homepage.is_none());
+        assert!(hb.dependencies.is_none());
+        assert!(hb.conflicts.is_none());
+        assert!(hb.caveats.is_none());
+        assert!(hb.skip_upload.is_none());
+    }
+
+    // ---- Scoop new fields parsing tests ----
+
+    #[test]
+    fn test_scoop_config_new_fields() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      scoop:
+        bucket:
+          owner: myorg
+          name: scoop-bucket
+        homepage: "https://example.com"
+        persist:
+          - data
+          - config.ini
+        depends:
+          - git
+          - 7zip
+        pre_install:
+          - "Write-Host 'Installing...'"
+        post_install:
+          - "Write-Host 'Done!'"
+        shortcuts:
+          - ["myapp.exe", "My App"]
+          - ["myapp.exe", "My App CLI", "--cli"]
+        skip_upload: "true"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let sc = config.crates[0]
+            .publish
+            .as_ref()
+            .unwrap()
+            .scoop
+            .as_ref()
+            .unwrap();
+        assert_eq!(sc.homepage.as_deref(), Some("https://example.com"));
+        assert_eq!(sc.skip_upload.as_deref(), Some("true"));
+
+        let persist = sc.persist.as_ref().unwrap();
+        assert_eq!(persist, &["data", "config.ini"]);
+
+        let depends = sc.depends.as_ref().unwrap();
+        assert_eq!(depends, &["git", "7zip"]);
+
+        let pre = sc.pre_install.as_ref().unwrap();
+        assert_eq!(pre, &["Write-Host 'Installing...'"]);
+
+        let post = sc.post_install.as_ref().unwrap();
+        assert_eq!(post, &["Write-Host 'Done!'"]);
+
+        let shortcuts = sc.shortcuts.as_ref().unwrap();
+        assert_eq!(shortcuts.len(), 2);
+        assert_eq!(shortcuts[0], vec!["myapp.exe", "My App"]);
+        assert_eq!(shortcuts[1], vec!["myapp.exe", "My App CLI", "--cli"]);
+    }
+
+    #[test]
+    fn test_scoop_config_defaults_when_new_fields_omitted() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      scoop:
+        bucket:
+          owner: myorg
+          name: scoop-bucket
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let sc = config.crates[0]
+            .publish
+            .as_ref()
+            .unwrap()
+            .scoop
+            .as_ref()
+            .unwrap();
+        assert!(sc.homepage.is_none());
+        assert!(sc.persist.is_none());
+        assert!(sc.depends.is_none());
+        assert!(sc.pre_install.is_none());
+        assert!(sc.post_install.is_none());
+        assert!(sc.shortcuts.is_none());
+        assert!(sc.skip_upload.is_none());
     }
 }

@@ -170,7 +170,14 @@ impl Pipeline {
             }
             log.status(&format!("\u{2022} {}...", name.bold()));
             match stage.run(ctx) {
-                Ok(()) => log.status(&format!("{} {}", "\u{2713}".green().bold(), name.bold())),
+                Ok(()) => {
+                    log.status(&format!("{} {}", "\u{2713}".green().bold(), name.bold()));
+                    // After the changelog stage completes, populate the ReleaseNotes
+                    // template variable so subsequent stages can reference it.
+                    if name == "changelog" {
+                        ctx.populate_release_notes_var();
+                    }
+                }
                 Err(e) => {
                     log.status(&format!(
                         "{} {} \u{2014} {}",
@@ -193,11 +200,15 @@ pub fn build_release_pipeline() -> Pipeline {
     use anodize_stage_build::BuildStage;
     use anodize_stage_changelog::ChangelogStage;
     use anodize_stage_checksum::ChecksumStage;
+    use anodize_stage_dmg::DmgStage;
     use anodize_stage_docker::DockerStage;
+    use anodize_stage_msi::MsiStage;
     use anodize_stage_nfpm::NfpmStage;
+    use anodize_stage_pkg::PkgStage;
     use anodize_stage_publish::PublishStage;
     use anodize_stage_release::ReleaseStage;
     use anodize_stage_sign::SignStage;
+    use anodize_stage_snapcraft::SnapcraftStage;
     use anodize_stage_source::SourceStage;
     use anodize_stage_upx::UpxStage;
 
@@ -206,6 +217,10 @@ pub fn build_release_pipeline() -> Pipeline {
     p.add(Box::new(UpxStage));
     p.add(Box::new(ArchiveStage));
     p.add(Box::new(NfpmStage));
+    p.add(Box::new(SnapcraftStage));
+    p.add(Box::new(DmgStage));
+    p.add(Box::new(MsiStage));
+    p.add(Box::new(PkgStage));
     p.add(Box::new(SourceStage));
     p.add(Box::new(ChecksumStage));
     p.add(Box::new(ChangelogStage));

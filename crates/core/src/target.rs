@@ -54,6 +54,23 @@ pub fn map_target(triple: &str) -> (String, String) {
     (os.to_string(), arch.to_string())
 }
 
+/// Returns `true` if the target triple represents a macOS (Darwin) target.
+pub fn is_darwin(triple: &str) -> bool {
+    triple.contains("darwin") || triple.contains("apple")
+}
+
+/// Returns `true` if the target triple represents a Linux target.
+///
+/// Excludes Android, which also contains "linux" in the triple.
+pub fn is_linux(triple: &str) -> bool {
+    triple.contains("linux") && !triple.contains("android")
+}
+
+/// Returns `true` if the target triple represents a Windows target.
+pub fn is_windows(triple: &str) -> bool {
+    triple.contains("windows")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

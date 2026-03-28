@@ -476,19 +476,110 @@ Replicate the full `anothrNick/github-tag-action@1.71.0` feature set as a native
 
 **Session 6 exit criteria:** Comprehensive parity matrix complete. All actionable gaps closed. No surprises left for users coming from GoReleaser.
 
+**Session 6 actual results:** 1285 tests (up from 1193), 0 clippy warnings. Parity matrix at `.claude/specs/goreleaser-parity-matrix.md`. 21 high/medium gaps closed: template vars (IsGitClean, IsSingleTarget, ReleaseNotes, GitURL, Summary, TagSubject/Contents/Body, RuntimeGoos/Goarch), template functions (envOrDefault, isEnvSet), Homebrew (homepage, dependencies, conflicts with because:, caveats, skip_upload), Scoop (homepage, persist, depends, pre/post_install, shortcuts, skip_upload, .exe bin), checksum split mode, release disable, sign env+certificate, docker sign ids/stdin/stdin_file, docker id/ids/labels, publisher dir+disable, changelog format template, CLI --draft/--release-header/--release-footer. All 4 code reviews passed with findings fixed. Session 6 is NOT complete — remaining gaps deferred to the second parity audit after all features are implemented.
+
 ---
 
-## Session 7: Test Parity Completion — Match GoReleaser's Coverage
+## Platform-Specific Packaging — Snapcraft, dmg, msi, pkg
 
-**Depends on:** Session 6 complete (all features implemented, all feature gaps closed).
+**Depends on:** Session 6 complete (initial parity audit done, high-priority gaps closed).
 
-**Why here:** Session 4 built test infrastructure and raised coverage from 441 to 812 tests, but the final comparison (`.claude/specs/test-coverage-comparison.md`) showed GoReleaser still ahead ~2,000 vs 812. After Session 6, every feature gap is closed — there is no excuse for missing tests. This session systematically closes the remaining test gap using the comparison spec as the authoritative input.
+**Why next:** These are known feature gaps that GoReleaser supports. They must be implemented before the final parity audit can be comprehensive — you can't audit what doesn't exist yet.
+
+### Snapcraft stage
+- Add `snapcrafts[]` config section
+- Generate `snapcraft.yaml` from config (name, version, summary, description, confinement, apps, plugs)
+- Shell out to `snapcraft pack` for building
+- Register `.snap` as artifact for upload
+
+### macOS dmg stage
+- Add `dmg[]` config section
+- Generate DMG disk image containing the binary and optional extras (README, LICENSE)
+- Use `hdiutil` (macOS-only) or cross-platform alternative
+- Register `.dmg` as artifact
+
+### Windows msi stage
+- Add `msi[]` config section
+- Generate WiX XML manifest, build with `wix`/`light`/`candle` toolchain
+- Register `.msi` as artifact
+
+### macOS pkg stage
+- Add `pkg[]` config section
+- Generate macOS `.pkg` installer using `pkgbuild`/`productbuild`
+- Register `.pkg` as artifact
+
+**Session exit criteria:** Each packaging format has config parsing, manifest generation, and artifact registration tests. Formats that require platform-specific tools gracefully skip with a clear message when the tool isn't available.
+
+**Session actual results:** 1372 tests (up from 1285), 0 clippy warnings, 0 fmt issues. 4 new stage crates (stage-snapcraft, stage-dmg, stage-msi, stage-pkg) with full implementations. 4 new artifact kinds (Snap, DiskImage, Installer, MacOsPackage). 4 new config sections (snapcrafts[], dmgs[], msis[], pkgs[]) on CrateConfig. All stages support: ids filtering, disable, replace, mod_timestamp, dry-run, artifact metadata, template-rendered filenames. Shared utilities extracted to core: is_darwin/is_linux/is_windows target helpers, collect_replace_archives, apply_mod_timestamp/parse_mod_timestamp (supports both epoch integers and RFC3339), set_file_mtime. Snapcraft validates confinement values. MSI supports WiX v3/v4 auto-detection with portable find_binary. DMG supports hdiutil/genisoimage/mkisofs fallback chain. 3 review rounds completed with all findings fixed.
+
+---
+
+## Cloud Storage + CI Fan-Out
+
+**Depends on:** Platform-specific packaging complete.
+
+### Blob storage upload (S3/GCS/Azure)
+- Add `blobs[]` config section with `provider` (s3/gcs/azure), `bucket`, `folder`, credentials config
+- Implement upload for each provider using their respective SDK crates
+- Support templated paths: `folder: "releases/{{ Tag }}"`
+- Dry-run logs the upload plan without executing
+
+### Split/merge CI fan-out
+- Add `--split` flag: serialize build plan to JSON, output per-target job definitions
+- Add `--merge` flag: collect artifacts from split jobs, resume pipeline from archive stage
+- Designed for CI matrix strategies where each target builds in its own job
+- Generate GitHub Actions matrix YAML from split output
+
+**Session exit criteria:** Blob upload works with mocked cloud APIs. Split/merge round-trips correctly in tests.
+
+---
+
+## Remaining Session 6 Gaps + Final GoReleaser Parity Audit
+
+**Depends on:** Platform-specific packaging and cloud storage complete.
+
+**Why here:** The initial parity audit (Session 6) identified gaps but could not close them all because platform packaging and cloud features weren't implemented yet. Now that every feature category is implemented, this session re-runs the full GoReleaser comparison from scratch with zero items written off. Every GoReleaser feature must be accounted for — implemented, or explicitly justified as not applicable to the Rust ecosystem.
+
+### Close remaining Session 6 gaps
+Items deferred from Session 6 that are now actionable:
+- Structured global hooks (cmd/dir/env/output object form, not just plain string arrays)
+- Release `mode` (keep-existing/append/prepend/replace for existing release notes)
+- Release `ids` (artifact filter for uploads)
+- Archive `id`/`ids` filter fields
+- Archive `formats` (plural — produce multiple formats from one config)
+- nFPM `id`/`ids` filter fields
+- Sign `artifacts` filter missing values (`sbom`, `installer`, `diskimage`)
+- Slack announce enrichment (channel, username, icon_emoji, icon_url, blocks, attachments)
+- Docker retry config (attempts, delay, max_delay)
+- Docker labels/annotations (OCI metadata)
+- Checksum missing algorithms (sha3-*, blake3, crc32, md5)
+- Any new items found in the re-audit below
+
+### Fresh feature-by-feature re-audit
+- Re-fetch GoReleaser's current documentation (features may have changed since Session 6)
+- Re-walk every config section, CLI flag, and stage
+- Update the parity matrix (`.claude/specs/goreleaser-parity-matrix.md`)
+- Close every gap found — no deferrals
+
+### Test coverage for all new parity work
+- Every gap closed gets parsing, behavior, and error path tests
+- Run coverage report to verify no blind spots
+
+**Session exit criteria:** Updated parity matrix shows zero unaccounted gaps. Every GoReleaser feature is either implemented or justified as N/A for Rust. All new work has tests. `cargo test --workspace` and `cargo clippy` pass.
+
+---
+
+## Test Parity Completion — Match GoReleaser's Coverage
+
+**Depends on:** Final parity audit complete (all features implemented, all gaps closed).
+
+**Why here:** Now that every feature is implemented and every parity gap is closed, there are no excuses for missing tests. This session systematically closes the remaining test gap.
 
 **Reference:** `.claude/specs/test-coverage-comparison.md` — the per-stage, per-category comparison with concrete numbers.
 
-> **Before starting this session:** Re-run the GoReleaser comparison against anodize's current state (post-Sessions 5+6). The comparison spec was written after Session 4 and does not reflect features/tests added in Sessions 5-6. Update the numbers, then use the updated spec as the task list.
+> **Before starting this session:** Re-run the GoReleaser comparison against anodize's current state. The comparison spec is stale. Update the numbers, then use the updated spec as the task list.
 
-### Task 7A: Update the comparison spec
+### Update the comparison spec
 - Re-run `cargo tarpaulin --workspace` for current coverage numbers
 - Re-count tests per stage/module
 - Browse GoReleaser's current test suite for any new tests since the last audit
@@ -497,135 +588,64 @@ Replicate the full `anothrNick/github-tag-action@1.71.0` feature set as a native
 
 **Done when:** Updated comparison spec with current numbers. Every deficit has a concrete test count target.
 
-### Task 7B: Build stage test parity (biggest gap)
+### Build stage test parity (biggest gap)
 - GoReleaser: ~261 tests. Target: match or exceed for shared feature scope
 - Add tests for: multiple builder backends, cross-compilation targets, build hooks (pre/post), build output types, ldflags/flags templates, artifact registration, dry-run behavior, build failure error paths, parallelism, copy_from behavior, Windows .exe suffix, selected_crates filter
 - Use real cargo builds with minimal fixture crates where needed
 
-**Done when:** Build stage test count reaches parity with GoReleaser's shared-feature scope (excluding Go/Zig/Bun/Deno-specific tests).
-
-### Task 7C: Golden file testing infrastructure + publisher tests
+### Golden file testing infrastructure + publisher tests
 - Implement golden file test pattern: compare generated output against reference files, with `UPDATE_GOLDEN=1` env var for regeneration
 - Add golden file tests for: Homebrew formula generation, Scoop manifest generation, nfpm YAML generation
-- Close Homebrew gap (17 vs 94): formula variations, dependencies, caveats, test stanzas, multi-arch, PR creation logic
-- Close Scoop gap (14 vs 34): manifest variations, autoupdate, architecture blocks
+- Close Homebrew, Scoop, and other publisher test gaps
 
-**Done when:** Golden file infrastructure exists. Homebrew and Scoop test counts reach parity with GoReleaser.
+### Sign + changelog + release stage parity
+- Sign: multiple signature types, docker signing, GPG config, template vars in args, stdin piping, cosign-style signing, error paths
+- Changelog: git log parsing edge cases, merge commit handling, special characters, commit grouping depth
+- Release: mock-client pipeline tests, draft/prerelease combinations, replace_existing behavior, artifact upload errors
 
-### Task 7D: Sign + changelog + release stage parity
-- Sign (22 vs 75): multiple signature types, docker signing, GPG config, template vars in args, stdin piping, cosign-style signing, error paths for each
-- Changelog (58 vs 107): git log parsing edge cases, merge commit handling, special characters, multiple SCM formats, commit grouping depth
-- Release (53 vs 125): mock-client pipeline tests (create + upload + verify), draft/prerelease combinations, replace_existing behavior, artifact upload errors, IDs filter, name_template rendering through mock
+### Announce, docker, nfpm, packaging stage parity
+- Every stage's test count reaches parity with GoReleaser for shared features
+- New packaging stages (snapcraft, dmg, msi, pkg) get full test coverage
+- Blob storage gets mocked API tests
 
-**Done when:** Each stage's test count is within 80% of GoReleaser's count for shared features.
-
-### Task 7E: Announce, docker, nfpm stage parity
-- Announce (20 vs 104): each provider individually tested, message template rendering, custom headers, error paths per provider, multi-error collection
-- Docker (29 vs 66): image template rendering, manifest creation, digest handling, multi-platform builds, binary staging verification
-- NFpm (35 vs 75): multiple format generation, template expressions in fields, contents glob expansion, format-specific overrides, artifact registration
-
-**Done when:** Each stage reaches parity for shared-feature scope.
-
-### Task 7F: Fuzz testing + httptest API mocks
-- Add fuzz tests for: template engine (random template strings), config parser (random YAML), artifact registry operations
-- Replace MockGitHubClient trait-only mocking with httptest-style server mocking (use `wiremock` or `mockito` crate) to test real HTTP serialization, headers, status codes
+### Fuzz testing + httptest API mocks
+- Add fuzz tests for: template engine, config parser, artifact registry operations
+- Replace MockGitHubClient trait-only mocking with httptest-style server mocking (use `wiremock` or `mockito` crate)
 - Add release stage tests that exercise the full HTTP path through the mock server
 
-**Done when:** At least 5 fuzz test functions exist. HTTP-level mock tests exist for release stage. `cargo fuzz` or `cargo test` with fuzz-like property tests pass.
-
-### Task 7G: Final comparison + coverage gate
+### Final comparison + coverage gate
 - Re-run `cargo tarpaulin --workspace` — target 85%+ line coverage
 - Re-run GoReleaser comparison — update the spec
-- For every stage where anodize is still behind, document whether the gap is:
-  - (a) Closed — test counts match for shared features
-  - (b) Intentionally smaller — feature not in scope, with justification
-  - (c) Still open — with specific plan for next session
-- No category (c) items allowed for session completion
+- No unjustified test gaps allowed for session completion
 
-**Done when:** Updated comparison shows parity or justified omission for every stage. Coverage ≥85%. No unjustified test gaps remain.
-
-**Session 7 exit criteria:** Test count reaches GoReleaser parity for all shared features (adjusted for feature scope). Golden file tests for all generated manifests. Fuzz tests for parsers. HTTP-level mock tests for API stages. ≥85% line coverage. Updated comparison spec shows no unjustified gaps.
+**Session exit criteria:** Test count reaches GoReleaser parity for all shared features. Golden file tests for all generated manifests. Fuzz tests for parsers. HTTP-level mock tests for API stages. ≥85% line coverage. No unjustified gaps.
 
 ---
 
-## Session 8: Full Audit — Code Quality Gate
+## Full Audit — Code Quality Gate
 
-**Depends on:** Session 7 complete.
+**Depends on:** Test parity complete.
 
-**Why before publish:** Sessions 1-7 were built fast across many parallel agents. Code quality, consistency, and dead code accumulate. A systematic audit before publishing catches design drift, duplication, unwired features, and cohesion issues that individual task reviews miss. The comprehensive test suite from Sessions 4, 6, and 7 provides a safety net for refactoring.
+**Why last before publish:** Everything was built fast across many parallel agents. Code quality, consistency, and dead code accumulate. A systematic audit before publishing catches design drift, duplication, unwired features, and cohesion issues that individual task reviews miss. The comprehensive test suite provides a safety net for refactoring.
 
-### Task 8A: Run `/full-audit`
+### Run `/full-audit`
 - Run the full-audit skill which dispatches three parallel agents:
-  - **Design + Cohesion review** — inconsistent error handling, parameter styles, logging, naming conventions, cohesion issues across all 12 crates
+  - **Design + Cohesion review** — inconsistent error handling, parameter styles, logging, naming conventions, cohesion issues across all crates
   - **Duplication scan** — duplicated logic across stage crates, shared code that should be in `core`
   - **Gap analysis** — config fields parsed but never consumed, public functions with no production callers, error variants never constructed
 - All automated checks (fmt, clippy, test) must pass before and after
 
-### Task 8B: Fix all Round 1 findings
+### Fix all Round 1 findings
 - Create task list from aggregated findings
-- Fix all findings in priority order (critical → important → minor)
+- Fix all findings — no exceptions
 - Run test suite after each logical group of changes
 
-### Task 8C: Round 2 verification
+### Round 2 verification
 - Re-run full-audit to catch regressions and issues missed in Round 1
 - Fix any new findings
 - Continue until a round returns zero findings or 3 rounds complete
 
-**Done when:** Full audit returns zero findings. All automated checks pass. No dead code, no duplication, no design inconsistencies across crates.
-
-**Session 8 exit criteria:** Clean full-audit (zero findings across all three scopes). `cargo fmt --check`, `cargo clippy -- -D warnings`, and `cargo test --workspace` all pass. Codebase is publish-ready.
-
----
-
-## Session 9: Platform-Specific Packaging — Snapcraft, dmg, msi, pkg
-
-**Depends on:** Session 8 complete (full audit passed).
-
-**Why separate:** Each format requires platform-specific tooling (macOS for dmg/pkg, Windows for msi, Linux for Snapcraft). Testing requires either CI runners on those platforms or careful mock-based validation. Grouping them together lets the session focus on platform abstraction patterns.
-
-### Task 9A: Snapcraft stage
-- Add `snapcrafts[]` config section
-- Generate `snapcraft.yaml` from config (name, version, summary, description, confinement, apps, plugs)
-- Shell out to `snapcraft pack` for building
-- Register `.snap` as artifact for upload
-
-### Task 9B: macOS dmg stage
-- Add `dmg[]` config section
-- Generate DMG disk image containing the binary and optional extras (README, LICENSE)
-- Use `hdiutil` (macOS-only) or cross-platform alternative
-- Register `.dmg` as artifact
-
-### Task 9C: Windows msi stage
-- Add `msi[]` config section
-- Generate WiX XML manifest, build with `wix`/`light`/`candle` toolchain
-- Register `.msi` as artifact
-
-### Task 9D: macOS pkg stage
-- Add `pkg[]` config section
-- Generate macOS `.pkg` installer using `pkgbuild`/`productbuild`
-- Register `.pkg` as artifact
-
-**Session 9 exit criteria:** Each packaging format has config parsing, manifest generation, and artifact registration tests. Formats that require platform-specific tools gracefully skip with a clear message when the tool isn't available.
-
----
-
-## Session 10: Cloud Storage + CI Fan-Out
-
-**Depends on:** Session 8 complete.
-
-### Task 10A: Blob storage upload (S3/GCS/Azure)
-- Add `blobs[]` config section with `provider` (s3/gcs/azure), `bucket`, `folder`, credentials config
-- Implement upload for each provider using their respective SDK crates
-- Support templated paths: `folder: "releases/{{ Tag }}"`
-- Dry-run logs the upload plan without executing
-
-### Task 10B: Split/merge CI fan-out
-- Add `--split` flag: serialize build plan to JSON, output per-target job definitions
-- Add `--merge` flag: collect artifacts from split jobs, resume pipeline from archive stage
-- Designed for CI matrix strategies where each target builds in its own job
-- Generate GitHub Actions matrix YAML from split output
-
-**Session 10 exit criteria:** Blob upload works with mocked cloud APIs. Split/merge round-trips correctly in tests.
+**Session exit criteria:** Clean full-audit (zero findings across all three scopes). `cargo fmt --check`, `cargo clippy -- -D warnings`, and `cargo test --workspace` all pass. Codebase is publish-ready.
 
 ---
 

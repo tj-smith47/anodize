@@ -16,6 +16,10 @@ pub enum ArtifactKind {
     Wasm,
     SourceArchive,
     Sbom,
+    Snap,
+    DiskImage,
+    Installer,
+    MacOsPackage,
 }
 
 impl ArtifactKind {
@@ -32,6 +36,10 @@ impl ArtifactKind {
             ArtifactKind::Wasm => "wasm",
             ArtifactKind::SourceArchive => "source_archive",
             ArtifactKind::Sbom => "sbom",
+            ArtifactKind::Snap => "snap",
+            ArtifactKind::DiskImage => "disk_image",
+            ArtifactKind::Installer => "installer",
+            ArtifactKind::MacOsPackage => "macos_package",
         }
     }
 }
