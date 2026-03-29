@@ -622,6 +622,28 @@ Spec at `.claude/specs/2026-03-29-cloud-storage-split-merge-v2.md`.
 
 **Why here:** The initial parity audit (Session 6) identified gaps but could not close them all because platform packaging and cloud features weren't implemented yet. Now that every feature category is implemented, this session re-runs the full GoReleaser comparison from scratch with zero items written off. Every GoReleaser feature must be accounted for — implemented, or explicitly justified as not applicable to the Rust ecosystem.
 
+> **CRITICAL: What "parity" means for this audit.**
+>
+> Previous sessions fell into the trap of "feature exists = parity." That is wrong. Parity means:
+>
+> 1. **Config field parity**: Every GoReleaser config field has an equivalent. Not just "we have the struct field" — the field must actually be *wired through to behavior*. The Cloud Storage session found `acl` was parsed but silently ignored, `s3_force_path_style` had wrong defaults, `extra_files.name` wasn't template-rendered, `disable` didn't support template strings, and `cache_control` was the wrong type. All of these were "implemented" on paper.
+>
+> 2. **Behavioral parity**: Each feature must produce the same output given the same input. If GoReleaser's `content_disposition` defaults to `"attachment;filename={{.Filename}}"` and ours doesn't set a default, that's a gap even though the field exists. If GoReleaser's `partial.by` defaults to `"goos"` and ours defaults to `"target"`, that's a gap.
+>
+> 3. **Wiring parity**: Config fields must flow through to the stage that uses them. The split/merge session found that `partial_target` was set on the context but the build stage never read it — the primary value proposition of split mode was broken despite "working" code. Every config field must be traced from parse → stage → effect.
+>
+> 4. **Error parity**: Every GoReleaser error case must have an equivalent. If GoReleaser warns on empty extra_files globs and we error, that's a behavioral difference that breaks user workflows.
+>
+> 5. **Auth parity**: Credential chains must match. If GoReleaser supports IAM roles, OIDC federation, and credential files, and we only support env vars, that's a gap.
+>
+> 6. **Default parity**: Every default value must match or be explicitly better. Silent default differences cause user confusion.
+>
+> **Audit method**: For each feature, do not just check "does anodize have this?" Instead:
+> - Read GoReleaser's source code for that feature
+> - Trace every config field from parse → default → usage → output
+> - Compare the actual behavior, not the config schema
+> - Test with equivalent config: does anodize produce the same result?
+
 ### Close remaining Session 6 gaps
 Items deferred from Session 6 that are now actionable:
 - Structured global hooks (cmd/dir/env/output object form, not just plain string arrays)
@@ -638,16 +660,17 @@ Items deferred from Session 6 that are now actionable:
 - Any new items found in the re-audit below
 
 ### Fresh feature-by-feature re-audit
-- Re-fetch GoReleaser's current documentation (features may have changed since Session 6)
+- Re-fetch GoReleaser's current source code and documentation (features may have changed since Session 6)
 - Re-walk every config section, CLI flag, and stage
+- For each feature: trace config field → default value → stage wiring → output behavior (see audit method above)
 - Update the parity matrix (`.claude/specs/goreleaser-parity-matrix.md`)
-- Close every gap found — no deferrals
+- Close every gap found — no deferrals, no "it's close enough"
 
 ### Test coverage for all new parity work
 - Every gap closed gets parsing, behavior, and error path tests
 - Run coverage report to verify no blind spots
 
-**Session exit criteria:** Updated parity matrix shows zero unaccounted gaps. Every GoReleaser feature is either implemented or justified as N/A for Rust. All new work has tests. `cargo test --workspace` and `cargo clippy` pass.
+**Session exit criteria:** Updated parity matrix shows zero unaccounted gaps. Every GoReleaser feature is either implemented with verified behavioral equivalence, or justified as N/A for Rust. All new work has tests. `cargo test --workspace` and `cargo clippy` pass.
 
 ---
 
