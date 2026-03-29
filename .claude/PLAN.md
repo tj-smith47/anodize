@@ -606,6 +606,14 @@ Based on Tasks A-D, produce a detailed implementation spec at `.claude/specs/clo
 
 **Session exit criteria:** Implementation spec exists and is comprehensive enough that a fresh session can implement it without any additional research. Every GoReleaser blob/split field is accounted for. The recommended approach is justified with concrete dependency analysis. No ambiguity remains about auth, headers, error handling, or test strategy.
 
+**Session actual results:** 1479 tests (up from 1441), 0 clippy warnings. Complete rewrite of both blob upload and split/merge.
+
+**Blob upload:** Replaced CLI-shelling (aws/gsutil/az) with `object_store` SDK (Apache Arrow, v0.13.2) — the Rust equivalent of Go CDK that GoReleaser uses. S3/GCS/Azure uploads via unified ObjectStore trait with from_env() auth chains. S3: smart force_path_style default (true when endpoint set), KMS SSE via with_sse_kms_encryption(). BlobConfig: cache_control now Vec<String> (joined with ", "), disable now StringOrBool (supports template strings like GoReleaser), content_disposition default "attachment;filename={{Filename}}" with "-" to disable, extra_files.name template-rendered. Parallel uploads via tokio multi-thread runtime with semaphore, file reads in spawned tasks (tokio::fs::read). Typed error handling (no string matching). InMemory backend integration tests. ACL warning when configured.
+
+**Split/merge — GoReleaser Pro parity:** New partial.rs module with env var target resolution (TARGET > ANODIZE_OS/ANODIZE_ARCH > host rustc). partial.by: "goos" (default, groups by OS) or "target" (full triple). Dist subdirectory routing (dist/linux/, dist/target/). Full SplitContext serialization (template vars + env vars + git info + artifacts). Rich artifact format (name, goos, goarch, target, type). Matrix generation with runner suggestions. Build stage integrates partial_target filtering. New CLI commands: `anodize continue --merge`, `anodize publish`, `anodize announce`. Legacy artifacts.json backward compat. Config hash validation planned. 2 code reviews, 20 total findings fixed.
+
+Spec at `.claude/specs/2026-03-29-cloud-storage-split-merge-v2.md`.
+
 ---
 
 ## Remaining Session 6 Gaps + Final GoReleaser Parity Audit
