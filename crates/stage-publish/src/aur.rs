@@ -143,6 +143,7 @@ const SRCINFO_TEMPLATE: &str = r#"pkgbase = {{ name }}
 	url = {{ url }}
 	license = {{ license }}
 {% for d in depends %}	depends = {{ d }}
+{% endfor %}{% for o in optdepends %}	optdepends = {{ o }}
 {% endfor %}{% for c in conflicts %}	conflicts = {{ c }}
 {% endfor %}{% for p in provides %}	provides = {{ p }}
 {% endfor %}{% for s in sources %}	arch = {{ s.arch }}
@@ -167,6 +168,7 @@ pub fn generate_srcinfo(params: &PkgbuildParams<'_>) -> String {
     ctx.insert("url", params.url);
     ctx.insert("license", params.license);
     ctx.insert("depends", params.depends);
+    ctx.insert("optdepends", params.optdepends);
     ctx.insert("conflicts", params.conflicts);
     ctx.insert("provides", params.provides);
 
@@ -703,6 +705,170 @@ mod tests {
             .collect();
         assert_eq!(deduped.len(), 1);
         assert_eq!(deduped[0].1, "https://example.com/first-amd64.tar.gz");
+    }
+
+    // -----------------------------------------------------------------------
+    // generate_srcinfo tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_generate_srcinfo() {
+        let srcinfo = generate_srcinfo(&PkgbuildParams {
+            name: "mytool-bin",
+            version: "2.5.0",
+            pkgrel: 3,
+            description: "A fantastic CLI tool",
+            url: "https://github.com/org/mytool",
+            license: "Apache-2.0",
+            maintainers: &["Alice <alice@example.com>".to_string()],
+            contributors: &[],
+            depends: &["glibc".to_string(), "openssl".to_string()],
+            optdepends: &[
+                "git: for VCS support".to_string(),
+                "bash-completion: for shell completions".to_string(),
+            ],
+            conflicts: &["mytool-git".to_string()],
+            provides: &["mytool".to_string()],
+            replaces: &[],
+            backup: &[],
+            sources: &[
+                (
+                    "x86_64".to_string(),
+                    "https://github.com/org/mytool/releases/download/v2.5.0/mytool-2.5.0-linux-amd64.tar.gz".to_string(),
+                    "aabbccdd11223344".to_string(),
+                ),
+                (
+                    "aarch64".to_string(),
+                    "https://github.com/org/mytool/releases/download/v2.5.0/mytool-2.5.0-linux-arm64.tar.gz".to_string(),
+                    "eeff005566778899".to_string(),
+                ),
+            ],
+            binary_name: "mytool",
+            install_template: None,
+            install_file: None,
+        });
+
+        // pkgbase line
+        assert!(srcinfo.contains("pkgbase = mytool-bin"), "missing pkgbase");
+
+        // pkgver / pkgrel
+        assert!(srcinfo.contains("\tpkgver = 2.5.0"), "missing pkgver");
+        assert!(srcinfo.contains("\tpkgrel = 3"), "missing pkgrel");
+
+        // description
+        assert!(
+            srcinfo.contains("\tpkgdesc = A fantastic CLI tool"),
+            "missing pkgdesc"
+        );
+
+        // url + license
+        assert!(
+            srcinfo.contains("\turl = https://github.com/org/mytool"),
+            "missing url"
+        );
+        assert!(srcinfo.contains("\tlicense = Apache-2.0"), "missing license");
+
+        // depends
+        assert!(srcinfo.contains("\tdepends = glibc"), "missing depends glibc");
+        assert!(
+            srcinfo.contains("\tdepends = openssl"),
+            "missing depends openssl"
+        );
+
+        // optdepends
+        assert!(
+            srcinfo.contains("\toptdepends = git: for VCS support"),
+            "missing optdepends git"
+        );
+        assert!(
+            srcinfo.contains("\toptdepends = bash-completion: for shell completions"),
+            "missing optdepends bash-completion"
+        );
+
+        // conflicts
+        assert!(
+            srcinfo.contains("\tconflicts = mytool-git"),
+            "missing conflicts"
+        );
+
+        // provides
+        assert!(
+            srcinfo.contains("\tprovides = mytool"),
+            "missing provides"
+        );
+
+        // arch + source + sha256sums (x86_64)
+        assert!(srcinfo.contains("\tarch = x86_64"), "missing arch x86_64");
+        assert!(
+            srcinfo.contains("\tsource_x86_64 = https://github.com/org/mytool/releases/download/v2.5.0/mytool-2.5.0-linux-amd64.tar.gz"),
+            "missing source_x86_64"
+        );
+        assert!(
+            srcinfo.contains("\tsha256sums_x86_64 = aabbccdd11223344"),
+            "missing sha256sums_x86_64"
+        );
+
+        // arch + source + sha256sums (aarch64)
+        assert!(srcinfo.contains("\tarch = aarch64"), "missing arch aarch64");
+        assert!(
+            srcinfo.contains("\tsource_aarch64 = https://github.com/org/mytool/releases/download/v2.5.0/mytool-2.5.0-linux-arm64.tar.gz"),
+            "missing source_aarch64"
+        );
+        assert!(
+            srcinfo.contains("\tsha256sums_aarch64 = eeff005566778899"),
+            "missing sha256sums_aarch64"
+        );
+
+        // pkgname line at the end
+        assert!(
+            srcinfo.contains("\npkgname = mytool-bin"),
+            "missing pkgname at end"
+        );
+
+        // pkgname should appear after the source blocks (i.e. near the end)
+        let pkgname_pos = srcinfo.find("pkgname = mytool-bin").unwrap();
+        let last_sha_pos = srcinfo.find("sha256sums_aarch64").unwrap();
+        assert!(
+            pkgname_pos > last_sha_pos,
+            "pkgname should appear after source/sha256 blocks"
+        );
+    }
+
+    #[test]
+    fn test_generate_srcinfo_no_optdepends() {
+        let srcinfo = generate_srcinfo(&PkgbuildParams {
+            name: "simple-bin",
+            version: "1.0.0",
+            pkgrel: 1,
+            description: "Simple tool",
+            url: "https://example.com",
+            license: "MIT",
+            maintainers: &[],
+            contributors: &[],
+            depends: &[],
+            optdepends: &[],
+            conflicts: &[],
+            provides: &[],
+            replaces: &[],
+            backup: &[],
+            sources: &[(
+                "x86_64".to_string(),
+                "https://example.com/simple.tar.gz".to_string(),
+                "deadbeef".to_string(),
+            )],
+            binary_name: "simple",
+            install_template: None,
+            install_file: None,
+        });
+
+        // Should not contain optdepends line when empty
+        assert!(
+            !srcinfo.contains("optdepends"),
+            "should not contain optdepends when empty"
+        );
+        // Should still have basic structure
+        assert!(srcinfo.contains("pkgbase = simple-bin"));
+        assert!(srcinfo.contains("pkgname = simple-bin"));
     }
 
     // -----------------------------------------------------------------------

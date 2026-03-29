@@ -1144,6 +1144,8 @@ pub struct HomebrewCaskConfig {
     pub alternative_names: Option<Vec<String>>,
     /// macOS .app bundle name (e.g. "MyApp.app").
     pub app: Option<String>,
+    /// Binary stubs to create in /usr/local/bin (paths inside the .app bundle).
+    pub binaries: Option<Vec<String>>,
     /// Cask description.
     pub description: Option<String>,
     /// Project homepage URL.

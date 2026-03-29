@@ -26,7 +26,7 @@ let
 {% for key, archive in archives %}    {{ key }} = "{{ archive.sha }}";
 {% endfor %}  };
 in
-stdenvNoCC.mkDerivation rec {
+stdenvNoCC.mkDerivation {
   pname = "{{ name }}";
   version = "{{ version }}";
 
@@ -41,7 +41,8 @@ stdenvNoCC.mkDerivation rec {
     installShellFiles
 {% if needs_make_wrapper %}    makeWrapper
 {% endif %}{% if needs_unzip %}    unzip
-{% endif %}  ];
+{% endif %}{% for dep in dep_args %}    {{ dep }}
+{% endfor %}  ];
 
   installPhase = ''
 {% for line in install_lines %}    {{ line }}
@@ -148,24 +149,298 @@ pub fn generate_nix_expression(params: &NixParams<'_>) -> String {
 // ---------------------------------------------------------------------------
 
 /// Known valid Nix license identifiers from `lib.licenses`.
+/// Sourced from GoReleaser's internal/pipe/nix/licenses.go.
 const VALID_NIX_LICENSES: &[&str] = &[
-    "mit",
-    "asl20",
-    "bsd2",
-    "bsd3",
-    "gpl2Only",
-    "gpl3Only",
-    "lgpl21Only",
-    "lgpl3Only",
-    "mpl20",
-    "isc",
-    "unlicense",
+    "abstyles",
+    "acsl14",
+    "activision",
+    "adobeDisplayPostScript",
+    "adobeUtopia",
+    "afl20",
+    "afl21",
+    "afl3",
+    "agpl3Only",
+    "agpl3Plus",
+    "aladdin",
+    "amazonsl",
+    "amd",
+    "aml",
+    "ampas",
+    "aom",
+    "apple-psl10",
+    "apple-psl20",
+    "apsl10",
+    "apsl20",
+    "arphicpl",
+    "artistic1",
+    "artistic1-cl8",
     "artistic2",
+    "asl11",
+    "asl20",
+    "baekmuk",
+    "beerware",
+    "bitstreamCharter",
+    "bitstreamVera",
+    "bitTorrent10",
+    "bitTorrent11",
+    "blueOak100",
+    "boehmGC",
+    "bola11",
+    "boost",
+    "bsd0",
+    "bsd1",
+    "bsd2",
+    "bsd2Patent",
+    "bsd2WithViews",
+    "bsd3",
+    "bsd3Clear",
+    "bsd3ClauseTso",
+    "bsd3Lbnl",
+    "bsdAxisNoDisclaimerUnmodified",
+    "bsdOriginal",
+    "bsdOriginalShortened",
+    "bsdOriginalUC",
+    "bsdProtection",
+    "bsdSourceCode",
+    "bsl11",
+    "bzip2",
+    "cal10",
+    "caldera",
+    "capec",
+    "cc-by-10",
+    "cc-by-20",
+    "cc-by-30",
+    "cc-by-40",
+    "cc-by-nc-30",
+    "cc-by-nc-40",
+    "cc-by-nc-nd-30",
+    "cc-by-nc-nd-40",
+    "cc-by-nc-sa-20",
+    "cc-by-nc-sa-25",
+    "cc-by-nc-sa-30",
+    "cc-by-nc-sa-40",
+    "cc-by-nd-30",
+    "cc-by-nd-40",
+    "cc-by-sa-10",
+    "cc-by-sa-20",
+    "cc-by-sa-25",
+    "cc-by-sa-30",
+    "cc-by-sa-40",
+    "cc-sa-10",
     "cc0",
-    "wtfpl",
-    "zlib",
+    "cddl",
+    "cecill-b",
+    "cecill-c",
+    "cecill20",
+    "cecill21",
+    "clArtistic",
+    "classpathException20",
+    "cnri-python",
+    "cockroachdb-community-license",
+    "commons-clause",
+    "cpal10",
+    "cpl10",
+    "cronyx",
+    "curl",
+    "databricks",
+    "databricks-dbx",
+    "databricks-license",
+    "dec3Clause",
+    "doc",
+    "drl10",
+    "dtoa",
+    "eapl",
+    "ecl20",
+    "efl10",
+    "efl20",
+    "elastic20",
+    "epl10",
+    "epl20",
+    "epson",
+    "eupl11",
+    "eupl12",
+    "fair",
+    "fairsource09",
+    "fdl11Only",
+    "fdl11Plus",
+    "fdl12Only",
+    "fdl12Plus",
+    "fdl13Only",
+    "fdl13Plus",
+    "ffsl",
+    "fontException",
+    "fraunhofer-fdk",
+    "free",
+    "fsl11Asl20",
+    "fsl11Mit",
+    "ftl",
+    "g4sl",
+    "generaluser",
+    "geogebra",
+    "gfl",
+    "gfsl",
+    "giftware",
+    "gnuplot",
+    "gpl1Only",
+    "gpl1Plus",
+    "gpl2",
+    "gpl2Only",
+    "gpl2Plus",
+    "gpl3",
+    "gpl3Only",
+    "gpl3Plus",
+    "hl3",
+    "hpnd",
+    "hpndDec",
+    "hpndDifferentDisclaimer",
+    "hpndDoc",
+    "hpndDocSell",
+    "hpndSellVariant",
+    "hpndSellVariantMitDisclaimerXserver",
+    "hpndSellVariantSafetyClause",
+    "hpndUc",
+    "hyphenBulgarian",
+    "iasl",
+    "icu",
+    "ijg",
+    "imagemagick",
+    "imlib2",
+    "info-zip",
+    "inria-compcert",
+    "inria-icesl",
+    "inria-zelus",
+    "intel-eula",
+    "interbase",
+    "ipa",
+    "ipl10",
+    "isc",
+    "issl",
+    "knuth",
+    "lal12",
+    "lal13",
+    "lens",
+    "lgpl2",
+    "lgpl2Only",
+    "lgpl2Plus",
+    "lgpl21",
+    "lgpl21Only",
+    "lgpl21Plus",
+    "lgpl3",
+    "lgpl3Only",
+    "lgpl3Plus",
+    "lgpllr",
+    "libpng",
+    "libpng2",
+    "libtiff",
+    "llgpl21",
+    "llvm-exception",
+    "lpl-102",
+    "lppl1",
+    "lppl12",
+    "lppl13a",
+    "lppl13c",
+    "lsof",
+    "miros",
+    "mit",
+    "mit-cmu",
+    "mit-enna",
+    "mit-feh",
+    "mit-modern",
+    "mit0",
+    "mitAdvertising",
+    "mitOpenGroup",
+    "mpl10",
+    "mpl11",
+    "mpl20",
+    "mplus",
+    "mspl",
+    "mulan-psl2",
+    "naist-2003",
+    "nasa13",
+    "ncbiPd",
+    "ncsa",
+    "ncul1",
+    "ngpl",
+    "nistSoftware",
+    "nlpl",
+    "nposl3",
+    "ntp",
+    "nvidiaCuda",
+    "nvidiaCudaRedist",
+    "obsidian",
+    "ocamlLgplLinkingException",
+    "ocamlpro_nc",
+    "odbl",
+    "ofl",
+    "oml",
+    "openldap",
+    "openssl",
+    "opubl",
+    "osl2",
+    "osl21",
+    "osl3",
+    "paratype",
+    "parity70",
+    "php301",
+    "postgresql",
+    "postman",
+    "prosperity30",
+    "psfl",
     "publicDomain",
+    "qhull",
+    "qpl",
+    "qwtException",
+    "ruby",
+    "sendmail",
+    "sfl",
+    "sgi-b-20",
+    "sgmlug",
+    "sissl11",
+    "sleepycat",
+    "smail",
+    "smlnj",
+    "sspl",
+    "stk",
+    "sudo",
+    "sustainableUse",
+    "tcltk",
+    "tcpWrappers",
+    "teamspeak",
+    "tekHvcLicense",
+    "torque11",
+    "tost",
+    "tsl",
+    "ubdlException",
+    "ucd",
+    "ufl",
     "unfree",
+    "unfreeRedistributable",
+    "unfreeRedistributableFirmware",
+    "unicode-30",
+    "unicode-dfs-2015",
+    "unicode-dfs-2016",
+    "unicodeTOU",
+    "unlicense",
+    "upl",
+    "vim",
+    "virtualbox-puel",
+    "vol-sl",
+    "vsl10",
+    "w3c",
+    "wadalab",
+    "watcom",
+    "wtfpl",
+    "wxWindowsException31",
+    "x11",
+    "x11BsdClause",
+    "x11NoPermitPersons",
+    "xerox",
+    "xfig",
+    "xinetd",
+    "xskat",
+    "zlib",
+    "zpl20",
+    "zpl21",
 ];
 
 /// Validate that a license identifier is a known Nix license.
@@ -326,40 +601,25 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
                 .map(|d| d.name.as_str())
                 .collect();
 
-            let mut prefix_parts: Vec<String> = Vec::new();
-            if !all_os_deps.is_empty() {
-                let bins: Vec<String> = all_os_deps
-                    .iter()
-                    .map(|d| format!("${{lib.getBin {}}}/bin", d))
-                    .collect();
-                prefix_parts.push(bins.join(":"));
-            }
+            // Build lib.makeBinPath argument list with optional platform guards.
+            let mut list_parts: Vec<String> = Vec::new();
             if !darwin_deps.is_empty() {
-                let bins: Vec<String> = darwin_deps
-                    .iter()
-                    .map(|d| format!("${{lib.getBin {}}}/bin", d))
-                    .collect();
-                prefix_parts.push(format!(
-                    "''${{lib.optionalString stdenvNoCC.isDarwin \"{}\"}}",
-                    bins.join(":")
-                ));
+                let items = darwin_deps.iter().map(|d| format!("{d}")).collect::<Vec<_>>().join(" ");
+                list_parts.push(format!("lib.optionals stdenvNoCC.isDarwin [ {items} ]"));
             }
             if !linux_deps.is_empty() {
-                let bins: Vec<String> = linux_deps
-                    .iter()
-                    .map(|d| format!("${{lib.getBin {}}}/bin", d))
-                    .collect();
-                prefix_parts.push(format!(
-                    "''${{lib.optionalString stdenvNoCC.isLinux \"{}\"}}",
-                    bins.join(":")
-                ));
+                let items = linux_deps.iter().map(|d| format!("{d}")).collect::<Vec<_>>().join(" ");
+                list_parts.push(format!("lib.optionals stdenvNoCC.isLinux [ {items} ]"));
+            }
+            if !all_os_deps.is_empty() {
+                let items = all_os_deps.iter().map(|d| format!("{d}")).collect::<Vec<_>>().join(" ");
+                list_parts.push(format!("[ {items} ]"));
             }
 
-            if !prefix_parts.is_empty() {
+            if !list_parts.is_empty() {
+                let joined = list_parts.join(" ++\n      ");
                 lines.push(format!(
-                    "wrapProgram $out/bin/{} --prefix PATH : {}",
-                    name,
-                    prefix_parts.join(":")
+                    "wrapProgram $out/bin/{name} --prefix PATH : ${{lib.makeBinPath (\n      {joined}\n    )}}"
                 ));
             }
         }
@@ -573,6 +833,142 @@ mod tests {
 
         assert!(expr.contains("postInstall"));
         assert!(expr.contains("installShellCompletion"));
+    }
+
+    #[test]
+    fn test_generate_nix_expression_with_deps_uses_make_bin_path() {
+        let archives = vec![
+            ("x86_64-linux".to_string(), "https://example.com/tool.tar.gz".to_string(), "abc".to_string()),
+            ("aarch64-darwin".to_string(), "https://example.com/tool-darwin.tar.gz".to_string(), "def".to_string()),
+        ];
+        // Simulate install lines that publish_to_nix would generate with deps.
+        let install = vec![
+            "mkdir -p $out/bin".to_string(),
+            "cp -vr ./mytool $out/bin/mytool".to_string(),
+            "wrapProgram $out/bin/mytool --prefix PATH : ${lib.makeBinPath (\n      lib.optionals stdenvNoCC.isDarwin [ darwin_dep ] ++\n      lib.optionals stdenvNoCC.isLinux [ linux_dep ] ++\n      [ git ]\n    )}".to_string(),
+        ];
+        let dep_args = vec![
+            "darwin_dep".to_string(),
+            "linux_dep".to_string(),
+            "git".to_string(),
+        ];
+
+        let expr = generate_nix_expression(&NixParams {
+            name: "mytool",
+            version: "1.0.0",
+            description: "A tool with deps",
+            homepage: "",
+            license: "mit",
+            archives: &archives,
+            install_lines: &install,
+            post_install_lines: &[],
+            needs_unzip: false,
+            needs_make_wrapper: true,
+            dep_args: &dep_args,
+            source_root: ".",
+        });
+
+        // Verify lib.makeBinPath pattern is used (not lib.getBin)
+        assert!(expr.contains("lib.makeBinPath"), "should use lib.makeBinPath");
+        assert!(!expr.contains("lib.getBin"), "should not use lib.getBin");
+        // Verify platform-conditional lists
+        assert!(expr.contains("lib.optionals stdenvNoCC.isDarwin [ darwin_dep ]"));
+        assert!(expr.contains("lib.optionals stdenvNoCC.isLinux [ linux_dep ]"));
+        // Verify makeWrapper is listed as a function arg
+        assert!(expr.contains(", makeWrapper"));
+    }
+
+    #[test]
+    fn test_generate_nix_expression_deps_in_native_build_inputs() {
+        let archives = vec![
+            ("x86_64-linux".to_string(), "https://example.com/tool.tar.gz".to_string(), "abc".to_string()),
+        ];
+        let install = vec!["mkdir -p $out/bin".to_string()];
+        let dep_args = vec!["git".to_string(), "curl".to_string()];
+
+        let expr = generate_nix_expression(&NixParams {
+            name: "mytool",
+            version: "1.0.0",
+            description: "",
+            homepage: "",
+            license: "mit",
+            archives: &archives,
+            install_lines: &install,
+            post_install_lines: &[],
+            needs_unzip: false,
+            needs_make_wrapper: true,
+            dep_args: &dep_args,
+            source_root: ".",
+        });
+
+        // Verify dep_args appear in nativeBuildInputs
+        assert!(expr.contains("nativeBuildInputs"), "should have nativeBuildInputs");
+        // The deps should appear inside the nativeBuildInputs block
+        let nbi_start = expr.find("nativeBuildInputs").unwrap();
+        let nbi_section = &expr[nbi_start..];
+        let bracket_end = nbi_section.find("];").unwrap();
+        let nbi_block = &nbi_section[..bracket_end];
+        assert!(nbi_block.contains("git"), "nativeBuildInputs should contain git");
+        assert!(nbi_block.contains("curl"), "nativeBuildInputs should contain curl");
+        assert!(nbi_block.contains("makeWrapper"), "nativeBuildInputs should contain makeWrapper");
+    }
+
+    #[test]
+    fn test_generate_nix_expression_no_rec() {
+        let archives = vec![
+            ("x86_64-linux".to_string(), "https://example.com/tool.tar.gz".to_string(), "abc".to_string()),
+        ];
+        let install = vec!["mkdir -p $out/bin".to_string()];
+
+        let expr = generate_nix_expression(&NixParams {
+            name: "mytool",
+            version: "1.0.0",
+            description: "",
+            homepage: "",
+            license: "mit",
+            archives: &archives,
+            install_lines: &install,
+            post_install_lines: &[],
+            needs_unzip: false,
+            needs_make_wrapper: false,
+            dep_args: &[],
+            source_root: ".",
+        });
+
+        assert!(!expr.contains("mkDerivation rec"), "should not contain 'rec'");
+        assert!(expr.contains("mkDerivation {"), "should contain mkDerivation without rec");
+    }
+
+    #[test]
+    fn test_validate_nix_license_valid() {
+        // Common licenses should all pass
+        assert!(validate_nix_license("mit").is_ok());
+        assert!(validate_nix_license("asl20").is_ok());
+        assert!(validate_nix_license("gpl3Only").is_ok());
+        assert!(validate_nix_license("bsd2").is_ok());
+        assert!(validate_nix_license("bsd3").is_ok());
+        assert!(validate_nix_license("mpl20").is_ok());
+        assert!(validate_nix_license("isc").is_ok());
+        assert!(validate_nix_license("unlicense").is_ok());
+        assert!(validate_nix_license("cc0").is_ok());
+        assert!(validate_nix_license("agpl3Only").is_ok());
+        assert!(validate_nix_license("eupl12").is_ok());
+        assert!(validate_nix_license("boost").is_ok());
+        assert!(validate_nix_license("publicDomain").is_ok());
+        assert!(validate_nix_license("unfree").is_ok());
+        assert!(validate_nix_license("unfreeRedistributable").is_ok());
+        assert!(validate_nix_license("wtfpl").is_ok());
+        assert!(validate_nix_license("zlib").is_ok());
+        assert!(validate_nix_license("artistic2").is_ok());
+    }
+
+    #[test]
+    fn test_validate_nix_license_invalid() {
+        let result = validate_nix_license("not-a-real-license");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("not-a-real-license"), "error should contain the bad license name");
+        assert!(msg.contains("unknown license"), "error should say unknown license");
     }
 
     #[test]

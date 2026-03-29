@@ -60,6 +60,21 @@ pub(crate) fn get_publish_config<'a>(
 }
 
 // ---------------------------------------------------------------------------
+// Artifact kind resolution
+// ---------------------------------------------------------------------------
+
+/// Map the `use` config value (e.g. "archive", "msi", "nsis") to an
+/// `ArtifactKind`.  Defaults to `Archive` when the value is `None` or
+/// unrecognised.
+pub(crate) fn resolve_artifact_kind(use_value: Option<&str>) -> ArtifactKind {
+    match use_value {
+        Some("msi") | Some("nsis") => ArtifactKind::Installer,
+        // "archive" or anything else defaults to Archive
+        _ => ArtifactKind::Archive,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Token resolution
 // ---------------------------------------------------------------------------
 
@@ -202,6 +217,19 @@ pub(crate) fn clone_repo(
     label: &str,
     log: &StageLogger,
 ) -> Result<()> {
+    // Warn when token_type is set to a non-GitHub value, since anodize
+    // currently only supports GitHub-based repository publishing.
+    if let Some(r) = repo {
+        if let Some(ref tt) = r.token_type {
+            let tt_lower = tt.to_lowercase();
+            if tt_lower != "github" && !tt_lower.is_empty() {
+                log.warn(&format!(
+                    "{label}: repository.token_type={tt:?} is not yet supported; only \"github\" is currently implemented"
+                ));
+            }
+        }
+    }
+
     // Check if RepositoryConfig specifies a Git SSH URL.
     if let Some(r) = repo {
         if let Some(ref git) = r.git {
@@ -265,6 +293,12 @@ pub(crate) fn maybe_submit_pr(
 
     let is_draft = pr_cfg.draft == Some(true);
 
+    // Determine the target base branch for the PR.
+    let base_branch = pr_cfg
+        .base
+        .as_ref()
+        .and_then(|b| b.branch.as_deref());
+
     let mut args = vec![
         "pr",
         "create",
@@ -277,6 +311,11 @@ pub(crate) fn maybe_submit_pr(
         "--head",
         &head,
     ];
+
+    if let Some(base) = base_branch {
+        args.push("--base");
+        args.push(base);
+    }
 
     if is_draft {
         args.push("--draft");
@@ -387,18 +426,6 @@ pub(crate) fn resolve_branch(
     repo: Option<&anodize_core::config::RepositoryConfig>,
 ) -> Option<&str> {
     repo.and_then(|r| r.branch.as_deref())
-}
-
-/// Stage files, commit, and push. Optionally creates a new branch first.
-#[allow(dead_code)]
-pub(crate) fn commit_and_push(
-    repo_path: &Path,
-    files: &[&str],
-    message: &str,
-    branch: Option<&str>,
-    label: &str,
-) -> Result<()> {
-    commit_and_push_with_opts(repo_path, files, message, branch, label, &CommitOptions::default())
 }
 
 /// Stage files, commit, and push with optional commit author overrides.
@@ -694,15 +721,16 @@ pub(crate) fn render_url_template(
 ) -> String {
     let mut tera = tera::Tera::default();
     tera.autoescape_on(vec![]);
-    tera.add_raw_template("url", template)
-        .expect("url_template: invalid template");
+    if tera.add_raw_template("url", template).is_err() {
+        return template.to_string();
+    }
     let mut ctx = tera::Context::new();
     ctx.insert("name", name);
     ctx.insert("version", version);
     ctx.insert("arch", arch);
     ctx.insert("os", os);
     tera.render("url", &ctx)
-        .expect("url_template: render failed")
+        .unwrap_or_else(|_| template.to_string())
 }
 
 /// Find all Archive artifacts for the given crate whose target or path
@@ -1134,5 +1162,62 @@ mod tests {
         let ids: Vec<String> = vec![];
         let result = filter_os_artifacts_by_ids(artifacts, Some(&ids));
         assert!(result.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_artifact_kind tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_resolve_artifact_kind_none_defaults_to_archive() {
+        assert!(matches!(resolve_artifact_kind(None), ArtifactKind::Archive));
+    }
+
+    #[test]
+    fn test_resolve_artifact_kind_archive() {
+        assert!(matches!(resolve_artifact_kind(Some("archive")), ArtifactKind::Archive));
+    }
+
+    #[test]
+    fn test_resolve_artifact_kind_msi() {
+        assert!(matches!(resolve_artifact_kind(Some("msi")), ArtifactKind::Installer));
+    }
+
+    #[test]
+    fn test_resolve_artifact_kind_nsis() {
+        assert!(matches!(resolve_artifact_kind(Some("nsis")), ArtifactKind::Installer));
+    }
+
+    #[test]
+    fn test_resolve_artifact_kind_unknown_defaults_to_archive() {
+        assert!(matches!(resolve_artifact_kind(Some("unknown")), ArtifactKind::Archive));
+    }
+
+    // -----------------------------------------------------------------------
+    // render_url_template tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_render_url_template_basic() {
+        let url = render_url_template(
+            "https://example.com/{{ name }}/{{ version }}/{{ arch }}-{{ os }}.zip",
+            "mytool",
+            "1.2.3",
+            "amd64",
+            "windows",
+        );
+        assert_eq!(url, "https://example.com/mytool/1.2.3/amd64-windows.zip");
+    }
+
+    #[test]
+    fn test_render_url_template_invalid_fallback() {
+        let url = render_url_template(
+            "https://example.com/{{ bad unclosed",
+            "mytool",
+            "1.0.0",
+            "amd64",
+            "linux",
+        );
+        assert_eq!(url, "https://example.com/{{ bad unclosed");
     }
 }

@@ -19,32 +19,50 @@ class {{ class_name }} < Formula
   license "{{ license }}"
   version "{{ version }}"
 
-{% if single_archive %}  url "{{ single_url }}"{% if download_strategy %}, using: {{ download_strategy }}{% endif %}
-{% for header in url_headers %}  url.header "{{ header }}"
-{% endfor %}  sha256 "{{ single_sha256 }}"
+{% if single_archive %}  url "{{ single_url }}"{% if download_strategy %}, using: {{ download_strategy }}{% endif %}{% if url_headers %},
+    headers: [
+{% for header in url_headers %}      "{{ header }}",
+{% endfor %}    ]{% endif %}
+
+  sha256 "{{ single_sha256 }}"
 {% endif %}{% for entry in unknown_entries %}  # platform: {{ entry.platform }}
-  url "{{ entry.url }}"{% if download_strategy %}, using: {{ download_strategy }}{% endif %}
-{% for header in url_headers %}  url.header "{{ header }}"
-{% endfor %}  sha256 "{{ entry.sha256 }}"
+  url "{{ entry.url }}"{% if download_strategy %}, using: {{ download_strategy }}{% endif %}{% if url_headers %},
+    headers: [
+{% for header in url_headers %}      "{{ header }}",
+{% endfor %}    ]{% endif %}
+
+  sha256 "{{ entry.sha256 }}"
 {% endfor %}{% if has_macos %}  on_macos do
 {% if macos_has_arch %}{% for entry in macos_entries %}    {{ entry.arch_block }} do
-      url "{{ entry.url }}"{% if download_strategy %}, using: {{ download_strategy }}{% endif %}
-{% for header in url_headers %}      url.header "{{ header }}"
-{% endfor %}      sha256 "{{ entry.sha256 }}"
+      url "{{ entry.url }}"{% if download_strategy %}, using: {{ download_strategy }}{% endif %}{% if url_headers %},
+        headers: [
+{% for header in url_headers %}          "{{ header }}",
+{% endfor %}        ]{% endif %}
+
+      sha256 "{{ entry.sha256 }}"
     end
-{% endfor %}{% else %}{% for entry in macos_entries %}    url "{{ entry.url }}"{% if download_strategy %}, using: {{ download_strategy }}{% endif %}
-{% for header in url_headers %}    url.header "{{ header }}"
-{% endfor %}    sha256 "{{ entry.sha256 }}"
+{% endfor %}{% else %}{% for entry in macos_entries %}    url "{{ entry.url }}"{% if download_strategy %}, using: {{ download_strategy }}{% endif %}{% if url_headers %},
+      headers: [
+{% for header in url_headers %}        "{{ header }}",
+{% endfor %}      ]{% endif %}
+
+    sha256 "{{ entry.sha256 }}"
 {% endfor %}{% endif %}  end
 {% endif %}{% if has_linux %}  on_linux do
 {% if linux_has_arch %}{% for entry in linux_entries %}    {{ entry.arch_block }} do
-      url "{{ entry.url }}"{% if download_strategy %}, using: {{ download_strategy }}{% endif %}
-{% for header in url_headers %}      url.header "{{ header }}"
-{% endfor %}      sha256 "{{ entry.sha256 }}"
+      url "{{ entry.url }}"{% if download_strategy %}, using: {{ download_strategy }}{% endif %}{% if url_headers %},
+        headers: [
+{% for header in url_headers %}          "{{ header }}",
+{% endfor %}        ]{% endif %}
+
+      sha256 "{{ entry.sha256 }}"
     end
-{% endfor %}{% else %}{% for entry in linux_entries %}    url "{{ entry.url }}"{% if download_strategy %}, using: {{ download_strategy }}{% endif %}
-{% for header in url_headers %}    url.header "{{ header }}"
-{% endfor %}    sha256 "{{ entry.sha256 }}"
+{% endfor %}{% else %}{% for entry in linux_entries %}    url "{{ entry.url }}"{% if download_strategy %}, using: {{ download_strategy }}{% endif %}{% if url_headers %},
+      headers: [
+{% for header in url_headers %}        "{{ header }}",
+{% endfor %}      ]{% endif %}
+
+    sha256 "{{ entry.sha256 }}"
 {% endfor %}{% endif %}  end
 {% endif %}{% for dep in global_deps %}
   depends_on "{{ dep.name }}"{% if dep.version %} => "{{ dep.version }}"{% elif dep.optional %} => :optional{% endif %}
@@ -193,14 +211,129 @@ pub fn generate_cask(params: &CaskParams<'_>) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// generate_cask_content – shared helper for cask file generation
+// ---------------------------------------------------------------------------
+
+/// Intermediate result from cask content generation: the rendered cask file
+/// string plus the cask name used as the filename stem.
+struct CaskGenResult {
+    content: String,
+    cask_name: String,
+}
+
+/// Generate a Homebrew Cask `.rb` file string from the project context.
+///
+/// This is the shared logic used by both [`publish_to_homebrew`] (when formula
+/// and cask share a tap repo) and [`publish_cask`] (standalone).
+fn generate_cask_from_context(
+    ctx: &Context,
+    crate_name: &str,
+    hb_cfg: &anodize_core::config::HomebrewConfig,
+    cask_cfg: &anodize_core::config::HomebrewCaskConfig,
+) -> Result<CaskGenResult> {
+    let version = ctx.version();
+    let cask_name = cask_cfg.name.as_deref().unwrap_or(crate_name);
+
+    // Find a macOS artifact: prefer DiskImage, then Archive with darwin target.
+    let macos_artifact = ctx
+        .artifacts
+        .by_kind_and_crate(anodize_core::artifact::ArtifactKind::DiskImage, crate_name)
+        .into_iter()
+        .find(|a| {
+            a.target
+                .as_deref()
+                .map(|t| t.contains("darwin") || t.contains("macos"))
+                .unwrap_or(true)
+        })
+        .or_else(|| {
+            ctx.artifacts
+                .by_kind_and_crate(anodize_core::artifact::ArtifactKind::Archive, crate_name)
+                .into_iter()
+                .find(|a| {
+                    a.target
+                        .as_deref()
+                        .map(|t| t.contains("darwin") || t.contains("macos"))
+                        .unwrap_or(false)
+                })
+        })
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "homebrew cask: no macOS artifact (DiskImage or Archive) found for '{}'",
+                crate_name
+            )
+        })?;
+
+    // Build the download URL: cask url_template > homebrew url_template > artifact metadata.
+    let url = if let Some(tmpl) = cask_cfg
+        .url_template
+        .as_deref()
+        .or(hb_cfg.url_template.as_deref())
+    {
+        let target = macos_artifact.target.as_deref().unwrap_or("");
+        let (os, arch) = anodize_core::target::map_target(target);
+        crate::util::render_url_template(tmpl, &macos_artifact.name(), &version, &arch, &os)
+    } else {
+        macos_artifact
+            .metadata
+            .get("url")
+            .cloned()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "homebrew cask: artifact for '{}' has no 'url' metadata; set url_template or ensure release uploads set artifact URLs",
+                    crate_name
+                )
+            })?
+    };
+
+    let sha256 = macos_artifact
+        .metadata
+        .get("sha256")
+        .cloned()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "homebrew cask: artifact for '{}' has no 'sha256' metadata",
+                crate_name
+            )
+        })?;
+
+    let display_name = cask_cfg.name.as_deref().unwrap_or(crate_name);
+    let empty_vec: Vec<String> = Vec::new();
+
+    let params = CaskParams {
+        name: cask_name,
+        display_name,
+        alternative_names: cask_cfg.alternative_names.as_deref().unwrap_or(&empty_vec),
+        version: &version,
+        sha256: &sha256,
+        url: &url,
+        homepage: cask_cfg.homepage.as_deref().or(hb_cfg.homepage.as_deref()),
+        description: cask_cfg
+            .description
+            .as_deref()
+            .or(hb_cfg.description.as_deref()),
+        app: cask_cfg.app.as_deref(),
+        binaries: cask_cfg.binaries.as_deref().unwrap_or(&empty_vec),
+        caveats: cask_cfg.caveats.as_deref(),
+        zap: cask_cfg.zap.as_deref().unwrap_or(&empty_vec),
+        uninstall: cask_cfg.uninstall.as_deref().unwrap_or(&empty_vec),
+    };
+
+    Ok(CaskGenResult {
+        content: generate_cask(&params),
+        cask_name: cask_name.to_string(),
+    })
+}
+
+// ---------------------------------------------------------------------------
 // publish_cask
 // ---------------------------------------------------------------------------
 
-/// Publish a Homebrew Cask `.rb` file to a tap repository.
+/// Publish a Homebrew Cask `.rb` file to a tap repository (standalone).
 ///
-/// This is called from [`publish_to_homebrew`] when the homebrew config has a
-/// `cask` section.  It looks for a macOS archive or disk-image artifact,
-/// generates the cask file, and commits it to the tap repo.
+/// This is only used when the cask needs its own separate tap repository,
+/// different from the formula's tap.  When the formula and cask share the
+/// same tap repo, [`publish_to_homebrew`] writes both files in one clone,
+/// one commit, and one push.
 pub fn publish_cask(ctx: &Context, crate_name: &str, log: &StageLogger) -> Result<()> {
     let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "homebrew")?;
 
@@ -248,91 +381,7 @@ pub fn publish_cask(ctx: &Context, crate_name: &str, log: &StageLogger) -> Resul
         return Ok(());
     }
 
-    // Find a macOS artifact: prefer DiskImage, then Archive with darwin target.
-    let macos_artifact = ctx
-        .artifacts
-        .by_kind_and_crate(anodize_core::artifact::ArtifactKind::DiskImage, crate_name)
-        .into_iter()
-        .find(|a| {
-            a.target
-                .as_deref()
-                .map(|t| t.contains("darwin") || t.contains("macos"))
-                .unwrap_or(true)
-        })
-        .or_else(|| {
-            ctx.artifacts
-                .by_kind_and_crate(anodize_core::artifact::ArtifactKind::Archive, crate_name)
-                .into_iter()
-                .find(|a| {
-                    a.target
-                        .as_deref()
-                        .map(|t| t.contains("darwin") || t.contains("macos"))
-                        .unwrap_or(false)
-                })
-        })
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "homebrew cask: no macOS artifact (DiskImage or Archive) found for '{}'",
-                crate_name
-            )
-        })?;
-
-    // Build the download URL: cask url_template > homebrew url_template > artifact metadata.
-    let url = if let Some(tmpl) = cask_cfg
-        .url_template
-        .as_deref()
-        .or(hb_cfg.url_template.as_deref())
-    {
-        let target = macos_artifact.target.as_deref().unwrap_or("");
-        let (os, arch) = anodize_core::target::map_target(target);
-        render_url_template(tmpl, &macos_artifact.name(), &version, &os, &arch)
-    } else {
-        macos_artifact
-            .metadata
-            .get("url")
-            .cloned()
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "homebrew cask: artifact for '{}' has no 'url' metadata; set url_template or ensure release uploads set artifact URLs",
-                    crate_name
-                )
-            })?
-    };
-
-    let sha256 = macos_artifact
-        .metadata
-        .get("sha256")
-        .cloned()
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "homebrew cask: artifact for '{}' has no 'sha256' metadata",
-                crate_name
-            )
-        })?;
-
-    let display_name = cask_cfg.name.as_deref().unwrap_or(crate_name);
-    let empty_vec: Vec<String> = Vec::new();
-
-    let params = CaskParams {
-        name: cask_name,
-        display_name,
-        alternative_names: cask_cfg.alternative_names.as_deref().unwrap_or(&empty_vec),
-        version: &version,
-        sha256: &sha256,
-        url: &url,
-        homepage: cask_cfg.homepage.as_deref().or(hb_cfg.homepage.as_deref()),
-        description: cask_cfg
-            .description
-            .as_deref()
-            .or(hb_cfg.description.as_deref()),
-        app: cask_cfg.app.as_deref(),
-        binaries: &empty_vec,
-        caveats: cask_cfg.caveats.as_deref(),
-        zap: cask_cfg.zap.as_deref().unwrap_or(&empty_vec),
-        uninstall: cask_cfg.uninstall.as_deref().unwrap_or(&empty_vec),
-    };
-
-    let cask_content = generate_cask(&params);
+    let cask_result = generate_cask_from_context(ctx, crate_name, hb_cfg, cask_cfg)?;
 
     // Clone tap repo, write cask, commit, push.
     let tmp_dir = tempfile::tempdir().context("homebrew cask: create temp dir")?;
@@ -357,15 +406,15 @@ pub fn publish_cask(ctx: &Context, crate_name: &str, log: &StageLogger) -> Resul
     std::fs::create_dir_all(&casks_dir)
         .with_context(|| format!("homebrew cask: create Casks dir {}", casks_dir.display()))?;
 
-    let cask_path = casks_dir.join(format!("{}.rb", cask_name));
-    std::fs::write(&cask_path, &cask_content)
+    let cask_path = casks_dir.join(format!("{}.rb", cask_result.cask_name));
+    std::fs::write(&cask_path, &cask_result.content)
         .with_context(|| format!("homebrew cask: write cask file {}", cask_path.display()))?;
 
     log.status(&format!("wrote Homebrew cask: {}", cask_path.display()));
 
     let commit_msg = render_commit_msg(
         hb_cfg.commit_msg_template.as_deref(),
-        cask_name,
+        &cask_result.cask_name,
         &version,
         "cask",
     );
@@ -388,7 +437,7 @@ pub fn publish_cask(ctx: &Context, crate_name: &str, log: &StageLogger) -> Resul
 
     log.status(&format!(
         "Homebrew tap {}/{} updated with cask '{}'",
-        repo_owner, repo_name, cask_name
+        repo_owner, repo_name, cask_result.cask_name
     ));
 
     // Submit a PR if pull_request.enabled is set.
@@ -399,10 +448,10 @@ pub fn publish_cask(ctx: &Context, crate_name: &str, log: &StageLogger) -> Resul
         &repo_owner,
         &repo_name,
         pr_branch,
-        &format!("Update {} cask to {}", cask_name, version),
+        &format!("Update {} cask to {}", cask_result.cask_name, version),
         &format!(
             "## Cask\n- **Name**: {}\n- **Version**: {}\n\nAutomatically submitted by anodize.",
-            cask_name, version
+            cask_result.cask_name, version
         ),
         "homebrew cask",
         log,
@@ -794,20 +843,6 @@ pub(crate) fn render_commit_msg(
 /// Render a `url_template` string using Tera with `name`, `version`, `os`,
 /// and `arch` variables.  Falls back to the raw template string on render
 /// failure.
-fn render_url_template(tmpl: &str, name: &str, version: &str, os: &str, arch: &str) -> String {
-    let mut tera = tera::Tera::default();
-    tera.autoescape_on(vec![]);
-    if tera.add_raw_template("url", tmpl).is_err() {
-        return tmpl.to_string();
-    }
-    let mut ctx = tera::Context::new();
-    ctx.insert("name", name);
-    ctx.insert("version", version);
-    ctx.insert("os", os);
-    ctx.insert("arch", arch);
-    tera.render("url", &ctx)
-        .unwrap_or_else(|_| tmpl.to_string())
-}
 
 pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Result<()> {
     let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "homebrew")?;
@@ -926,7 +961,7 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
             // otherwise use the artifact metadata URL (from the release stage).
             let url = if let Some(tmpl) = hb_cfg.url_template.as_deref() {
                 let (os, arch) = anodize_core::target::map_target(target);
-                render_url_template(tmpl, &a.name(), &version, &os, &arch)
+                crate::util::render_url_template(tmpl, &a.name(), &version, &arch, &os)
             } else {
                 a.metadata.get("url")?.to_string()
             };
@@ -986,15 +1021,50 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
         formula_path.display()
     ));
 
+    // If a cask config is present, generate and write the cask file into the
+    // same clone so we commit and push everything in one shot (avoiding a
+    // redundant second clone/commit/push cycle).
+    let mut cask_name_for_log: Option<String> = None;
+    let mut cask_path_lossy: Option<String> = None;
+
+    if let Some(cask_cfg) = hb_cfg.cask.as_ref() {
+        let cask_result = generate_cask_from_context(ctx, crate_name, hb_cfg, cask_cfg)?;
+
+        let casks_dir = repo_path.join("Casks");
+        std::fs::create_dir_all(&casks_dir).with_context(|| {
+            format!("homebrew cask: create Casks dir {}", casks_dir.display())
+        })?;
+
+        let cask_path = casks_dir.join(format!("{}.rb", cask_result.cask_name));
+        std::fs::write(&cask_path, &cask_result.content).with_context(|| {
+            format!("homebrew cask: write cask file {}", cask_path.display())
+        })?;
+
+        log.status(&format!("wrote Homebrew cask: {}", cask_path.display()));
+        cask_path_lossy = Some(cask_path.to_string_lossy().into_owned());
+        cask_name_for_log = Some(cask_result.cask_name);
+    }
+
+    // Build the list of files to commit: always the formula, plus the cask if present.
+    let formula_lossy = formula_path.to_string_lossy();
+    let mut files_to_commit: Vec<&str> = vec![&formula_lossy];
+    if let Some(ref cask_lossy) = cask_path_lossy {
+        files_to_commit.push(cask_lossy);
+    }
+
     // Render commit message from template or use default.
+    let kind = if cask_name_for_log.is_some() {
+        "formula and cask"
+    } else {
+        "formula"
+    };
     let commit_msg = render_commit_msg(
         hb_cfg.commit_msg_template.as_deref(),
         formula_name,
         &version,
-        "formula",
+        kind,
     );
 
-    let formula_lossy = formula_path.to_string_lossy();
     let commit_opts = crate::util::resolve_commit_opts(
         hb_cfg.commit_author.as_ref(),
         hb_cfg.commit_author_name.as_deref(),
@@ -1003,39 +1073,58 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
     let branch = crate::util::resolve_branch(hb_cfg.repository.as_ref());
     crate::util::commit_and_push_with_opts(
         repo_path,
-        &[&formula_lossy],
+        &files_to_commit,
         &commit_msg,
         branch,
         "homebrew",
         &commit_opts,
     )?;
 
-    log.status(&format!(
-        "Homebrew tap {}/{} updated for '{}'",
-        repo_owner, repo_name, crate_name
-    ));
+    if let Some(ref cask_name) = cask_name_for_log {
+        log.status(&format!(
+            "Homebrew tap {}/{} updated with formula '{}' and cask '{}'",
+            repo_owner, repo_name, formula_name, cask_name
+        ));
+    } else {
+        log.status(&format!(
+            "Homebrew tap {}/{} updated for '{}'",
+            repo_owner, repo_name, crate_name
+        ));
+    }
 
     // Submit a PR if pull_request.enabled is set.
     let pr_branch = branch.unwrap_or("main");
+    let (pr_title, pr_body) = if let Some(ref cask_name) = cask_name_for_log {
+        (
+            format!(
+                "Update {} formula and {} cask to {}",
+                formula_name, cask_name, version
+            ),
+            format!(
+                "## Formula\n- **Name**: {}\n- **Version**: {}\n\n## Cask\n- **Name**: {}\n- **Version**: {}\n\nAutomatically submitted by anodize.",
+                formula_name, version, cask_name, version
+            ),
+        )
+    } else {
+        (
+            format!("Update {} formula to {}", formula_name, version),
+            format!(
+                "## Formula\n- **Name**: {}\n- **Version**: {}\n\nAutomatically submitted by anodize.",
+                formula_name, version
+            ),
+        )
+    };
     crate::util::maybe_submit_pr(
         repo_path,
         hb_cfg.repository.as_ref(),
         &repo_owner,
         &repo_name,
         pr_branch,
-        &format!("Update {} formula to {}", formula_name, version),
-        &format!(
-            "## Formula\n- **Name**: {}\n- **Version**: {}\n\nAutomatically submitted by anodize.",
-            formula_name, version
-        ),
+        &pr_title,
+        &pr_body,
         "homebrew",
         log,
     );
-
-    // If a cask config is present, also publish the cask file.
-    if hb_cfg.cask.is_some() {
-        publish_cask(ctx, crate_name, log)?;
-    }
 
     Ok(())
 }
@@ -1974,12 +2063,12 @@ mod tests {
 
     #[test]
     fn test_render_url_template() {
-        let url = render_url_template(
+        let url = crate::util::render_url_template(
             "https://example.com/{{ name }}/{{ version }}/{{ os }}-{{ arch }}.tar.gz",
             "mytool",
             "1.2.3",
-            "linux",
             "amd64",
+            "linux",
         );
         assert_eq!(
             url,
@@ -1987,16 +2076,297 @@ mod tests {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // Formula: download_strategy, url_headers, custom_block, extra_install,
+    //          post_install, plist, service
+    // -----------------------------------------------------------------------
+
     #[test]
-    fn test_render_url_template_invalid_fallback() {
-        let url = render_url_template(
-            "https://example.com/{{ bad unclosed",
+    fn test_formula_download_strategy() {
+        let opts = FormulaOptions {
+            download_strategy: Some("GitHubPrivateRepositoryReleaseDownloadStrategy"),
+            ..Default::default()
+        };
+        let formula = generate_formula_with_opts(
             "mytool",
             "1.0.0",
-            "linux",
-            "amd64",
+            &[("linux-amd64", "https://example.com/a.tar.gz", "abc")],
+            "desc",
+            "MIT",
+            "bin.install \"mytool\"",
+            "system \"#{bin}/mytool\"",
+            &opts,
         );
-        assert_eq!(url, "https://example.com/{{ bad unclosed");
+        assert!(
+            formula.contains(", using: GitHubPrivateRepositoryReleaseDownloadStrategy"),
+            "formula should contain download_strategy after url, got:\n{}",
+            formula
+        );
+    }
+
+    #[test]
+    fn test_formula_no_download_strategy_when_none() {
+        let formula = generate_formula(
+            "mytool",
+            "1.0.0",
+            &[("linux-amd64", "https://example.com/a.tar.gz", "abc")],
+            "desc",
+            "MIT",
+            "bin.install \"mytool\"",
+            "system \"#{bin}/mytool\"",
+        );
+        assert!(
+            !formula.contains(", using:"),
+            "formula should not contain download_strategy when not set"
+        );
+    }
+
+    #[test]
+    fn test_formula_url_headers() {
+        let headers = vec![
+            "Authorization: bearer ghp_xxx".to_string(),
+            "Accept: application/octet-stream".to_string(),
+        ];
+        let opts = FormulaOptions {
+            url_headers: Some(&headers),
+            ..Default::default()
+        };
+        let formula = generate_formula_with_opts(
+            "mytool",
+            "1.0.0",
+            &[("linux-amd64", "https://example.com/a.tar.gz", "abc")],
+            "desc",
+            "MIT",
+            "bin.install \"mytool\"",
+            "system \"#{bin}/mytool\"",
+            &opts,
+        );
+        assert!(
+            formula.contains("headers: ["),
+            "formula should use headers: [] syntax, got:\n{}",
+            formula
+        );
+        assert!(
+            formula.contains("\"Authorization: bearer ghp_xxx\""),
+            "formula should contain first header"
+        );
+        assert!(
+            formula.contains("\"Accept: application/octet-stream\""),
+            "formula should contain second header"
+        );
+        assert!(
+            !formula.contains("url.header"),
+            "formula should NOT use url.header syntax"
+        );
+    }
+
+    #[test]
+    fn test_formula_no_url_headers_when_empty() {
+        let formula = generate_formula(
+            "mytool",
+            "1.0.0",
+            &[("linux-amd64", "https://example.com/a.tar.gz", "abc")],
+            "desc",
+            "MIT",
+            "bin.install \"mytool\"",
+            "system \"#{bin}/mytool\"",
+        );
+        assert!(
+            !formula.contains("headers:"),
+            "formula should not contain headers block when not set"
+        );
+    }
+
+    #[test]
+    fn test_formula_custom_block() {
+        let opts = FormulaOptions {
+            custom_block: Some("  def something\n    puts \"hello\"\n  end"),
+            ..Default::default()
+        };
+        let formula = generate_formula_with_opts(
+            "mytool",
+            "1.0.0",
+            &[],
+            "desc",
+            "MIT",
+            "bin.install \"mytool\"",
+            "system \"#{bin}/mytool\"",
+            &opts,
+        );
+        assert!(
+            formula.contains("def something"),
+            "formula should contain custom_block content"
+        );
+        assert!(
+            formula.contains("puts \"hello\""),
+            "formula should contain custom_block body"
+        );
+    }
+
+    #[test]
+    fn test_formula_extra_install() {
+        let opts = FormulaOptions {
+            extra_install: Some("bash_completion.install \"completions/mytool.bash\""),
+            ..Default::default()
+        };
+        let formula = generate_formula_with_opts(
+            "mytool",
+            "1.0.0",
+            &[],
+            "desc",
+            "MIT",
+            "bin.install \"mytool\"",
+            "system \"#{bin}/mytool\"",
+            &opts,
+        );
+        assert!(
+            formula.contains("    bash_completion.install \"completions/mytool.bash\""),
+            "formula should contain extra_install lines in install block, got:\n{}",
+            formula
+        );
+        // Verify extra_install comes after main install
+        let install_pos = formula.find("bin.install \"mytool\"").unwrap();
+        let extra_pos = formula.find("bash_completion.install").unwrap();
+        assert!(
+            extra_pos > install_pos,
+            "extra_install should come after main install"
+        );
+    }
+
+    #[test]
+    fn test_formula_post_install() {
+        let opts = FormulaOptions {
+            post_install: Some("system \"mytool\", \"init\""),
+            ..Default::default()
+        };
+        let formula = generate_formula_with_opts(
+            "mytool",
+            "1.0.0",
+            &[],
+            "desc",
+            "MIT",
+            "bin.install \"mytool\"",
+            "system \"#{bin}/mytool\"",
+            &opts,
+        );
+        assert!(
+            formula.contains("def post_install"),
+            "formula should contain post_install method"
+        );
+        assert!(
+            formula.contains("    system \"mytool\", \"init\""),
+            "formula should contain post_install body"
+        );
+    }
+
+    #[test]
+    fn test_formula_plist() {
+        let plist_content = "    <?xml version=\"1.0\" encoding=\"UTF-8\"?>\n    <plist version=\"1.0\">\n    </plist>";
+        let opts = FormulaOptions {
+            plist: Some(plist_content),
+            ..Default::default()
+        };
+        let formula = generate_formula_with_opts(
+            "mytool",
+            "1.0.0",
+            &[],
+            "desc",
+            "MIT",
+            "bin.install \"mytool\"",
+            "system \"#{bin}/mytool\"",
+            &opts,
+        );
+        assert!(
+            formula.contains("plist_options startup: true"),
+            "formula should contain plist_options"
+        );
+        assert!(
+            formula.contains("def plist"),
+            "formula should contain plist method"
+        );
+        assert!(
+            formula.contains("<<~EOS"),
+            "formula should contain heredoc for plist"
+        );
+    }
+
+    #[test]
+    fn test_formula_service() {
+        let service_content = "    run [opt_bin/\"mytool\", \"serve\"]\n    keep_alive true";
+        let opts = FormulaOptions {
+            service: Some(service_content),
+            ..Default::default()
+        };
+        let formula = generate_formula_with_opts(
+            "mytool",
+            "1.0.0",
+            &[],
+            "desc",
+            "MIT",
+            "bin.install \"mytool\"",
+            "system \"#{bin}/mytool\"",
+            &opts,
+        );
+        assert!(
+            formula.contains("service do"),
+            "formula should contain service block"
+        );
+        assert!(
+            formula.contains("keep_alive true"),
+            "formula should contain service content"
+        );
+    }
+
+    #[test]
+    fn test_formula_no_plist_or_service_when_none() {
+        let formula = generate_formula(
+            "mytool",
+            "1.0.0",
+            &[],
+            "desc",
+            "MIT",
+            "bin.install \"mytool\"",
+            "system \"#{bin}/mytool\"",
+        );
+        assert!(!formula.contains("plist_options"), "no plist_options when plist not set");
+        assert!(!formula.contains("def plist"), "no def plist when plist not set");
+        assert!(!formula.contains("service do"), "no service block when service not set");
+    }
+
+    #[test]
+    fn test_formula_download_strategy_with_headers_multi_arch() {
+        let headers = vec!["Authorization: bearer token".to_string()];
+        let opts = FormulaOptions {
+            download_strategy: Some("CustomStrategy"),
+            url_headers: Some(&headers),
+            ..Default::default()
+        };
+        let formula = generate_formula_with_opts(
+            "mytool",
+            "1.0.0",
+            &[
+                ("darwin-amd64", "https://example.com/mac-amd64.tar.gz", "aaa"),
+                ("linux-amd64", "https://example.com/linux-amd64.tar.gz", "bbb"),
+            ],
+            "desc",
+            "MIT",
+            "bin.install \"mytool\"",
+            "system \"#{bin}/mytool\"",
+            &opts,
+        );
+        // Both download_strategy and headers should appear together
+        assert!(
+            formula.contains(", using: CustomStrategy"),
+            "multi-arch formula should contain download_strategy"
+        );
+        assert!(
+            formula.contains("headers: ["),
+            "multi-arch formula should contain headers block"
+        );
+        assert!(
+            formula.contains("\"Authorization: bearer token\""),
+            "multi-arch formula should contain header value"
+        );
     }
 
     // -----------------------------------------------------------------------

@@ -1,4 +1,3 @@
-use anodize_core::artifact::ArtifactKind;
 use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
 use anyhow::{Context as _, Result};
@@ -163,24 +162,6 @@ pub fn generate_manifest_with_opts(
     serde_json::to_string_pretty(&manifest).expect("scoop: serialize manifest")
 }
 
-/// Render a URL template with the given variables using Tera.
-///
-/// Supports `{{ name }}`, `{{ version }}`, `{{ arch }}`, `{{ os }}` variables.
-fn render_url_template(template: &str, name: &str, version: &str, arch: &str, os: &str) -> String {
-    let mut tera = tera::Tera::default();
-    tera.autoescape_on(vec![]);
-    if tera.add_raw_template("url", template).is_err() {
-        return template.to_string();
-    }
-    let mut ctx = tera::Context::new();
-    ctx.insert("name", name);
-    ctx.insert("version", version);
-    ctx.insert("arch", arch);
-    ctx.insert("os", os);
-    tera.render("url", &ctx)
-        .unwrap_or_else(|_| template.to_string())
-}
-
 // ---------------------------------------------------------------------------
 // publish_to_scoop
 // ---------------------------------------------------------------------------
@@ -240,9 +221,10 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
     let ids_filter = scoop_cfg.ids.as_deref();
     let url_template = scoop_cfg.url_template.as_deref();
 
+    let artifact_kind = util::resolve_artifact_kind(scoop_cfg.use_artifact.as_deref());
     let all_artifacts = ctx
         .artifacts
-        .by_kind_and_crate(ArtifactKind::Archive, crate_name);
+        .by_kind_and_crate(artifact_kind, crate_name);
 
     let arch_entries: Vec<ArchEntry> = all_artifacts
         .into_iter()
@@ -282,7 +264,7 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
 
             // Resolve download URL: use url_template if set, otherwise artifact metadata.
             let url = if let Some(tmpl) = url_template {
-                render_url_template(tmpl, manifest_name, &version, &raw_arch, "windows")
+                util::render_url_template(tmpl, manifest_name, &version, &raw_arch, "windows")
             } else {
                 a.metadata
                     .get("url")
@@ -996,6 +978,77 @@ mod tests {
         assert!(json["pre_install"].is_array());
         assert!(json["post_install"].is_array());
         assert!(json["shortcuts"].is_array());
+    }
+
+    // -----------------------------------------------------------------------
+    // Multi-arch manifest tests (32bit + 64bit + arm64)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_manifest_multi_arch_all_three() {
+        let entries = vec![
+            ArchEntry {
+                scoop_arch: "64bit".to_string(),
+                url: "https://example.com/app-1.0.0-windows-amd64.zip".to_string(),
+                hash: "hash_amd64".to_string(),
+            },
+            ArchEntry {
+                scoop_arch: "32bit".to_string(),
+                url: "https://example.com/app-1.0.0-windows-386.zip".to_string(),
+                hash: "hash_386".to_string(),
+            },
+            ArchEntry {
+                scoop_arch: "arm64".to_string(),
+                url: "https://example.com/app-1.0.0-windows-arm64.zip".to_string(),
+                hash: "hash_arm64".to_string(),
+            },
+        ];
+        let opts = ManifestOptions {
+            github_slug: Some("myorg/app".to_string()),
+            ..Default::default()
+        };
+        let manifest = generate_manifest_with_opts(
+            "app",
+            "1.0.0",
+            &entries,
+            "A multi-arch app",
+            "MIT",
+            &opts,
+        );
+        let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+
+        // Verify all three architecture blocks
+        let arch = &json["architecture"];
+        assert!(arch["64bit"].is_object(), "64bit block should exist");
+        assert!(arch["32bit"].is_object(), "32bit block should exist");
+        assert!(arch["arm64"].is_object(), "arm64 block should exist");
+
+        // Verify URLs and hashes
+        assert_eq!(arch["64bit"]["url"], "https://example.com/app-1.0.0-windows-amd64.zip");
+        assert_eq!(arch["64bit"]["hash"], "hash_amd64");
+        assert_eq!(arch["64bit"]["bin"], "app.exe");
+
+        assert_eq!(arch["32bit"]["url"], "https://example.com/app-1.0.0-windows-386.zip");
+        assert_eq!(arch["32bit"]["hash"], "hash_386");
+        assert_eq!(arch["32bit"]["bin"], "app.exe");
+
+        assert_eq!(arch["arm64"]["url"], "https://example.com/app-1.0.0-windows-arm64.zip");
+        assert_eq!(arch["arm64"]["hash"], "hash_arm64");
+        assert_eq!(arch["arm64"]["bin"], "app.exe");
+
+        // Verify autoupdate has all three architectures
+        let auto = &json["autoupdate"]["architecture"];
+        assert!(auto["64bit"].is_object(), "autoupdate.64bit should exist");
+        assert!(auto["32bit"].is_object(), "autoupdate.32bit should exist");
+        assert!(auto["arm64"].is_object(), "autoupdate.arm64 should exist");
+
+        // Verify autoupdate URLs use correct arch suffixes
+        let auto_64_url = auto["64bit"]["url"].as_str().unwrap();
+        assert!(auto_64_url.contains("amd64"), "autoupdate 64bit should use amd64 suffix");
+        let auto_32_url = auto["32bit"]["url"].as_str().unwrap();
+        assert!(auto_32_url.contains("386"), "autoupdate 32bit should use 386 suffix");
+        let auto_arm_url = auto["arm64"]["url"].as_str().unwrap();
+        assert!(auto_arm_url.contains("arm64"), "autoupdate arm64 should use arm64 suffix");
     }
 
     // -----------------------------------------------------------------------

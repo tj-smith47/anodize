@@ -1,4 +1,3 @@
-use anodize_core::artifact::ArtifactKind;
 use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
 use anyhow::{Context as _, Result};
@@ -309,26 +308,6 @@ pub fn generate_manifests(params: &WingetManifestParams<'_>) -> (String, String,
 }
 
 // ---------------------------------------------------------------------------
-// URL template rendering
-// ---------------------------------------------------------------------------
-
-/// Render a URL template with the given variables using Tera.
-fn render_url_template(template: &str, name: &str, version: &str, arch: &str, os: &str) -> String {
-    let mut tera = tera::Tera::default();
-    tera.autoescape_on(vec![]);
-    if tera.add_raw_template("url", template).is_err() {
-        return template.to_string();
-    }
-    let mut ctx = tera::Context::new();
-    ctx.insert("name", name);
-    ctx.insert("version", version);
-    ctx.insert("arch", arch);
-    ctx.insert("os", os);
-    tera.render("url", &ctx)
-        .unwrap_or_else(|_| template.to_string())
-}
-
-// ---------------------------------------------------------------------------
 // publish_to_winget
 // ---------------------------------------------------------------------------
 
@@ -394,9 +373,10 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
     let ids_filter = winget_cfg.ids.as_deref();
     let url_template = winget_cfg.url_template.as_deref();
 
+    let artifact_kind = util::resolve_artifact_kind(winget_cfg.use_artifact.as_deref());
     let all_artifacts = ctx
         .artifacts
-        .by_kind_and_crate(ArtifactKind::Archive, crate_name);
+        .by_kind_and_crate(artifact_kind, crate_name);
 
     let installers: Vec<WingetInstallerItem> = all_artifacts
         .into_iter()
@@ -431,7 +411,7 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
             };
 
             let resolved_url = if let Some(tmpl) = url_template {
-                render_url_template(tmpl, name, &version, &raw_arch, "windows")
+                util::render_url_template(tmpl, name, &version, &raw_arch, "windows")
             } else {
                 a.metadata
                     .get("url")
@@ -880,5 +860,84 @@ mod tests {
 
         // Should fail because manifests_repo is missing
         assert!(publish_to_winget(&ctx, "mytool", &log).is_err());
+    }
+
+    #[test]
+    fn test_generate_manifests_all_optional_fields() {
+        let deps = vec![
+            anodize_core::config::WingetDependency {
+                package_identifier: "Microsoft.VCRedist.2015+.x64".to_string(),
+                minimum_version: Some("14.0.0".to_string()),
+            },
+        ];
+        let tags = vec!["CLI".to_string(), "DevOps".to_string()];
+        let params = WingetManifestParams {
+            package_id: "MyOrg.MyTool",
+            name: "mytool",
+            package_name: Some("My Tool Pro"),
+            version: "2.5.0",
+            description: "A comprehensive tool",
+            short_description: "CLI tool",
+            license: "Apache-2.0",
+            license_url: Some("https://example.com/license"),
+            publisher: "My Org Inc",
+            publisher_url: Some("https://myorg.com"),
+            publisher_support_url: Some("https://myorg.com/support"),
+            privacy_url: Some("https://myorg.com/privacy"),
+            author: Some("Jane Doe"),
+            copyright: Some("Copyright 2026 My Org Inc"),
+            copyright_url: Some("https://myorg.com/copyright"),
+            homepage: Some("https://mytool.dev"),
+            release_notes: Some("Added new features in v2.5.0"),
+            release_notes_url: Some("https://github.com/myorg/mytool/releases/v2.5.0"),
+            installation_notes: Some("Run 'mytool --help' to get started"),
+            tags: Some(&tags),
+            dependencies: &deps,
+            installers: vec![WingetInstallerItem {
+                architecture: "x64".to_string(),
+                url: "https://example.com/mytool-2.5.0-windows-amd64.zip".to_string(),
+                sha256: "abc123def456".to_string(),
+            }],
+            product_code: Some("{12345678-1234-1234-1234-123456789012}"),
+            release_date: Some("2026-03-29"),
+        };
+
+        let (ver, inst, locale) = generate_manifests(&params);
+
+        // Version manifest
+        assert!(ver.contains("PackageIdentifier: MyOrg.MyTool"));
+        assert!(ver.contains("PackageVersion: 2.5.0"));
+        assert!(ver.contains("ManifestType: version"));
+
+        // Installer manifest
+        assert!(inst.contains("ProductCode:"), "installer manifest should contain ProductCode");
+        assert!(inst.contains("{12345678-1234-1234-1234-123456789012}"), "installer manifest should contain the product code value");
+        assert!(inst.contains("ReleaseDate:"), "installer manifest should contain ReleaseDate");
+        assert!(inst.contains("2026-03-29"), "installer manifest should contain the release date value");
+        assert!(inst.contains("PackageDependencies:"));
+        assert!(inst.contains("PackageIdentifier: Microsoft.VCRedist.2015+.x64"));
+        assert!(inst.contains("MinimumVersion: 14.0.0"));
+        assert!(inst.contains("NestedInstallerType: portable"));
+        assert!(inst.contains("RelativeFilePath: mytool.exe"));
+
+        // Locale manifest
+        assert!(locale.contains("PackageName: My Tool Pro"));
+        assert!(locale.contains("Publisher: My Org Inc"));
+        assert!(locale.contains("PublisherUrl: https://myorg.com"));
+        assert!(locale.contains("PublisherSupportUrl: https://myorg.com/support"));
+        assert!(locale.contains("PrivacyUrl: https://myorg.com/privacy"));
+        assert!(locale.contains("Author: Jane Doe"));
+        assert!(locale.contains("Copyright: Copyright 2026 My Org Inc"));
+        assert!(locale.contains("CopyrightUrl: https://myorg.com/copyright"));
+        assert!(locale.contains("PackageUrl: https://mytool.dev"));
+        assert!(locale.contains("License: Apache-2.0"));
+        assert!(locale.contains("LicenseUrl: https://example.com/license"));
+        assert!(locale.contains("ShortDescription: CLI tool"));
+        assert!(locale.contains("Description: A comprehensive tool"));
+        assert!(locale.contains("ReleaseNotes: Added new features in v2.5.0"));
+        assert!(locale.contains("ReleaseNotesUrl: https://github.com/myorg/mytool/releases/v2.5.0"));
+        assert!(locale.contains("InstallationNotes: Run 'mytool --help' to get started"));
+        assert!(locale.contains("cli"));
+        assert!(locale.contains("devops"));
     }
 }

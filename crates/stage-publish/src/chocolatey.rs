@@ -1,4 +1,3 @@
-use anodize_core::artifact::ArtifactKind;
 use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
 use anyhow::{Context as _, Result};
@@ -186,26 +185,6 @@ pub fn generate_install_script(name: &str, url: &str, hash: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// URL template rendering
-// ---------------------------------------------------------------------------
-
-/// Render a URL template with the given variables using Tera.
-fn render_url_template(template: &str, name: &str, version: &str, arch: &str, os: &str) -> String {
-    let mut tera = tera::Tera::default();
-    tera.autoescape_on(vec![]);
-    if tera.add_raw_template("url", template).is_err() {
-        return template.to_string();
-    }
-    let mut ctx = tera::Context::new();
-    ctx.insert("name", name);
-    ctx.insert("version", version);
-    ctx.insert("arch", arch);
-    ctx.insert("os", os);
-    tera.render("url", &ctx)
-        .unwrap_or_else(|_| template.to_string())
-}
-
-// ---------------------------------------------------------------------------
 // publish_to_chocolatey
 // ---------------------------------------------------------------------------
 
@@ -256,9 +235,10 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
     let ids_filter = choco_cfg.ids.as_deref();
     let url_template = choco_cfg.url_template.as_deref();
 
+    let artifact_kind = util::resolve_artifact_kind(choco_cfg.use_artifact.as_deref());
     let all_artifacts = ctx
         .artifacts
-        .by_kind_and_crate(ArtifactKind::Archive, crate_name);
+        .by_kind_and_crate(artifact_kind, crate_name);
 
     let win_artifact = all_artifacts
         .into_iter()
@@ -291,7 +271,7 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
         let (_, raw_arch) = anodize_core::target::map_target(target);
 
         let resolved_url = if let Some(tmpl) = url_template {
-            render_url_template(tmpl, pkg_name, &version, &raw_arch, "windows")
+            util::render_url_template(tmpl, pkg_name, &version, &raw_arch, "windows")
         } else {
             a.metadata
                 .get("url")
@@ -337,13 +317,13 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
         release_notes: choco_cfg.release_notes.as_deref(),
         dependencies: choco_cfg.dependencies.as_deref().unwrap_or(&[]),
     });
-    let install_script = generate_install_script(crate_name, &url, &hash);
+    let install_script = generate_install_script(pkg_name, &url, &hash);
 
     // Create temp directory, write files, run choco pack + push.
     let tmp_dir = tempfile::tempdir().context("chocolatey: create temp dir")?;
     let pkg_dir = tmp_dir.path();
 
-    let nuspec_path = pkg_dir.join(format!("{}.nuspec", crate_name));
+    let nuspec_path = pkg_dir.join(format!("{}.nuspec", pkg_name));
     std::fs::write(&nuspec_path, &nuspec)
         .with_context(|| format!("chocolatey: write nuspec {}", nuspec_path.display()))?;
 
@@ -714,5 +694,63 @@ mod tests {
 
         // Should fail because project_repo is missing
         assert!(publish_to_chocolatey(&ctx, "mytool", &log).is_err());
+    }
+
+    #[test]
+    fn test_generate_nuspec_all_optional_fields() {
+        let deps = vec![
+            anodize_core::config::ChocolateyDependency {
+                id: "dotnetfx".to_string(),
+                version: Some("[4.5.1,)".to_string()),
+            },
+            anodize_core::config::ChocolateyDependency {
+                id: "vcredist140".to_string(),
+                version: None,
+            },
+        ];
+        let tags = vec!["cli".to_string(), "devops".to_string()];
+        let nuspec = generate_nuspec(&NuspecParams {
+            name: "my-tool",
+            version: "2.5.0",
+            description: "A tool with all fields",
+            license: "MIT",
+            license_url: Some("https://example.com/license"),
+            authors: "Jane Doe",
+            project_url: "https://example.com/my-tool",
+            icon_url: "https://example.com/icon.png",
+            tags: &tags,
+            package_source_url: Some("https://github.com/org/choco-packages"),
+            owners: Some("jdoe"),
+            title: Some("My Tool Pro"),
+            copyright: Some("Copyright 2026 Jane Doe"),
+            require_license_acceptance: true,
+            project_source_url: Some("https://github.com/org/my-tool"),
+            docs_url: Some("https://docs.example.com"),
+            bug_tracker_url: Some("https://github.com/org/my-tool/issues"),
+            summary: Some("CLI devops tool"),
+            release_notes: Some("Added new features"),
+            dependencies: &deps,
+        });
+
+        // Verify all optional fields are present
+        assert!(nuspec.contains("<packageSourceUrl>https://github.com/org/choco-packages</packageSourceUrl>"));
+        assert!(nuspec.contains("<owners>jdoe</owners>"));
+        assert!(nuspec.contains("<title>My Tool Pro</title>"));
+        assert!(nuspec.contains("<copyright>Copyright 2026 Jane Doe</copyright>"));
+        assert!(nuspec.contains("<requireLicenseAcceptance>true</requireLicenseAcceptance>"));
+        assert!(nuspec.contains("<projectSourceUrl>https://github.com/org/my-tool</projectSourceUrl>"));
+        assert!(nuspec.contains("<docsUrl>https://docs.example.com</docsUrl>"));
+        assert!(nuspec.contains("<bugTrackerUrl>https://github.com/org/my-tool/issues</bugTrackerUrl>"));
+        assert!(nuspec.contains("<summary>CLI devops tool</summary>"));
+        assert!(nuspec.contains("<releaseNotes>Added new features</releaseNotes>"));
+        assert!(nuspec.contains("<licenseUrl>https://example.com/license</licenseUrl>"));
+        assert!(nuspec.contains("<iconUrl>https://example.com/icon.png</iconUrl>"));
+        assert!(nuspec.contains("<tags>cli devops</tags>"));
+
+        // Verify dependencies
+        assert!(nuspec.contains("<dependencies>"));
+        assert!(nuspec.contains("<dependency id=\"dotnetfx\" version=\"[4.5.1,)\" />"));
+        assert!(nuspec.contains("<dependency id=\"vcredist140\" />"));
+        assert!(nuspec.contains("</dependencies>"));
     }
 }
