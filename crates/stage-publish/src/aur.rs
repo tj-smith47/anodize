@@ -32,6 +32,9 @@ pub struct PkgbuildParams<'a> {
     /// When `None`, defaults to `install -Dm755 "$srcdir/<binary>" "$pkgdir/usr/bin/<binary>"`.
     /// Use this when the archive places binaries in a subdirectory.
     pub install_template: Option<&'a str>,
+    /// Filename for a `.install` file (post-install hooks). When `Some`, the
+    /// PKGBUILD will include an `install=<filename>` line.
+    pub install_file: Option<&'a str>,
 }
 
 // ---------------------------------------------------------------------------
@@ -55,6 +58,7 @@ license=('{{ license }}')
 {% endif %}{% if provides | length > 0 %}provides=({% for p in provides %}'{{ p }}'{% if not loop.last %} {% endif %}{% endfor %})
 {% endif %}{% if replaces | length > 0 %}replaces=({% for r in replaces %}'{{ r }}'{% if not loop.last %} {% endif %}{% endfor %})
 {% endif %}{% if backup | length > 0 %}backup=({% for b in backup %}'{{ b }}'{% if not loop.last %} {% endif %}{% endfor %})
+{% endif %}{% if install_file %}install={{ install_file }}
 {% endif %}{% for s in sources %}source_{{ s.arch }}=("{{ s.url }}")
 sha256sums_{{ s.arch }}=('{{ s.hash }}')
 {% endfor %}
@@ -87,6 +91,7 @@ pub fn generate_pkgbuild(params: &PkgbuildParams<'_>) -> String {
     ctx.insert("replaces", params.replaces);
     ctx.insert("backup", params.backup);
     ctx.insert("binary_name", params.binary_name);
+    ctx.insert("install_file", &params.install_file);
 
     // Deduplicate architectures.
     let mut arches: Vec<&str> = params
@@ -319,6 +324,16 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         .as_deref()
         .and_then(|s| s.parse().ok())
         .unwrap_or(1);
+
+    // Compute .install filename: strip trailing "-bin" from the package name.
+    let install_base = package_name.strip_suffix("-bin").unwrap_or(&package_name);
+    let install_filename = format!("{}.install", install_base);
+    let install_file_ref = if aur_cfg.install.is_some() {
+        Some(install_filename.as_str())
+    } else {
+        None
+    };
+
     let pkgbuild_params = PkgbuildParams {
         name: &package_name,
         version: &version,
@@ -337,6 +352,7 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         sources: &sources,
         binary_name: crate_name,
         install_template: aur_cfg.package.as_deref(),
+        install_file: install_file_ref,
     };
     let pkgbuild = generate_pkgbuild(&pkgbuild_params);
 
@@ -344,14 +360,35 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     let tmp_dir = tempfile::tempdir().context("aur: create temp dir")?;
     let repo_path = tmp_dir.path();
 
-    // AUR uses SSH or plain HTTPS (no bearer-token auth).
-    util::clone_repo_with_auth(git_url, None, repo_path, "aur", log)?;
+    // AUR uses SSH.  When private_key or git_ssh_command is set, use the
+    // SSH clone function with those credentials.
+    if aur_cfg.private_key.is_some() || aur_cfg.git_ssh_command.is_some() {
+        util::clone_repo_ssh(
+            git_url,
+            aur_cfg.private_key.as_deref(),
+            aur_cfg.git_ssh_command.as_deref(),
+            repo_path,
+            "aur",
+            log,
+        )?;
+    } else {
+        // Plain clone (no bearer-token auth for AUR).
+        util::clone_repo_with_auth(git_url, None, repo_path, "aur", log)?;
+    }
 
     let pkgbuild_path = repo_path.join("PKGBUILD");
     std::fs::write(&pkgbuild_path, &pkgbuild)
         .with_context(|| format!("aur: write PKGBUILD {}", pkgbuild_path.display()))?;
 
     log.status(&format!("wrote AUR PKGBUILD: {}", pkgbuild_path.display()));
+
+    // Write .install file if configured (post-install hooks).
+    if let Some(ref install_content) = aur_cfg.install {
+        let install_path = repo_path.join(&install_filename);
+        std::fs::write(&install_path, install_content)
+            .with_context(|| format!("aur: write {} {}", install_filename, install_path.display()))?;
+        log.status(&format!("wrote AUR install file: {}", install_path.display()));
+    }
 
     // Generate .SRCINFO from a Tera template (no makepkg dependency).
     let srcinfo = generate_srcinfo(&pkgbuild_params);
@@ -425,6 +462,7 @@ mod tests {
             )],
             binary_name: "mytool",
             install_template: None,
+            install_file: None,
         });
 
         assert!(pkgbuild.contains("# Maintainer: Jane Doe <jane@example.com>"));
@@ -477,6 +515,7 @@ mod tests {
             ],
             binary_name: "mytool",
             install_template: None,
+            install_file: None,
         });
 
         assert!(pkgbuild.contains("arch=('aarch64' 'x86_64')"));
@@ -510,6 +549,7 @@ mod tests {
             )],
             binary_name: "mytool",
             install_template: None,
+            install_file: None,
         });
 
         assert!(pkgbuild.contains("depends=('glibc' 'openssl')"));
@@ -544,6 +584,7 @@ mod tests {
             )],
             binary_name: "tool",
             install_template: None,
+            install_file: None,
         });
 
         assert!(!pkgbuild.contains("# Maintainer:"));
@@ -581,6 +622,7 @@ mod tests {
             ],
             binary_name: "anodize",
             install_template: None,
+            install_file: None,
         });
 
         // Starts with maintainer comment
@@ -625,6 +667,7 @@ mod tests {
             install_template: Some(
                 r#"install -Dm755 "$srcdir/mytool-${pkgver}/mytool" "$pkgdir/usr/bin/mytool""#,
             ),
+            install_file: None,
         });
 
         assert!(pkgbuild.contains("package() {"));

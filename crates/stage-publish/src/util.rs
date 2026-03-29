@@ -1,4 +1,5 @@
 use anodize_core::artifact::{Artifact, ArtifactKind};
+use anodize_core::config::RepositoryConfig;
 use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
 use anyhow::{Context as _, Result};
@@ -117,6 +118,198 @@ pub(crate) fn clone_repo_with_auth(
     }
 
     Ok(())
+}
+
+/// Clone a git repo via SSH, optionally using a private key file or custom
+/// SSH command.  When `private_key` is set, it is written to a temporary
+/// file and referenced via `GIT_SSH_COMMAND`.  When `ssh_command` is set
+/// directly, it takes precedence.
+pub(crate) fn clone_repo_ssh(
+    git_url: &str,
+    private_key: Option<&str>,
+    ssh_command: Option<&str>,
+    tmp_dir: &Path,
+    label: &str,
+    log: &StageLogger,
+) -> Result<()> {
+    let mut cmd = Command::new("git");
+    cmd.args(["clone", "--depth=1", git_url]);
+    let repo_path_str = tmp_dir.to_string_lossy();
+    cmd.arg(repo_path_str.as_ref());
+
+    // Determine the GIT_SSH_COMMAND to use.
+    // We may need to persist the SSH command string for configuring the repo
+    // after clone, so track it here.
+    let mut ssh_cmd_for_config: Option<String> = None;
+
+    if let Some(ssh_cmd) = ssh_command {
+        // Explicit ssh_command takes precedence.
+        cmd.env("GIT_SSH_COMMAND", ssh_cmd);
+        ssh_cmd_for_config = Some(ssh_cmd.to_string());
+    } else if let Some(key_content) = private_key {
+        // Write the private key to a file inside the clone target directory's
+        // parent so it lives as long as the caller's tempdir.  We use a
+        // sibling directory to avoid conflicts with the clone itself.
+        let key_dir = tmp_dir.parent().unwrap_or(tmp_dir);
+        let key_path = key_dir.join(".anodize_ssh_key");
+        std::fs::write(&key_path, key_content)
+            .with_context(|| format!("{label}: write SSH private key"))?;
+        // SSH requires the key file to be user-readable only.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("{label}: set SSH key permissions"))?;
+        }
+        let built_ssh_cmd = format!(
+            "ssh -i {} -o StrictHostKeyChecking=no",
+            key_path.display()
+        );
+        cmd.env("GIT_SSH_COMMAND", &built_ssh_cmd);
+        ssh_cmd_for_config = Some(built_ssh_cmd);
+    }
+
+    let output = cmd
+        .output()
+        .with_context(|| format!("{label}: git clone via SSH: spawn"))?;
+    log.check_output(output, &format!("{label}: git clone (SSH)"))?;
+
+    // Configure core.sshCommand in the cloned repo so that subsequent push
+    // operations use the same SSH credentials.
+    if let Some(ref ssh_cfg) = ssh_cmd_for_config {
+        run_cmd_in(
+            tmp_dir,
+            "git",
+            &["config", "core.sshCommand", ssh_cfg],
+            &format!("{label}: git config sshCommand"),
+        )?;
+    }
+
+    Ok(())
+}
+
+/// Smart clone: decide between HTTPS and SSH based on RepositoryConfig.
+///
+/// When `repo.git.url` is set, uses SSH-based cloning with optional
+/// `private_key` / `ssh_command`.  Otherwise falls back to HTTPS via
+/// `clone_repo_with_auth`.
+pub(crate) fn clone_repo(
+    repo: Option<&RepositoryConfig>,
+    fallback_owner: &str,
+    fallback_name: &str,
+    token: Option<&str>,
+    tmp_dir: &Path,
+    label: &str,
+    log: &StageLogger,
+) -> Result<()> {
+    // Check if RepositoryConfig specifies a Git SSH URL.
+    if let Some(r) = repo {
+        if let Some(ref git) = r.git {
+            if let Some(ref url) = git.url {
+                return clone_repo_ssh(
+                    url,
+                    git.private_key.as_deref(),
+                    git.ssh_command.as_deref(),
+                    tmp_dir,
+                    label,
+                    log,
+                );
+            }
+        }
+    }
+
+    // Fall back to HTTPS clone.
+    let repo_url = format!(
+        "https://github.com/{}/{}.git",
+        fallback_owner, fallback_name
+    );
+    clone_repo_with_auth(&repo_url, token, tmp_dir, label, log)
+}
+
+/// Submit a pull request if `repo.pull_request.enabled` is true.
+///
+/// Uses `pull_request.base` for the upstream target when available,
+/// falling back to `repo_owner/repo_name`.  Supports `pull_request.draft`.
+pub(crate) fn maybe_submit_pr(
+    repo_path: &Path,
+    repo: Option<&RepositoryConfig>,
+    repo_owner: &str,
+    repo_name: &str,
+    branch_name: &str,
+    title: &str,
+    body: &str,
+    label: &str,
+    log: &StageLogger,
+) {
+    let pr_cfg = match repo.and_then(|r| r.pull_request.as_ref()) {
+        Some(pr) if pr.enabled == Some(true) => pr,
+        _ => return,
+    };
+
+    // Determine the upstream target repo slug.
+    let upstream_slug = if let Some(ref base) = pr_cfg.base {
+        if let (Some(owner), Some(name)) = (&base.owner, &base.name) {
+            format!("{}/{}", owner, name)
+        } else {
+            format!("{}/{}", repo_owner, repo_name)
+        }
+    } else {
+        format!("{}/{}", repo_owner, repo_name)
+    };
+
+    // Build the PR body, preferring the config body if set.
+    let pr_body = pr_cfg.body.as_deref().unwrap_or(body);
+
+    // Build head reference: owner:branch.
+    let head = format!("{}:{}", repo_owner, branch_name);
+
+    let is_draft = pr_cfg.draft == Some(true);
+
+    let mut args = vec![
+        "pr",
+        "create",
+        "--repo",
+        &upstream_slug,
+        "--title",
+        title,
+        "--body",
+        pr_body,
+        "--head",
+        &head,
+    ];
+
+    if is_draft {
+        args.push("--draft");
+    }
+
+    let pr_result = Command::new("gh")
+        .current_dir(repo_path)
+        .args(&args)
+        .output();
+
+    match pr_result {
+        Ok(output) if output.status.success() => {
+            log.status(&format!("{label}: PR submitted"));
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            log.warn(&format!(
+                "{label}: gh pr create exited with {} -- you may need to create the PR manually{}",
+                output.status,
+                if stderr.is_empty() {
+                    String::new()
+                } else {
+                    format!("\n{}", stderr)
+                }
+            ));
+        }
+        Err(e) => {
+            log.warn(&format!(
+                "{label}: could not run gh to create PR: {} -- you may need to create the PR manually",
+                e
+            ));
+        }
+    }
 }
 
 /// Optional overrides for the git commit step.

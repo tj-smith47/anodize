@@ -35,7 +35,7 @@ stdenvNoCC.mkDerivation rec {
     sha256 = selectSystem shaMap;
   };
 
-  sourceRoot = ".";
+  sourceRoot = "{{ source_root }}";
 
   nativeBuildInputs = [
     installShellFiles
@@ -51,11 +51,11 @@ stdenvNoCC.mkDerivation rec {
 {% for line in post_install_lines %}    {{ line }}
 {% endfor %}  '';
 {% endif %}
-  meta = with lib; {
+  meta = {
 {% if description %}    description = "{{ description }}";
 {% endif %}{% if homepage %}    homepage = "{{ homepage }}";
-{% endif %}{% if license %}    license = licenses.{{ license }};
-{% endif %}    sourceProvenance = with sourceTypes; [ binaryNativeCode ];
+{% endif %}{% if license %}    license = lib.licenses.{{ license }};
+{% endif %}    sourceProvenance = with lib.sourceTypes; [ binaryNativeCode ];
     platforms = [ {% for p in platforms %}"{{ p }}" {% endfor %}];
   };
 }
@@ -84,6 +84,8 @@ pub struct NixParams<'a> {
     pub needs_make_wrapper: bool,
     /// Dependency package names to add as function arguments in the derivation.
     pub dep_args: &'a [String],
+    /// Value for `sourceRoot` in the derivation. Defaults to `"."`.
+    pub source_root: &'a str,
 }
 
 // ---------------------------------------------------------------------------
@@ -103,6 +105,7 @@ pub fn generate_nix_expression(params: &NixParams<'_>) -> String {
     ctx.insert("description", params.description);
     ctx.insert("homepage", params.homepage);
     ctx.insert("license", params.license);
+    ctx.insert("source_root", params.source_root);
     ctx.insert("needs_unzip", &params.needs_unzip);
     ctx.insert("needs_make_wrapper", &params.needs_make_wrapper);
     ctx.insert("dep_args", &params.dep_args);
@@ -381,6 +384,7 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         needs_unzip,
         needs_make_wrapper,
         dep_args: &dep_args,
+        source_root: ".",
     });
 
     // Optionally format with alejandra or nixfmt
@@ -504,13 +508,14 @@ mod tests {
             needs_unzip: false,
             needs_make_wrapper: false,
             dep_args: &[],
+            source_root: ".",
         });
 
         assert!(expr.contains("pname = \"mytool\""));
         assert!(expr.contains("version = \"1.0.0\""));
         assert!(expr.contains("description = \"A great tool\""));
         assert!(expr.contains("homepage = \"https://example.com\""));
-        assert!(expr.contains("licenses.mit"));
+        assert!(expr.contains("lib.licenses.mit"));
         assert!(expr.contains("x86_64-linux"));
         assert!(expr.contains("aarch64-darwin"));
         assert!(expr.contains("abc123"));
@@ -537,6 +542,7 @@ mod tests {
             needs_unzip: true,
             needs_make_wrapper: false,
             dep_args: &[],
+            source_root: ".",
         });
 
         assert!(expr.contains(", unzip"));
@@ -562,6 +568,7 @@ mod tests {
             needs_unzip: false,
             needs_make_wrapper: false,
             dep_args: &[],
+            source_root: ".",
         });
 
         assert!(expr.contains("postInstall"));

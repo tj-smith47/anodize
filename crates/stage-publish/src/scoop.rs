@@ -332,12 +332,19 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
 
     // Clone bucket repo, write manifest, commit, push.
     let token = util::resolve_repo_token(ctx, scoop_cfg.repository.as_ref(), Some("SCOOP_BUCKET_TOKEN"));
-    let repo_url = format!("https://github.com/{}/{}.git", repo_owner, repo_name);
 
     let tmp_dir = tempfile::tempdir().context("scoop: create temp dir")?;
     let repo_path = tmp_dir.path();
 
-    util::clone_repo_with_auth(&repo_url, token.as_deref(), repo_path, "scoop", log)?;
+    util::clone_repo(
+        scoop_cfg.repository.as_ref(),
+        &repo_owner,
+        &repo_name,
+        token.as_deref(),
+        repo_path,
+        "scoop",
+        log,
+    )?;
 
     // Place manifest in optional subdirectory.
     let manifest_dir = if let Some(dir) = scoop_cfg.directory.as_deref() {
@@ -386,6 +393,23 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         "Scoop bucket {}/{} updated for '{}'",
         repo_owner, repo_name, crate_name
     ));
+
+    // Submit a PR if pull_request.enabled is set.
+    let pr_branch = branch.unwrap_or("main");
+    util::maybe_submit_pr(
+        repo_path,
+        scoop_cfg.repository.as_ref(),
+        &repo_owner,
+        &repo_name,
+        pr_branch,
+        &format!("Update {} manifest to {}", manifest_name, version),
+        &format!(
+            "## Manifest\n- **Name**: {}\n- **Version**: {}\n\nAutomatically submitted by anodize.",
+            manifest_name, version
+        ),
+        "scoop",
+        log,
+    );
 
     Ok(())
 }

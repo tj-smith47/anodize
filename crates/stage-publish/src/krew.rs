@@ -287,12 +287,19 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
 
     // Clone the krew-index fork, write the plugin manifest, commit, push.
     let token = util::resolve_repo_token(ctx, krew_cfg.repository.as_ref(), None);
-    let repo_url = format!("https://github.com/{}/{}.git", repo_owner, repo_name);
 
     let tmp_dir = tempfile::tempdir().context("krew: create temp dir")?;
     let repo_path = tmp_dir.path();
 
-    util::clone_repo_with_auth(&repo_url, token.as_deref(), repo_path, "krew", log)?;
+    util::clone_repo(
+        krew_cfg.repository.as_ref(),
+        &repo_owner,
+        &repo_name,
+        token.as_deref(),
+        repo_path,
+        "krew",
+        log,
+    )?;
 
     // Write plugin manifest under plugins/<name>.yaml.
     let plugins_dir = repo_path.join("plugins");
@@ -336,25 +343,52 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
         repo_owner, repo_name, branch_name
     ));
 
-    // Determine the upstream repo to submit the PR against.
-    let upstream_slug = if let Some(ref u) = krew_cfg.upstream_repo {
-        format!("{}/{}", u.owner, u.name)
-    } else {
-        format!("{}/{}", repo_owner, repo_name)
-    };
+    // Submit a PR.  When `repository.pull_request` is configured, use
+    // the unified PR helper (which respects `base`, `draft`, `body`).
+    // Otherwise fall back to the legacy `upstream_repo` field.
+    let has_pr_config = krew_cfg
+        .repository
+        .as_ref()
+        .and_then(|r| r.pull_request.as_ref())
+        .and_then(|pr| pr.enabled)
+        .unwrap_or(false);
 
-    util::submit_pr_via_gh(
-        repo_path,
-        &upstream_slug,
-        &format!("{}:{}", repo_owner, branch_name),
-        &format!("Add/update {} plugin to v{}", crate_name, version),
-        &format!(
-            "## Plugin\n- **Name**: {}\n- **Version**: v{}\n\nAutomatically submitted by anodize.",
-            crate_name, version
-        ),
-        "krew",
-        log,
-    );
+    if has_pr_config {
+        util::maybe_submit_pr(
+            repo_path,
+            krew_cfg.repository.as_ref(),
+            &repo_owner,
+            &repo_name,
+            &branch_name,
+            &format!("Add/update {} plugin to v{}", crate_name, version),
+            &format!(
+                "## Plugin\n- **Name**: {}\n- **Version**: v{}\n\nAutomatically submitted by anodize.",
+                crate_name, version
+            ),
+            "krew",
+            log,
+        );
+    } else {
+        // Legacy path: always submit a PR using upstream_repo or own repo.
+        let upstream_slug = if let Some(ref u) = krew_cfg.upstream_repo {
+            format!("{}/{}", u.owner, u.name)
+        } else {
+            format!("{}/{}", repo_owner, repo_name)
+        };
+
+        util::submit_pr_via_gh(
+            repo_path,
+            &upstream_slug,
+            &format!("{}:{}", repo_owner, branch_name),
+            &format!("Add/update {} plugin to v{}", crate_name, version),
+            &format!(
+                "## Plugin\n- **Name**: {}\n- **Version**: v{}\n\nAutomatically submitted by anodize.",
+                crate_name, version
+            ),
+            "krew",
+            log,
+        );
+    }
 
     Ok(())
 }

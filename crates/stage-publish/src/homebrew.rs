@@ -617,12 +617,19 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
     );
 
     // Clone tap repo, write formula, commit, push.
-    let repo_url = format!("https://github.com/{}/{}.git", repo_owner, repo_name);
     let tmp_dir = tempfile::tempdir().context("homebrew: create temp dir")?;
     let repo_path = tmp_dir.path();
 
     let token = crate::util::resolve_repo_token(ctx, hb_cfg.repository.as_ref(), Some("HOMEBREW_TAP_TOKEN"));
-    crate::util::clone_repo_with_auth(&repo_url, token.as_deref(), repo_path, "homebrew", log)?;
+    crate::util::clone_repo(
+        hb_cfg.repository.as_ref(),
+        &repo_owner,
+        &repo_name,
+        token.as_deref(),
+        repo_path,
+        "homebrew",
+        log,
+    )?;
 
     // Determine formula folder.
     let folder = hb_cfg
@@ -670,6 +677,23 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
         "Homebrew tap {}/{} updated for '{}'",
         repo_owner, repo_name, crate_name
     ));
+
+    // Submit a PR if pull_request.enabled is set.
+    let pr_branch = branch.unwrap_or("main");
+    crate::util::maybe_submit_pr(
+        repo_path,
+        hb_cfg.repository.as_ref(),
+        &repo_owner,
+        &repo_name,
+        pr_branch,
+        &format!("Update {} formula to {}", formula_name, version),
+        &format!(
+            "## Formula\n- **Name**: {}\n- **Version**: {}\n\nAutomatically submitted by anodize.",
+            formula_name, version
+        ),
+        "homebrew",
+        log,
+    );
 
     Ok(())
 }
