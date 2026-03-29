@@ -1255,6 +1255,8 @@ pub struct ChocolateyConfig {
     /// Bug tracker URL.
     pub bug_tracker_url: Option<String>,
     /// Space-separated tags for the Chocolatey gallery.
+    /// Accepts either a space-separated string (GoReleaser compat) or an array.
+    #[serde(deserialize_with = "deserialize_space_separated_string_or_vec_opt", default)]
     pub tags: Option<Vec<String>>,
     /// Short summary of the package.
     pub summary: Option<String>,
@@ -2675,6 +2677,64 @@ where
     }
 
     deserializer.deserialize_any(StringOrVecVisitor)
+}
+
+/// Custom deserializer for `Option<Vec<String>>` that accepts either a
+/// space-separated string (split into individual tags) or an array of strings.
+/// Used by `ChocolateyConfig.tags` for GoReleaser compatibility where tags
+/// are a single space-delimited string.
+fn deserialize_space_separated_string_or_vec_opt<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::{self, Visitor};
+
+    struct SpaceSepOrVecVisitor;
+
+    impl<'de> Visitor<'de> for SpaceSepOrVecVisitor {
+        type Value = Option<Vec<String>>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a space-separated string, a list of strings, or null")
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            let tags: Vec<String> = v.split_whitespace().map(|s| s.to_owned()).collect();
+            if tags.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(tags))
+            }
+        }
+
+        fn visit_string<E: de::Error>(self, v: String) -> Result<Self::Value, E> {
+            self.visit_str(&v)
+        }
+
+        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut items = Vec::new();
+            while let Some(item) = seq.next_element::<String>()? {
+                items.push(item);
+            }
+            if items.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(items))
+            }
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+    }
+
+    deserializer.deserialize_any(SpaceSepOrVecVisitor)
 }
 
 // ---------------------------------------------------------------------------
@@ -4366,6 +4426,68 @@ name = "tool"
         assert_eq!(choco.description, Some("A tool".to_string()));
         let repo = choco.project_repo.as_ref().unwrap();
         assert_eq!(repo.owner, "org");
+    }
+
+    #[test]
+    fn test_chocolatey_tags_space_separated_string() {
+        // GoReleaser uses a plain space-separated string for tags.
+        let yaml = r#"
+project_name: test
+crates:
+  - name: mytool
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      chocolatey:
+        project_repo:
+          owner: myorg
+          name: mytool
+        tags: "cli tool automation"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let choco = config.crates[0]
+            .publish
+            .as_ref()
+            .unwrap()
+            .chocolatey
+            .as_ref()
+            .unwrap();
+
+        assert_eq!(
+            choco.tags,
+            Some(vec![
+                "cli".to_string(),
+                "tool".to_string(),
+                "automation".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn test_chocolatey_tags_empty_string_is_none() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: mytool
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      chocolatey:
+        project_repo:
+          owner: myorg
+          name: mytool
+        tags: ""
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let choco = config.crates[0]
+            .publish
+            .as_ref()
+            .unwrap()
+            .chocolatey
+            .as_ref()
+            .unwrap();
+
+        assert!(choco.tags.is_none());
     }
 
     // ---- WingetConfig tests ----
