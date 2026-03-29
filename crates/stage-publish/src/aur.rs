@@ -136,6 +136,16 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("aur: no aur config for '{}'", crate_name))?;
 
+    // Check skip_upload before doing any work.
+    if crate::homebrew::should_skip_upload(aur_cfg.skip_upload.as_deref(), ctx) {
+        log.status(&format!(
+            "aur: skipping upload for '{}' (skip_upload={})",
+            crate_name,
+            aur_cfg.skip_upload.as_deref().unwrap_or("")
+        ));
+        return Ok(());
+    }
+
     let git_url = aur_cfg
         .git_url
         .as_ref()
@@ -151,17 +161,29 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
 
     let version = ctx.version();
 
+    // Default name is crate_name + "-bin" (GoReleaser convention)
     let package_name = aur_cfg
-        .package_name
+        .name
         .clone()
-        .unwrap_or_else(|| crate_name.to_string());
+        .unwrap_or_else(|| {
+            if crate_name.ends_with("-bin") {
+                crate_name.to_string()
+            } else {
+                format!("{}-bin", crate_name)
+            }
+        });
     let description = aur_cfg
         .description
         .clone()
         .unwrap_or_else(|| crate_name.to_string());
     let license = aur_cfg.license.clone().unwrap_or_else(|| "MIT".to_string());
-    let url = if let Some(ref u) = aur_cfg.url {
-        u.clone()
+    let url = aur_cfg
+        .url
+        .as_deref()
+        .or(aur_cfg.homepage.as_deref())
+        .map(|s| s.to_string());
+    let url = if let Some(u) = url {
+        u
     } else if let Some(gh) = crate_cfg.release.as_ref().and_then(|r| r.github.as_ref()) {
         format!("https://github.com/{}/{}", gh.owner, gh.name)
     } else {
@@ -171,6 +193,7 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
             crate_name
         );
     };
+
     let maintainers = aur_cfg.maintainers.clone().unwrap_or_default();
     let depends = aur_cfg.depends.clone().unwrap_or_default();
     let optdepends = aur_cfg.optdepends.clone().unwrap_or_default();
@@ -217,10 +240,15 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
             .collect()
     };
 
+    let pkgrel: u32 = aur_cfg
+        .rel
+        .as_deref()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1);
     let pkgbuild = generate_pkgbuild(&PkgbuildParams {
         name: &package_name,
         version: &version,
-        pkgrel: 1,
+        pkgrel,
         description: &description,
         url: &url,
         license: &license,
@@ -233,7 +261,7 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         backup: &backup,
         sources: &sources,
         binary_name: crate_name,
-        install_template: aur_cfg.install_template.as_deref(),
+        install_template: aur_cfg.package.as_deref(),
     });
 
     // Clone AUR repo, write PKGBUILD, commit, push.
@@ -267,12 +295,24 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         );
     }
 
-    util::commit_and_push(
+    let commit_msg = crate::homebrew::render_commit_msg(
+        aur_cfg.commit_msg_template.as_deref(),
+        &package_name,
+        &version,
+        "package",
+    );
+    let commit_opts = util::resolve_commit_opts(
+        aur_cfg.commit_author.as_ref(),
+        None,
+        None,
+    );
+    util::commit_and_push_with_opts(
         repo_path,
         &["."],
-        &format!("Update to version {}", version),
+        &commit_msg,
         None,
         "aur",
+        &commit_opts,
     )?;
 
     log.status(&format!(

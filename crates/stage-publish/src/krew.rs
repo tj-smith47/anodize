@@ -197,15 +197,30 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("krew: no krew config for '{}'", crate_name))?;
 
-    let manifests_repo = krew_cfg
-        .manifests_repo
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("krew: no manifests_repo config for '{}'", crate_name))?;
+    // Check skip_upload before doing any work.
+    if crate::homebrew::should_skip_upload(krew_cfg.skip_upload.as_deref(), ctx) {
+        log.status(&format!(
+            "krew: skipping upload for '{}' (skip_upload={})",
+            crate_name,
+            krew_cfg.skip_upload.as_deref().unwrap_or("")
+        ));
+        return Ok(());
+    }
+
+    // Resolve repository config: prefer `repository` over legacy `manifests_repo`.
+    let (repo_owner, repo_name) = crate::util::resolve_repo_owner_name(
+        krew_cfg.repository.as_ref(),
+        krew_cfg.manifests_repo.as_ref().map(|r| r.owner.as_str()),
+        krew_cfg.manifests_repo.as_ref().map(|r| r.name.as_str()),
+    )
+    .ok_or_else(|| {
+        anyhow::anyhow!("krew: no repository/manifests_repo config for '{}'", crate_name)
+    })?;
 
     if ctx.is_dry_run() {
         log.status(&format!(
             "(dry-run) would submit Krew plugin manifest for '{}' to {}/{}",
-            crate_name, manifests_repo.owner, manifests_repo.name
+            crate_name, repo_owner, repo_name
         ));
         return Ok(());
     }
@@ -223,7 +238,7 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
     let homepage = krew_cfg
         .homepage
         .clone()
-        .unwrap_or_else(|| format!("https://github.com/{}/{}", manifests_repo.owner, crate_name));
+        .unwrap_or_else(|| format!("https://github.com/{}/{}", repo_owner, crate_name));
     let caveats = krew_cfg.caveats.clone().unwrap_or_default();
 
     // Find artifacts across all platforms.
@@ -239,7 +254,7 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
             arch: "amd64".to_string(),
             url: format!(
                 "https://github.com/{0}/{1}/releases/download/v{2}/{1}-{2}-linux-amd64.tar.gz",
-                manifests_repo.owner, crate_name, version
+                repo_owner, crate_name, version
             ),
             sha256: String::new(),
             bin: crate_name.to_string(),
@@ -258,12 +273,12 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
         platforms: &platforms,
     });
 
+    // Use name override if set.
+    let plugin_name = krew_cfg.name.as_deref().unwrap_or(crate_name);
+
     // Clone the krew-index fork, write the plugin manifest, commit, push.
-    let token = util::resolve_token(ctx, None);
-    let repo_url = format!(
-        "https://github.com/{}/{}.git",
-        manifests_repo.owner, manifests_repo.name
-    );
+    let token = util::resolve_repo_token(ctx, krew_cfg.repository.as_ref(), None);
+    let repo_url = format!("https://github.com/{}/{}.git", repo_owner, repo_name);
 
     let tmp_dir = tempfile::tempdir().context("krew: create temp dir")?;
     let repo_path = tmp_dir.path();
@@ -275,7 +290,7 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
     std::fs::create_dir_all(&plugins_dir)
         .with_context(|| format!("krew: create plugins dir {}", plugins_dir.display()))?;
 
-    let manifest_file = plugins_dir.join(format!("{}.yaml", crate_name));
+    let manifest_file = plugins_dir.join(format!("{}.yaml", plugin_name));
     std::fs::write(&manifest_file, &manifest)
         .with_context(|| format!("krew: write manifest {}", manifest_file.display()))?;
 
@@ -284,28 +299,46 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
         manifest_file.display()
     ));
 
-    let branch_name = format!("{}-v{}", crate_name, version);
-    util::commit_and_push(
+    let commit_msg = crate::homebrew::render_commit_msg(
+        krew_cfg.commit_msg_template.as_deref(),
+        plugin_name,
+        &version,
+        "plugin",
+    );
+    let branch_name = format!("{}-v{}", plugin_name, version);
+    let commit_opts = util::resolve_commit_opts(
+        krew_cfg.commit_author.as_ref(),
+        None,
+        None,
+    );
+    let branch = util::resolve_branch(krew_cfg.repository.as_ref())
+        .map(|_| branch_name.as_str())
+        .or(Some(&branch_name));
+    util::commit_and_push_with_opts(
         repo_path,
         &["."],
-        &format!("Add/update {} plugin to v{}", crate_name, version),
-        Some(&branch_name),
+        &commit_msg,
+        branch,
         "krew",
+        &commit_opts,
     )?;
 
     log.status(&format!(
         "Krew manifest pushed to {}/{} branch '{}'",
-        manifests_repo.owner, manifests_repo.name, branch_name
+        repo_owner, repo_name, branch_name
     ));
 
     // Determine the upstream repo to submit the PR against.
-    let upstream = krew_cfg.upstream_repo.as_ref().unwrap_or(manifests_repo);
-    let upstream_slug = format!("{}/{}", upstream.owner, upstream.name);
+    let upstream_slug = if let Some(ref u) = krew_cfg.upstream_repo {
+        format!("{}/{}", u.owner, u.name)
+    } else {
+        format!("{}/{}", repo_owner, repo_name)
+    };
 
     util::submit_pr_via_gh(
         repo_path,
         &upstream_slug,
-        &format!("{}:{}", manifests_repo.owner, branch_name),
+        &format!("{}:{}", repo_owner, branch_name),
         &format!("Add/update {} plugin to v{}", crate_name, version),
         &format!(
             "## Plugin\n- **Name**: {}\n- **Version**: v{}\n\nAutomatically submitted by anodize.",

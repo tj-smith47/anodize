@@ -149,15 +149,20 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         return Ok(());
     }
 
-    let bucket = scoop_cfg
-        .bucket
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("scoop: no bucket config for '{}'", crate_name))?;
+    // Resolve repository config: prefer `repository` over legacy `bucket`.
+    let (repo_owner, repo_name) = crate::util::resolve_repo_owner_name(
+        scoop_cfg.repository.as_ref(),
+        scoop_cfg.bucket.as_ref().map(|b| b.owner.as_str()),
+        scoop_cfg.bucket.as_ref().map(|b| b.name.as_str()),
+    )
+    .ok_or_else(|| {
+        anyhow::anyhow!("scoop: no repository/bucket config for '{}'", crate_name)
+    })?;
 
     if ctx.is_dry_run() {
         log.status(&format!(
             "(dry-run) would update Scoop bucket {}/{} for '{}'",
-            bucket.owner, bucket.name, crate_name
+            repo_owner, repo_name, crate_name
         ));
         return Ok(());
     }
@@ -208,8 +213,8 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
     );
 
     // Clone bucket repo, write manifest, commit, push.
-    let token = util::resolve_token(ctx, Some("SCOOP_BUCKET_TOKEN"));
-    let repo_url = format!("https://github.com/{}/{}.git", bucket.owner, bucket.name);
+    let token = util::resolve_repo_token(ctx, scoop_cfg.repository.as_ref(), Some("SCOOP_BUCKET_TOKEN"));
+    let repo_url = format!("https://github.com/{}/{}.git", repo_owner, repo_name);
 
     let tmp_dir = tempfile::tempdir().context("scoop: create temp dir")?;
     let repo_path = tmp_dir.path();
@@ -244,22 +249,24 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
     );
 
     let manifest_lossy = manifest_path.to_string_lossy();
-    let commit_opts = util::CommitOptions {
-        author_name: scoop_cfg.commit_author_name.as_deref(),
-        author_email: scoop_cfg.commit_author_email.as_deref(),
-    };
+    let commit_opts = util::resolve_commit_opts(
+        scoop_cfg.commit_author.as_ref(),
+        scoop_cfg.commit_author_name.as_deref(),
+        scoop_cfg.commit_author_email.as_deref(),
+    );
+    let branch = util::resolve_branch(scoop_cfg.repository.as_ref());
     util::commit_and_push_with_opts(
         repo_path,
         &[&manifest_lossy],
         &commit_msg,
-        None,
+        branch,
         "scoop",
         &commit_opts,
     )?;
 
     log.status(&format!(
         "Scoop bucket {}/{} updated for '{}'",
-        bucket.owner, bucket.name, crate_name
+        repo_owner, repo_name, crate_name
     ));
 
     Ok(())

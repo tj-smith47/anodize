@@ -126,6 +126,74 @@ pub(crate) struct CommitOptions<'a> {
     pub author_name: Option<&'a str>,
     /// Git commit author email (passed via `-c user.email=X`).
     pub author_email: Option<&'a str>,
+    /// Enable GPG/SSH signing for the commit.
+    pub signing: Option<&'a anodize_core::config::CommitSigningConfig>,
+}
+
+/// Resolve repository owner/name from a RepositoryConfig, falling back to
+/// a legacy config's owner/name pair.
+pub(crate) fn resolve_repo_owner_name(
+    repo: Option<&anodize_core::config::RepositoryConfig>,
+    legacy_owner: Option<&str>,
+    legacy_name: Option<&str>,
+) -> Option<(String, String)> {
+    if let Some(r) = repo {
+        if let (Some(o), Some(n)) = (r.owner.as_deref(), r.name.as_deref()) {
+            return Some((o.to_string(), n.to_string()));
+        }
+    }
+    if let (Some(o), Some(n)) = (legacy_owner, legacy_name) {
+        return Some((o.to_string(), n.to_string()));
+    }
+    None
+}
+
+/// Resolve commit author name/email from a CommitAuthorConfig, falling back
+/// to legacy per-publisher fields.
+pub(crate) fn resolve_commit_opts<'a>(
+    commit_author: Option<&'a anodize_core::config::CommitAuthorConfig>,
+    legacy_name: Option<&'a str>,
+    legacy_email: Option<&'a str>,
+) -> CommitOptions<'a> {
+    let (name, email, signing) = if let Some(ca) = commit_author {
+        (
+            ca.name.as_deref().or(legacy_name),
+            ca.email.as_deref().or(legacy_email),
+            ca.signing.as_ref(),
+        )
+    } else {
+        (legacy_name, legacy_email, None)
+    };
+    CommitOptions {
+        author_name: name,
+        author_email: email,
+        signing,
+    }
+}
+
+/// Resolve the repository token from: RepositoryConfig.token → env_var → GITHUB_TOKEN.
+pub(crate) fn resolve_repo_token(
+    ctx: &Context,
+    repo: Option<&anodize_core::config::RepositoryConfig>,
+    env_var: Option<&str>,
+) -> Option<String> {
+    // 1. Token from repository config
+    if let Some(r) = repo {
+        if let Some(ref tok) = r.token {
+            if !tok.is_empty() {
+                return Some(tok.clone());
+            }
+        }
+    }
+    // 2. Fall back to context + env
+    resolve_token(ctx, env_var)
+}
+
+/// Resolve the branch to push to from RepositoryConfig.
+pub(crate) fn resolve_branch(
+    repo: Option<&anodize_core::config::RepositoryConfig>,
+) -> Option<&str> {
+    repo.and_then(|r| r.branch.as_deref())
 }
 
 /// Stage files, commit, and push. Optionally creates a new branch first.
@@ -166,10 +234,14 @@ pub(crate) fn commit_and_push_with_opts(
         )?;
     }
 
-    // Build commit args, optionally injecting -c user.name / -c user.email.
+    // Build commit args, optionally injecting -c user.name / -c user.email / signing.
     let mut commit_args: Vec<&str> = Vec::new();
     let name_cfg;
     let email_cfg;
+    let sign_cfg;
+    let sign_key_cfg;
+    let sign_program_cfg;
+    let sign_format_cfg;
     if let Some(name) = opts.author_name {
         name_cfg = format!("user.name={}", name);
         commit_args.extend_from_slice(&["-c", &name_cfg]);
@@ -177,6 +249,27 @@ pub(crate) fn commit_and_push_with_opts(
     if let Some(email) = opts.author_email {
         email_cfg = format!("user.email={}", email);
         commit_args.extend_from_slice(&["-c", &email_cfg]);
+    }
+    // Handle commit signing config
+    let do_sign = opts
+        .signing
+        .and_then(|s| s.enabled)
+        .unwrap_or(false);
+    if do_sign {
+        sign_cfg = "commit.gpgsign=true".to_string();
+        commit_args.extend_from_slice(&["-c", &sign_cfg]);
+        if let Some(key) = opts.signing.and_then(|s| s.key.as_deref()) {
+            sign_key_cfg = format!("user.signingkey={}", key);
+            commit_args.extend_from_slice(&["-c", &sign_key_cfg]);
+        }
+        if let Some(program) = opts.signing.and_then(|s| s.program.as_deref()) {
+            sign_program_cfg = format!("gpg.program={}", program);
+            commit_args.extend_from_slice(&["-c", &sign_program_cfg]);
+        }
+        if let Some(fmt) = opts.signing.and_then(|s| s.format.as_deref()) {
+            sign_format_cfg = format!("gpg.format={}", fmt);
+            commit_args.extend_from_slice(&["-c", &sign_format_cfg]);
+        }
     }
     commit_args.extend_from_slice(&["commit", "-m", message]);
 

@@ -6,32 +6,43 @@ use anyhow::{Context as _, Result};
 // Homebrew formula Tera template
 // ---------------------------------------------------------------------------
 
-const FORMULA_TEMPLATE: &str = r#"class {{ class_name }} < Formula
+const FORMULA_TEMPLATE: &str = r#"# typed: false
+# frozen_string_literal: true
+{% if custom_require %}
+require "{{ custom_require }}"
+{% endif %}
+class {{ class_name }} < Formula
   desc "{{ description }}"
   homepage "{{ homepage }}"
   license "{{ license }}"
   version "{{ version }}"
 
-{% if single_archive %}  url "{{ single_url }}"
-  sha256 "{{ single_sha256 }}"
+{% if single_archive %}  url "{{ single_url }}"{% if download_strategy %}, using: {{ download_strategy }}{% endif %}
+{% for header in url_headers %}  url.header "{{ header }}"
+{% endfor %}  sha256 "{{ single_sha256 }}"
 {% endif %}{% for entry in unknown_entries %}  # platform: {{ entry.platform }}
-  url "{{ entry.url }}"
-  sha256 "{{ entry.sha256 }}"
+  url "{{ entry.url }}"{% if download_strategy %}, using: {{ download_strategy }}{% endif %}
+{% for header in url_headers %}  url.header "{{ header }}"
+{% endfor %}  sha256 "{{ entry.sha256 }}"
 {% endfor %}{% if has_macos %}  on_macos do
 {% if macos_has_arch %}{% for entry in macos_entries %}    {{ entry.arch_block }} do
-      url "{{ entry.url }}"
-      sha256 "{{ entry.sha256 }}"
+      url "{{ entry.url }}"{% if download_strategy %}, using: {{ download_strategy }}{% endif %}
+{% for header in url_headers %}      url.header "{{ header }}"
+{% endfor %}      sha256 "{{ entry.sha256 }}"
     end
-{% endfor %}{% else %}{% for entry in macos_entries %}    url "{{ entry.url }}"
-    sha256 "{{ entry.sha256 }}"
+{% endfor %}{% else %}{% for entry in macos_entries %}    url "{{ entry.url }}"{% if download_strategy %}, using: {{ download_strategy }}{% endif %}
+{% for header in url_headers %}    url.header "{{ header }}"
+{% endfor %}    sha256 "{{ entry.sha256 }}"
 {% endfor %}{% endif %}  end
 {% endif %}{% if has_linux %}  on_linux do
 {% if linux_has_arch %}{% for entry in linux_entries %}    {{ entry.arch_block }} do
-      url "{{ entry.url }}"
-      sha256 "{{ entry.sha256 }}"
+      url "{{ entry.url }}"{% if download_strategy %}, using: {{ download_strategy }}{% endif %}
+{% for header in url_headers %}      url.header "{{ header }}"
+{% endfor %}      sha256 "{{ entry.sha256 }}"
     end
-{% endfor %}{% else %}{% for entry in linux_entries %}    url "{{ entry.url }}"
-    sha256 "{{ entry.sha256 }}"
+{% endfor %}{% else %}{% for entry in linux_entries %}    url "{{ entry.url }}"{% if download_strategy %}, using: {{ download_strategy }}{% endif %}
+{% for header in url_headers %}    url.header "{{ header }}"
+{% endfor %}    sha256 "{{ entry.sha256 }}"
 {% endfor %}{% endif %}  end
 {% endif %}{% for dep in global_deps %}
   depends_on "{{ dep.name }}"{% if dep.version %} => "{{ dep.version }}"{% elif dep.optional %} => :optional{% endif %}
@@ -45,11 +56,18 @@ const FORMULA_TEMPLATE: &str = r#"class {{ class_name }} < Formula
   end
 {% endfor %}{% for c in conflicts %}
   conflicts_with "{{ c.name }}"{% if c.because %}, because: "{{ c.because }}"{% endif %}
-{% endfor %}
+{% endfor %}{% if custom_block %}
+{{ custom_block }}
+{% endif %}
   def install
 {% for line in install_lines %}    {{ line }}
+{% endfor %}{% for line in extra_install_lines %}    {{ line }}
 {% endfor %}  end
-
+{% if has_post_install %}
+  def post_install
+{% for line in post_install_lines %}    {{ line }}
+{% endfor %}  end
+{% endif %}
   test do
 {% for line in test_lines %}    {{ line }}
 {% endfor %}  end
@@ -58,6 +76,18 @@ const FORMULA_TEMPLATE: &str = r#"class {{ class_name }} < Formula
     <<~EOS
       {{ caveats }}
     EOS
+  end
+{% endif %}{% if has_plist %}
+  plist_options startup: true
+
+  def plist
+    <<~EOS
+{{ plist }}
+    EOS
+  end
+{% endif %}{% if has_service %}
+  service do
+{{ service }}
   end
 {% endif %}end
 "#;
@@ -79,6 +109,22 @@ pub struct FormulaOptions<'a> {
     pub conflicts: Option<&'a [anodize_core::config::HomebrewConflict]>,
     /// Post-install user-facing notes.
     pub caveats: Option<&'a str>,
+    /// Additional install commands appended after main install block.
+    pub extra_install: Option<&'a str>,
+    /// Post-install method body (separate from install).
+    pub post_install: Option<&'a str>,
+    /// Custom download strategy class name.
+    pub download_strategy: Option<&'a str>,
+    /// URL headers for download requests.
+    pub url_headers: Option<&'a [String]>,
+    /// Custom `require` statement for download strategies.
+    pub custom_require: Option<&'a str>,
+    /// Custom Ruby code block in the formula body.
+    pub custom_block: Option<&'a str>,
+    /// Launchd plist content.
+    pub plist: Option<&'a str>,
+    /// Homebrew service block content.
+    pub service: Option<&'a str>,
 }
 
 /// Generate a Homebrew Ruby formula string.
@@ -320,6 +366,48 @@ pub fn generate_formula_with_opts(
     ctx.insert("install_lines", &install_lines);
     ctx.insert("test_lines", &test_lines);
 
+    // Extra install lines (appended after main install block)
+    let extra_install_lines: Vec<&str> = opts
+        .extra_install
+        .map(|s| s.lines().collect())
+        .unwrap_or_default();
+    ctx.insert("extra_install_lines", &extra_install_lines);
+
+    // Post-install method
+    let has_post_install = opts.post_install.is_some();
+    ctx.insert("has_post_install", &has_post_install);
+    let post_install_lines: Vec<&str> = opts
+        .post_install
+        .map(|s| s.lines().collect())
+        .unwrap_or_default();
+    ctx.insert("post_install_lines", &post_install_lines);
+
+    // Download strategy
+    ctx.insert("download_strategy", &opts.download_strategy.unwrap_or(""));
+
+    // URL headers
+    let url_headers: Vec<&str> = opts
+        .url_headers
+        .map(|h| h.iter().map(|s| s.as_str()).collect())
+        .unwrap_or_default();
+    ctx.insert("url_headers", &url_headers);
+
+    // Custom require
+    ctx.insert("custom_require", &opts.custom_require.unwrap_or(""));
+
+    // Custom block
+    ctx.insert("custom_block", &opts.custom_block.unwrap_or(""));
+
+    // Plist
+    let has_plist = opts.plist.is_some();
+    ctx.insert("has_plist", &has_plist);
+    ctx.insert("plist", &opts.plist.unwrap_or(""));
+
+    // Service
+    let has_service = opts.service.is_some();
+    ctx.insert("has_service", &has_service);
+    ctx.insert("service", &opts.service.unwrap_or(""));
+
     // SAFETY: All context variables are inserted above; rendering is infallible.
     tera.render("formula", &ctx)
         .expect("homebrew: render formula template")
@@ -402,15 +490,20 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
         return Ok(());
     }
 
-    let tap = hb_cfg
-        .tap
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("homebrew: no tap config for '{}'", crate_name))?;
+    // Resolve repository config: prefer `repository` over legacy `tap`.
+    let (repo_owner, repo_name) = crate::util::resolve_repo_owner_name(
+        hb_cfg.repository.as_ref(),
+        hb_cfg.tap.as_ref().map(|t| t.owner.as_str()),
+        hb_cfg.tap.as_ref().map(|t| t.name.as_str()),
+    )
+    .ok_or_else(|| {
+        anyhow::anyhow!("homebrew: no repository/tap config for '{}'", crate_name)
+    })?;
 
     if ctx.is_dry_run() {
         log.status(&format!(
             "(dry-run) would update Homebrew tap {}/{} for '{}'",
-            tap.owner, tap.name, crate_name
+            repo_owner, repo_name, crate_name
         ));
         return Ok(());
     }
@@ -444,13 +537,33 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
         dependencies: hb_cfg.dependencies.as_deref(),
         conflicts: hb_cfg.conflicts.as_deref(),
         caveats: hb_cfg.caveats.as_deref(),
+        extra_install: hb_cfg.extra_install.as_deref(),
+        post_install: hb_cfg.post_install.as_deref(),
+        download_strategy: hb_cfg.download_strategy.as_deref(),
+        url_headers: hb_cfg.url_headers.as_deref(),
+        custom_require: hb_cfg.custom_require.as_deref(),
+        custom_block: hb_cfg.custom_block.as_deref(),
+        plist: hb_cfg.plist.as_deref(),
+        service: hb_cfg.service.as_deref(),
     };
 
     // Collect Archive artifacts for this crate to build the formula entries.
+    // Apply IDs filter if configured.
+    let ids_filter = hb_cfg.ids.as_deref();
     let archives: Vec<(&str, &str, &str)> = ctx
         .artifacts
         .by_kind_and_crate(anodize_core::artifact::ArtifactKind::Archive, crate_name)
         .iter()
+        .filter(|a| {
+            if let Some(ids) = ids_filter {
+                a.metadata
+                    .get("id")
+                    .map(|id| ids.iter().any(|i| i == id))
+                    .unwrap_or(false)
+            } else {
+                true
+            }
+        })
         .filter_map(|a| {
             let url = a.metadata.get("url")?.as_str();
             let sha256 = a.metadata.get("sha256")?.as_str();
@@ -474,11 +587,11 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
     );
 
     // Clone tap repo, write formula, commit, push.
-    let repo_url = format!("https://github.com/{}/{}.git", tap.owner, tap.name);
+    let repo_url = format!("https://github.com/{}/{}.git", repo_owner, repo_name);
     let tmp_dir = tempfile::tempdir().context("homebrew: create temp dir")?;
     let repo_path = tmp_dir.path();
 
-    let token = crate::util::resolve_token(ctx, Some("HOMEBREW_TAP_TOKEN"));
+    let token = crate::util::resolve_repo_token(ctx, hb_cfg.repository.as_ref(), Some("HOMEBREW_TAP_TOKEN"));
     crate::util::clone_repo_with_auth(&repo_url, token.as_deref(), repo_path, "homebrew", log)?;
 
     // Determine formula folder.
@@ -508,22 +621,24 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
     );
 
     let formula_lossy = formula_path.to_string_lossy();
-    let commit_opts = crate::util::CommitOptions {
-        author_name: hb_cfg.commit_author_name.as_deref(),
-        author_email: hb_cfg.commit_author_email.as_deref(),
-    };
+    let commit_opts = crate::util::resolve_commit_opts(
+        hb_cfg.commit_author.as_ref(),
+        hb_cfg.commit_author_name.as_deref(),
+        hb_cfg.commit_author_email.as_deref(),
+    );
+    let branch = crate::util::resolve_branch(hb_cfg.repository.as_ref());
     crate::util::commit_and_push_with_opts(
         repo_path,
         &[&formula_lossy],
         &commit_msg,
-        None,
+        branch,
         "homebrew",
         &commit_opts,
     )?;
 
     log.status(&format!(
         "Homebrew tap {}/{} updated for '{}'",
-        tap.owner, tap.name, crate_name
+        repo_owner, repo_name, crate_name
     ));
 
     Ok(())
@@ -662,10 +777,10 @@ mod tests {
             "system \"#{bin}/anodize\", \"--version\"",
         );
 
-        // Verify class declaration
+        // Verify class declaration (after header comments)
         assert!(
-            formula.starts_with("class Anodize < Formula\n"),
-            "should start with class declaration"
+            formula.contains("class Anodize < Formula\n"),
+            "should contain class declaration"
         );
 
         // Verify desc field
@@ -1127,6 +1242,7 @@ mod tests {
             dependencies: Some(&deps),
             conflicts: Some(&conflicts),
             caveats: Some("Important note."),
+            ..Default::default()
         };
         let formula = generate_formula_with_opts(
             "mytool",

@@ -19,6 +19,17 @@ pub struct NuspecParams<'a> {
     pub project_url: &'a str,
     pub icon_url: &'a str,
     pub tags: &'a [String],
+    pub package_source_url: Option<&'a str>,
+    pub owners: Option<&'a str>,
+    pub title: Option<&'a str>,
+    pub copyright: Option<&'a str>,
+    pub require_license_acceptance: bool,
+    pub project_source_url: Option<&'a str>,
+    pub docs_url: Option<&'a str>,
+    pub bug_tracker_url: Option<&'a str>,
+    pub summary: Option<&'a str>,
+    pub release_notes: Option<&'a str>,
+    pub dependencies: &'a [anodize_core::config::ChocolateyDependency],
 }
 
 // ---------------------------------------------------------------------------
@@ -33,14 +44,26 @@ const NUSPEC_TEMPLATE: &str = r#"<?xml version="1.0" encoding="utf-8"?>
   <metadata>
     <id>{{ name }}</id>
     <version>{{ version }}</version>
-    <title>{{ name }}</title>
+{% if package_source_url %}    <packageSourceUrl>{{ package_source_url }}</packageSourceUrl>
+{% endif %}{% if owners %}    <owners>{{ owners }}</owners>
+{% endif %}    <title>{{ title }}</title>
     <authors>{{ authors }}</authors>
-    <description>{{ description | escape }}</description>
     <projectUrl>{{ project_url }}</projectUrl>
 {% if icon_url %}    <iconUrl>{{ icon_url }}</iconUrl>
+{% endif %}{% if copyright %}    <copyright>{{ copyright }}</copyright>
 {% endif %}    <licenseUrl>{{ license_url }}</licenseUrl>
-    <tags>{{ tags_str }}</tags>
-  </metadata>
+    <requireLicenseAcceptance>{{ require_license_acceptance }}</requireLicenseAcceptance>
+{% if project_source_url %}    <projectSourceUrl>{{ project_source_url }}</projectSourceUrl>
+{% endif %}{% if docs_url %}    <docsUrl>{{ docs_url }}</docsUrl>
+{% endif %}{% if bug_tracker_url %}    <bugTrackerUrl>{{ bug_tracker_url }}</bugTrackerUrl>
+{% endif %}    <tags>{{ tags_str }}</tags>
+{% if summary %}    <summary>{{ summary | escape }}</summary>
+{% endif %}    <description>{{ description | escape }}</description>
+{% if release_notes %}    <releaseNotes>{{ release_notes | escape }}</releaseNotes>
+{% endif %}{% if has_dependencies %}    <dependencies>
+{% for dep in dependencies %}      <dependency id="{{ dep.id }}"{% if dep.version %} version="{{ dep.version }}"{% endif %} />
+{% endfor %}    </dependencies>
+{% endif %}  </metadata>
   <files>
     <file src="tools\**" target="tools" />
   </files>
@@ -80,18 +103,19 @@ pub fn generate_nuspec(params: &NuspecParams<'_>) -> String {
         _ => format!("https://opensource.org/licenses/{}", params.license),
     };
 
+    let title = params.title.unwrap_or(params.name);
+
     let mut tera = tera::Tera::default();
-    // SAFETY: NUSPEC_TEMPLATE is a compile-time constant; parse cannot fail.
     tera.add_raw_template("nuspec", NUSPEC_TEMPLATE)
         .expect("chocolatey: parse nuspec template");
 
     // Disable auto-escaping — URLs contain `/` which Tera encodes as &#x2F;.
-    // The description field uses the `| escape` filter explicitly in the template.
     tera.autoescape_on(vec![]);
 
     let mut ctx = tera::Context::new();
     ctx.insert("name", params.name);
     ctx.insert("version", params.version);
+    ctx.insert("title", title);
     ctx.insert("authors", params.authors);
     ctx.insert("description", params.description);
     ctx.insert("project_url", params.project_url);
@@ -101,9 +125,33 @@ pub fn generate_nuspec(params: &NuspecParams<'_>) -> String {
     );
     ctx.insert("license_url", &license_url);
     ctx.insert("tags_str", &tags_str);
+    ctx.insert("package_source_url", &params.package_source_url.unwrap_or(""));
+    ctx.insert("owners", &params.owners.unwrap_or(""));
+    ctx.insert("copyright", &params.copyright.unwrap_or(""));
+    ctx.insert("require_license_acceptance", &params.require_license_acceptance);
+    ctx.insert("project_source_url", &params.project_source_url.unwrap_or(""));
+    ctx.insert("docs_url", &params.docs_url.unwrap_or(""));
+    ctx.insert("bug_tracker_url", &params.bug_tracker_url.unwrap_or(""));
+    ctx.insert("summary", &params.summary.unwrap_or(""));
+    ctx.insert("release_notes", &params.release_notes.unwrap_or(""));
 
-    // SAFETY: All context variables are inserted above; the template only
-    // references variables we just set, so rendering is infallible.
+    // Dependencies
+    #[derive(serde::Serialize)]
+    struct DepEntry {
+        id: String,
+        version: Option<String>,
+    }
+    let dep_entries: Vec<DepEntry> = params
+        .dependencies
+        .iter()
+        .map(|d| DepEntry {
+            id: d.id.clone(),
+            version: d.version.clone(),
+        })
+        .collect();
+    ctx.insert("has_dependencies", &!dep_entries.is_empty());
+    ctx.insert("dependencies", &dep_entries);
+
     tera.render("nuspec", &ctx)
         .expect("chocolatey: render nuspec template")
 }
@@ -201,7 +249,7 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
     };
 
     let nuspec = generate_nuspec(&NuspecParams {
-        name: crate_name,
+        name: choco_cfg.name.as_deref().unwrap_or(crate_name),
         version: &version,
         description: &description,
         license: &license,
@@ -210,6 +258,17 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
         project_url: &project_url,
         icon_url: &icon_url,
         tags: &tags,
+        package_source_url: choco_cfg.package_source_url.as_deref(),
+        owners: choco_cfg.owners.as_deref(),
+        title: choco_cfg.title.as_deref(),
+        copyright: choco_cfg.copyright.as_deref(),
+        require_license_acceptance: choco_cfg.require_license_acceptance.unwrap_or(false),
+        project_source_url: choco_cfg.project_source_url.as_deref(),
+        docs_url: choco_cfg.docs_url.as_deref(),
+        bug_tracker_url: choco_cfg.bug_tracker_url.as_deref(),
+        summary: choco_cfg.summary.as_deref(),
+        release_notes: choco_cfg.release_notes.as_deref(),
+        dependencies: choco_cfg.dependencies.as_deref().unwrap_or(&[]),
     });
     let install_script = generate_install_script(crate_name, &url, &hash);
 
@@ -256,8 +315,22 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
         .or_else(|| std::env::var("CHOCOLATEY_API_KEY").ok())
         .unwrap_or_default();
 
+    // Check skip_publish
+    if choco_cfg.skip_publish.unwrap_or(false) {
+        log.status(&format!(
+            "chocolatey: skipping push for '{}' (skip_publish=true)",
+            crate_name
+        ));
+        return Ok(());
+    }
+
     // choco push
-    let nupkg = pkg_dir.join(format!("{}.{}.nupkg", crate_name, version));
+    let source = choco_cfg
+        .source_repo
+        .as_deref()
+        .unwrap_or("https://push.chocolatey.org/");
+    let pkg_name = choco_cfg.name.as_deref().unwrap_or(crate_name);
+    let nupkg = pkg_dir.join(format!("{}.{}.nupkg", pkg_name, version));
     util::run_cmd_in(
         pkg_dir,
         "choco",
@@ -265,7 +338,7 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
             "push",
             &nupkg.to_string_lossy(),
             "--source",
-            "https://push.chocolatey.org/",
+            source,
             "--api-key",
             &api_key,
         ],
@@ -286,22 +359,46 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
 mod tests {
     use super::*;
 
+    fn default_nuspec_params<'a>() -> NuspecParams<'a> {
+        NuspecParams {
+            name: "mytool",
+            version: "1.0.0",
+            description: "A tool",
+            license: "MIT",
+            license_url: None,
+            authors: "Author",
+            project_url: "https://example.com",
+            icon_url: "",
+            tags: &[],
+            package_source_url: None,
+            owners: None,
+            title: None,
+            copyright: None,
+            require_license_acceptance: false,
+            project_source_url: None,
+            docs_url: None,
+            bug_tracker_url: None,
+            summary: None,
+            release_notes: None,
+            dependencies: &[],
+        }
+    }
+
     // -----------------------------------------------------------------------
     // generate_nuspec tests
     // -----------------------------------------------------------------------
 
     #[test]
     fn test_generate_nuspec_basic() {
+        let tags = vec!["cli".to_string(), "tool".to_string()];
         let nuspec = generate_nuspec(&NuspecParams {
             name: "mytool",
-            version: "1.0.0",
             description: "A great tool",
-            license: "MIT",
-            license_url: None,
             authors: "Test Author",
             project_url: "https://github.com/org/mytool",
             icon_url: "https://example.com/icon.png",
-            tags: &["cli".to_string(), "tool".to_string()],
+            tags: &tags,
+            ..default_nuspec_params()
         });
 
         assert!(nuspec.contains("<?xml version=\"1.0\""));
@@ -318,35 +415,13 @@ mod tests {
 
     #[test]
     fn test_generate_nuspec_no_icon() {
-        let nuspec = generate_nuspec(&NuspecParams {
-            name: "mytool",
-            version: "1.0.0",
-            description: "A tool",
-            license: "MIT",
-            license_url: None,
-            authors: "Author",
-            project_url: "https://example.com",
-            icon_url: "",
-            tags: &[],
-        });
-
+        let nuspec = generate_nuspec(&default_nuspec_params());
         assert!(!nuspec.contains("<iconUrl>"));
     }
 
     #[test]
     fn test_generate_nuspec_empty_tags_uses_name() {
-        let nuspec = generate_nuspec(&NuspecParams {
-            name: "mytool",
-            version: "1.0.0",
-            description: "A tool",
-            license: "MIT",
-            license_url: None,
-            authors: "Author",
-            project_url: "https://example.com",
-            icon_url: "",
-            tags: &[],
-        });
-
+        let nuspec = generate_nuspec(&default_nuspec_params());
         assert!(nuspec.contains("<tags>mytool</tags>"));
     }
 
@@ -354,20 +429,13 @@ mod tests {
     fn test_generate_nuspec_xml_escaping() {
         let nuspec = generate_nuspec(&NuspecParams {
             name: "my-tool",
-            version: "1.0.0",
             description: "A tool for <things> & \"stuff\"",
-            license: "MIT",
-            license_url: None,
-            authors: "Author",
-            project_url: "https://example.com",
-            icon_url: "",
-            tags: &[],
+            ..default_nuspec_params()
         });
 
         assert!(nuspec.contains("&lt;things&gt;"));
         assert!(nuspec.contains("&amp;"));
         assert!(nuspec.contains("&quot;stuff&quot;"));
-        // Should still be valid XML structure
         assert!(nuspec.contains("<?xml version=\"1.0\""));
         assert!(nuspec.contains("</package>"));
     }
@@ -377,13 +445,8 @@ mod tests {
         let nuspec = generate_nuspec(&NuspecParams {
             name: "tool",
             version: "2.0.0",
-            description: "desc",
             license: "Apache-2.0",
-            license_url: None,
-            authors: "Author",
-            project_url: "https://example.com",
-            icon_url: "",
-            tags: &[],
+            ..default_nuspec_params()
         });
 
         assert!(
@@ -396,13 +459,9 @@ mod tests {
         let nuspec = generate_nuspec(&NuspecParams {
             name: "tool",
             version: "2.0.0",
-            description: "desc",
             license: "Proprietary",
             license_url: Some("https://example.com/license"),
-            authors: "Author",
-            project_url: "https://example.com",
-            icon_url: "",
-            tags: &[],
+            ..default_nuspec_params()
         });
 
         assert!(nuspec.contains("<licenseUrl>https://example.com/license</licenseUrl>"));
@@ -411,20 +470,16 @@ mod tests {
 
     #[test]
     fn test_generate_nuspec_complete_xml_structure() {
+        let tags = vec!["release".to_string(), "automation".to_string(), "ci".to_string()];
         let nuspec = generate_nuspec(&NuspecParams {
             name: "release-tool",
             version: "3.2.1",
             description: "Release automation",
-            license: "MIT",
-            license_url: None,
             authors: "Jane Doe",
             project_url: "https://github.com/org/release-tool",
             icon_url: "https://example.com/icon.png",
-            tags: &[
-                "release".to_string(),
-                "automation".to_string(),
-                "ci".to_string(),
-            ],
+            tags: &tags,
+            ..default_nuspec_params()
         });
 
         // Verify the XML starts and ends correctly

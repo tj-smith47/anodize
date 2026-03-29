@@ -867,6 +867,89 @@ impl_auto_or_bool_serde!(
 );
 
 // ---------------------------------------------------------------------------
+// Shared publisher config types: RepositoryConfig, CommitAuthorConfig
+// ---------------------------------------------------------------------------
+
+/// Shared repository configuration used by all git-based publishers
+/// (Homebrew, Scoop, Winget, Krew, Nix). Equivalent to GoReleaser's `RepoRef`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct RepositoryConfig {
+    pub owner: Option<String>,
+    pub name: Option<String>,
+    /// Auth token for the repository. Falls back to env-based resolution.
+    pub token: Option<String>,
+    /// Token type: "github" (default), "gitlab", "gitea".
+    pub token_type: Option<String>,
+    /// Branch to push to (default: repo default branch).
+    pub branch: Option<String>,
+    /// Git-specific settings for SSH-based publishing.
+    pub git: Option<GitRepoConfig>,
+    /// Pull request settings for fork-based workflows.
+    pub pull_request: Option<PullRequestConfig>,
+}
+
+/// Git-specific repository settings for SSH-based publishing.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct GitRepoConfig {
+    /// Git URL (e.g. `ssh://git@github.com/owner/repo.git`).
+    pub url: Option<String>,
+    /// Custom SSH command (e.g. `ssh -i /path/to/key`).
+    pub ssh_command: Option<String>,
+    /// Path to SSH private key file.
+    pub private_key: Option<String>,
+}
+
+/// Pull request configuration for fork-based publisher workflows.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct PullRequestConfig {
+    /// Enable PR creation instead of direct push.
+    pub enabled: Option<bool>,
+    /// Create PR as draft.
+    pub draft: Option<bool>,
+    /// Body text for the pull request.
+    pub body: Option<String>,
+    /// Target base repository/branch for the PR.
+    pub base: Option<PullRequestBaseConfig>,
+}
+
+/// Target base for pull requests (upstream repo to PR against).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct PullRequestBaseConfig {
+    pub owner: Option<String>,
+    pub name: Option<String>,
+    pub branch: Option<String>,
+}
+
+/// Shared commit author configuration with optional GPG/SSH signing.
+/// Equivalent to GoReleaser's `CommitAuthor`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct CommitAuthorConfig {
+    pub name: Option<String>,
+    pub email: Option<String>,
+    /// Commit signing configuration.
+    pub signing: Option<CommitSigningConfig>,
+}
+
+/// Commit signing configuration (GPG, x509, or SSH).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct CommitSigningConfig {
+    /// Enable commit signing.
+    pub enabled: Option<bool>,
+    /// Signing key identifier.
+    pub key: Option<String>,
+    /// Signing program (e.g. `gpg`, `gpg2`).
+    pub program: Option<String>,
+    /// Signing format: "openpgp" (default), "x509", or "ssh".
+    pub format: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
 // PublishConfig
 // ---------------------------------------------------------------------------
 
@@ -881,6 +964,7 @@ pub struct PublishConfig {
     pub winget: Option<WingetConfig>,
     pub aur: Option<AurConfig>,
     pub krew: Option<KrewConfig>,
+    pub nix: Option<NixConfig>,
 }
 
 /// Schema for crates publish config (bool or object).
@@ -948,13 +1032,24 @@ impl Default for CratesPublishSettings {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct HomebrewConfig {
+    /// Legacy tap config (owner/name). Prefer `repository` for new configs.
     pub tap: Option<TapConfig>,
+    /// Unified repository config with branch, token, PR, git SSH support.
+    pub repository: Option<RepositoryConfig>,
+    /// Commit author with optional signing.
+    pub commit_author: Option<CommitAuthorConfig>,
+    /// Formula directory in the tap (e.g. "Formula").
+    #[serde(alias = "directory")]
     pub folder: Option<String>,
     /// Override the formula name (default: crate name).
     pub name: Option<String>,
     pub description: Option<String>,
     pub license: Option<String>,
     pub install: Option<String>,
+    /// Additional install commands appended after the main install block.
+    pub extra_install: Option<String>,
+    /// Post-install commands (separate `def post_install` block in formula).
+    pub post_install: Option<String>,
     pub test: Option<String>,
     /// Project homepage URL. Falls back to the GitHub release URL when unset.
     pub homepage: Option<String>,
@@ -970,10 +1065,28 @@ pub struct HomebrewConfig {
     /// Custom commit message template.  Rendered via Tera with `name` and
     /// `version` variables.  Defaults to `"chore: update {{ name }} formula to {{ version }}"`.
     pub commit_msg_template: Option<String>,
-    /// Git commit author name for tap updates.
+    /// Git commit author name for tap updates (legacy; prefer `commit_author`).
     pub commit_author_name: Option<String>,
-    /// Git commit author email for tap updates.
+    /// Git commit author email for tap updates (legacy; prefer `commit_author`).
     pub commit_author_email: Option<String>,
+    /// Build IDs filter: only include artifacts whose `id` is in this list.
+    pub ids: Option<Vec<String>>,
+    /// Custom URL template for download URLs (overrides release URL).
+    pub url_template: Option<String>,
+    /// HTTP headers to include in download requests (e.g. for private repos).
+    pub url_headers: Option<Vec<String>>,
+    /// Custom download strategy class name (e.g. `:using => GitHubPrivateRepositoryReleaseDownloadStrategy`).
+    pub download_strategy: Option<String>,
+    /// Ruby `require` statement for custom download strategies.
+    pub custom_require: Option<String>,
+    /// Custom Ruby code block inserted into the formula class body.
+    pub custom_block: Option<String>,
+    /// Launchd plist content for `brew services`.
+    pub plist: Option<String>,
+    /// Homebrew service block content (alternative to plist).
+    pub service: Option<String>,
+    /// Homebrew Cask configuration (macOS .app bundles).
+    pub cask: Option<HomebrewCaskConfig>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, JsonSchema)]
@@ -1021,10 +1134,39 @@ impl HomebrewConflict {
     }
 }
 
+/// Homebrew Cask configuration for macOS .app bundles.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct HomebrewCaskConfig {
+    /// Override the cask name (default: crate name).
+    pub name: Option<String>,
+    /// Alternative cask names (aliases).
+    pub alternative_names: Option<Vec<String>>,
+    /// macOS .app bundle name (e.g. "MyApp.app").
+    pub app: Option<String>,
+    /// Cask description.
+    pub description: Option<String>,
+    /// Project homepage URL.
+    pub homepage: Option<String>,
+    /// URL template for the .dmg/.zip download.
+    pub url_template: Option<String>,
+    /// Custom caveats shown after install.
+    pub caveats: Option<String>,
+    /// Zap stanza for complete uninstall cleanup.
+    pub zap: Option<Vec<String>>,
+    /// Uninstall stanza directives.
+    pub uninstall: Option<Vec<String>>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct ScoopConfig {
+    /// Legacy bucket config (owner/name). Prefer `repository` for new configs.
     pub bucket: Option<BucketConfig>,
+    /// Unified repository config with branch, token, PR, git SSH support.
+    pub repository: Option<RepositoryConfig>,
+    /// Commit author with optional signing.
+    pub commit_author: Option<CommitAuthorConfig>,
     /// Override the manifest name (default: crate name).
     pub name: Option<String>,
     /// Subdirectory in the bucket repo for manifest placement.
@@ -1046,13 +1188,19 @@ pub struct ScoopConfig {
     /// Skip publishing the manifest.  `"true"` always skips; `"auto"` skips
     /// for prerelease versions.
     pub skip_upload: Option<String>,
-    /// Custom commit message template.  Rendered via Tera with `name` and
-    /// `version` variables.  Defaults to `"chore: update {{ name }} manifest to {{ version }}"`.
+    /// Custom commit message template.
     pub commit_msg_template: Option<String>,
-    /// Git commit author name for bucket updates.
+    /// Git commit author name (legacy; prefer `commit_author`).
     pub commit_author_name: Option<String>,
-    /// Git commit author email for bucket updates.
+    /// Git commit author email (legacy; prefer `commit_author`).
     pub commit_author_email: Option<String>,
+    /// Build IDs filter: only include artifacts whose `id` is in this list.
+    pub ids: Option<Vec<String>>,
+    /// Custom URL template for download URLs (overrides release URL).
+    pub url_template: Option<String>,
+    /// Artifact selection: "archive" (default), "msi", or "nsis".
+    #[serde(rename = "use")]
+    pub use_artifact: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1074,22 +1222,63 @@ pub struct BucketConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct ChocolateyConfig {
-    /// The GitHub project repo (owner/name). Used to derive download URLs
-    /// and project metadata.
-    #[serde(alias = "source_repo")]
+    /// Override the package name (default: crate name).
+    pub name: Option<String>,
+    /// Build IDs filter: only include artifacts whose `id` is in this list.
+    pub ids: Option<Vec<String>>,
+    /// The GitHub project repo (owner/name). Used to derive download URLs.
     pub project_repo: Option<ChocolateyRepoConfig>,
+    /// URL shown as the package source in the Chocolatey gallery.
+    pub package_source_url: Option<String>,
+    /// Package owners (Chocolatey gallery user).
+    pub owners: Option<String>,
+    /// Package title (default: project name).
+    pub title: Option<String>,
+    pub authors: Option<String>,
+    pub project_url: Option<String>,
+    /// Custom URL template for download URLs (overrides release URL).
+    pub url_template: Option<String>,
+    pub icon_url: Option<String>,
+    /// Copyright notice.
+    pub copyright: Option<String>,
     pub description: Option<String>,
     pub license: Option<String>,
     /// Optional explicit license URL. Falls back to
     /// `https://opensource.org/licenses/<license>` when not set.
     pub license_url: Option<String>,
+    /// Require license acceptance before install.
+    pub require_license_acceptance: Option<bool>,
+    /// Source code project URL.
+    pub project_source_url: Option<String>,
+    /// Documentation URL.
+    pub docs_url: Option<String>,
+    /// Bug tracker URL.
+    pub bug_tracker_url: Option<String>,
+    /// Space-separated tags for the Chocolatey gallery.
     pub tags: Option<Vec<String>>,
-    pub authors: Option<String>,
-    pub project_url: Option<String>,
-    pub icon_url: Option<String>,
-    /// Chocolatey API key for `choco push`. If not set, falls back to the
-    /// `CHOCOLATEY_API_KEY` environment variable.
+    /// Short summary of the package.
+    pub summary: Option<String>,
+    /// Release notes for this version.
+    pub release_notes: Option<String>,
+    /// Package dependencies with optional version constraints.
+    pub dependencies: Option<Vec<ChocolateyDependency>>,
+    /// Chocolatey API key for `choco push`. Falls back to `CHOCOLATEY_API_KEY` env var.
     pub api_key: Option<String>,
+    /// Push source URL (default: "https://push.chocolatey.org/").
+    pub source_repo: Option<String>,
+    /// Skip publishing. When true, only generates the package.
+    pub skip_publish: Option<bool>,
+    /// Artifact selection: "archive" (default), "msi", or "nsis".
+    #[serde(rename = "use")]
+    pub use_artifact: Option<String>,
+}
+
+/// Chocolatey package dependency with optional version constraint.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct ChocolateyDependency {
+    pub id: String,
+    pub version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1105,12 +1294,68 @@ pub struct ChocolateyRepoConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct WingetConfig {
-    pub manifests_repo: Option<WingetManifestsRepoConfig>,
-    pub description: Option<String>,
-    pub license: Option<String>,
+    /// Override the package name (default: crate name).
+    pub name: Option<String>,
+    /// Package name as displayed (default: same as name).
+    pub package_name: Option<String>,
+    /// WinGet package identifier (e.g. "Publisher.AppName"). Auto-generated if empty.
     pub package_identifier: Option<String>,
+    /// Publisher name (required).
     pub publisher: Option<String>,
     pub publisher_url: Option<String>,
+    /// Publisher support URL.
+    pub publisher_support_url: Option<String>,
+    /// Privacy policy URL.
+    pub privacy_url: Option<String>,
+    /// Author name.
+    pub author: Option<String>,
+    /// Copyright notice.
+    pub copyright: Option<String>,
+    /// Copyright URL.
+    pub copyright_url: Option<String>,
+    /// License identifier (required, e.g. "MIT").
+    pub license: Option<String>,
+    /// License URL.
+    pub license_url: Option<String>,
+    /// Short description (required, max 256 chars).
+    pub short_description: Option<String>,
+    pub description: Option<String>,
+    /// Project homepage URL.
+    pub homepage: Option<String>,
+    /// Custom URL template for download URLs (overrides release URL).
+    pub url_template: Option<String>,
+    /// Build IDs filter: only include artifacts whose `id` is in this list.
+    pub ids: Option<Vec<String>>,
+    /// Skip publishing. `"true"` always skips; `"auto"` skips for prereleases.
+    pub skip_upload: Option<String>,
+    /// Custom commit message template.
+    pub commit_msg_template: Option<String>,
+    /// Manifest file path (auto-generated if empty from publisher/name/version).
+    pub path: Option<String>,
+    /// Release notes for this version.
+    pub release_notes: Option<String>,
+    /// URL to full release notes.
+    pub release_notes_url: Option<String>,
+    /// Post-install notes shown to the user.
+    pub installation_notes: Option<String>,
+    /// Tags for package discovery (lowercased, spaces→hyphens).
+    pub tags: Option<Vec<String>>,
+    /// Package dependencies.
+    pub dependencies: Option<Vec<WingetDependency>>,
+    /// Legacy manifests repo config (owner/name). Prefer `repository`.
+    pub manifests_repo: Option<WingetManifestsRepoConfig>,
+    /// Unified repository config with branch, token, PR, git SSH support.
+    pub repository: Option<RepositoryConfig>,
+    /// Commit author with optional signing.
+    pub commit_author: Option<CommitAuthorConfig>,
+}
+
+/// WinGet package dependency.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct WingetDependency {
+    pub package_identifier: String,
+    pub minimum_version: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -1126,36 +1371,52 @@ pub struct WingetManifestsRepoConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct AurConfig {
-    /// AUR SSH git URL (e.g., `ssh://aur@aur.archlinux.org/<package>.git`).
-    ///
-    /// Required for publishing. The field is `Option` for serde compatibility
-    /// (omitted in config means "no AUR publishing"), but `publish_to_aur`
-    /// will return an error if it is `None` at publish time.
-    pub git_url: Option<String>,
-    pub package_name: Option<String>,
+    /// Override the package name (default: crate name + "-bin").
+    #[serde(alias = "package_name")]
+    pub name: Option<String>,
+    /// Build IDs filter: only include artifacts whose `id` is in this list.
+    pub ids: Option<Vec<String>>,
+    /// Commit author with optional signing.
+    pub commit_author: Option<CommitAuthorConfig>,
+    /// Custom commit message template. Default: "Update to {{ version }}".
+    pub commit_msg_template: Option<String>,
     pub description: Option<String>,
+    /// Project homepage URL.
+    pub homepage: Option<String>,
     pub license: Option<String>,
+    /// Skip publishing. `"true"` always skips; `"auto"` skips for prereleases.
+    pub skip_upload: Option<String>,
+    /// Custom URL template for download URLs (overrides release URL).
+    pub url_template: Option<String>,
     pub maintainers: Option<Vec<String>>,
+    /// Contributors listed in PKGBUILD comments.
+    pub contributors: Option<Vec<String>>,
+    pub provides: Option<Vec<String>>,
+    pub conflicts: Option<Vec<String>>,
     pub depends: Option<Vec<String>>,
     pub optdepends: Option<Vec<String>>,
-    pub conflicts: Option<Vec<String>>,
-    pub provides: Option<Vec<String>>,
-    pub replaces: Option<Vec<String>>,
     /// List of config files to preserve on upgrade (relative to `/`).
     pub backup: Option<Vec<String>>,
+    /// Package release number (default: "1").
+    pub rel: Option<String>,
+    /// Custom PKGBUILD `package()` function body.
+    #[serde(alias = "install_template")]
+    pub package: Option<String>,
+    /// AUR SSH git URL (e.g., `ssh://aur@aur.archlinux.org/<package>.git`).
+    pub git_url: Option<String>,
+    /// Custom SSH command for git operations.
+    pub git_ssh_command: Option<String>,
+    /// Path to SSH private key file.
+    pub private_key: Option<String>,
+    /// Subdirectory in the git repo for committed files.
+    pub directory: Option<String>,
+    /// Disable this AUR config. Accepts bool or template string.
+    pub disable: Option<String>,
+    /// Content for a .install file (post-install/pre-remove scripts).
+    pub install: Option<String>,
+    /// Legacy project URL field.
     pub url: Option<String>,
-    /// Custom install template for the PKGBUILD `package()` function.
-    ///
-    /// When omitted, defaults to:
-    /// ```text
-    /// install -Dm755 "$srcdir/<binary>" "$pkgdir/usr/bin/<binary>"
-    /// ```
-    ///
-    /// Use this when the archive has a subdirectory structure, e.g.:
-    /// ```text
-    /// install -Dm755 "$srcdir/<binary>-${pkgver}/<binary>" "$pkgdir/usr/bin/<binary>"
-    /// ```
-    pub install_template: Option<String>,
+    pub replaces: Option<Vec<String>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1165,17 +1426,28 @@ pub struct AurConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct KrewConfig {
-    /// The krew-index fork repo (owner/name) to which the plugin manifest is
-    /// submitted, similar to winget's `manifests_repo`.
+    /// Override the plugin name (default: crate name).
+    pub name: Option<String>,
+    /// Build IDs filter: only include artifacts whose `id` is in this list.
+    pub ids: Option<Vec<String>>,
+    /// Legacy krew-index fork repo (owner/name). Prefer `repository`.
     pub manifests_repo: Option<KrewManifestsRepoConfig>,
+    /// Unified repository config with branch, token, PR, git SSH support.
+    pub repository: Option<RepositoryConfig>,
+    /// Commit author with optional signing.
+    pub commit_author: Option<CommitAuthorConfig>,
+    /// Custom commit message template.
+    pub commit_msg_template: Option<String>,
     pub description: Option<String>,
     pub short_description: Option<String>,
     pub homepage: Option<String>,
+    /// Custom URL template for download URLs (overrides release URL).
+    pub url_template: Option<String>,
     /// Post-install message shown to the user.
     pub caveats: Option<String>,
-    /// The upstream repo to submit the PR against (e.g. `kubernetes-sigs/krew-index`).
-    /// When omitted, defaults to `manifests_repo` owner/name, which is the fork.
-    /// Set this when your `manifests_repo` is a fork and PRs should target the upstream.
+    /// Skip publishing. `"true"` always skips; `"auto"` skips for prereleases.
+    pub skip_upload: Option<String>,
+    /// Legacy upstream repo for PR target. Use `repository.pull_request.base` instead.
     pub upstream_repo: Option<KrewManifestsRepoConfig>,
 }
 
@@ -1183,6 +1455,55 @@ pub struct KrewConfig {
 pub struct KrewManifestsRepoConfig {
     pub owner: String,
     pub name: String,
+}
+
+// ---------------------------------------------------------------------------
+// NixConfig
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct NixConfig {
+    /// Override the derivation name (default: crate name).
+    pub name: Option<String>,
+    /// Path for the .nix file in the repository (default: `pkgs/<name>/default.nix`).
+    pub path: Option<String>,
+    /// Unified repository config with branch, token, PR, git SSH support.
+    pub repository: Option<RepositoryConfig>,
+    /// Commit author with optional signing.
+    pub commit_author: Option<CommitAuthorConfig>,
+    /// Custom commit message template.
+    pub commit_msg_template: Option<String>,
+    /// Build IDs filter: only include artifacts whose `id` is in this list.
+    pub ids: Option<Vec<String>>,
+    /// Custom URL template for download URLs (overrides release URL).
+    pub url_template: Option<String>,
+    /// Skip publishing. `"true"` always skips; `"auto"` skips for prereleases.
+    pub skip_upload: Option<String>,
+    /// Custom install commands (replaces auto-generated binary install).
+    pub install: Option<String>,
+    /// Additional install commands appended after the main install.
+    pub extra_install: Option<String>,
+    /// Post-install commands (postInstall phase).
+    pub post_install: Option<String>,
+    pub description: Option<String>,
+    /// Project homepage URL.
+    pub homepage: Option<String>,
+    /// Nix license identifier (e.g. "mit", "asl20"). Validated against known licenses.
+    pub license: Option<String>,
+    /// Nix package dependencies with optional OS filtering.
+    pub dependencies: Option<Vec<NixDependency>>,
+    /// Nix formatter to run on the generated file: "alejandra" or "nixfmt".
+    pub formatter: Option<String>,
+}
+
+/// Nix package dependency with optional OS restriction.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct NixDependency {
+    pub name: String,
+    /// OS restriction: "linux", "darwin", or empty for all.
+    pub os: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -3933,7 +4254,7 @@ crates:
     tag_template: "v{{ .Version }}"
     publish:
       chocolatey:
-        source_repo:
+        project_repo:
           owner: myorg
           name: mytool
         description: "A great tool"
@@ -3984,7 +4305,7 @@ crates:
     tag_template: "v{{ .Version }}"
     publish:
       chocolatey:
-        source_repo:
+        project_repo:
           owner: myorg
           name: mytool
 "#;
@@ -4024,7 +4345,7 @@ license = "MIT"
 authors = "Author"
 tags = ["cli"]
 
-[crates.publish.chocolatey.source_repo]
+[crates.publish.chocolatey.project_repo]
 owner = "org"
 name = "tool"
 "#;
@@ -4200,7 +4521,7 @@ crates:
             aur.git_url,
             Some("ssh://aur@aur.archlinux.org/mytool.git".to_string())
         );
-        assert_eq!(aur.package_name, Some("mytool-bin".to_string()));
+        assert_eq!(aur.name, Some("mytool-bin".to_string()));
         assert_eq!(aur.description, Some("A great tool".to_string()));
         assert_eq!(aur.license, Some("MIT".to_string()));
         assert_eq!(
@@ -4247,7 +4568,7 @@ crates:
             aur.git_url,
             Some("ssh://aur@aur.archlinux.org/mytool.git".to_string())
         );
-        assert!(aur.package_name.is_none());
+        assert!(aur.name.is_none());
         assert!(aur.description.is_none());
         assert!(aur.license.is_none());
         assert!(aur.maintainers.is_none());
@@ -4424,7 +4745,7 @@ crates:
           owner: org
           name: scoop-bucket
       chocolatey:
-        source_repo:
+        project_repo:
           owner: org
           name: mytool
       winget:

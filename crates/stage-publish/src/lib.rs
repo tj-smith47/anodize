@@ -3,6 +3,7 @@ pub mod chocolatey;
 pub mod crates_io;
 pub mod homebrew;
 pub mod krew;
+pub mod nix;
 pub mod scoop;
 pub(crate) mod util;
 pub mod winget;
@@ -17,6 +18,7 @@ use chocolatey::publish_to_chocolatey;
 use crates_io::publish_to_crates_io;
 use homebrew::publish_to_homebrew;
 use krew::publish_to_krew;
+use nix::publish_to_nix;
 use scoop::publish_to_scoop;
 use winget::publish_to_winget;
 
@@ -77,6 +79,11 @@ impl Stage for PublishStage {
         // 7. Krew — one call per crate that has a krew config.
         for crate_name in &crates_with_publisher(ctx, &selected, |p| p.krew.is_some()) {
             publish_to_krew(ctx, crate_name, &log)?;
+        }
+
+        // 8. Nix — one call per crate that has a nix config.
+        for crate_name in &crates_with_publisher(ctx, &selected, |p| p.nix.is_some()) {
+            publish_to_nix(ctx, crate_name, &log)?;
         }
 
         Ok(())
@@ -676,6 +683,38 @@ mod tests {
                     }),
                     ..Default::default()
                 }),
+                nix: None,
+            }),
+            ..Default::default()
+        }];
+
+        let mut ctx = dry_run_ctx(config);
+        assert!(PublishStage.run(&mut ctx).is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // Nix integration tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_run_dry_run_nix() {
+        use anodize_core::config::{NixConfig, RepositoryConfig};
+
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                nix: Some(NixConfig {
+                    repository: Some(RepositoryConfig {
+                        owner: Some("myorg".to_string()),
+                        name: Some("nixpkgs-overlay".to_string()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
             }),
             ..Default::default()
         }];
