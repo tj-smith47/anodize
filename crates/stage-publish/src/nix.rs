@@ -14,7 +14,8 @@ const NIX_TEMPLATE: &str = r#"{ lib
 {% if needs_unzip %}, unzip
 {% endif %}{% if needs_make_wrapper %}, makeWrapper
 {% endif %}, installShellFiles
-}:
+{% for dep in dep_args %}, {{ dep }}
+{% endfor %}}:
 
 let
   selectSystem = attrs: attrs.${stdenvNoCC.hostPlatform.system} or (throw "Unsupported system: ${stdenvNoCC.hostPlatform.system}");
@@ -81,6 +82,8 @@ pub struct NixParams<'a> {
     pub needs_unzip: bool,
     /// Whether dependencies are configured (need makeWrapper).
     pub needs_make_wrapper: bool,
+    /// Dependency package names to add as function arguments in the derivation.
+    pub dep_args: &'a [String],
 }
 
 // ---------------------------------------------------------------------------
@@ -102,6 +105,7 @@ pub fn generate_nix_expression(params: &NixParams<'_>) -> String {
     ctx.insert("license", params.license);
     ctx.insert("needs_unzip", &params.needs_unzip);
     ctx.insert("needs_make_wrapper", &params.needs_make_wrapper);
+    ctx.insert("dep_args", &params.dep_args);
 
     // Archives map
     #[derive(serde::Serialize)]
@@ -134,6 +138,45 @@ pub fn generate_nix_expression(params: &NixParams<'_>) -> String {
 
     tera.render("nix", &ctx)
         .expect("nix: render expression")
+}
+
+// ---------------------------------------------------------------------------
+// License validation
+// ---------------------------------------------------------------------------
+
+/// Known valid Nix license identifiers from `lib.licenses`.
+const VALID_NIX_LICENSES: &[&str] = &[
+    "mit",
+    "asl20",
+    "bsd2",
+    "bsd3",
+    "gpl2Only",
+    "gpl3Only",
+    "lgpl21Only",
+    "lgpl3Only",
+    "mpl20",
+    "isc",
+    "unlicense",
+    "artistic2",
+    "cc0",
+    "wtfpl",
+    "zlib",
+    "publicDomain",
+    "unfree",
+];
+
+/// Validate that a license identifier is a known Nix license.
+/// Returns `Ok(())` if valid, or `Err` with a descriptive message.
+pub fn validate_nix_license(license: &str) -> Result<()> {
+    if VALID_NIX_LICENSES.contains(&license) {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "nix: unknown license identifier '{}'. Valid values: {}",
+            license,
+            VALID_NIX_LICENSES.join(", ")
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -204,14 +247,25 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     let homepage = nix_cfg.homepage.as_deref().unwrap_or("");
     let license = nix_cfg.license.as_deref().unwrap_or("mit");
 
-    // Find artifacts for Linux and Darwin platforms.
-    let all_artifacts = util::find_all_platform_artifacts(ctx, crate_name);
+    // Validate license identifier against known Nix licenses.
+    validate_nix_license(license)?;
+
+    // Find artifacts for Linux and Darwin platforms, applying IDs filter.
+    let ids_filter = nix_cfg.ids.as_deref();
+    let all_artifacts = util::find_all_platform_artifacts_filtered(ctx, crate_name, ids_filter);
+
+    let url_template = nix_cfg.url_template.as_deref();
 
     let archives: Vec<(String, String, String)> = all_artifacts
         .iter()
         .filter_map(|a| {
             let system = nix_system(&a.os, &a.arch)?;
-            Some((system, a.url.clone(), a.sha256.clone()))
+            let download_url = if let Some(tmpl) = url_template {
+                util::render_url_template(tmpl, crate_name, &version, &a.arch, &a.os)
+            } else {
+                a.url.clone()
+            };
+            Some((system, download_url, a.sha256.clone()))
         })
         .collect();
 
@@ -225,11 +279,17 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         .any(|a| a.url.ends_with(".zip"));
 
     // Check if dependencies are configured (needs makeWrapper)
-    let needs_make_wrapper = nix_cfg
-        .dependencies
-        .as_ref()
-        .map(|d| !d.is_empty())
-        .unwrap_or(false);
+    let deps = nix_cfg.dependencies.as_deref().unwrap_or(&[]);
+    let needs_make_wrapper = !deps.is_empty();
+
+    // Collect unique dependency package names for the derivation function arguments.
+    let dep_args: Vec<String> = {
+        let mut seen = std::collections::HashSet::new();
+        deps.iter()
+            .filter(|d| seen.insert(d.name.clone()))
+            .map(|d| d.name.clone())
+            .collect()
+    };
 
     // Build install lines
     let install_lines: Vec<String> = if let Some(ref custom_install) = nix_cfg.install {
@@ -243,6 +303,62 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         lines.push(format!("cp -vr ./{name} $out/bin/{name}"));
         if let Some(ref extra) = nix_cfg.extra_install {
             lines.extend(extra.lines().map(|l| l.to_string()));
+        }
+        // Generate wrapProgram invocations from dependencies with OS filtering.
+        if needs_make_wrapper {
+            // Partition deps by OS for conditional wrapping.
+            let all_os_deps: Vec<&str> = deps
+                .iter()
+                .filter(|d| d.os.is_none())
+                .map(|d| d.name.as_str())
+                .collect();
+            let darwin_deps: Vec<&str> = deps
+                .iter()
+                .filter(|d| d.os.as_deref() == Some("darwin"))
+                .map(|d| d.name.as_str())
+                .collect();
+            let linux_deps: Vec<&str> = deps
+                .iter()
+                .filter(|d| d.os.as_deref() == Some("linux"))
+                .map(|d| d.name.as_str())
+                .collect();
+
+            let mut prefix_parts: Vec<String> = Vec::new();
+            if !all_os_deps.is_empty() {
+                let bins: Vec<String> = all_os_deps
+                    .iter()
+                    .map(|d| format!("${{lib.getBin {}}}/bin", d))
+                    .collect();
+                prefix_parts.push(bins.join(":"));
+            }
+            if !darwin_deps.is_empty() {
+                let bins: Vec<String> = darwin_deps
+                    .iter()
+                    .map(|d| format!("${{lib.getBin {}}}/bin", d))
+                    .collect();
+                prefix_parts.push(format!(
+                    "''${{lib.optionalString stdenvNoCC.isDarwin \"{}\"}}",
+                    bins.join(":")
+                ));
+            }
+            if !linux_deps.is_empty() {
+                let bins: Vec<String> = linux_deps
+                    .iter()
+                    .map(|d| format!("${{lib.getBin {}}}/bin", d))
+                    .collect();
+                prefix_parts.push(format!(
+                    "''${{lib.optionalString stdenvNoCC.isLinux \"{}\"}}",
+                    bins.join(":")
+                ));
+            }
+
+            if !prefix_parts.is_empty() {
+                lines.push(format!(
+                    "wrapProgram $out/bin/{} --prefix PATH : {}",
+                    name,
+                    prefix_parts.join(":")
+                ));
+            }
         }
         lines
     };
@@ -264,6 +380,7 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         post_install_lines: &post_install_lines,
         needs_unzip,
         needs_make_wrapper,
+        dep_args: &dep_args,
     });
 
     // Optionally format with alejandra or nixfmt
@@ -386,6 +503,7 @@ mod tests {
             post_install_lines: &[],
             needs_unzip: false,
             needs_make_wrapper: false,
+            dep_args: &[],
         });
 
         assert!(expr.contains("pname = \"mytool\""));
@@ -418,6 +536,7 @@ mod tests {
             post_install_lines: &[],
             needs_unzip: true,
             needs_make_wrapper: false,
+            dep_args: &[],
         });
 
         assert!(expr.contains(", unzip"));
@@ -442,6 +561,7 @@ mod tests {
             post_install_lines: &post,
             needs_unzip: false,
             needs_make_wrapper: false,
+            dep_args: &[],
         });
 
         assert!(expr.contains("postInstall"));

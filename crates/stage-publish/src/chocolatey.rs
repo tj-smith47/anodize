@@ -1,3 +1,4 @@
+use anodize_core::artifact::ArtifactKind;
 use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
 use anyhow::{Context as _, Result};
@@ -185,6 +186,26 @@ pub fn generate_install_script(name: &str, url: &str, hash: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// URL template rendering
+// ---------------------------------------------------------------------------
+
+/// Render a URL template with the given variables using Tera.
+fn render_url_template(template: &str, name: &str, version: &str, arch: &str, os: &str) -> String {
+    let mut tera = tera::Tera::default();
+    tera.autoescape_on(vec![]);
+    if tera.add_raw_template("url", template).is_err() {
+        return template.to_string();
+    }
+    let mut ctx = tera::Context::new();
+    ctx.insert("name", name);
+    ctx.insert("version", version);
+    ctx.insert("arch", arch);
+    ctx.insert("os", os);
+    tera.render("url", &ctx)
+        .unwrap_or_else(|_| template.to_string())
+}
+
+// ---------------------------------------------------------------------------
 // publish_to_chocolatey
 // ---------------------------------------------------------------------------
 
@@ -231,9 +252,55 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
     let icon_url = choco_cfg.icon_url.clone().unwrap_or_default();
     let tags = choco_cfg.tags.clone().unwrap_or_default();
 
-    // Find the windows Archive artifact.
-    let (url, hash) = if let Some(found) = util::find_windows_artifact(ctx, crate_name) {
-        found
+    // Find the windows Archive artifact with IDs filtering and url_template support.
+    let ids_filter = choco_cfg.ids.as_deref();
+    let url_template = choco_cfg.url_template.as_deref();
+
+    let all_artifacts = ctx
+        .artifacts
+        .by_kind_and_crate(ArtifactKind::Archive, crate_name);
+
+    let win_artifact = all_artifacts
+        .into_iter()
+        .filter(|a| {
+            a.target
+                .as_deref()
+                .map(|t| t.to_ascii_lowercase().contains("windows"))
+                .unwrap_or(false)
+                || a.path
+                    .to_string_lossy()
+                    .to_ascii_lowercase()
+                    .contains("windows")
+        })
+        .filter(|a| {
+            if let Some(ids) = ids_filter {
+                a.metadata
+                    .get("id")
+                    .map(|id| ids.iter().any(|i| i == id))
+                    .unwrap_or(false)
+            } else {
+                true
+            }
+        })
+        .next();
+
+    let pkg_name = choco_cfg.name.as_deref().unwrap_or(crate_name);
+
+    let (url, hash) = if let Some(a) = win_artifact {
+        let target = a.target.as_deref().unwrap_or("");
+        let (_, raw_arch) = anodize_core::target::map_target(target);
+
+        let resolved_url = if let Some(tmpl) = url_template {
+            render_url_template(tmpl, pkg_name, &version, &raw_arch, "windows")
+        } else {
+            a.metadata
+                .get("url")
+                .cloned()
+                .unwrap_or_else(|| a.path.to_string_lossy().into_owned())
+        };
+
+        let sha256 = a.metadata.get("sha256").cloned().unwrap_or_default();
+        (resolved_url, sha256)
     } else {
         log.warn(&format!(
             "chocolatey: no windows artifact found for '{}', using placeholder URL",
@@ -329,7 +396,6 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
         .source_repo
         .as_deref()
         .unwrap_or("https://push.chocolatey.org/");
-    let pkg_name = choco_cfg.name.as_deref().unwrap_or(crate_name);
     let nupkg = pkg_dir.join(format!("{}.{}.nupkg", pkg_name, version));
     util::run_cmd_in(
         pkg_dir,

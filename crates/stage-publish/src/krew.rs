@@ -3,7 +3,7 @@ use anodize_core::log::StageLogger;
 use anyhow::{Context as _, Result};
 use serde::Serialize;
 
-use crate::util::{self, OsArtifact, find_all_platform_artifacts};
+use crate::util::{self, OsArtifact};
 
 // ---------------------------------------------------------------------------
 // KrewManifestParams
@@ -241,8 +241,11 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
         .unwrap_or_else(|| format!("https://github.com/{}/{}", repo_owner, crate_name));
     let caveats = krew_cfg.caveats.clone().unwrap_or_default();
 
-    // Find artifacts across all platforms.
-    let all_artifacts = find_all_platform_artifacts(ctx, crate_name);
+    // Find artifacts across all platforms, applying IDs filter.
+    let ids_filter = krew_cfg.ids.as_deref();
+    let all_artifacts = util::find_all_platform_artifacts_filtered(ctx, crate_name, ids_filter);
+
+    let url_template = krew_cfg.url_template.as_deref();
 
     let platforms = if all_artifacts.is_empty() {
         log.warn(&format!(
@@ -260,7 +263,13 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
             bin: crate_name.to_string(),
         }]
     } else {
-        artifacts_to_platforms(&all_artifacts, crate_name)
+        let mut plats = artifacts_to_platforms(&all_artifacts, crate_name);
+        if let Some(tmpl) = url_template {
+            for p in &mut plats {
+                p.url = util::render_url_template(tmpl, crate_name, &version, &p.arch, &p.os);
+            }
+        }
+        plats
     };
 
     let manifest = generate_manifest(&KrewManifestParams {
@@ -311,9 +320,8 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
         None,
         None,
     );
-    let branch = util::resolve_branch(krew_cfg.repository.as_ref())
-        .map(|_| branch_name.as_str())
-        .or(Some(&branch_name));
+    // Always create a versioned branch for Krew PRs.
+    let branch = Some(branch_name.as_str());
     util::commit_and_push_with_opts(
         repo_path,
         &["."],

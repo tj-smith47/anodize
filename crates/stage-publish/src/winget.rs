@@ -1,3 +1,4 @@
+use anodize_core::artifact::ArtifactKind;
 use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
 use anyhow::{Context as _, Result};
@@ -13,6 +14,8 @@ use crate::util;
 pub struct WingetManifestParams<'a> {
     pub package_id: &'a str,
     pub name: &'a str,
+    /// Display name for the package. Falls back to `name` when not set.
+    pub package_name: Option<&'a str>,
     pub version: &'a str,
     pub description: &'a str,
     pub short_description: &'a str,
@@ -32,6 +35,10 @@ pub struct WingetManifestParams<'a> {
     pub tags: Option<&'a [String]>,
     pub dependencies: &'a [anodize_core::config::WingetDependency],
     pub installers: Vec<WingetInstallerItem>,
+    /// Product code for the installer (used in Add/Remove Programs).
+    pub product_code: Option<&'a str>,
+    /// Release date in YYYY-MM-DD format.
+    pub release_date: Option<&'a str>,
 }
 
 /// A single installer entry in the WinGet manifest.
@@ -62,9 +69,13 @@ struct InstallerManifest {
     package_version: String,
     installer_locale: String,
     installer_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    product_code: Option<String>,
     installers: Vec<InstallerEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     dependencies: Option<DependenciesBlock>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    release_date: Option<String>,
     manifest_type: String,
     manifest_version: String,
 }
@@ -77,6 +88,17 @@ struct InstallerEntry {
     #[serde(rename = "InstallerSha256")]
     installer_sha256: String,
     upgrade_behavior: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    nested_installer_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    nested_installer_files: Option<Vec<NestedInstallerFile>>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct NestedInstallerFile {
+    relative_file_path: String,
+    portable_command_alias: String,
 }
 
 #[derive(Serialize)]
@@ -208,18 +230,39 @@ pub fn generate_manifests(params: &WingetManifestParams<'_>) -> (String, String,
         })
     };
 
+    let installer_type = "zip";
+
     let installer = InstallerManifest {
         package_identifier: params.package_id.to_string(),
         package_version: params.version.to_string(),
         installer_locale: "en-US".to_string(),
-        installer_type: "zip".to_string(),
-        installers: params.installers.iter().map(|i| InstallerEntry {
-            architecture: i.architecture.clone(),
-            installer_url: i.url.clone(),
-            installer_sha256: i.sha256.clone(),
-            upgrade_behavior: "uninstallPrevious".to_string(),
+        installer_type: installer_type.to_string(),
+        product_code: params.product_code.map(|s| s.to_string()),
+        installers: params.installers.iter().map(|i| {
+            // When installer_type is "zip", add nested installer info for portable executables.
+            let (nested_type, nested_files) = if installer_type == "zip" {
+                (
+                    Some("portable".to_string()),
+                    Some(vec![NestedInstallerFile {
+                        relative_file_path: format!("{}.exe", params.name),
+                        portable_command_alias: params.name.to_string(),
+                    }]),
+                )
+            } else {
+                (None, None)
+            };
+
+            InstallerEntry {
+                architecture: i.architecture.clone(),
+                installer_url: i.url.clone(),
+                installer_sha256: i.sha256.clone(),
+                upgrade_behavior: "uninstallPrevious".to_string(),
+                nested_installer_type: nested_type,
+                nested_installer_files: nested_files,
+            }
         }).collect(),
         dependencies: deps,
+        release_date: params.release_date.map(|s| s.to_string()),
         manifest_type: "installer".to_string(),
         manifest_version: "1.6.0".to_string(),
     };
@@ -239,7 +282,7 @@ pub fn generate_manifests(params: &WingetManifestParams<'_>) -> (String, String,
         publisher_support_url: params.publisher_support_url.map(|s| s.to_string()).filter(|s| !s.is_empty()),
         privacy_url: params.privacy_url.map(|s| s.to_string()).filter(|s| !s.is_empty()),
         author: params.author.map(|s| s.to_string()).filter(|s| !s.is_empty()),
-        package_name: params.name.to_string(),
+        package_name: params.package_name.unwrap_or(params.name).to_string(),
         package_url: params.homepage.map(|s| s.to_string()).filter(|s| !s.is_empty()),
         license: params.license.to_string(),
         license_url: params.license_url.map(|s| s.to_string()).filter(|s| !s.is_empty()),
@@ -261,6 +304,26 @@ pub fn generate_manifests(params: &WingetManifestParams<'_>) -> (String, String,
         serde_yaml_ng::to_string(&installer).expect("winget: serialize installer manifest"),
         serde_yaml_ng::to_string(&locale).expect("winget: serialize locale manifest"),
     )
+}
+
+// ---------------------------------------------------------------------------
+// URL template rendering
+// ---------------------------------------------------------------------------
+
+/// Render a URL template with the given variables using Tera.
+fn render_url_template(template: &str, name: &str, version: &str, arch: &str, os: &str) -> String {
+    let mut tera = tera::Tera::default();
+    tera.autoescape_on(vec![]);
+    if tera.add_raw_template("url", template).is_err() {
+        return template.to_string();
+    }
+    let mut ctx = tera::Context::new();
+    ctx.insert("name", name);
+    ctx.insert("version", version);
+    ctx.insert("arch", arch);
+    ctx.insert("os", os);
+    tera.render("url", &ctx)
+        .unwrap_or_else(|_| template.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -325,34 +388,79 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
         .unwrap_or(crate_name);
     let license = winget_cfg.license.as_deref().unwrap_or("MIT");
 
-    // Find windows Archive artifacts for this crate.
-    let win_artifacts = util::find_artifacts_by_os(ctx, crate_name, "windows");
-    if win_artifacts.is_empty() {
-        anyhow::bail!("winget: no Windows archive artifact found for '{}'", crate_name);
-    }
+    // Find windows Archive artifacts for this crate with IDs filtering.
+    let ids_filter = winget_cfg.ids.as_deref();
+    let url_template = winget_cfg.url_template.as_deref();
 
-    let installers: Vec<WingetInstallerItem> = win_artifacts
+    let all_artifacts = ctx
+        .artifacts
+        .by_kind_and_crate(ArtifactKind::Archive, crate_name);
+
+    let installers: Vec<WingetInstallerItem> = all_artifacts
         .into_iter()
+        .filter(|a| {
+            a.target
+                .as_deref()
+                .map(|t| t.to_ascii_lowercase().contains("windows"))
+                .unwrap_or(false)
+                || a.path
+                    .to_string_lossy()
+                    .to_ascii_lowercase()
+                    .contains("windows")
+        })
+        .filter(|a| {
+            if let Some(ids) = ids_filter {
+                a.metadata
+                    .get("id")
+                    .map(|id| ids.iter().any(|i| i == id))
+                    .unwrap_or(false)
+            } else {
+                true
+            }
+        })
         .map(|a| {
-            let arch = match a.arch.as_str() {
+            let target = a.target.as_deref().unwrap_or("");
+            let (_, raw_arch) = anodize_core::target::map_target(target);
+            let arch = match raw_arch.as_str() {
                 "amd64" => "x64",
                 "386" | "i686" => "x86",
                 "arm64" => "arm64",
                 other => other,
             };
+
+            let resolved_url = if let Some(tmpl) = url_template {
+                render_url_template(tmpl, name, &version, &raw_arch, "windows")
+            } else {
+                a.metadata
+                    .get("url")
+                    .cloned()
+                    .unwrap_or_else(|| a.path.to_string_lossy().into_owned())
+            };
+
+            let sha256 = a.metadata.get("sha256").cloned().unwrap_or_default();
+
             WingetInstallerItem {
                 architecture: arch.to_string(),
-                url: a.url,
-                sha256: a.sha256,
+                url: resolved_url,
+                sha256,
             }
         })
         .collect();
 
+    if installers.is_empty() {
+        anyhow::bail!("winget: no Windows archive artifact found for '{}'", crate_name);
+    }
+
     let deps = winget_cfg.dependencies.as_deref().unwrap_or(&[]);
+
+    // Generate release date from current date if available in context.
+    let release_date = ctx.template_vars().get("Date").map(|d| d.to_string());
+    let release_date_ref = release_date.as_deref();
 
     let (ver_yaml, inst_yaml, locale_yaml) = generate_manifests(&WingetManifestParams {
         package_id,
         name,
+        package_name: winget_cfg.package_name.as_deref(),
         version: &version,
         description,
         short_description: short_desc,
@@ -372,6 +480,8 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
         tags: winget_cfg.tags.as_deref(),
         dependencies: deps,
         installers,
+        product_code: winget_cfg.product_code.as_deref(),
+        release_date: release_date_ref,
     });
 
     let token = util::resolve_repo_token(ctx, winget_cfg.repository.as_ref(), None);
@@ -414,7 +524,10 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
         "manifest",
     );
 
-    let branch_name = format!("{}-{}", package_id, version);
+    // Use repository.branch if set, otherwise auto-generate from package_id + version.
+    let auto_branch = format!("{}-{}", package_id, version);
+    let branch_name = util::resolve_branch(winget_cfg.repository.as_ref())
+        .unwrap_or(&auto_branch);
     let commit_opts = util::resolve_commit_opts(
         winget_cfg.commit_author.as_ref(),
         None,
@@ -424,7 +537,7 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
         repo_path,
         &["."],
         &commit_msg,
-        Some(&branch_name),
+        Some(branch_name),
         "winget",
         &commit_opts,
     )?;
@@ -467,6 +580,7 @@ mod tests {
         WingetManifestParams {
             package_id: "Org.MyTool",
             name: "mytool",
+            package_name: None,
             version: "1.0.0",
             description: "A great tool",
             short_description: "A great tool",
@@ -490,6 +604,8 @@ mod tests {
                 url: "https://example.com/mytool-1.0.0-windows-amd64.zip".to_string(),
                 sha256: "deadbeef1234567890abcdef".to_string(),
             }],
+            product_code: None,
+            release_date: None,
         }
     }
 
@@ -531,6 +647,10 @@ mod tests {
         assert!(inst.contains("ManifestType: installer"));
         assert!(inst.contains("InstallerSha256: deadbeef1234567890abcdef"));
         assert!(inst.contains("UpgradeBehavior: uninstallPrevious"));
+        // Nested installer fields for zip type
+        assert!(inst.contains("NestedInstallerType: portable"));
+        assert!(inst.contains("RelativeFilePath: mytool.exe"));
+        assert!(inst.contains("PortableCommandAlias: mytool"));
 
         assert!(locale.contains("ManifestType: defaultLocale"));
         assert!(locale.contains("ShortDescription: A great tool"));

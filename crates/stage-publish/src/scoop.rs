@@ -1,3 +1,4 @@
+use anodize_core::artifact::ArtifactKind;
 use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
 use anyhow::{Context as _, Result};
@@ -27,6 +28,14 @@ pub struct ManifestOptions<'a> {
     pub shortcuts: Option<&'a [Vec<String>]>,
 }
 
+/// A single architecture entry for the Scoop manifest.
+pub struct ArchEntry {
+    /// Scoop architecture key: "64bit", "32bit", or "arm64".
+    pub scoop_arch: String,
+    pub url: String,
+    pub hash: String,
+}
+
 /// Generate a Scoop JSON manifest string for a Windows binary.
 pub fn generate_manifest(
     name: &str,
@@ -36,11 +45,15 @@ pub fn generate_manifest(
     description: &str,
     license: &str,
 ) -> String {
+    let entries = vec![ArchEntry {
+        scoop_arch: "64bit".to_string(),
+        url: url.to_string(),
+        hash: hash.to_string(),
+    }];
     generate_manifest_with_opts(
         name,
         version,
-        url,
-        hash,
+        &entries,
         description,
         license,
         &ManifestOptions::default(),
@@ -48,11 +61,13 @@ pub fn generate_manifest(
 }
 
 /// Generate a Scoop JSON manifest string with extended options.
+///
+/// Accepts multiple architecture entries. Each entry maps to a key in
+/// the `architecture` block: `64bit`, `32bit`, or `arm64`.
 pub fn generate_manifest_with_opts(
     name: &str,
     version: &str,
-    url: &str,
-    hash: &str,
+    arch_entries: &[ArchEntry],
     description: &str,
     license: &str,
     opts: &ManifestOptions<'_>,
@@ -68,18 +83,25 @@ pub fn generate_manifest_with_opts(
     // Scoop bin entry should include .exe for Windows.
     let bin_name = format!("{}.exe", name);
 
+    // Build the architecture block from entries.
+    let mut arch_obj = serde_json::Map::new();
+    for entry in arch_entries {
+        arch_obj.insert(
+            entry.scoop_arch.clone(),
+            serde_json::json!({
+                "url": entry.url,
+                "hash": entry.hash,
+                "bin": bin_name
+            }),
+        );
+    }
+
     let mut manifest = serde_json::json!({
         "version": version,
         "description": description,
         "homepage": homepage,
         "license": license,
-        "architecture": {
-            "64bit": {
-                "url": url,
-                "hash": hash,
-                "bin": bin_name
-            }
-        }
+        "architecture": arch_obj
     });
 
     // Only include checkver + autoupdate when a valid GitHub slug (owner/repo) is
@@ -88,17 +110,31 @@ pub fn generate_manifest_with_opts(
     if let Some(slug) = opts.github_slug.as_deref() {
         let obj = manifest.as_object_mut().expect("manifest is an object");
         obj.insert("checkver".to_string(), serde_json::json!("github"));
+
+        // Build autoupdate architecture block mirroring the main architecture entries.
+        let mut auto_arch = serde_json::Map::new();
+        for entry in arch_entries {
+            let arch_suffix = match entry.scoop_arch.as_str() {
+                "64bit" => "amd64",
+                "32bit" => "386",
+                "arm64" => "arm64",
+                other => other,
+            };
+            auto_arch.insert(
+                entry.scoop_arch.clone(),
+                serde_json::json!({
+                    "url": format!(
+                        "https://github.com/{}/releases/download/v$version/{}-$version-windows-{}.zip",
+                        slug, name, arch_suffix
+                    )
+                }),
+            );
+        }
+
         obj.insert(
             "autoupdate".to_string(),
             serde_json::json!({
-                "architecture": {
-                    "64bit": {
-                        "url": format!(
-                            "https://github.com/{}/releases/download/v$version/{}-$version-windows-amd64.zip",
-                            slug, name
-                        )
-                    }
-                }
+                "architecture": auto_arch
             }),
         );
     }
@@ -125,6 +161,24 @@ pub fn generate_manifest_with_opts(
     // SAFETY: The manifest is a serde_json::Value constructed from string
     // literals and function parameters; serialisation to JSON is infallible.
     serde_json::to_string_pretty(&manifest).expect("scoop: serialize manifest")
+}
+
+/// Render a URL template with the given variables using Tera.
+///
+/// Supports `{{ name }}`, `{{ version }}`, `{{ arch }}`, `{{ os }}` variables.
+fn render_url_template(template: &str, name: &str, version: &str, arch: &str, os: &str) -> String {
+    let mut tera = tera::Tera::default();
+    tera.autoescape_on(vec![]);
+    if tera.add_raw_template("url", template).is_err() {
+        return template.to_string();
+    }
+    let mut ctx = tera::Context::new();
+    ctx.insert("name", name);
+    ctx.insert("version", version);
+    ctx.insert("arch", arch);
+    ctx.insert("os", os);
+    tera.render("url", &ctx)
+        .unwrap_or_else(|_| template.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -179,8 +233,76 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         .clone()
         .unwrap_or_else(|| "MIT".to_string());
 
-    // Find the windows-amd64 Archive artifact.
-    let (url, hash) = util::require_windows_artifact(ctx, crate_name, "scoop")?;
+    // Use name override if set, otherwise crate name.
+    let manifest_name = scoop_cfg.name.as_deref().unwrap_or(crate_name);
+
+    // Find all Windows Archive artifacts, applying IDs filter when configured.
+    let ids_filter = scoop_cfg.ids.as_deref();
+    let url_template = scoop_cfg.url_template.as_deref();
+
+    let all_artifacts = ctx
+        .artifacts
+        .by_kind_and_crate(ArtifactKind::Archive, crate_name);
+
+    let arch_entries: Vec<ArchEntry> = all_artifacts
+        .into_iter()
+        .filter(|a| {
+            // Only windows artifacts.
+            a.target
+                .as_deref()
+                .map(|t| t.to_ascii_lowercase().contains("windows"))
+                .unwrap_or(false)
+                || a.path
+                    .to_string_lossy()
+                    .to_ascii_lowercase()
+                    .contains("windows")
+        })
+        .filter(|a| {
+            // Apply IDs filter if configured.
+            if let Some(ids) = ids_filter {
+                a.metadata
+                    .get("id")
+                    .map(|id| ids.iter().any(|i| i == id))
+                    .unwrap_or(false)
+            } else {
+                true
+            }
+        })
+        .map(|a| {
+            let target = a.target.as_deref().unwrap_or("");
+            let (_, raw_arch) = anodize_core::target::map_target(target);
+
+            // Map architecture to Scoop keys.
+            let scoop_arch = match raw_arch.as_str() {
+                "amd64" => "64bit",
+                "386" => "32bit",
+                "arm64" => "arm64",
+                _ => "64bit",
+            };
+
+            // Resolve download URL: use url_template if set, otherwise artifact metadata.
+            let url = if let Some(tmpl) = url_template {
+                render_url_template(tmpl, manifest_name, &version, &raw_arch, "windows")
+            } else {
+                a.metadata
+                    .get("url")
+                    .cloned()
+                    .unwrap_or_else(|| a.path.to_string_lossy().into_owned())
+            };
+
+            let hash = a.metadata.get("sha256").cloned().unwrap_or_default();
+
+            ArchEntry {
+                scoop_arch: scoop_arch.to_string(),
+                url,
+                hash,
+            }
+        })
+        .collect();
+
+    if arch_entries.is_empty() {
+        anyhow::bail!("scoop: no Windows archive artifact found for crate '{}'", crate_name);
+    }
 
     // Derive GitHub slug (owner/repo) for homepage fallback.
     let github_slug = _crate_cfg
@@ -199,14 +321,10 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         shortcuts: scoop_cfg.shortcuts.as_deref(),
     };
 
-    // Use name override if set, otherwise crate name.
-    let manifest_name = scoop_cfg.name.as_deref().unwrap_or(crate_name);
-
     let manifest = generate_manifest_with_opts(
         manifest_name,
         &version,
-        &url,
-        &hash,
+        &arch_entries,
         &description,
         &license,
         &opts,
@@ -359,17 +477,29 @@ mod tests {
     // Deep integration tests: verify manifest JSON structure
     // -----------------------------------------------------------------------
 
+    /// Helper to build a single 64bit ArchEntry for test convenience.
+    fn arch_64(url: &str, hash: &str) -> Vec<ArchEntry> {
+        vec![ArchEntry {
+            scoop_arch: "64bit".to_string(),
+            url: url.to_string(),
+            hash: hash.to_string(),
+        }]
+    }
+
     #[test]
     fn test_integration_manifest_complete_json_structure() {
         let opts = ManifestOptions {
             github_slug: Some("tj-smith47/anodize".to_string()),
             ..Default::default()
         };
+        let entries = arch_64(
+            "https://github.com/tj-smith47/anodize/releases/download/v3.2.1/anodize-3.2.1-windows-amd64.zip",
+            "aabbccdd1122334455667788",
+        );
         let manifest = generate_manifest_with_opts(
             "anodize",
             "3.2.1",
-            "https://github.com/tj-smith47/anodize/releases/download/v3.2.1/anodize-3.2.1-windows-amd64.zip",
-            "aabbccdd1122334455667788",
+            &entries,
             "Release automation for Rust projects",
             "Apache-2.0",
             &opts,
@@ -517,11 +647,14 @@ mod tests {
             github_slug: Some("myorg/release-tool".to_string()),
             ..Default::default()
         };
+        let entries = arch_64(
+            "https://example.com/release-tool-5.0.0-windows-amd64.zip",
+            "hash",
+        );
         let manifest = generate_manifest_with_opts(
             "release-tool",
             "5.0.0",
-            "https://example.com/release-tool-5.0.0-windows-amd64.zip",
-            "hash",
+            &entries,
             "desc",
             "MIT",
             &opts,
@@ -574,11 +707,11 @@ mod tests {
             github_slug: Some("myorg/mytool".to_string()),
             ..Default::default()
         };
+        let entries = arch_64("https://example.com/mytool.zip", "abc");
         let manifest = generate_manifest_with_opts(
             "mytool",
             "2.0.0",
-            "https://example.com/mytool.zip",
-            "abc",
+            &entries,
             "desc",
             "MIT",
             &opts,
@@ -643,11 +776,11 @@ mod tests {
             homepage: Some("https://example.com/mytool"),
             ..Default::default()
         };
+        let entries = arch_64("https://example.com/a.zip", "abc");
         let manifest = generate_manifest_with_opts(
             "mytool",
             "1.0.0",
-            "https://example.com/a.zip",
-            "abc",
+            &entries,
             "desc",
             "MIT",
             &opts,
@@ -677,11 +810,11 @@ mod tests {
             persist: Some(&persist),
             ..Default::default()
         };
+        let entries = arch_64("https://example.com/a.zip", "abc");
         let manifest = generate_manifest_with_opts(
             "mytool",
             "1.0.0",
-            "https://example.com/a.zip",
-            "abc",
+            &entries,
             "desc",
             "MIT",
             &opts,
@@ -700,11 +833,11 @@ mod tests {
             depends: Some(&depends),
             ..Default::default()
         };
+        let entries = arch_64("https://example.com/a.zip", "abc");
         let manifest = generate_manifest_with_opts(
             "mytool",
             "1.0.0",
-            "https://example.com/a.zip",
-            "abc",
+            &entries,
             "desc",
             "MIT",
             &opts,
@@ -721,11 +854,11 @@ mod tests {
             pre_install: Some(&pre),
             ..Default::default()
         };
+        let entries = arch_64("https://example.com/a.zip", "abc");
         let manifest = generate_manifest_with_opts(
             "mytool",
             "1.0.0",
-            "https://example.com/a.zip",
-            "abc",
+            &entries,
             "desc",
             "MIT",
             &opts,
@@ -743,11 +876,11 @@ mod tests {
             post_install: Some(&post),
             ..Default::default()
         };
+        let entries = arch_64("https://example.com/a.zip", "abc");
         let manifest = generate_manifest_with_opts(
             "mytool",
             "1.0.0",
-            "https://example.com/a.zip",
-            "abc",
+            &entries,
             "desc",
             "MIT",
             &opts,
@@ -772,11 +905,11 @@ mod tests {
             shortcuts: Some(&shortcuts),
             ..Default::default()
         };
+        let entries = arch_64("https://example.com/a.zip", "abc");
         let manifest = generate_manifest_with_opts(
             "mytool",
             "1.0.0",
-            "https://example.com/a.zip",
-            "abc",
+            &entries,
             "desc",
             "MIT",
             &opts,
@@ -823,11 +956,11 @@ mod tests {
             post_install: Some(&post),
             shortcuts: Some(&shortcuts),
         };
+        let entries = arch_64("https://example.com/a.zip", "abc");
         let manifest = generate_manifest_with_opts(
             "mytool",
             "1.0.0",
-            "https://example.com/a.zip",
-            "abc",
+            &entries,
             "desc",
             "MIT",
             &opts,

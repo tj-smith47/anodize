@@ -3,7 +3,7 @@ use anodize_core::log::StageLogger;
 use anyhow::{Context as _, Result};
 use tera::Tera;
 
-use crate::util::{self, find_artifacts_by_os};
+use crate::util;
 
 // ---------------------------------------------------------------------------
 // PkgbuildParams
@@ -18,6 +18,7 @@ pub struct PkgbuildParams<'a> {
     pub url: &'a str,
     pub license: &'a str,
     pub maintainers: &'a [String],
+    pub contributors: &'a [String],
     pub depends: &'a [String],
     pub optdepends: &'a [String],
     pub conflicts: &'a [String],
@@ -38,7 +39,8 @@ pub struct PkgbuildParams<'a> {
 // ---------------------------------------------------------------------------
 
 const PKGBUILD_TEMPLATE: &str = r#"{% for m in maintainers %}# Maintainer: {{ m }}
-{% endfor %}{% if maintainers | length > 0 %}
+{% endfor %}{% for c in contributors %}# Contributor: {{ c }}
+{% endfor %}{% if maintainers | length > 0 or contributors | length > 0 %}
 {% endif %}pkgname={{ name }}
 pkgver={{ version }}
 pkgrel={{ pkgrel }}
@@ -77,6 +79,7 @@ pub fn generate_pkgbuild(params: &PkgbuildParams<'_>) -> String {
     ctx.insert("url", params.url);
     ctx.insert("license", params.license);
     ctx.insert("maintainers", params.maintainers);
+    ctx.insert("contributors", params.contributors);
     ctx.insert("depends", params.depends);
     ctx.insert("optdepends", params.optdepends);
     ctx.insert("conflicts", params.conflicts);
@@ -125,6 +128,61 @@ pub fn generate_pkgbuild(params: &PkgbuildParams<'_>) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// generate_srcinfo (template-based, no makepkg dependency)
+// ---------------------------------------------------------------------------
+
+const SRCINFO_TEMPLATE: &str = r#"pkgbase = {{ name }}
+	pkgdesc = {{ description }}
+	pkgver = {{ version }}
+	pkgrel = {{ pkgrel }}
+	url = {{ url }}
+	license = {{ license }}
+{% for d in depends %}	depends = {{ d }}
+{% endfor %}{% for c in conflicts %}	conflicts = {{ c }}
+{% endfor %}{% for p in provides %}	provides = {{ p }}
+{% endfor %}{% for s in sources %}	arch = {{ s.arch }}
+	source_{{ s.arch }} = {{ s.url }}
+	sha256sums_{{ s.arch }} = {{ s.hash }}
+{% endfor %}
+pkgname = {{ name }}
+"#;
+
+/// Generate an AUR `.SRCINFO` file string from a Tera template.
+pub fn generate_srcinfo(params: &PkgbuildParams<'_>) -> String {
+    let mut tera = Tera::default();
+    tera.autoescape_on(vec![]);
+    tera.add_raw_template("srcinfo", SRCINFO_TEMPLATE)
+        .expect("aur: invalid .SRCINFO template");
+
+    let mut ctx = tera::Context::new();
+    ctx.insert("name", params.name);
+    ctx.insert("version", params.version);
+    ctx.insert("pkgrel", &params.pkgrel);
+    ctx.insert("description", params.description);
+    ctx.insert("url", params.url);
+    ctx.insert("license", params.license);
+    ctx.insert("depends", params.depends);
+    ctx.insert("conflicts", params.conflicts);
+    ctx.insert("provides", params.provides);
+
+    let sources: Vec<std::collections::HashMap<&str, &str>> = params
+        .sources
+        .iter()
+        .map(|(arch, url, hash)| {
+            let mut m = std::collections::HashMap::new();
+            m.insert("arch", arch.as_str());
+            m.insert("url", url.as_str());
+            m.insert("hash", hash.as_str());
+            m
+        })
+        .collect();
+    ctx.insert("sources", &sources);
+
+    tera.render("srcinfo", &ctx)
+        .expect("aur: failed to render .SRCINFO template")
+}
+
+// ---------------------------------------------------------------------------
 // publish_to_aur
 // ---------------------------------------------------------------------------
 
@@ -135,6 +193,12 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         .aur
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("aur: no aur config for '{}'", crate_name))?;
+
+    // Check disable before doing any work.
+    if aur_cfg.disable.as_deref() == Some("true") {
+        log.status(&format!("aur: disabled for '{}'", crate_name));
+        return Ok(());
+    }
 
     // Check skip_upload before doing any work.
     if crate::homebrew::should_skip_upload(aur_cfg.skip_upload.as_deref(), ctx) {
@@ -159,7 +223,8 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         return Ok(());
     }
 
-    let version = ctx.version();
+    // AUR pkgver does not allow hyphens; replace with underscores.
+    let version = ctx.version().replace('-', "_");
 
     // Default name is crate_name + "-bin" (GoReleaser convention)
     let package_name = aur_cfg
@@ -195,6 +260,7 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     };
 
     let maintainers = aur_cfg.maintainers.clone().unwrap_or_default();
+    let contributors = aur_cfg.contributors.clone().unwrap_or_default();
     let depends = aur_cfg.depends.clone().unwrap_or_default();
     let optdepends = aur_cfg.optdepends.clone().unwrap_or_default();
     let conflicts = aur_cfg.conflicts.clone().unwrap_or_default();
@@ -202,8 +268,11 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     let replaces = aur_cfg.replaces.clone().unwrap_or_default();
     let backup = aur_cfg.backup.clone().unwrap_or_default();
 
-    // Find Linux artifacts for the AUR package.
-    let linux_artifacts = find_artifacts_by_os(ctx, crate_name, "linux");
+    // Find Linux artifacts for the AUR package, applying IDs filter.
+    let ids_filter = aur_cfg.ids.as_deref();
+    let linux_artifacts = util::find_artifacts_by_os_filtered(ctx, crate_name, "linux", ids_filter);
+
+    let url_template = aur_cfg.url_template.as_deref();
 
     let sources: Vec<(String, String, String)> = if linux_artifacts.is_empty() {
         log.warn(&format!(
@@ -232,7 +301,12 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
                     "x86_64".to_string()
                 };
                 if seen_arches.insert(pkgbuild_arch.clone()) {
-                    Some((pkgbuild_arch, a.url.clone(), a.sha256.clone()))
+                    let download_url = if let Some(tmpl) = url_template {
+                        util::render_url_template(tmpl, crate_name, &version, &pkgbuild_arch, "linux")
+                    } else {
+                        a.url.clone()
+                    };
+                    Some((pkgbuild_arch, download_url, a.sha256.clone()))
                 } else {
                     None
                 }
@@ -245,7 +319,7 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         .as_deref()
         .and_then(|s| s.parse().ok())
         .unwrap_or(1);
-    let pkgbuild = generate_pkgbuild(&PkgbuildParams {
+    let pkgbuild_params = PkgbuildParams {
         name: &package_name,
         version: &version,
         pkgrel,
@@ -253,6 +327,7 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         url: &url,
         license: &license,
         maintainers: &maintainers,
+        contributors: &contributors,
         depends: &depends,
         optdepends: &optdepends,
         conflicts: &conflicts,
@@ -262,7 +337,8 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         sources: &sources,
         binary_name: crate_name,
         install_template: aur_cfg.package.as_deref(),
-    });
+    };
+    let pkgbuild = generate_pkgbuild(&pkgbuild_params);
 
     // Clone AUR repo, write PKGBUILD, commit, push.
     let tmp_dir = tempfile::tempdir().context("aur: create temp dir")?;
@@ -277,23 +353,12 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
 
     log.status(&format!("wrote AUR PKGBUILD: {}", pkgbuild_path.display()));
 
-    // Generate .SRCINFO using makepkg.
-    let srcinfo_result = std::process::Command::new("makepkg")
-        .current_dir(repo_path)
-        .args(["--printsrcinfo"])
-        .output()
-        .context("aur: makepkg --printsrcinfo")?;
-
-    if srcinfo_result.status.success() {
-        let srcinfo_path = repo_path.join(".SRCINFO");
-        std::fs::write(&srcinfo_path, &srcinfo_result.stdout)
-            .with_context(|| format!("aur: write .SRCINFO {}", srcinfo_path.display()))?;
-        log.status(&format!("wrote AUR .SRCINFO: {}", srcinfo_path.display()));
-    } else {
-        log.warn(
-            "aur: makepkg --printsrcinfo failed (may not be available); skipping .SRCINFO generation",
-        );
-    }
+    // Generate .SRCINFO from a Tera template (no makepkg dependency).
+    let srcinfo = generate_srcinfo(&pkgbuild_params);
+    let srcinfo_path = repo_path.join(".SRCINFO");
+    std::fs::write(&srcinfo_path, &srcinfo)
+        .with_context(|| format!("aur: write .SRCINFO {}", srcinfo_path.display()))?;
+    log.status(&format!("wrote AUR .SRCINFO: {}", srcinfo_path.display()));
 
     let commit_msg = crate::homebrew::render_commit_msg(
         aur_cfg.commit_msg_template.as_deref(),
@@ -346,6 +411,7 @@ mod tests {
             url: "https://github.com/org/mytool",
             license: "MIT",
             maintainers: &["Jane Doe <jane@example.com>".to_string()],
+            contributors: &[],
             depends: &[],
             optdepends: &[],
             conflicts: &[],
@@ -390,6 +456,7 @@ mod tests {
             url: "https://github.com/org/mytool",
             license: "Apache-2.0",
             maintainers: &[],
+            contributors: &[],
             depends: &[],
             optdepends: &[],
             conflicts: &[],
@@ -429,6 +496,7 @@ mod tests {
             url: "https://example.com",
             license: "MIT",
             maintainers: &[],
+            contributors: &[],
             depends: &["glibc".to_string(), "openssl".to_string()],
             optdepends: &["git: for VCS support".to_string()],
             conflicts: &["mytool-git".to_string()],
@@ -462,6 +530,7 @@ mod tests {
             url: "https://example.com",
             license: "MIT",
             maintainers: &[],
+            contributors: &[],
             depends: &[],
             optdepends: &[],
             conflicts: &[],
@@ -491,6 +560,7 @@ mod tests {
             url: "https://github.com/tj-smith47/anodize",
             license: "Apache-2.0",
             maintainers: &["TJ Smith <tj@example.com>".to_string()],
+            contributors: &[],
             depends: &[],
             optdepends: &[],
             conflicts: &[],
@@ -539,6 +609,7 @@ mod tests {
             url: "https://example.com",
             license: "MIT",
             maintainers: &[],
+            contributors: &[],
             depends: &[],
             optdepends: &[],
             conflicts: &[],

@@ -1348,6 +1348,11 @@ pub struct WingetConfig {
     pub repository: Option<RepositoryConfig>,
     /// Commit author with optional signing.
     pub commit_author: Option<CommitAuthorConfig>,
+    /// Product code for the installer (used in Add/Remove Programs).
+    pub product_code: Option<String>,
+    /// Artifact selection: "archive" (default), "msi", or "nsis".
+    #[serde(rename = "use")]
+    pub use_artifact: Option<String>,
 }
 
 /// WinGet package dependency.

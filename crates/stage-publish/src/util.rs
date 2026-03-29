@@ -197,6 +197,7 @@ pub(crate) fn resolve_branch(
 }
 
 /// Stage files, commit, and push. Optionally creates a new branch first.
+#[allow(dead_code)]
 pub(crate) fn commit_and_push(
     repo_path: &Path,
     files: &[&str],
@@ -351,6 +352,7 @@ pub(crate) fn submit_pr_via_gh(
 
 /// Find a Windows Archive artifact and return `(url, sha256)`, or bail with a
 /// descriptive error.
+#[allow(dead_code)]
 pub(crate) fn require_windows_artifact(
     ctx: &Context,
     crate_name: &str,
@@ -417,6 +419,8 @@ pub(crate) struct OsArtifact {
     pub sha256: String,
     pub os: String,
     pub arch: String,
+    #[allow(dead_code)]
+    pub id: Option<String>,
 }
 
 /// Convert a single `Artifact` reference into an `OsArtifact`, using the
@@ -431,13 +435,81 @@ fn artifact_to_os_artifact(a: &Artifact, os_fallback: &str) -> OsArtifact {
         .cloned()
         .unwrap_or_else(|| a.path.to_string_lossy().into_owned());
     let sha256 = a.metadata.get("sha256").cloned().unwrap_or_default();
+    let id = a.metadata.get("id").cloned();
     let target = a.target.as_deref().unwrap_or("");
     OsArtifact {
         url,
         sha256,
         os: infer_os(target, os_fallback),
         arch: infer_arch(target),
+        id,
     }
+}
+
+/// Filter a vec of `OsArtifact` by IDs: when `ids` is `Some`, keep only
+/// artifacts whose `id` field matches one of the given IDs.  When `ids` is
+/// `None`, all artifacts pass through.
+#[allow(dead_code)]
+pub(crate) fn filter_os_artifacts_by_ids(
+    artifacts: Vec<OsArtifact>,
+    ids: Option<&[String]>,
+) -> Vec<OsArtifact> {
+    if let Some(ids) = ids {
+        artifacts
+            .into_iter()
+            .filter(|a| {
+                a.id.as_ref()
+                    .map(|id| ids.iter().any(|i| i == id))
+                    .unwrap_or(false)
+            })
+            .collect()
+    } else {
+        artifacts
+    }
+}
+
+/// Filter artifacts by IDs: when `ids` is `Some`, keep only artifacts whose
+/// metadata `"id"` key matches one of the given IDs.  When `ids` is `None`,
+/// all artifacts pass through.
+pub(crate) fn filter_by_ids<'a>(
+    artifacts: Vec<&'a Artifact>,
+    ids: Option<&[String]>,
+) -> Vec<&'a Artifact> {
+    if let Some(ids) = ids {
+        artifacts
+            .into_iter()
+            .filter(|a| {
+                a.metadata
+                    .get("id")
+                    .map(|id| ids.iter().any(|i| i == id))
+                    .unwrap_or(false)
+            })
+            .collect()
+    } else {
+        artifacts
+    }
+}
+
+/// Render a `url_template` string with Tera, providing `name`, `version`,
+/// `arch`, and `os` variables.  Returns the rendered URL.
+pub(crate) fn render_url_template(
+    template: &str,
+    name: &str,
+    version: &str,
+    arch: &str,
+    os: &str,
+) -> String {
+    let mut tera = tera::Tera::default();
+    tera.autoescape_on(vec![]);
+    tera.add_raw_template("url", template)
+        .expect("url_template: invalid template");
+    let mut ctx = tera::Context::new();
+    ctx.insert("name", name);
+    ctx.insert("version", version);
+    ctx.insert("arch", arch);
+    ctx.insert("os", os);
+    tera.render("url", &ctx)
+        .expect("url_template: render failed")
 }
 
 /// Find all Archive artifacts for the given crate whose target or path
@@ -445,13 +517,28 @@ fn artifact_to_os_artifact(a: &Artifact, os_fallback: &str) -> OsArtifact {
 ///
 /// Returns a vec of `OsArtifact` with the URL, SHA256, and inferred
 /// os/arch strings extracted from the target triple.
+#[allow(dead_code)]
 pub(crate) fn find_artifacts_by_os(
     ctx: &Context,
     crate_name: &str,
     os_needle: &str,
 ) -> Vec<OsArtifact> {
-    ctx.artifacts
-        .by_kind_and_crate(ArtifactKind::Archive, crate_name)
+    find_artifacts_by_os_filtered(ctx, crate_name, os_needle, None)
+}
+
+/// Find all Archive artifacts for the given crate whose target or path
+/// matches `os_needle`, with optional IDs filter.
+pub(crate) fn find_artifacts_by_os_filtered(
+    ctx: &Context,
+    crate_name: &str,
+    os_needle: &str,
+    ids: Option<&[String]>,
+) -> Vec<OsArtifact> {
+    let all = ctx
+        .artifacts
+        .by_kind_and_crate(ArtifactKind::Archive, crate_name);
+    let filtered = filter_by_ids(all, ids);
+    filtered
         .into_iter()
         .filter(|a| {
             a.target
@@ -471,9 +558,23 @@ pub(crate) fn find_artifacts_by_os(
 ///
 /// Returns a vec of `OsArtifact` with the URL, SHA256, and inferred
 /// os/arch strings extracted from the target triple.
+#[allow(dead_code)]
 pub(crate) fn find_all_platform_artifacts(ctx: &Context, crate_name: &str) -> Vec<OsArtifact> {
-    ctx.artifacts
-        .by_kind_and_crate(ArtifactKind::Archive, crate_name)
+    find_all_platform_artifacts_filtered(ctx, crate_name, None)
+}
+
+/// Find all Archive artifacts for the given crate across all platforms,
+/// with optional IDs filter.
+pub(crate) fn find_all_platform_artifacts_filtered(
+    ctx: &Context,
+    crate_name: &str,
+    ids: Option<&[String]>,
+) -> Vec<OsArtifact> {
+    let all = ctx
+        .artifacts
+        .by_kind_and_crate(ArtifactKind::Archive, crate_name);
+    let filtered = filter_by_ids(all, ids);
+    filtered
         .into_iter()
         .map(|a| artifact_to_os_artifact(a, "unknown"))
         .collect()
@@ -482,6 +583,7 @@ pub(crate) fn find_all_platform_artifacts(ctx: &Context, crate_name: &str) -> Ve
 /// Find a Windows Archive artifact for the given crate and return `(url, sha256)`.
 ///
 /// Returns `None` when no matching artifact exists.
+#[allow(dead_code)]
 pub(crate) fn find_windows_artifact(ctx: &Context, crate_name: &str) -> Option<(String, String)> {
     let a = find_artifacts_by_os(ctx, crate_name, "windows")
         .into_iter()
@@ -722,5 +824,122 @@ mod tests {
         );
         let all = find_all_platform_artifacts(&ctx, "other_tool");
         assert!(all.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // OsArtifact id field tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_os_artifact_has_id_from_metadata() {
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            ..Default::default()
+        }];
+        let mut ctx = Context::new(config, ContextOptions::default());
+        let mut meta = HashMap::new();
+        meta.insert("url".to_string(), "https://example.com/a.tar.gz".to_string());
+        meta.insert("sha256".to_string(), "abc".to_string());
+        meta.insert("id".to_string(), "my-archive".to_string());
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: PathBuf::from("dist/a.tar.gz"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "mytool".to_string(),
+            metadata: meta,
+        });
+
+        let all = find_all_platform_artifacts(&ctx, "mytool");
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].id.as_deref(), Some("my-archive"));
+    }
+
+    #[test]
+    fn test_os_artifact_id_is_none_when_not_in_metadata() {
+        let ctx = ctx_with_artifacts(
+            "mytool",
+            vec![(
+                "x86_64-unknown-linux-gnu",
+                "https://example.com/a.tar.gz",
+                "abc",
+            )],
+        );
+        let all = find_all_platform_artifacts(&ctx, "mytool");
+        assert_eq!(all.len(), 1);
+        assert!(all[0].id.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // filter_os_artifacts_by_ids tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_filter_os_artifacts_by_ids_none_passes_all() {
+        let artifacts = vec![
+            OsArtifact {
+                url: "u1".to_string(),
+                sha256: "s1".to_string(),
+                os: "linux".to_string(),
+                arch: "amd64".to_string(),
+                id: Some("a".to_string()),
+            },
+            OsArtifact {
+                url: "u2".to_string(),
+                sha256: "s2".to_string(),
+                os: "darwin".to_string(),
+                arch: "arm64".to_string(),
+                id: Some("b".to_string()),
+            },
+        ];
+        let result = filter_os_artifacts_by_ids(artifacts, None);
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_filter_os_artifacts_by_ids_filters_matching() {
+        let artifacts = vec![
+            OsArtifact {
+                url: "u1".to_string(),
+                sha256: "s1".to_string(),
+                os: "linux".to_string(),
+                arch: "amd64".to_string(),
+                id: Some("keep-me".to_string()),
+            },
+            OsArtifact {
+                url: "u2".to_string(),
+                sha256: "s2".to_string(),
+                os: "darwin".to_string(),
+                arch: "arm64".to_string(),
+                id: Some("drop-me".to_string()),
+            },
+            OsArtifact {
+                url: "u3".to_string(),
+                sha256: "s3".to_string(),
+                os: "windows".to_string(),
+                arch: "amd64".to_string(),
+                id: None,
+            },
+        ];
+        let ids = vec!["keep-me".to_string()];
+        let result = filter_os_artifacts_by_ids(artifacts, Some(&ids));
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].url, "u1");
+    }
+
+    #[test]
+    fn test_filter_os_artifacts_by_ids_empty_ids_returns_nothing() {
+        let artifacts = vec![OsArtifact {
+            url: "u1".to_string(),
+            sha256: "s1".to_string(),
+            os: "linux".to_string(),
+            arch: "amd64".to_string(),
+            id: Some("a".to_string()),
+        }];
+        let ids: Vec<String> = vec![];
+        let result = filter_os_artifacts_by_ids(artifacts, Some(&ids));
+        assert!(result.is_empty());
     }
 }
