@@ -536,9 +536,81 @@ Replicate the full `anothrNick/github-tag-action@1.71.0` feature set as a native
 
 ---
 
+## Cloud Storage + Split/Merge — Research & Redo
+
+**Depends on:** Cloud Storage + CI Fan-Out session complete (scaffolding exists but implementation is incomplete).
+
+**Why this session exists:** The previous session implemented blob upload by shelling out to CLI tools (`aws s3 cp`, `gsutil cp`, `az storage blob upload`) and left several gaps vs GoReleaser: `extra_files.name` is not template-rendered, `s3_force_path_style` is improperly wired, there are no integration tests against actual cloud APIs (even mocked), and the split/merge workflow doesn't match GoReleaser's `GGOOS`-based filtering model. The review process failed to catch these gaps because it reviewed internal code quality without independently verifying GoReleaser parity. This session fixes that by starting with research, not code.
+
+### Task A: Deep-dive GoReleaser's blob implementation
+
+Research the actual GoReleaser source code and documentation to understand exactly how blob upload works:
+
+- **Fetch and read GoReleaser's blob pipe source**: `internal/pipe/blob/` in the GoReleaser repo. Understand the Go SDK usage (aws-sdk-go-v2 for S3, cloud.google.com/go/storage for GCS, azblob SDK for Azure). Document every config field, every API call, every header set, every error path.
+- **Fetch and read GoReleaser's blob tests**: Understand what they test — do they use mocked HTTP servers? LocalStack? MinIO containers? What's the test strategy?
+- **Document the authentication model**: How does GoReleaser handle credentials for each provider? Environment variables only? Credential files? IAM roles? What's the default credential chain?
+- **Document S3-compatible backends**: How does GoReleaser handle MinIO, DigitalOcean Spaces, Backblaze B2, Cloudflare R2? What config fields enable this (endpoint, force_path_style, disable_ssl)?
+- **Compare field-by-field**: Produce a table: GoReleaser field → anodize field → status (identical, different, missing). Every field must be accounted for.
+
+### Task B: Deep-dive GoReleaser's split/merge implementation
+
+- **Fetch and read GoReleaser's split/merge source**: `internal/pipe/partial/` and the `--split`/`continue --merge` CLI paths. Understand the serialization format, the `GGOOS`/`GGOARCH` filtering, the artifact collection strategy.
+- **Fetch the split/merge example repo**: `goreleaser/example-split-merge-real` — understand the real-world CI workflow pattern.
+- **Document the split strategy**: What does `partial.by: goos` vs `partial.by: target` actually do? How does filtering work at the build level vs the pipeline level?
+- **Document the merge protocol**: What files are read? What stages are re-run? How are Docker images handled (they mention "pulling previously built images")?
+- **Compare with anodize's current implementation**: What's correct, what's wrong, what's missing?
+
+### Task C: Evaluate implementation approaches for blob upload
+
+Based on the research, evaluate and recommend the best approach for anodize:
+
+**Option 1: Direct HTTP via reqwest (already a workspace dep)**
+- Pros: No new deps, full control over headers/auth/path-style, testable with wiremock/mockito
+- Cons: Must implement S3 SigV4 signing, GCS OAuth, Azure SAS/key auth manually — significant crypto/auth code
+- Evaluate: Is there a lightweight S3 signing crate (e.g., `rusty-s3`, `aws-sigv4`) that avoids pulling in the full AWS SDK?
+
+**Option 2: Rust cloud SDKs (aws-sdk-s3, google-cloud-storage, azure_storage_blobs)**
+- Pros: Correct auth, retry, error handling out of the box — matches GoReleaser's approach
+- Cons: Heavy dependencies (aws-sdk-s3 alone pulls 50+ crates), async runtime required (tokio already in workspace)
+- Evaluate: What's the actual dep tree size? Is it acceptable for a CLI tool?
+
+**Option 3: Lightweight S3/GCS/Azure crates**
+- Evaluate `rust-s3`, `cloud-storage` (GCS), `azure_storage_blobs` — are there minimal crates that provide upload without the full SDK?
+- What's the maintenance status and community adoption of each?
+
+**Option 4: CLI shelling (current approach) but done properly**
+- If shelling is the right call (simpler, fewer deps, user controls auth), then every config field must actually map to a CLI flag, templates must be rendered, and tests must verify command construction exhaustively.
+- Evaluate: Are there config fields that simply cannot be expressed as CLI flags? If so, this option is ruled out.
+
+For each option, document: dependency cost, auth complexity, testability, feature completeness, maintenance burden. Recommend one approach with justification.
+
+### Task D: Evaluate split/merge design decisions
+
+- Should anodize use `GGOOS`/`GGOARCH` env var filtering like GoReleaser, or is the `--single-target` approach better?
+- Should `--merge` be a separate command (`anodize continue --merge`) or a flag on `release`?
+- How should the artifact handoff work between split and merge jobs? Filesystem convention? Explicit `--artifacts-dir` flag?
+- What's the right serialization format and what metadata must it contain?
+
+### Task E: Write the implementation spec
+
+Based on Tasks A-D, produce a detailed implementation spec at `.claude/specs/cloud-storage-split-merge-v2.md` covering:
+
+- Exact crate dependencies to add (with version pins)
+- Auth strategy per provider (env vars, credential chain, config fields)
+- API calls per provider (endpoint, method, headers, body)
+- Error handling strategy (retries, timeouts, meaningful error messages)
+- Test strategy (mocked HTTP servers vs real containers vs command construction)
+- Split/merge protocol (serialization format, file layout, stage filtering)
+- Migration plan from current CLI-shelling implementation
+- Every config field with its runtime behavior documented
+
+**Session exit criteria:** Implementation spec exists and is comprehensive enough that a fresh session can implement it without any additional research. Every GoReleaser blob/split field is accounted for. The recommended approach is justified with concrete dependency analysis. No ambiguity remains about auth, headers, error handling, or test strategy.
+
+---
+
 ## Remaining Session 6 Gaps + Final GoReleaser Parity Audit
 
-**Depends on:** Platform-specific packaging and cloud storage complete.
+**Depends on:** Cloud Storage + Split/Merge research and redo complete.
 
 **Why here:** The initial parity audit (Session 6) identified gaps but could not close them all because platform packaging and cloud features weren't implemented yet. Now that every feature category is implemented, this session re-runs the full GoReleaser comparison from scratch with zero items written off. Every GoReleaser feature must be accounted for — implemented, or explicitly justified as not applicable to the Rust ecosystem.
 
