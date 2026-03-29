@@ -10,6 +10,7 @@ pub enum ArtifactKind {
     Archive,
     Checksum,
     DockerImage,
+    DockerManifest,
     LinuxPackage,
     Metadata,
     Library,
@@ -30,6 +31,7 @@ impl ArtifactKind {
             ArtifactKind::Archive => "archive",
             ArtifactKind::Checksum => "checksum",
             ArtifactKind::DockerImage => "docker_image",
+            ArtifactKind::DockerManifest => "docker_manifest",
             ArtifactKind::LinuxPackage => "linux_package",
             ArtifactKind::Metadata => "metadata",
             ArtifactKind::Library => "library",
@@ -50,6 +52,7 @@ impl ArtifactKind {
             "archive" => Some(ArtifactKind::Archive),
             "checksum" => Some(ArtifactKind::Checksum),
             "docker_image" => Some(ArtifactKind::DockerImage),
+            "docker_manifest" => Some(ArtifactKind::DockerManifest),
             "linux_package" => Some(ArtifactKind::LinuxPackage),
             "metadata" => Some(ArtifactKind::Metadata),
             "library" => Some(ArtifactKind::Library),
@@ -258,7 +261,7 @@ mod tests {
         });
         registry.add(Artifact {
             kind: ArtifactKind::Checksum,
-            path: PathBuf::from("dist/myapp_checksums.sha256"),
+            path: PathBuf::from("dist/myapp_1.0.0_checksums.txt"),
             target: None,
             crate_name: "myapp".to_string(),
             metadata: Default::default(),

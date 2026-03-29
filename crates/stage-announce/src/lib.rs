@@ -90,8 +90,16 @@ impl Stage for AnnounceStage {
         {
             let url = require_rendered(ctx, cfg.webhook_url.as_deref(), "discord", "webhook_url")?;
             let message = render_message(ctx, cfg.message_template.as_deref())?;
+            let author = render_optional(ctx, cfg.author.as_deref())?;
+            let color = cfg.color;
+            let icon_url = render_optional(ctx, cfg.icon_url.as_deref())?;
+            let opts = discord::DiscordOptions {
+                author: author.as_deref(),
+                color,
+                icon_url: icon_url.as_deref(),
+            };
             dispatch(ctx, "discord", &message, || {
-                discord::send_discord(&url, &message)
+                discord::send_discord(&url, &message, &opts)
             })?;
         }
 
@@ -103,7 +111,23 @@ impl Stage for AnnounceStage {
         {
             let url = require_rendered(ctx, cfg.webhook_url.as_deref(), "slack", "webhook_url")?;
             let message = render_message(ctx, cfg.message_template.as_deref())?;
-            dispatch(ctx, "slack", &message, || slack::send_slack(&url, &message))?;
+            let channel = render_optional(ctx, cfg.channel.as_deref())?;
+            let username = render_optional(ctx, cfg.username.as_deref())?;
+            let icon_emoji = cfg.icon_emoji.clone();
+            let icon_url = cfg.icon_url.clone();
+            let blocks = cfg.blocks.clone();
+            let attachments = cfg.attachments.clone();
+            dispatch(ctx, "slack", &message, || {
+                let opts = slack::SlackOptions {
+                    channel: channel.as_deref(),
+                    username: username.as_deref(),
+                    icon_emoji: icon_emoji.as_deref(),
+                    icon_url: icon_url.as_deref(),
+                    blocks: blocks.as_ref(),
+                    attachments: attachments.as_ref(),
+                };
+                slack::send_slack(&url, &message, &opts)
+            })?;
         }
 
         // ----------------------------------------------------------------
@@ -126,8 +150,9 @@ impl Stage for AnnounceStage {
                 .clone()
                 .unwrap_or_else(|| "application/json".to_string());
 
+            let skip_tls = cfg.skip_tls_verify.unwrap_or(false);
             dispatch(ctx, "webhook", &message, || {
-                webhook::send_webhook(&url, &message, &headers, &content_type)
+                webhook::send_webhook(&url, &message, &headers, &content_type, skip_tls)
             })?;
         }
 
@@ -141,10 +166,22 @@ impl Stage for AnnounceStage {
                 require_rendered(ctx, cfg.bot_token.as_deref(), "telegram", "bot_token")?;
             let chat_id = require_rendered(ctx, cfg.chat_id.as_deref(), "telegram", "chat_id")?;
             let message = render_message(ctx, cfg.message_template.as_deref())?;
-            let parse_mode = render_optional(ctx, cfg.parse_mode.as_deref())?;
+            // Default parse_mode to "MarkdownV2" to match GoReleaser behaviour.
+            let parse_mode_raw = cfg
+                .parse_mode
+                .as_deref()
+                .or(Some("MarkdownV2"));
+            let parse_mode = render_optional(ctx, parse_mode_raw)?;
+            let message_thread_id = cfg.message_thread_id;
 
             dispatch(ctx, "telegram", &message, || {
-                telegram::send_telegram(&bot_token, &chat_id, &message, parse_mode.as_deref())
+                telegram::send_telegram(
+                    &bot_token,
+                    &chat_id,
+                    &message,
+                    parse_mode.as_deref(),
+                    message_thread_id,
+                )
             })?;
         }
 
@@ -156,7 +193,15 @@ impl Stage for AnnounceStage {
         {
             let url = require_rendered(ctx, cfg.webhook_url.as_deref(), "teams", "webhook_url")?;
             let message = render_message(ctx, cfg.message_template.as_deref())?;
-            dispatch(ctx, "teams", &message, || teams::send_teams(&url, &message))?;
+            let title = render_optional(ctx, cfg.title_template.as_deref())?;
+            let color = cfg.color.clone();
+            let opts = teams::TeamsOptions {
+                title: title.as_deref(),
+                color: color.as_deref(),
+            };
+            dispatch(ctx, "teams", &message, || {
+                teams::send_teams(&url, &message, &opts)
+            })?;
         }
 
         // ----------------------------------------------------------------
@@ -171,15 +216,18 @@ impl Stage for AnnounceStage {
             let channel = render_optional(ctx, cfg.channel.as_deref())?;
             let username = render_optional(ctx, cfg.username.as_deref())?;
             let icon_url = render_optional(ctx, cfg.icon_url.as_deref())?;
+            let icon_emoji = render_optional(ctx, cfg.icon_emoji.as_deref())?;
+            let color = cfg.color.clone();
 
+            let opts = mattermost::MattermostOptions {
+                channel: channel.as_deref(),
+                username: username.as_deref(),
+                icon_url: icon_url.as_deref(),
+                icon_emoji: icon_emoji.as_deref(),
+                color: color.as_deref(),
+            };
             dispatch(ctx, "mattermost", &message, || {
-                mattermost::send_mattermost(
-                    &url,
-                    &message,
-                    channel.as_deref(),
-                    username.as_deref(),
-                    icon_url.as_deref(),
-                )
+                mattermost::send_mattermost(&url, &message, &opts)
             })?;
         }
 
@@ -233,7 +281,7 @@ impl Stage for AnnounceStage {
 mod tests {
     use super::*;
     use anodize_core::config::{
-        AnnounceConfig, AnnounceProviderConfig, Config, EmailAnnounce, MattermostAnnounce,
+        AnnounceConfig, Config, DiscordAnnounce, EmailAnnounce, MattermostAnnounce, SlackAnnounce,
         TeamsAnnounce, TelegramAnnounce, WebhookConfig,
     };
     use anodize_core::context::{Context, ContextOptions};
@@ -261,10 +309,11 @@ mod tests {
     #[test]
     fn test_skips_disabled_discord() {
         let announce = AnnounceConfig {
-            discord: Some(AnnounceProviderConfig {
+            discord: Some(DiscordAnnounce {
                 enabled: Some(false),
                 webhook_url: Some("https://discord.invalid/webhook".to_string()),
                 message_template: None,
+                ..Default::default()
             }),
             slack: None,
             webhook: None,
@@ -279,10 +328,10 @@ mod tests {
     fn test_skips_disabled_slack() {
         let announce = AnnounceConfig {
             discord: None,
-            slack: Some(AnnounceProviderConfig {
+            slack: Some(SlackAnnounce {
                 enabled: Some(false),
                 webhook_url: Some("https://hooks.slack.invalid/services/T000".to_string()),
-                message_template: None,
+                ..Default::default()
             }),
             webhook: None,
             ..Default::default()
@@ -302,6 +351,7 @@ mod tests {
                 headers: None,
                 content_type: None,
                 message_template: None,
+                skip_tls_verify: None,
             }),
             ..Default::default()
         };
@@ -312,10 +362,11 @@ mod tests {
     #[test]
     fn test_dry_run_discord_does_not_send() {
         let announce = AnnounceConfig {
-            discord: Some(AnnounceProviderConfig {
+            discord: Some(DiscordAnnounce {
                 enabled: Some(true),
                 webhook_url: Some("https://discord.invalid/webhook".to_string()),
                 message_template: Some("{{ .ProjectName }} {{ .Tag }} released!".to_string()),
+                ..Default::default()
             }),
             slack: None,
             webhook: None,
@@ -338,10 +389,11 @@ mod tests {
     fn test_dry_run_slack_does_not_send() {
         let announce = AnnounceConfig {
             discord: None,
-            slack: Some(AnnounceProviderConfig {
+            slack: Some(SlackAnnounce {
                 enabled: Some(true),
                 webhook_url: Some("https://hooks.slack.invalid/services/T000".to_string()),
                 message_template: Some("{{ .ProjectName }} {{ .Tag }} released!".to_string()),
+                ..Default::default()
             }),
             webhook: None,
             ..Default::default()
@@ -369,6 +421,7 @@ mod tests {
                 headers: None,
                 content_type: Some("application/json".to_string()),
                 message_template: Some("{{ .ProjectName }} {{ .Tag }} released!".to_string()),
+                skip_tls_verify: None,
             }),
             ..Default::default()
         };
@@ -387,10 +440,11 @@ mod tests {
     #[test]
     fn test_missing_webhook_url_returns_error() {
         let announce = AnnounceConfig {
-            discord: Some(AnnounceProviderConfig {
+            discord: Some(DiscordAnnounce {
                 enabled: Some(true),
                 webhook_url: None, // intentionally missing
                 message_template: None,
+                ..Default::default()
             }),
             slack: None,
             webhook: None,
@@ -436,6 +490,7 @@ mod tests {
                 chat_id: Some("-100123".to_string()),
                 message_template: Some("{{ .ProjectName }} {{ .Tag }} released!".to_string()),
                 parse_mode: Some("MarkdownV2".to_string()),
+                message_thread_id: None,
             }),
             ..Default::default()
         };
@@ -514,6 +569,7 @@ mod tests {
                 enabled: Some(true),
                 webhook_url: Some("https://teams.invalid/webhook".to_string()),
                 message_template: Some("{{ .ProjectName }} {{ .Tag }} released!".to_string()),
+                ..Default::default()
             }),
             ..Default::default()
         };
@@ -574,6 +630,8 @@ mod tests {
                 channel: Some("releases".to_string()),
                 username: Some("release-bot".to_string()),
                 icon_url: Some("https://example.com/icon.png".to_string()),
+                icon_emoji: None,
+                color: None,
                 message_template: Some("{{ .ProjectName }} {{ .Tag }} released!".to_string()),
             }),
             ..Default::default()
@@ -710,5 +768,100 @@ mod tests {
             err.to_string().contains("missing @"),
             "expected 'missing @' error, got: {err}"
         );
+    }
+
+    // ----------------------------------------------------------------
+    // Config struct field tests
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn test_discord_announce_new_fields() {
+        let cfg = DiscordAnnounce {
+            enabled: Some(true),
+            webhook_url: Some("https://discord.com/api/webhooks/123/abc".to_string()),
+            message_template: None,
+            author: Some("release-bot".to_string()),
+            color: Some(16711680),
+            icon_url: Some("https://example.com/icon.png".to_string()),
+        };
+        assert_eq!(cfg.author.as_deref(), Some("release-bot"));
+        assert_eq!(cfg.color, Some(16711680));
+        assert_eq!(cfg.icon_url.as_deref(), Some("https://example.com/icon.png"));
+    }
+
+    #[test]
+    fn test_webhook_skip_tls_verify_field() {
+        let cfg = WebhookConfig {
+            enabled: Some(true),
+            endpoint_url: Some("https://internal.example.com/hook".to_string()),
+            skip_tls_verify: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(cfg.skip_tls_verify, Some(true));
+    }
+
+    #[test]
+    fn test_telegram_message_thread_id_field() {
+        let cfg = TelegramAnnounce {
+            enabled: Some(true),
+            bot_token: Some("123:ABC".to_string()),
+            chat_id: Some("-100123".to_string()),
+            message_thread_id: Some(42),
+            ..Default::default()
+        };
+        assert_eq!(cfg.message_thread_id, Some(42));
+    }
+
+    #[test]
+    fn test_teams_title_and_color_fields() {
+        let cfg = TeamsAnnounce {
+            enabled: Some(true),
+            webhook_url: Some("https://teams.example.com/webhook".to_string()),
+            title_template: Some("Release v1.0".to_string()),
+            color: Some("0076D7".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(cfg.title_template.as_deref(), Some("Release v1.0"));
+        assert_eq!(cfg.color.as_deref(), Some("0076D7"));
+    }
+
+    #[test]
+    fn test_mattermost_icon_emoji_and_color_fields() {
+        let cfg = MattermostAnnounce {
+            enabled: Some(true),
+            webhook_url: Some("https://mm.example.com/hooks/xxx".to_string()),
+            icon_emoji: Some(":rocket:".to_string()),
+            color: Some("#36a64f".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(cfg.icon_emoji.as_deref(), Some(":rocket:"));
+        assert_eq!(cfg.color.as_deref(), Some("#36a64f"));
+    }
+
+    #[test]
+    fn test_dry_run_telegram_defaults_parse_mode_to_markdownv2() {
+        // When parse_mode is not explicitly set, it should default to "MarkdownV2".
+        let announce = AnnounceConfig {
+            telegram: Some(TelegramAnnounce {
+                enabled: Some(true),
+                bot_token: Some("123:ABC".to_string()),
+                chat_id: Some("-100123".to_string()),
+                message_template: Some("{{ .ProjectName }} released!".to_string()),
+                parse_mode: None, // not set -- should default to MarkdownV2
+                message_thread_id: None,
+            }),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.announce = Some(announce);
+        let opts = ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        // Should succeed in dry-run without error.
+        assert!(AnnounceStage.run(&mut ctx).is_ok());
     }
 }

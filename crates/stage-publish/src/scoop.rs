@@ -68,9 +68,6 @@ pub fn generate_manifest_with_opts(
     // Scoop bin entry should include .exe for Windows.
     let bin_name = format!("{}.exe", name);
 
-    // Autoupdate URL uses GitHub slug if available.
-    let autoupdate_prefix = opts.github_slug.as_deref().unwrap_or(name);
-
     let mut manifest = serde_json::json!({
         "version": version,
         "description": description,
@@ -82,19 +79,29 @@ pub fn generate_manifest_with_opts(
                 "hash": hash,
                 "bin": bin_name
             }
-        },
-        "checkver": "github",
-        "autoupdate": {
-            "architecture": {
-                "64bit": {
-                    "url": format!(
-                        "https://github.com/{}/releases/download/v$version/{}-$version-windows-amd64.zip",
-                        autoupdate_prefix, name
-                    )
-                }
-            }
         }
     });
+
+    // Only include checkver + autoupdate when a valid GitHub slug (owner/repo) is
+    // available.  Without a slug the URL would be broken (bare crate name used as
+    // the GitHub path component), so we omit both fields entirely.
+    if let Some(slug) = opts.github_slug.as_deref() {
+        let obj = manifest.as_object_mut().expect("manifest is an object");
+        obj.insert("checkver".to_string(), serde_json::json!("github"));
+        obj.insert(
+            "autoupdate".to_string(),
+            serde_json::json!({
+                "architecture": {
+                    "64bit": {
+                        "url": format!(
+                            "https://github.com/{}/releases/download/v$version/{}-$version-windows-amd64.zip",
+                            slug, name
+                        )
+                    }
+                }
+            }),
+        );
+    }
 
     // Add optional array fields when present.
     let obj = manifest.as_object_mut().expect("manifest is an object");
@@ -187,8 +194,11 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         shortcuts: scoop_cfg.shortcuts.as_deref(),
     };
 
+    // Use name override if set, otherwise crate name.
+    let manifest_name = scoop_cfg.name.as_deref().unwrap_or(crate_name);
+
     let manifest = generate_manifest_with_opts(
-        crate_name,
+        manifest_name,
         &version,
         &url,
         &hash,
@@ -206,7 +216,17 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
 
     util::clone_repo_with_auth(&repo_url, token.as_deref(), repo_path, "scoop", log)?;
 
-    let manifest_path = repo_path.join(format!("{}.json", crate_name));
+    // Place manifest in optional subdirectory.
+    let manifest_dir = if let Some(dir) = scoop_cfg.directory.as_deref() {
+        let d = repo_path.join(dir);
+        std::fs::create_dir_all(&d)
+            .with_context(|| format!("scoop: create directory {}", d.display()))?;
+        d
+    } else {
+        repo_path.to_path_buf()
+    };
+
+    let manifest_path = manifest_dir.join(format!("{}.json", manifest_name));
     std::fs::write(&manifest_path, &manifest)
         .with_context(|| format!("scoop: write manifest {}", manifest_path.display()))?;
 
@@ -215,13 +235,26 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         manifest_path.display()
     ));
 
+    // Render commit message from template or use default.
+    let commit_msg = crate::homebrew::render_commit_msg(
+        scoop_cfg.commit_msg_template.as_deref(),
+        manifest_name,
+        &version,
+        "manifest",
+    );
+
     let manifest_lossy = manifest_path.to_string_lossy();
-    util::commit_and_push(
+    let commit_opts = util::CommitOptions {
+        author_name: scoop_cfg.commit_author_name.as_deref(),
+        author_email: scoop_cfg.commit_author_email.as_deref(),
+    };
+    util::commit_and_push_with_opts(
         repo_path,
         &[&manifest_lossy],
-        &format!("chore: update {} manifest to {}", crate_name, version),
+        &commit_msg,
         None,
         "scoop",
+        &commit_opts,
     )?;
 
     log.status(&format!(
@@ -321,13 +354,18 @@ mod tests {
 
     #[test]
     fn test_integration_manifest_complete_json_structure() {
-        let manifest = generate_manifest(
+        let opts = ManifestOptions {
+            github_slug: Some("tj-smith47/anodize".to_string()),
+            ..Default::default()
+        };
+        let manifest = generate_manifest_with_opts(
             "anodize",
             "3.2.1",
             "https://github.com/tj-smith47/anodize/releases/download/v3.2.1/anodize-3.2.1-windows-amd64.zip",
             "aabbccdd1122334455667788",
             "Release automation for Rust projects",
             "Apache-2.0",
+            &opts,
         );
 
         // Parse the manifest as JSON
@@ -337,7 +375,7 @@ mod tests {
         // Verify top-level fields exist and have correct values
         assert_eq!(json["version"], "3.2.1");
         assert_eq!(json["description"], "Release automation for Rust projects");
-        assert_eq!(json["homepage"], "https://github.com/anodize");
+        assert_eq!(json["homepage"], "https://github.com/tj-smith47/anodize");
         assert_eq!(json["license"], "Apache-2.0");
 
         // Verify architecture.64bit structure
@@ -416,13 +454,14 @@ mod tests {
             keys.iter().any(|k| k.as_str() == "architecture"),
             "should have architecture key"
         );
+        // checkver and autoupdate are only present when github_slug is set
         assert!(
-            keys.iter().any(|k| k.as_str() == "checkver"),
-            "should have checkver key"
+            !keys.iter().any(|k| k.as_str() == "checkver"),
+            "should NOT have checkver key when github_slug is absent"
         );
         assert!(
-            keys.iter().any(|k| k.as_str() == "autoupdate"),
-            "should have autoupdate key"
+            !keys.iter().any(|k| k.as_str() == "autoupdate"),
+            "should NOT have autoupdate key when github_slug is absent"
         );
     }
 
@@ -467,13 +506,18 @@ mod tests {
 
     #[test]
     fn test_integration_manifest_autoupdate_url_format() {
-        let manifest = generate_manifest(
+        let opts = ManifestOptions {
+            github_slug: Some("myorg/release-tool".to_string()),
+            ..Default::default()
+        };
+        let manifest = generate_manifest_with_opts(
             "release-tool",
             "5.0.0",
             "https://example.com/release-tool-5.0.0-windows-amd64.zip",
             "hash",
             "desc",
             "MIT",
+            &opts,
         );
 
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
@@ -482,10 +526,9 @@ mod tests {
             .unwrap();
 
         // The autoupdate URL should follow the pattern:
-        // https://github.com/<name>/releases/download/v$version/<name>-$version-windows-amd64.zip
-        // When github_slug is set, it uses owner/repo instead of bare name.
+        // https://github.com/<owner>/<repo>/releases/download/v$version/<name>-$version-windows-amd64.zip
         assert!(
-            auto_url.starts_with("https://github.com/release-tool/releases/download/v$version/")
+            auto_url.starts_with("https://github.com/myorg/release-tool/releases/download/v$version/")
         );
         assert!(auto_url.ends_with("-windows-amd64.zip"));
         assert!(auto_url.contains("release-tool-$version-"));
@@ -519,14 +562,19 @@ mod tests {
     }
 
     #[test]
-    fn test_scoop_manifest_checkver_and_autoupdate() {
-        let manifest = generate_manifest(
+    fn test_scoop_manifest_checkver_and_autoupdate_with_slug() {
+        let opts = ManifestOptions {
+            github_slug: Some("myorg/mytool".to_string()),
+            ..Default::default()
+        };
+        let manifest = generate_manifest_with_opts(
             "mytool",
             "2.0.0",
             "https://example.com/mytool.zip",
             "abc",
             "desc",
             "MIT",
+            &opts,
         );
 
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
@@ -537,6 +585,29 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("$version")
+        );
+    }
+
+    #[test]
+    fn test_scoop_manifest_no_checkver_autoupdate_without_slug() {
+        let manifest = generate_manifest(
+            "mytool",
+            "2.0.0",
+            "https://example.com/mytool.zip",
+            "abc",
+            "desc",
+            "MIT",
+        );
+
+        let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+        // Without github_slug, checkver and autoupdate should be absent
+        assert!(
+            json.get("checkver").is_none(),
+            "checkver should be absent without github_slug"
+        );
+        assert!(
+            json.get("autoupdate").is_none(),
+            "autoupdate should be absent without github_slug"
         );
     }
 
@@ -830,5 +901,91 @@ mod tests {
         ctx.template_vars_mut().set("Prerelease", "alpha.1");
         let log = StageLogger::new("publish", Verbosity::Normal);
         assert!(publish_to_scoop(&ctx, "pre", &log).is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // Scoop manifest name override
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_manifest_name_override() {
+        // When ScoopConfig.name is set, the manifest bin and filename should
+        // use the override name.
+        let manifest = generate_manifest(
+            "custom-name",
+            "1.0.0",
+            "https://example.com/custom-name-1.0.0-windows-amd64.zip",
+            "abc123",
+            "A custom named tool",
+            "MIT",
+        );
+        let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+        assert_eq!(json["architecture"]["64bit"]["bin"], "custom-name.exe");
+    }
+
+    // -----------------------------------------------------------------------
+    // Scoop manifest directory placement (dry-run test)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_publish_to_scoop_dry_run_with_directory() {
+        use anodize_core::config::{BucketConfig, Config, CrateConfig, PublishConfig, ScoopConfig};
+        use anodize_core::context::{Context, ContextOptions};
+        use anodize_core::log::{StageLogger, Verbosity};
+
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: "cfgd".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                scoop: Some(ScoopConfig {
+                    bucket: Some(BucketConfig {
+                        owner: "myorg".to_string(),
+                        name: "scoop-bucket".to_string(),
+                    }),
+                    directory: Some("bucket".to_string()),
+                    description: Some("A tool".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+
+        let ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        let log = StageLogger::new("publish", Verbosity::Normal);
+
+        // dry-run should succeed; the directory field is wired but no actual
+        // file system operations happen in dry-run mode.
+        assert!(publish_to_scoop(&ctx, "cfgd", &log).is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // Scoop commit message template (uses shared render_commit_msg)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_scoop_commit_msg_default() {
+        let msg =
+            crate::homebrew::render_commit_msg(None, "mytool", "1.2.3", "manifest");
+        assert_eq!(msg, "chore: update mytool manifest to 1.2.3");
+    }
+
+    #[test]
+    fn test_scoop_commit_msg_custom() {
+        let msg = crate::homebrew::render_commit_msg(
+            Some("scoop: bump {{ name }} to {{ version }}"),
+            "mytool",
+            "3.0.0",
+            "manifest",
+        );
+        assert_eq!(msg, "scoop: bump mytool to 3.0.0");
     }
 }

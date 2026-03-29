@@ -3,13 +3,17 @@ use std::fs::{self, File};
 use std::io::{Read as IoRead, Write as IoWrite};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use flate2::Compression;
 use flate2::write::GzEncoder;
 
 use anodize_core::artifact::{Artifact, ArtifactKind};
-use anodize_core::config::{ArchiveConfig, ArchivesConfig, FormatOverride};
+use anodize_core::config::{
+    ArchiveConfig, ArchiveFileSpec, ArchivesConfig, FormatOverride, VALID_ARCHIVE_FORMATS,
+    parse_octal_mode,
+};
 use anodize_core::context::Context;
+use anodize_core::hooks::run_hooks;
 use anodize_core::stage::Stage;
 use anodize_core::target::map_target;
 
@@ -17,7 +21,29 @@ use anodize_core::target::map_target;
 // append_tar_entry  (helper)
 // ---------------------------------------------------------------------------
 
-/// Append a single file to a tar archive, optionally overriding mtime.
+/// Apply `ArchiveFileInfo` overrides (mode, owner, group) to a tar header.
+fn apply_file_info_to_header(
+    header: &mut tar::Header,
+    info: &anodize_core::config::ArchiveFileInfo,
+) {
+    if let Some(mode_str) = &info.mode {
+        if let Some(mode) = parse_octal_mode(mode_str) {
+            header.set_mode(mode);
+        }
+    }
+    if let Some(ref owner) = info.owner {
+        header.set_username(owner).ok();
+    }
+    if let Some(ref group) = info.group {
+        header.set_groupname(group).ok();
+    }
+    if let Some(Ok(ts)) = info.mtime.as_ref().map(|s| s.parse::<u64>()) {
+        header.set_mtime(ts);
+    }
+}
+
+/// Append a single file to a tar archive, optionally overriding mtime and
+/// file info (mode/owner/group from builds_info).
 /// When `mtime` is Some, a header is built manually with that timestamp so
 /// that the archive is reproducible regardless of filesystem mtime.
 fn append_tar_entry<W: std::io::Write>(
@@ -25,17 +51,23 @@ fn append_tar_entry<W: std::io::Write>(
     src: &Path,
     archive_name: &Path,
     mtime: Option<u64>,
+    file_info: Option<&anodize_core::config::ArchiveFileInfo>,
 ) -> Result<()> {
-    if let Some(ts) = mtime {
+    if mtime.is_some() || file_info.is_some() {
         let metadata =
             fs::metadata(src).with_context(|| format!("read metadata: {}", src.display()))?;
         let mut header = tar::Header::new_gnu();
         header.set_metadata(&metadata);
-        header.set_mtime(ts);
-        header.set_uid(0);
-        header.set_gid(0);
-        header.set_username("").ok();
-        header.set_groupname("").ok();
+        if let Some(ts) = mtime {
+            header.set_mtime(ts);
+            header.set_uid(0);
+            header.set_gid(0);
+            header.set_username("").ok();
+            header.set_groupname("").ok();
+        }
+        if let Some(info) = file_info {
+            apply_file_info_to_header(&mut header, info);
+        }
         header
             .set_path(archive_name)
             .with_context(|| format!("set tar path: {}", archive_name.display()))?;
@@ -58,12 +90,15 @@ fn append_tar_entry<W: std::io::Write>(
 // ---------------------------------------------------------------------------
 
 /// Shared tar archive creation: adds files to a tar builder, then finishes it.
+/// When `file_info` is provided, it is applied to all entries (e.g. builds_info
+/// permissions for binaries).
 fn write_tar_entries<W: std::io::Write>(
     tar: &mut tar::Builder<W>,
     files: &[&Path],
     base_dir: Option<&Path>,
     wrap_dir: Option<&str>,
     mtime: Option<u64>,
+    file_info: Option<&anodize_core::config::ArchiveFileInfo>,
     label: &str,
 ) -> Result<()> {
     for &src in files {
@@ -71,7 +106,7 @@ fn write_tar_entries<W: std::io::Write>(
             continue;
         }
         let archive_name = compute_archive_name(src, base_dir, wrap_dir);
-        append_tar_entry(tar, src, &archive_name, mtime).with_context(|| {
+        append_tar_entry(tar, src, &archive_name, mtime, file_info).with_context(|| {
             format!(
                 "{label}: adding {} as {}",
                 src.display(),
@@ -93,12 +128,13 @@ pub fn create_tar_gz(
     base_dir: Option<&Path>,
     wrap_dir: Option<&str>,
     mtime: Option<u64>,
+    file_info: Option<&anodize_core::config::ArchiveFileInfo>,
 ) -> Result<()> {
     let out_file =
         File::create(output).with_context(|| format!("create tar.gz: {}", output.display()))?;
     let enc = GzEncoder::new(out_file, Compression::default());
     let mut tar = tar::Builder::new(enc);
-    write_tar_entries(&mut tar, files, base_dir, wrap_dir, mtime, "tar.gz")?;
+    write_tar_entries(&mut tar, files, base_dir, wrap_dir, mtime, file_info, "tar.gz")?;
     tar.finish().context("tar.gz: finish")
 }
 
@@ -109,12 +145,13 @@ pub fn create_tar_xz(
     base_dir: Option<&Path>,
     wrap_dir: Option<&str>,
     mtime: Option<u64>,
+    file_info: Option<&anodize_core::config::ArchiveFileInfo>,
 ) -> Result<()> {
     let out_file =
         File::create(output).with_context(|| format!("create tar.xz: {}", output.display()))?;
     let enc = xz2::write::XzEncoder::new(out_file, 6);
     let mut tar = tar::Builder::new(enc);
-    write_tar_entries(&mut tar, files, base_dir, wrap_dir, mtime, "tar.xz")?;
+    write_tar_entries(&mut tar, files, base_dir, wrap_dir, mtime, file_info, "tar.xz")?;
     tar.finish().context("tar.xz: finish")
 }
 
@@ -125,14 +162,52 @@ pub fn create_tar_zst(
     base_dir: Option<&Path>,
     wrap_dir: Option<&str>,
     mtime: Option<u64>,
+    file_info: Option<&anodize_core::config::ArchiveFileInfo>,
 ) -> Result<()> {
     let out_file =
         File::create(output).with_context(|| format!("create tar.zst: {}", output.display()))?;
     let enc = zstd::Encoder::new(out_file, 3).context("tar.zst: create zstd encoder")?;
     let mut tar = tar::Builder::new(enc);
-    write_tar_entries(&mut tar, files, base_dir, wrap_dir, mtime, "tar.zst")?;
+    write_tar_entries(&mut tar, files, base_dir, wrap_dir, mtime, file_info, "tar.zst")?;
     let enc = tar.into_inner().context("tar.zst: finish tar")?;
     enc.finish().context("tar.zst: finish zstd")?;
+    Ok(())
+}
+
+/// Create an uncompressed tar archive containing the given files.
+pub fn create_tar(
+    files: &[&Path],
+    output: &Path,
+    base_dir: Option<&Path>,
+    wrap_dir: Option<&str>,
+    mtime: Option<u64>,
+    file_info: Option<&anodize_core::config::ArchiveFileInfo>,
+) -> Result<()> {
+    let out_file =
+        File::create(output).with_context(|| format!("create tar: {}", output.display()))?;
+    let mut tar = tar::Builder::new(out_file);
+    write_tar_entries(&mut tar, files, base_dir, wrap_dir, mtime, file_info, "tar")?;
+    tar.finish().context("tar: finish")
+}
+
+// ---------------------------------------------------------------------------
+// create_gz  (standalone gzip, no tar wrapping)
+// ---------------------------------------------------------------------------
+
+/// Create a standalone .gz file from a single input file.
+/// Unlike tar.gz, this compresses one file directly with gzip (gz cannot hold
+/// multiple files without tar).
+pub fn create_gz(file: &Path, output: &Path) -> Result<()> {
+    if !file.exists() {
+        bail!("gz: source file does not exist: {}", file.display());
+    }
+    let out_file =
+        File::create(output).with_context(|| format!("create gz: {}", output.display()))?;
+    let mut enc = GzEncoder::new(out_file, Compression::default());
+    let data = fs::read(file).with_context(|| format!("gz: read {}", file.display()))?;
+    enc.write_all(&data)
+        .context("gz: write compressed data")?;
+    enc.finish().context("gz: finish")?;
     Ok(())
 }
 
@@ -143,12 +218,27 @@ pub fn create_tar_zst(
 /// Create a zip archive containing the given files.
 /// Each file is stored under its own filename (no directory prefix).
 /// If `wrap_dir` is provided, all archive entries are prefixed with that directory.
-pub fn create_zip(files: &[&Path], output: &Path, wrap_dir: Option<&str>) -> Result<()> {
+/// If `file_info` is provided, unix permissions from `file_info.mode` are applied.
+pub fn create_zip(
+    files: &[&Path],
+    output: &Path,
+    wrap_dir: Option<&str>,
+    file_info: Option<&anodize_core::config::ArchiveFileInfo>,
+) -> Result<()> {
     let out_file =
         File::create(output).with_context(|| format!("create zip: {}", output.display()))?;
     let mut zip = zip::ZipWriter::new(out_file);
-    let options = zip::write::SimpleFileOptions::default()
+    let mut options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
+
+    // Apply unix permissions from file_info if set
+    if let Some(info) = file_info {
+        if let Some(mode_str) = &info.mode {
+            if let Some(mode) = parse_octal_mode(mode_str) {
+                options = options.unix_permissions(mode);
+            }
+        }
+    }
 
     for &src in files {
         if !src.exists() {
@@ -232,6 +322,51 @@ pub fn resolve_glob_patterns(patterns: &[String]) -> Result<Vec<PathBuf>> {
 }
 
 // ---------------------------------------------------------------------------
+// resolve_file_specs — handle ArchiveFileSpec entries
+// ---------------------------------------------------------------------------
+
+/// A resolved extra file to include in an archive, with optional destination
+/// path override and file info (permissions/owner/group).
+pub struct ResolvedExtraFile {
+    pub src: PathBuf,
+    /// When Some, use this path inside the archive instead of the filename.
+    pub dst: Option<String>,
+    /// File metadata to apply to the archive entry.
+    pub info: Option<anodize_core::config::ArchiveFileInfo>,
+}
+
+/// Resolve a list of ArchiveFileSpec entries into concrete file paths with
+/// optional destination overrides and file info.
+pub fn resolve_file_specs(specs: &[ArchiveFileSpec]) -> Result<Vec<ResolvedExtraFile>> {
+    let mut results = Vec::new();
+    for spec in specs {
+        match spec {
+            ArchiveFileSpec::Glob(pattern) => {
+                let paths = resolve_glob_patterns(std::slice::from_ref(pattern))?;
+                for p in paths {
+                    results.push(ResolvedExtraFile {
+                        src: p,
+                        dst: None,
+                        info: None,
+                    });
+                }
+            }
+            ArchiveFileSpec::Detailed { src, dst, info } => {
+                let paths = resolve_glob_patterns(std::slice::from_ref(src))?;
+                for p in paths {
+                    results.push(ResolvedExtraFile {
+                        src: p,
+                        dst: dst.clone(),
+                        info: info.clone(),
+                    });
+                }
+            }
+        }
+    }
+    Ok(results)
+}
+
+// ---------------------------------------------------------------------------
 // compute_archive_name  (helper)
 // ---------------------------------------------------------------------------
 
@@ -255,22 +390,117 @@ fn compute_archive_name(src: &Path, base_dir: Option<&Path>, wrap_dir: Option<&s
 }
 
 // ---------------------------------------------------------------------------
+// ArchiveEntry — rich file descriptor for archive creation
+// ---------------------------------------------------------------------------
+
+/// An entry to add to an archive, carrying source path, archive-internal name,
+/// and optional per-file info (permissions/owner/group).
+struct ArchiveEntry {
+    /// Source file path on disk.
+    src: PathBuf,
+    /// Name inside the archive (may differ from src filename due to dst override).
+    archive_name: PathBuf,
+    /// Per-file info overrides (mode/owner/group/mtime).
+    info: Option<anodize_core::config::ArchiveFileInfo>,
+}
+
+/// Write a list of `ArchiveEntry` items into a tar builder, applying per-entry
+/// file info and an optional global mtime.
+fn write_archive_entries<W: std::io::Write>(
+    tar: &mut tar::Builder<W>,
+    entries: &[ArchiveEntry],
+    mtime: Option<u64>,
+    label: &str,
+) -> Result<()> {
+    for entry in entries {
+        if !entry.src.exists() {
+            continue;
+        }
+        append_tar_entry(tar, &entry.src, &entry.archive_name, mtime, entry.info.as_ref())
+            .with_context(|| {
+                format!(
+                    "{label}: adding {} as {}",
+                    entry.src.display(),
+                    entry.archive_name.display()
+                )
+            })?;
+    }
+    Ok(())
+}
+
+/// Write a list of `ArchiveEntry` items into a zip writer, applying per-entry
+/// file info (unix permissions from mode).
+fn write_zip_entries<W: std::io::Write + std::io::Seek>(
+    zip: &mut zip::ZipWriter<W>,
+    entries: &[ArchiveEntry],
+) -> Result<()> {
+    let base_options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    for entry in entries {
+        if !entry.src.exists() {
+            continue;
+        }
+        let mut options = base_options;
+        if let Some(ref info) = entry.info {
+            if let Some(mode_str) = &info.mode {
+                if let Some(mode) = parse_octal_mode(mode_str) {
+                    options = options.unix_permissions(mode);
+                }
+            }
+        }
+        let name = entry.archive_name.to_string_lossy().to_string();
+        zip.start_file(&name, options)
+            .with_context(|| format!("zip: start_file {name}"))?;
+        let data = fs::read(&entry.src)
+            .with_context(|| format!("zip: read {}", entry.src.display()))?;
+        zip.write_all(&data)
+            .with_context(|| format!("zip: write {name}"))?;
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // format_for_target
 // ---------------------------------------------------------------------------
 
-/// Determine the archive format for a target, applying OS-based overrides.
+/// Determine the archive format(s) for a target, applying OS-based overrides.
+/// When a FormatOverride has `formats` (plural), returns all of them.
+/// Otherwise uses the singular `format` field.
+/// Falls back to `default_format` when no override matches.
+pub fn formats_for_target(
+    target: &str,
+    default_format: &str,
+    overrides: &[FormatOverride],
+) -> Vec<String> {
+    let (os, _arch) = map_target(target);
+    for ov in overrides {
+        if ov.os == os {
+            // Plural takes priority over singular
+            if let Some(ref fmts) = ov.formats {
+                if !fmts.is_empty() {
+                    return fmts.clone();
+                }
+            }
+            if let Some(ref fmt) = ov.format {
+                return vec![fmt.clone()];
+            }
+        }
+    }
+    vec![default_format.to_string()]
+}
+
+/// Determine the archive format for a target (returns the first match).
+/// Convenience wrapper around `formats_for_target`.
 pub fn format_for_target(
     target: &str,
     default_format: &str,
     overrides: &[FormatOverride],
 ) -> String {
-    let (os, _arch) = map_target(target);
-    for ov in overrides {
-        if ov.os == os {
-            return ov.format.clone();
-        }
-    }
-    default_format.to_string()
+    formats_for_target(target, default_format, overrides)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| default_format.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -296,6 +526,7 @@ impl Stage for ArchiveStage {
         let log = ctx.logger("archive");
         let selected = ctx.options.selected_crates.clone();
         let dist = ctx.config.dist.clone();
+        let dry_run = ctx.options.dry_run;
 
         // Global archive defaults
         let global_default_format = ctx
@@ -341,6 +572,53 @@ impl Stage for ArchiveStage {
             })
             .collect();
 
+        // Early validation: reject unknown archive format strings before doing
+        // any I/O so typos are surfaced immediately.
+        for (_crate_name, archive_cfgs) in &work {
+            for cfg in archive_cfgs {
+                if let Some(ref fmt) = cfg.format {
+                    if !VALID_ARCHIVE_FORMATS.contains(&fmt.as_str()) {
+                        bail!(
+                            "unsupported archive format: {fmt} (valid: {})",
+                            VALID_ARCHIVE_FORMATS.join(", ")
+                        );
+                    }
+                }
+                if let Some(ref fmts) = cfg.formats {
+                    for fmt in fmts {
+                        if !VALID_ARCHIVE_FORMATS.contains(&fmt.as_str()) {
+                            bail!(
+                                "unsupported archive format: {fmt} (valid: {})",
+                                VALID_ARCHIVE_FORMATS.join(", ")
+                            );
+                        }
+                    }
+                }
+                if let Some(ref overrides) = cfg.format_overrides {
+                    for ov in overrides {
+                        if let Some(ref fmt) = ov.format {
+                            if !VALID_ARCHIVE_FORMATS.contains(&fmt.as_str()) {
+                                bail!(
+                                    "unsupported archive format: {fmt} (valid: {})",
+                                    VALID_ARCHIVE_FORMATS.join(", ")
+                                );
+                            }
+                        }
+                        if let Some(ref fmts) = ov.formats {
+                            for fmt in fmts {
+                                if !VALID_ARCHIVE_FORMATS.contains(&fmt.as_str()) {
+                                    bail!(
+                                        "unsupported archive format: {fmt} (valid: {})",
+                                        VALID_ARCHIVE_FORMATS.join(", ")
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Ensure dist directory exists
         fs::create_dir_all(&dist)
             .with_context(|| format!("create dist dir: {}", dist.display()))?;
@@ -349,28 +627,82 @@ impl Stage for ArchiveStage {
 
         for (crate_name, archive_cfgs) in &work {
             // Collect Binary artifacts for this crate
-            let binaries: Vec<Artifact> = ctx
+            let all_binaries: Vec<Artifact> = ctx
                 .artifacts
                 .by_kind_and_crate(ArtifactKind::Binary, crate_name)
                 .into_iter()
                 .cloned()
                 .collect();
 
-            if binaries.is_empty() {
+            // meta archives can skip the "no binaries" check
+            let has_any_meta = archive_cfgs
+                .iter()
+                .any(|cfg| cfg.meta.unwrap_or(false));
+
+            if all_binaries.is_empty() && !has_any_meta {
                 log.warn(&format!("no binaries for crate {crate_name}, skipping"));
                 continue;
             }
 
-            // Group binaries by target
-            let mut by_target: HashMap<String, Vec<Artifact>> = HashMap::new();
-            for bin in binaries {
-                let target = bin.target.clone().unwrap_or_else(|| "unknown".to_string());
-                by_target.entry(target).or_default().push(bin);
-            }
-
             for archive_cfg in archive_cfgs {
-                // Determine format (per-config > global default)
-                let default_format = archive_cfg
+                let is_meta = archive_cfg.meta.unwrap_or(false);
+
+                // ids filtering: only include binary artifacts whose metadata
+                // "id" matches one of the listed IDs (same pattern as checksum)
+                let binaries: Vec<Artifact> = if is_meta {
+                    // Meta archives have no binaries
+                    Vec::new()
+                } else if let Some(ref ids) = archive_cfg.ids {
+                    all_binaries
+                        .iter()
+                        .filter(|a| {
+                            matches!(a.metadata.get("id"), Some(id) if ids.contains(id))
+                        })
+                        .cloned()
+                        .collect()
+                } else {
+                    all_binaries.clone()
+                };
+
+                if binaries.is_empty() && !is_meta {
+                    continue;
+                }
+
+                // Group binaries by target
+                let mut by_target: HashMap<String, Vec<Artifact>> = HashMap::new();
+                for bin in &binaries {
+                    let target = bin.target.clone().unwrap_or_else(|| "unknown".to_string());
+                    by_target.entry(target).or_default().push(bin.clone());
+                }
+
+                // For meta archives with no binaries, create a single entry with "unknown" target
+                if is_meta && by_target.is_empty() {
+                    by_target.insert("unknown".to_string(), Vec::new());
+                }
+
+                // allow_different_binary_count check: when false (default),
+                // error if different targets have different binary counts
+                // (matches GoReleaser behavior which errors, not warns)
+                if !archive_cfg.allow_different_binary_count.unwrap_or(false)
+                    && by_target.len() > 1
+                {
+                    let counts: Vec<usize> =
+                        by_target.values().map(|bins| bins.len()).collect();
+                    let first = counts[0];
+                    if counts.iter().any(|&c| c != first) {
+                        let details: Vec<_> = by_target
+                            .iter()
+                            .map(|(t, b)| format!("{t}={}", b.len()))
+                            .collect();
+                        bail!(
+                            "binary counts differ across targets ({:?}); set allow_different_binary_count: true to allow this",
+                            details
+                        );
+                    }
+                }
+
+                // Determine singular default format (per-config > global default)
+                let singular_format = archive_cfg
                     .format
                     .as_deref()
                     .unwrap_or(&global_default_format);
@@ -388,6 +720,14 @@ impl Stage for ArchiveStage {
                 let default_tmpl = default_name_template();
                 let name_tmpl = archive_cfg.name_template.as_deref().unwrap_or(default_tmpl);
 
+                // strip_binary_directory: place binaries at archive root
+                let strip_bin_dir = archive_cfg.strip_binary_directory.unwrap_or(false);
+
+                // Pre-archive hooks
+                if let Some(pre) = archive_cfg.hooks.as_ref().and_then(|h| h.pre.as_ref()) {
+                    run_hooks(pre, "pre-archive", dry_run, &log)?;
+                }
+
                 for (target, target_bins) in &by_target {
                     // Filter binaries for this archive config
                     let selected_bins: Vec<&Artifact> = target_bins
@@ -402,12 +742,23 @@ impl Stage for ArchiveStage {
                         })
                         .collect();
 
-                    if selected_bins.is_empty() {
+                    if selected_bins.is_empty() && !is_meta {
                         continue;
                     }
 
-                    // Resolve archive format for this target
-                    let format = format_for_target(target, default_format, &format_overrides);
+                    // Determine the list of formats to produce for this target.
+                    // If `formats` (plural) is set and non-empty, use it exactly as
+                    // specified (ignore both singular `format` and `format_overrides`).
+                    // Otherwise, fall back to the singular format with per-target
+                    // overrides (which may themselves produce multiple formats via
+                    // FormatOverride.formats plural).
+                    let formats_to_produce: Vec<String> = match &archive_cfg.formats {
+                        Some(fmts) if !fmts.is_empty() => fmts.clone(),
+                        _ => {
+                            formats_for_target(target, singular_format, &format_overrides)
+                        }
+                    };
+
                     let (os, arch) = map_target(target);
 
                     // Build template vars for this target
@@ -438,36 +789,96 @@ impl Stage for ArchiveStage {
                         format!("render archive name for {crate_name}/{target}")
                     })?;
 
-                    // For binary format, no extension; otherwise append format
-                    let archive_filename = if format == "binary" {
-                        archive_stem.clone()
-                    } else {
-                        format!("{archive_stem}.{format}")
-                    };
-                    let archive_path = dist.join(&archive_filename);
-
-                    // Collect binary files — missing binaries are errors
-                    let mut paths: Vec<PathBuf> = Vec::new();
-                    for b in &selected_bins {
-                        if !b.path.exists() && !ctx.options.dry_run {
-                            anyhow::bail!(
-                                "binary artifact missing: {} (expected at {})",
-                                b.metadata.get("binary").unwrap_or(&b.crate_name),
-                                b.path.display()
-                            );
+                    // Collect binary files — unless meta archive
+                    let mut binary_paths: Vec<PathBuf> = Vec::new();
+                    if !is_meta {
+                        for b in &selected_bins {
+                            if !b.path.exists() && !dry_run {
+                                anyhow::bail!(
+                                    "binary artifact missing: {} (expected at {})",
+                                    b.metadata.get("binary").unwrap_or(&b.crate_name),
+                                    b.path.display()
+                                );
+                            }
+                            binary_paths.push(b.path.clone());
                         }
-                        paths.push(b.path.clone());
                     }
 
-                    // Extra files (LICENSE, README, etc.) — with glob support
-                    if let Some(extra_files) = &archive_cfg.files {
-                        let resolved = resolve_glob_patterns(extra_files).with_context(|| {
-                            format!("resolve file patterns for {crate_name}/{target}")
-                        })?;
-                        paths.extend(resolved);
-                    }
+                    // Extra files (LICENSE, README, etc.) — with ArchiveFileSpec support
+                    let extra_files: Vec<ResolvedExtraFile> =
+                        if let Some(file_specs) = &archive_cfg.files {
+                            resolve_file_specs(file_specs).with_context(|| {
+                                format!("resolve file specs for {crate_name}/{target}")
+                            })?
+                        } else {
+                            Vec::new()
+                        };
 
-                    let path_refs: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
+                    // builds_info: permissions applied to binary entries
+                    let builds_info = archive_cfg.builds_info.as_ref();
+
+                    // Build ArchiveEntry items for binaries.
+                    // strip_binary_directory: when true, binaries skip the
+                    // wrap_in_directory prefix (placed at archive root).
+                    let binary_entries: Vec<ArchiveEntry> = binary_paths
+                        .iter()
+                        .map(|bp| {
+                            let file_name = bp
+                                .file_name()
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or_else(|| "unknown".to_string());
+                            let archive_name = if strip_bin_dir || wrap_dir.is_none() {
+                                PathBuf::from(&file_name)
+                            } else {
+                                PathBuf::from(wrap_dir.unwrap()).join(&file_name)
+                            };
+                            ArchiveEntry {
+                                src: bp.clone(),
+                                archive_name,
+                                info: builds_info.cloned(),
+                            }
+                        })
+                        .collect();
+
+                    // Build ArchiveEntry items for extra files.
+                    // Extra files always get the wrap_in_directory prefix (if set).
+                    // When ArchiveFileSpec::Detailed has dst, use it as the
+                    // archive-internal name; apply per-file info permissions.
+                    let extra_entries: Vec<ArchiveEntry> = extra_files
+                        .iter()
+                        .map(|ef| {
+                            let base_name = if let Some(ref dst) = ef.dst {
+                                dst.clone()
+                            } else {
+                                ef.src
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().to_string())
+                                    .unwrap_or_else(|| "unknown".to_string())
+                            };
+                            let archive_name = if let Some(dir) = wrap_dir {
+                                PathBuf::from(dir).join(&base_name)
+                            } else {
+                                PathBuf::from(&base_name)
+                            };
+                            ArchiveEntry {
+                                src: ef.src.clone(),
+                                archive_name,
+                                info: ef.info.clone(),
+                            }
+                        })
+                        .collect();
+
+                    let all_entries: Vec<&ArchiveEntry> =
+                        binary_entries.iter().chain(extra_entries.iter()).collect();
+
+                    // For gz/binary formats, collect flat path refs (these formats
+                    // don't support per-entry metadata)
+                    let all_src_paths: Vec<PathBuf> = binary_paths
+                        .iter()
+                        .cloned()
+                        .chain(extra_files.iter().map(|ef| ef.src.clone()))
+                        .collect();
+                    let path_refs: Vec<&Path> = all_src_paths.iter().map(PathBuf::as_path).collect();
 
                     // Determine reproducible mtime: prefer CommitTimestamp from context
                     // when any crate has reproducible: true, fall back to SOURCE_DATE_EPOCH.
@@ -488,56 +899,142 @@ impl Stage for ArchiveStage {
                         }
                     };
 
-                    if ctx.options.dry_run {
-                        log.status(&format!(
-                            "(dry-run) would create {} with {} files",
-                            archive_path.display(),
-                            path_refs.len()
-                        ));
-                    } else {
-                        log.status(&format!("creating {}", archive_path.display()));
-                        match format.as_str() {
-                            "zip" => create_zip(&path_refs, &archive_path, wrap_dir)?,
-                            "tar.xz" => create_tar_xz(
-                                &path_refs,
-                                &archive_path,
-                                None,
-                                wrap_dir,
-                                source_date_epoch,
-                            )?,
-                            "tar.zst" => create_tar_zst(
-                                &path_refs,
-                                &archive_path,
-                                None,
-                                wrap_dir,
-                                source_date_epoch,
-                            )?,
-                            "binary" => copy_binary(&path_refs, &archive_path)?,
-                            _ => create_tar_gz(
-                                &path_refs,
-                                &archive_path,
-                                None,
-                                wrap_dir,
-                                source_date_epoch,
-                            )?,
+                    for format in &formats_to_produce {
+                        // For binary format, no extension; otherwise append format
+                        let archive_filename = if format == "binary" {
+                            archive_stem.clone()
+                        } else {
+                            format!("{archive_stem}.{format}")
+                        };
+                        let archive_path = dist.join(&archive_filename);
+
+                        if dry_run {
+                            log.status(&format!(
+                                "(dry-run) would create {} with {} files",
+                                archive_path.display(),
+                                all_entries.len()
+                            ));
+                        } else {
+                            log.status(&format!("creating {}", archive_path.display()));
+                            match format.as_str() {
+                                "zip" => {
+                                    let out_file = File::create(&archive_path)
+                                        .with_context(|| format!("create zip: {}", archive_path.display()))?;
+                                    let mut zip = zip::ZipWriter::new(out_file);
+                                    let owned: Vec<ArchiveEntry> = all_entries.iter().map(|e| ArchiveEntry {
+                                        src: e.src.clone(),
+                                        archive_name: e.archive_name.clone(),
+                                        info: e.info.clone(),
+                                    }).collect();
+                                    write_zip_entries(&mut zip, &owned)?;
+                                    zip.finish().context("zip: finish")?;
+                                }
+                                "tar.gz" | "tgz" => {
+                                    let out_file = File::create(&archive_path)
+                                        .with_context(|| format!("create tar.gz: {}", archive_path.display()))?;
+                                    let enc = GzEncoder::new(out_file, Compression::default());
+                                    let mut tar = tar::Builder::new(enc);
+                                    let owned: Vec<ArchiveEntry> = all_entries.iter().map(|e| ArchiveEntry {
+                                        src: e.src.clone(),
+                                        archive_name: e.archive_name.clone(),
+                                        info: e.info.clone(),
+                                    }).collect();
+                                    write_archive_entries(&mut tar, &owned, source_date_epoch, "tar.gz")?;
+                                    tar.finish().context("tar.gz: finish")?;
+                                }
+                                "tar.xz" | "txz" => {
+                                    let out_file = File::create(&archive_path)
+                                        .with_context(|| format!("create tar.xz: {}", archive_path.display()))?;
+                                    let enc = xz2::write::XzEncoder::new(out_file, 6);
+                                    let mut tar = tar::Builder::new(enc);
+                                    let owned: Vec<ArchiveEntry> = all_entries.iter().map(|e| ArchiveEntry {
+                                        src: e.src.clone(),
+                                        archive_name: e.archive_name.clone(),
+                                        info: e.info.clone(),
+                                    }).collect();
+                                    write_archive_entries(&mut tar, &owned, source_date_epoch, "tar.xz")?;
+                                    tar.finish().context("tar.xz: finish")?;
+                                }
+                                "tar.zst" | "tzst" => {
+                                    let out_file = File::create(&archive_path)
+                                        .with_context(|| format!("create tar.zst: {}", archive_path.display()))?;
+                                    let enc = zstd::Encoder::new(out_file, 3).context("tar.zst: create zstd encoder")?;
+                                    let mut tar = tar::Builder::new(enc);
+                                    let owned: Vec<ArchiveEntry> = all_entries.iter().map(|e| ArchiveEntry {
+                                        src: e.src.clone(),
+                                        archive_name: e.archive_name.clone(),
+                                        info: e.info.clone(),
+                                    }).collect();
+                                    write_archive_entries(&mut tar, &owned, source_date_epoch, "tar.zst")?;
+                                    let enc = tar.into_inner().context("tar.zst: finish tar")?;
+                                    enc.finish().context("tar.zst: finish zstd")?;
+                                }
+                                "tar" => {
+                                    let out_file = File::create(&archive_path)
+                                        .with_context(|| format!("create tar: {}", archive_path.display()))?;
+                                    let mut tar = tar::Builder::new(out_file);
+                                    let owned: Vec<ArchiveEntry> = all_entries.iter().map(|e| ArchiveEntry {
+                                        src: e.src.clone(),
+                                        archive_name: e.archive_name.clone(),
+                                        info: e.info.clone(),
+                                    }).collect();
+                                    write_archive_entries(&mut tar, &owned, source_date_epoch, "tar")?;
+                                    tar.finish().context("tar: finish")?;
+                                }
+                                "gz" => {
+                                    if path_refs.is_empty() {
+                                        bail!("gz format requires at least one file");
+                                    }
+                                    if path_refs.len() > 1 {
+                                        log.warn(&format!(
+                                            "gz format only compresses a single file; {} extra files will be skipped",
+                                            path_refs.len() - 1
+                                        ));
+                                    }
+                                    create_gz(path_refs[0], &archive_path)?;
+                                }
+                                "binary" => copy_binary(&path_refs, &archive_path)?,
+                                _ => bail!("unsupported archive format: {format}"),
+                            }
                         }
-                    }
 
-                    // Update stage-scoped template vars for downstream stages
-                    let tvars = ctx.template_vars_mut();
-                    tvars.set("ArtifactName", &archive_filename);
-                    tvars.set("ArtifactPath", &archive_path.to_string_lossy());
+                        // Update stage-scoped template vars for downstream stages
+                        let tvars = ctx.template_vars_mut();
+                        tvars.set("ArtifactName", &archive_filename);
+                        tvars.set("ArtifactPath", &archive_path.to_string_lossy());
 
-                    new_artifacts.push(Artifact {
-                        kind: ArtifactKind::Archive,
-                        path: archive_path,
-                        target: Some(target.clone()),
-                        crate_name: crate_name.clone(),
-                        metadata: HashMap::from([
+                        let mut metadata = HashMap::from([
                             ("format".to_string(), format.clone()),
                             ("name".to_string(), archive_stem.clone()),
-                        ]),
-                    });
+                        ]);
+                        // Propagate archive config id to artifact metadata for
+                        // downstream stages (sign, release) to filter by archive ID
+                        if let Some(ref id) = archive_cfg.id {
+                            metadata.insert("id".to_string(), id.clone());
+                        }
+                        if is_meta {
+                            metadata.insert("meta".to_string(), "true".to_string());
+                        }
+                        if strip_bin_dir {
+                            metadata.insert(
+                                "strip_binary_directory".to_string(),
+                                "true".to_string(),
+                            );
+                        }
+
+                        new_artifacts.push(Artifact {
+                            kind: ArtifactKind::Archive,
+                            path: archive_path,
+                            target: Some(target.clone()),
+                            crate_name: crate_name.clone(),
+                            metadata,
+                        });
+                    }
+                }
+
+                // Post-archive hooks
+                if let Some(post) = archive_cfg.hooks.as_ref().and_then(|h| h.post.as_ref()) {
+                    run_hooks(post, "post-archive", dry_run, &log)?;
                 }
             }
         }
@@ -571,7 +1068,7 @@ mod tests {
         fs::write(&bin_path, b"binary content").unwrap();
 
         let archive_path = tmp.path().join("mybin.tar.gz");
-        create_tar_gz(&[&bin_path], &archive_path, None, None, None).unwrap();
+        create_tar_gz(&[&bin_path], &archive_path, None, None, None, None).unwrap();
 
         assert!(archive_path.exists());
         assert!(fs::metadata(&archive_path).unwrap().len() > 0);
@@ -584,7 +1081,7 @@ mod tests {
         fs::write(&bin_path, b"binary content").unwrap();
 
         let archive_path = tmp.path().join("mybin.zip");
-        create_zip(&[&bin_path], &archive_path, None).unwrap();
+        create_zip(&[&bin_path], &archive_path, None, None).unwrap();
 
         assert!(archive_path.exists());
         assert!(fs::metadata(&archive_path).unwrap().len() > 0);
@@ -602,7 +1099,8 @@ mod tests {
                 "tar.gz",
                 &[FormatOverride {
                     os: "windows".to_string(),
-                    format: "zip".to_string()
+                    format: Some("zip".to_string()),
+                    formats: None,
                 }]
             ),
             "zip"
@@ -620,7 +1118,7 @@ mod tests {
         fs::write(&bin_path, b"binary content for xz").unwrap();
 
         let archive_path = tmp.path().join("mybin.tar.xz");
-        create_tar_xz(&[&bin_path], &archive_path, None, None, None).unwrap();
+        create_tar_xz(&[&bin_path], &archive_path, None, None, None, None).unwrap();
 
         assert!(archive_path.exists());
         let len = fs::metadata(&archive_path).unwrap().len();
@@ -647,7 +1145,7 @@ mod tests {
         fs::write(&bin_path, b"binary content for zstd").unwrap();
 
         let archive_path = tmp.path().join("mybin.tar.zst");
-        create_tar_zst(&[&bin_path], &archive_path, None, None, None).unwrap();
+        create_tar_zst(&[&bin_path], &archive_path, None, None, None, None).unwrap();
 
         assert!(archive_path.exists());
         let len = fs::metadata(&archive_path).unwrap().len();
@@ -770,6 +1268,7 @@ mod tests {
             None,
             Some("myapp-1.0.0"),
             None,
+            None,
         )
         .unwrap();
 
@@ -795,7 +1294,7 @@ mod tests {
         fs::write(&bin_path, b"binary").unwrap();
 
         let archive_path = tmp.path().join("wrapped.zip");
-        create_zip(&[&bin_path], &archive_path, Some("myapp-1.0.0")).unwrap();
+        create_zip(&[&bin_path], &archive_path, Some("myapp-1.0.0"), None).unwrap();
 
         // Verify entry has the directory prefix
         let file = File::open(&archive_path).unwrap();
@@ -812,7 +1311,7 @@ mod tests {
         fs::write(&bin_path, b"binary").unwrap();
 
         let archive_path = tmp.path().join("wrapped.tar.xz");
-        create_tar_xz(&[&bin_path], &archive_path, None, Some("myapp-1.0.0"), None).unwrap();
+        create_tar_xz(&[&bin_path], &archive_path, None, Some("myapp-1.0.0"), None, None).unwrap();
 
         // Verify entry has the directory prefix
         let file = File::open(&archive_path).unwrap();
@@ -831,7 +1330,7 @@ mod tests {
         fs::write(&bin_path, b"binary").unwrap();
 
         let archive_path = tmp.path().join("wrapped.tar.zst");
-        create_tar_zst(&[&bin_path], &archive_path, None, Some("myapp-1.0.0"), None).unwrap();
+        create_tar_zst(&[&bin_path], &archive_path, None, Some("myapp-1.0.0"), None, None).unwrap();
 
         // Verify entry has the directory prefix
         let file = File::open(&archive_path).unwrap();
@@ -910,6 +1409,7 @@ crates:
                     files: None,
                     binaries: None,
                     wrap_in_directory: None,
+                    ..Default::default()
                 }]),
                 ..Default::default()
             }])
@@ -1000,11 +1500,13 @@ crates:
                 format: Some("tar.gz".to_string()),
                 format_overrides: Some(vec![FormatOverride {
                     os: "windows".to_string(),
-                    format: "zip".to_string(),
+                    format: Some("zip".to_string()),
+                    formats: None,
                 }]),
                 files: None,
                 binaries: None,
                 wrap_in_directory: None,
+                ..Default::default()
             }]),
             ..Default::default()
         };
@@ -1067,6 +1569,7 @@ crates:
                 files: None,
                 binaries: None,
                 wrap_in_directory: None,
+                ..Default::default()
             }]),
             ..Default::default()
         };
@@ -1130,6 +1633,7 @@ crates:
                 files: None,
                 binaries: None,
                 wrap_in_directory: None,
+                ..Default::default()
             }]),
             ..Default::default()
         };
@@ -1216,7 +1720,7 @@ crates:
         let (bin, license, readme) = create_realistic_file_tree(tmp.path());
 
         let archive_path = tmp.path().join("myapp-1.0.0-linux-amd64.tar.gz");
-        create_tar_gz(&[&bin, &license, &readme], &archive_path, None, None, None).unwrap();
+        create_tar_gz(&[&bin, &license, &readme], &archive_path, None, None, None, None).unwrap();
 
         // Open the archive and verify all files are present with correct names
         let file = File::open(&archive_path).unwrap();
@@ -1263,7 +1767,7 @@ crates:
         let (bin, license, readme) = create_realistic_file_tree(tmp.path());
 
         let archive_path = tmp.path().join("myapp-1.0.0-windows-amd64.zip");
-        create_zip(&[&bin, &license, &readme], &archive_path, None).unwrap();
+        create_zip(&[&bin, &license, &readme], &archive_path, None, None).unwrap();
 
         // Open the zip and verify all files
         let file = File::open(&archive_path).unwrap();
@@ -1306,7 +1810,7 @@ crates:
         let (bin, license, readme) = create_realistic_file_tree(tmp.path());
 
         let archive_path = tmp.path().join("myapp-1.0.0-linux-amd64.tar.xz");
-        create_tar_xz(&[&bin, &license, &readme], &archive_path, None, None, None).unwrap();
+        create_tar_xz(&[&bin, &license, &readme], &archive_path, None, None, None, None).unwrap();
 
         // Open the archive and verify all files
         let file = File::open(&archive_path).unwrap();
@@ -1353,6 +1857,7 @@ crates:
             None,
             Some("myapp-1.0.0"),
             None,
+            None,
         )
         .unwrap();
 
@@ -1383,7 +1888,7 @@ crates:
         let (bin, license, readme) = create_realistic_file_tree(tmp.path());
 
         let archive_path = tmp.path().join("myapp-1.0.0-linux-amd64.tar.zst");
-        create_tar_zst(&[&bin, &license, &readme], &archive_path, None, None, None).unwrap();
+        create_tar_zst(&[&bin, &license, &readme], &archive_path, None, None, None, None).unwrap();
 
         // Open the archive and verify all files
         let file = File::open(&archive_path).unwrap();
@@ -1468,11 +1973,13 @@ crates:
         let overrides = vec![
             FormatOverride {
                 os: "windows".to_string(),
-                format: "zip".to_string(),
+                format: Some("zip".to_string()),
+                formats: None,
             },
             FormatOverride {
                 os: "darwin".to_string(),
-                format: "tar.gz".to_string(),
+                format: Some("tar.gz".to_string()),
+                formats: None,
             },
         ];
         // Default is tar.xz but windows should get zip
@@ -1519,6 +2026,7 @@ crates:
                 files: None,
                 binaries: None, // Include all binaries
                 wrap_in_directory: None,
+                ..Default::default()
             }]),
             ..Default::default()
         };
@@ -1606,7 +2114,8 @@ crates:
                 format: Some("tar.gz".to_string()),
                 format_overrides: Some(vec![FormatOverride {
                     os: "windows".to_string(),
-                    format: "zip".to_string(),
+                    format: Some("zip".to_string()),
+                    formats: None,
                 }]),
             }),
             ..Default::default()
@@ -1665,6 +2174,7 @@ crates:
                 files: None,
                 binaries: None,
                 wrap_in_directory: None,
+                ..Default::default()
             }]),
             ..Default::default()
         };
@@ -1702,7 +2212,9 @@ crates:
 
     #[test]
     fn test_archive_stage_files_included_alongside_binaries() {
-        use anodize_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
+        use anodize_core::config::{
+            ArchiveConfig, ArchiveFileSpec, ArchivesConfig, Config, CrateConfig,
+        };
         use anodize_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
@@ -1726,9 +2238,13 @@ crates:
                 name_template: Some("myapp-1.0.0-linux-amd64".to_string()),
                 format: Some("tar.gz".to_string()),
                 format_overrides: None,
-                files: Some(vec![license_pattern, readme_pattern]),
+                files: Some(vec![
+                    ArchiveFileSpec::Glob(license_pattern),
+                    ArchiveFileSpec::Glob(readme_pattern),
+                ]),
                 binaries: None,
                 wrap_in_directory: None,
+                ..Default::default()
             }]),
             ..Default::default()
         };
@@ -1856,6 +2372,7 @@ crates:
                 files: None,
                 format_overrides: None,
                 binaries: None,
+                ..Default::default()
             }]),
             ..Default::default()
         };
@@ -1956,7 +2473,7 @@ crates:
         let archive_path = tmp.path().join("empty.tar.gz");
 
         // Create an archive with empty file list
-        let result = create_tar_gz(&[], &archive_path, None, None, None);
+        let result = create_tar_gz(&[], &archive_path, None, None, None, None);
         assert!(
             result.is_ok(),
             "creating archive with empty file list should succeed"
@@ -1969,7 +2486,7 @@ crates:
         let tmp = TempDir::new().unwrap();
         let archive_path = tmp.path().join("empty.zip");
 
-        let result = create_zip(&[], &archive_path, None);
+        let result = create_zip(&[], &archive_path, None, None);
         assert!(
             result.is_ok(),
             "creating zip with empty file list should succeed"
@@ -1996,9 +2513,8 @@ crates:
     }
 
     #[test]
-    fn test_archive_unsupported_format_falls_back_to_tar_gz() {
-        // The archive stage treats unknown formats as tar.gz (the default branch)
-        // This tests that an unusual format string doesn't crash but falls back.
+    fn test_archive_unsupported_format_returns_error() {
+        // Unknown archive formats should produce a clear error.
         use anodize_core::config::{ArchiveConfig, Config, CrateConfig};
         use anodize_core::context::{Context, ContextOptions};
 
@@ -2045,12 +2561,15 @@ crates:
             },
         });
 
-        // Should succeed because unknown format falls back to tar.gz
         let result = ArchiveStage.run(&mut ctx);
         assert!(
-            result.is_ok(),
-            "unknown format should fall back to tar.gz, got: {:?}",
-            result.err()
+            result.is_err(),
+            "unsupported format should return an error"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("unsupported archive format"),
+            "error should mention 'unsupported archive format', got: {err}"
         );
     }
 
@@ -2064,7 +2583,7 @@ crates:
 
         let archive_path = tmp.path().join("mybin-reproducible.tar.gz");
         let fixed_mtime: u64 = 1_700_000_000;
-        create_tar_gz(&[&bin_path], &archive_path, None, None, Some(fixed_mtime)).unwrap();
+        create_tar_gz(&[&bin_path], &archive_path, None, None, Some(fixed_mtime), None).unwrap();
 
         assert!(archive_path.exists());
 
@@ -2089,7 +2608,7 @@ crates:
 
         let archive_path = tmp.path().join("mybin-reproducible.tar.xz");
         let fixed_mtime: u64 = 1_700_000_000;
-        create_tar_xz(&[&bin_path], &archive_path, None, None, Some(fixed_mtime)).unwrap();
+        create_tar_xz(&[&bin_path], &archive_path, None, None, Some(fixed_mtime), None).unwrap();
 
         assert!(archive_path.exists());
 
@@ -2113,7 +2632,7 @@ crates:
 
         let archive_path = tmp.path().join("mybin-reproducible.tar.zst");
         let fixed_mtime: u64 = 1_700_000_000;
-        create_tar_zst(&[&bin_path], &archive_path, None, None, Some(fixed_mtime)).unwrap();
+        create_tar_zst(&[&bin_path], &archive_path, None, None, Some(fixed_mtime), None).unwrap();
 
         assert!(archive_path.exists());
 
@@ -2140,14 +2659,1439 @@ crates:
         let archive1 = tmp.path().join("archive1.tar.gz");
         let archive2 = tmp.path().join("archive2.tar.gz");
 
-        create_tar_gz(&[&bin_path], &archive1, None, None, Some(fixed_mtime)).unwrap();
-        create_tar_gz(&[&bin_path], &archive2, None, None, Some(fixed_mtime)).unwrap();
+        create_tar_gz(&[&bin_path], &archive1, None, None, Some(fixed_mtime), None).unwrap();
+        create_tar_gz(&[&bin_path], &archive2, None, None, Some(fixed_mtime), None).unwrap();
 
         let bytes1 = fs::read(&archive1).unwrap();
         let bytes2 = fs::read(&archive2).unwrap();
         assert_eq!(
             bytes1, bytes2,
             "archives with same content and fixed mtime should be byte-identical"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // ids filtering tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_archive_ids_filter_only_matching_builds() {
+        use anodize_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
+        use anodize_core::test_helpers::TestContextBuilder;
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+
+        // Create two fake binaries: one with id "linux-build", one with id "windows-build"
+        let linux_bin = tmp.path().join("myapp-linux");
+        let windows_bin = tmp.path().join("myapp-windows");
+        fs::write(&linux_bin, b"linux binary").unwrap();
+        fs::write(&windows_bin, b"windows binary").unwrap();
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .tag("v1.0.0")
+            .dist(dist.clone())
+            .crates(vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                    format: Some("tar.gz".to_string()),
+                    ids: Some(vec!["linux-build".to_string()]),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }])
+            .build();
+
+        // Register binaries with different build IDs
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: linux_bin,
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([
+                ("binary".to_string(), "myapp".to_string()),
+                ("id".to_string(), "linux-build".to_string()),
+            ]),
+        });
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: windows_bin,
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([
+                ("binary".to_string(), "myapp".to_string()),
+                ("id".to_string(), "windows-build".to_string()),
+            ]),
+        });
+
+        let stage = ArchiveStage;
+        stage.run(&mut ctx).unwrap();
+
+        let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+        assert_eq!(
+            archives.len(),
+            1,
+            "only one archive should be created (linux-build only)"
+        );
+        assert!(
+            archives[0]
+                .target
+                .as_deref()
+                .unwrap()
+                .contains("linux"),
+            "archive should be for the linux target"
+        );
+    }
+
+    #[test]
+    fn test_archive_ids_filter_excludes_all_when_no_match() {
+        use anodize_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
+        use anodize_core::test_helpers::TestContextBuilder;
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+
+        let bin_path = tmp.path().join("myapp");
+        fs::write(&bin_path, b"binary").unwrap();
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .tag("v1.0.0")
+            .dist(dist)
+            .crates(vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                    format: Some("tar.gz".to_string()),
+                    ids: Some(vec!["nonexistent-id".to_string()]),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }])
+            .build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: bin_path,
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([
+                ("binary".to_string(), "myapp".to_string()),
+                ("id".to_string(), "some-other-id".to_string()),
+            ]),
+        });
+
+        let stage = ArchiveStage;
+        stage.run(&mut ctx).unwrap();
+
+        let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+        assert!(
+            archives.is_empty(),
+            "no archives should be created when ids filter matches nothing"
+        );
+    }
+
+    #[test]
+    fn test_archive_ids_filter_none_includes_all() {
+        // When ids is None, all binaries should be included (backward compat)
+        use anodize_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
+        use anodize_core::test_helpers::TestContextBuilder;
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+
+        let linux_bin = tmp.path().join("myapp-linux");
+        let win_bin = tmp.path().join("myapp-win");
+        fs::write(&linux_bin, b"linux binary").unwrap();
+        fs::write(&win_bin, b"windows binary").unwrap();
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .tag("v1.0.0")
+            .dist(dist)
+            .crates(vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                    format: Some("tar.gz".to_string()),
+                    // ids is None (default) — all binaries should be included
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }])
+            .build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: linux_bin,
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([
+                ("binary".to_string(), "myapp".to_string()),
+                ("id".to_string(), "linux-build".to_string()),
+            ]),
+        });
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: win_bin,
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([
+                ("binary".to_string(), "myapp".to_string()),
+                ("id".to_string(), "windows-build".to_string()),
+            ]),
+        });
+
+        let stage = ArchiveStage;
+        stage.run(&mut ctx).unwrap();
+
+        let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+        assert_eq!(
+            archives.len(),
+            2,
+            "both targets should produce archives when ids is None"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // id metadata tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_archive_id_metadata_propagated() {
+        use anodize_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
+        use anodize_core::test_helpers::TestContextBuilder;
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+
+        let bin_path = tmp.path().join("myapp");
+        fs::write(&bin_path, b"binary").unwrap();
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .tag("v1.0.0")
+            .dist(dist)
+            .crates(vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                    id: Some("linux-archive".to_string()),
+                    format: Some("tar.gz".to_string()),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }])
+            .build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: bin_path,
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("binary".to_string(), "myapp".to_string())]),
+        });
+
+        let stage = ArchiveStage;
+        stage.run(&mut ctx).unwrap();
+
+        let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+        assert_eq!(archives.len(), 1);
+        assert_eq!(
+            archives[0].metadata.get("id"),
+            Some(&"linux-archive".to_string()),
+            "archive artifact should have the config id in metadata"
+        );
+    }
+
+    #[test]
+    fn test_archive_id_metadata_absent_when_not_set() {
+        use anodize_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
+        use anodize_core::test_helpers::TestContextBuilder;
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+
+        let bin_path = tmp.path().join("myapp");
+        fs::write(&bin_path, b"binary").unwrap();
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .tag("v1.0.0")
+            .dist(dist)
+            .crates(vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                    // id is None (default)
+                    format: Some("tar.gz".to_string()),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }])
+            .build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: bin_path,
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("binary".to_string(), "myapp".to_string())]),
+        });
+
+        let stage = ArchiveStage;
+        stage.run(&mut ctx).unwrap();
+
+        let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+        assert_eq!(archives.len(), 1);
+        assert_eq!(
+            archives[0].metadata.get("id"),
+            None,
+            "archive artifact should not have id in metadata when config id is None"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // formats (plural) tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_archive_formats_plural_produces_multiple_archives() {
+        use anodize_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
+        use anodize_core::test_helpers::TestContextBuilder;
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+
+        let bin_path = tmp.path().join("myapp");
+        fs::write(&bin_path, b"binary content").unwrap();
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .tag("v1.0.0")
+            .dist(dist)
+            .crates(vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                    formats: Some(vec!["tar.gz".to_string(), "zip".to_string()]),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }])
+            .build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: bin_path,
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("binary".to_string(), "myapp".to_string())]),
+        });
+
+        let stage = ArchiveStage;
+        stage.run(&mut ctx).unwrap();
+
+        let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+        assert_eq!(
+            archives.len(),
+            2,
+            "should produce one archive per format in formats list"
+        );
+
+        let mut formats: Vec<String> = archives
+            .iter()
+            .map(|a| a.metadata.get("format").unwrap().clone())
+            .collect();
+        formats.sort();
+        assert_eq!(formats, vec!["tar.gz", "zip"]);
+
+        // Both archives should exist on disk
+        for a in &archives {
+            assert!(a.path.exists(), "archive should exist: {}", a.path.display());
+        }
+
+        // Verify file extensions
+        let paths: Vec<String> = archives
+            .iter()
+            .map(|a| a.path.to_string_lossy().to_string())
+            .collect();
+        assert!(
+            paths.iter().any(|p| p.ends_with(".tar.gz")),
+            "should have a tar.gz archive"
+        );
+        assert!(
+            paths.iter().any(|p| p.ends_with(".zip")),
+            "should have a zip archive"
+        );
+    }
+
+    #[test]
+    fn test_archive_formats_plural_ignores_singular_format() {
+        // When formats (plural) is set, singular format should be ignored
+        use anodize_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
+        use anodize_core::test_helpers::TestContextBuilder;
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+
+        let bin_path = tmp.path().join("myapp");
+        fs::write(&bin_path, b"binary content").unwrap();
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .tag("v1.0.0")
+            .dist(dist)
+            .crates(vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                    format: Some("tar.xz".to_string()),  // should be ignored
+                    formats: Some(vec!["tar.gz".to_string(), "zip".to_string()]),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }])
+            .build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: bin_path,
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("binary".to_string(), "myapp".to_string())]),
+        });
+
+        let stage = ArchiveStage;
+        stage.run(&mut ctx).unwrap();
+
+        let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+        assert_eq!(archives.len(), 2);
+
+        let mut formats: Vec<String> = archives
+            .iter()
+            .map(|a| a.metadata.get("format").unwrap().clone())
+            .collect();
+        formats.sort();
+        assert_eq!(
+            formats,
+            vec!["tar.gz", "zip"],
+            "should use formats (plural), not singular format"
+        );
+    }
+
+    #[test]
+    fn test_archive_formats_empty_falls_back_to_singular() {
+        // When formats is Some but empty, fall back to singular format
+        use anodize_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
+        use anodize_core::test_helpers::TestContextBuilder;
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+
+        let bin_path = tmp.path().join("myapp");
+        fs::write(&bin_path, b"binary content").unwrap();
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .tag("v1.0.0")
+            .dist(dist)
+            .crates(vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                    format: Some("tar.xz".to_string()),
+                    formats: Some(vec![]), // empty — should fall back to singular
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }])
+            .build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: bin_path,
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("binary".to_string(), "myapp".to_string())]),
+        });
+
+        let stage = ArchiveStage;
+        stage.run(&mut ctx).unwrap();
+
+        let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+        assert_eq!(archives.len(), 1);
+        assert_eq!(
+            archives[0].metadata.get("format").unwrap(),
+            "tar.xz",
+            "empty formats should fall back to singular format"
+        );
+    }
+
+    #[test]
+    fn test_archive_singular_format_still_works_when_formats_absent() {
+        // Backward compat: when formats is None, singular format works as before
+        use anodize_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
+        use anodize_core::test_helpers::TestContextBuilder;
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+
+        let bin_path = tmp.path().join("myapp");
+        fs::write(&bin_path, b"binary content").unwrap();
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .tag("v1.0.0")
+            .dist(dist)
+            .crates(vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                    format: Some("zip".to_string()),
+                    // formats is None (default)
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }])
+            .build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: bin_path,
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("binary".to_string(), "myapp".to_string())]),
+        });
+
+        let stage = ArchiveStage;
+        stage.run(&mut ctx).unwrap();
+
+        let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+        assert_eq!(archives.len(), 1);
+        assert_eq!(
+            archives[0].metadata.get("format").unwrap(),
+            "zip",
+            "singular format should work when formats is absent"
+        );
+        assert!(archives[0].path.exists());
+        assert!(archives[0].path.to_string_lossy().ends_with(".zip"));
+    }
+
+    // ---------------------------------------------------------------------------
+    // Uncompressed tar archive
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_create_tar_uncompressed() {
+        let tmp = TempDir::new().unwrap();
+        let bin_path = tmp.path().join("mybin");
+        fs::write(&bin_path, b"binary content for tar").unwrap();
+
+        let archive_path = tmp.path().join("mybin.tar");
+        create_tar(&[&bin_path], &archive_path, None, None, None, None).unwrap();
+
+        assert!(archive_path.exists());
+        let len = fs::metadata(&archive_path).unwrap().len();
+        assert!(len > 0, "uncompressed tar archive should not be empty");
+
+        // Verify we can read the tar directly (no decompression needed)
+        let file = File::open(&archive_path).unwrap();
+        let mut tar = tar::Archive::new(file);
+        let entries: Vec<_> = tar.entries().unwrap().collect();
+        assert_eq!(entries.len(), 1);
+        let entry = entries.into_iter().next().unwrap().unwrap();
+        assert_eq!(entry.path().unwrap().to_str().unwrap(), "mybin");
+    }
+
+    // ---------------------------------------------------------------------------
+    // Format alias tests: tgz, txz, tzst, tar via stage
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_archive_stage_tgz_alias() {
+        use anodize_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+
+        let bin = tmp.path().join("myapp");
+        fs::write(&bin, b"binary").unwrap();
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                format: Some("tgz".to_string()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = dist;
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: bin,
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("binary".to_string(), "myapp".to_string())]),
+        });
+
+        ArchiveStage.run(&mut ctx).unwrap();
+
+        let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+        assert_eq!(archives.len(), 1);
+        assert_eq!(archives[0].metadata.get("format"), Some(&"tgz".to_string()));
+        assert!(archives[0].path.exists(), "tgz archive file should exist");
+    }
+
+    #[test]
+    fn test_archive_stage_txz_alias() {
+        use anodize_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+
+        let bin = tmp.path().join("myapp");
+        fs::write(&bin, b"binary").unwrap();
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                format: Some("txz".to_string()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = dist;
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: bin,
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("binary".to_string(), "myapp".to_string())]),
+        });
+
+        ArchiveStage.run(&mut ctx).unwrap();
+
+        let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+        assert_eq!(archives.len(), 1);
+        assert_eq!(archives[0].metadata.get("format"), Some(&"txz".to_string()));
+        assert!(archives[0].path.exists(), "txz archive file should exist");
+    }
+
+    #[test]
+    fn test_archive_stage_tzst_alias() {
+        use anodize_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+
+        let bin = tmp.path().join("myapp");
+        fs::write(&bin, b"binary").unwrap();
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                format: Some("tzst".to_string()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = dist;
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: bin,
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("binary".to_string(), "myapp".to_string())]),
+        });
+
+        ArchiveStage.run(&mut ctx).unwrap();
+
+        let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+        assert_eq!(archives.len(), 1);
+        assert_eq!(
+            archives[0].metadata.get("format"),
+            Some(&"tzst".to_string())
+        );
+        assert!(archives[0].path.exists(), "tzst archive file should exist");
+    }
+
+    #[test]
+    fn test_archive_stage_uncompressed_tar() {
+        use anodize_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+
+        let bin = tmp.path().join("myapp");
+        fs::write(&bin, b"binary").unwrap();
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                format: Some("tar".to_string()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = dist;
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: bin,
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("binary".to_string(), "myapp".to_string())]),
+        });
+
+        ArchiveStage.run(&mut ctx).unwrap();
+
+        let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+        assert_eq!(archives.len(), 1);
+        assert_eq!(archives[0].metadata.get("format"), Some(&"tar".to_string()));
+        assert!(archives[0].path.exists(), "tar archive file should exist");
+    }
+
+    #[test]
+    fn test_archive_stage_unknown_format_errors() {
+        use anodize_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+
+        let bin = tmp.path().join("myapp");
+        fs::write(&bin, b"binary").unwrap();
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                format: Some("rar".to_string()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = dist;
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: bin,
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("binary".to_string(), "myapp".to_string())]),
+        });
+
+        let result = ArchiveStage.run(&mut ctx);
+        assert!(result.is_err(), "unknown format should produce an error");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("unsupported archive format") && err.contains("rar"),
+            "error should mention the unsupported format, got: {err}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 3: Config parsing tests for new parity features
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_config_parse_archive_file_spec_glob() {
+        use anodize_core::config::{ArchiveFileSpec, Config};
+        let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+    archives:
+      - files:
+          - LICENSE*
+          - README.md
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        if let ArchivesConfig::Configs(cfgs) = &config.crates[0].archives {
+            let files = cfgs[0].files.as_ref().unwrap();
+            assert_eq!(files.len(), 2);
+            assert_eq!(files[0], "LICENSE*");
+            assert_eq!(files[1], "README.md");
+            // Verify it deserialized as Glob variant
+            assert!(matches!(&files[0], ArchiveFileSpec::Glob(_)));
+        } else {
+            panic!("expected Configs variant");
+        }
+    }
+
+    #[test]
+    fn test_config_parse_archive_file_spec_detailed() {
+        use anodize_core::config::{ArchiveFileSpec, Config};
+        let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+    archives:
+      - files:
+          - src: "LICENSE*"
+            dst: "licenses/"
+            info:
+              owner: root
+              group: root
+              mode: "0644"
+          - src: "completions/*"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        if let ArchivesConfig::Configs(cfgs) = &config.crates[0].archives {
+            let files = cfgs[0].files.as_ref().unwrap();
+            assert_eq!(files.len(), 2);
+            match &files[0] {
+                ArchiveFileSpec::Detailed { src, dst, info } => {
+                    assert_eq!(src, "LICENSE*");
+                    assert_eq!(dst.as_deref(), Some("licenses/"));
+                    let info = info.as_ref().unwrap();
+                    assert_eq!(info.owner.as_deref(), Some("root"));
+                    assert_eq!(info.group.as_deref(), Some("root"));
+                    assert_eq!(info.mode.as_deref(), Some("0644"));
+                }
+                _ => panic!("expected Detailed variant for first entry"),
+            }
+            match &files[1] {
+                ArchiveFileSpec::Detailed { src, dst, info } => {
+                    assert_eq!(src, "completions/*");
+                    assert!(dst.is_none());
+                    assert!(info.is_none());
+                }
+                _ => panic!("expected Detailed variant for second entry"),
+            }
+        } else {
+            panic!("expected Configs variant");
+        }
+    }
+
+    #[test]
+    fn test_config_parse_format_override_formats_plural() {
+        use anodize_core::config::Config;
+        let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+    archives:
+      - format_overrides:
+          - os: windows
+            formats:
+              - zip
+              - tar.gz
+          - os: darwin
+            format: tar.xz
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        if let ArchivesConfig::Configs(cfgs) = &config.crates[0].archives {
+            let overrides = cfgs[0].format_overrides.as_ref().unwrap();
+            assert_eq!(overrides.len(), 2);
+            // First override: windows with plural formats
+            assert_eq!(overrides[0].os, "windows");
+            assert!(overrides[0].format.is_none());
+            let fmts = overrides[0].formats.as_ref().unwrap();
+            assert_eq!(fmts, &["zip", "tar.gz"]);
+            // Second override: darwin with singular format
+            assert_eq!(overrides[1].os, "darwin");
+            assert_eq!(overrides[1].format, Some("tar.xz".to_string()));
+            assert!(overrides[1].formats.is_none());
+        } else {
+            panic!("expected Configs variant");
+        }
+    }
+
+    #[test]
+    fn test_config_parse_meta_builds_info_strip_allow() {
+        use anodize_core::config::Config;
+        let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+    archives:
+      - meta: true
+        strip_binary_directory: true
+        allow_different_binary_count: true
+        builds_info:
+          owner: root
+          group: root
+          mode: "0755"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        if let ArchivesConfig::Configs(cfgs) = &config.crates[0].archives {
+            assert_eq!(cfgs[0].meta, Some(true));
+            assert_eq!(cfgs[0].strip_binary_directory, Some(true));
+            assert_eq!(cfgs[0].allow_different_binary_count, Some(true));
+            let bi = cfgs[0].builds_info.as_ref().unwrap();
+            assert_eq!(bi.owner.as_deref(), Some("root"));
+            assert_eq!(bi.group.as_deref(), Some("root"));
+            assert_eq!(bi.mode.as_deref(), Some("0755"));
+        } else {
+            panic!("expected Configs variant");
+        }
+    }
+
+    #[test]
+    fn test_config_parse_archive_hooks() {
+        use anodize_core::config::Config;
+        let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+    archives:
+      - hooks:
+          pre:
+            - echo pre-archive
+          post:
+            - echo post-archive
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        if let ArchivesConfig::Configs(cfgs) = &config.crates[0].archives {
+            let hooks = cfgs[0].hooks.as_ref().unwrap();
+            let pre = hooks.pre.as_ref().unwrap();
+            assert_eq!(pre.len(), 1);
+            assert_eq!(pre[0], "echo pre-archive");
+            let post = hooks.post.as_ref().unwrap();
+            assert_eq!(post.len(), 1);
+            assert_eq!(post[0], "echo post-archive");
+        } else {
+            panic!("expected Configs variant");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // gz format tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_create_gz() {
+        let tmp = TempDir::new().unwrap();
+        let bin_path = tmp.path().join("mybin");
+        fs::write(&bin_path, b"binary content for gz").unwrap();
+
+        let archive_path = tmp.path().join("mybin.gz");
+        create_gz(&bin_path, &archive_path).unwrap();
+
+        assert!(archive_path.exists());
+        let len = fs::metadata(&archive_path).unwrap().len();
+        assert!(len > 0, "gz archive should not be empty");
+
+        // Verify we can decompress and get the original content
+        let compressed = fs::read(&archive_path).unwrap();
+        let mut dec = flate2::read::GzDecoder::new(&compressed[..]);
+        let mut decompressed = Vec::new();
+        std::io::Read::read_to_end(&mut dec, &mut decompressed).unwrap();
+        assert_eq!(decompressed, b"binary content for gz");
+    }
+
+    #[test]
+    fn test_create_gz_nonexistent_fails() {
+        let tmp = TempDir::new().unwrap();
+        let archive_path = tmp.path().join("empty.gz");
+        let nonexistent = tmp.path().join("does_not_exist");
+        let result = create_gz(&nonexistent, &archive_path);
+        assert!(result.is_err(), "gz with nonexistent file should fail");
+    }
+
+    #[test]
+    fn test_archive_stage_gz_format() {
+        use anodize_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+
+        let bin = tmp.path().join("myapp");
+        fs::write(&bin, b"binary content").unwrap();
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                format: Some("gz".to_string()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = dist;
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: bin,
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("binary".to_string(), "myapp".to_string())]),
+        });
+
+        ArchiveStage.run(&mut ctx).unwrap();
+
+        let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+        assert_eq!(archives.len(), 1);
+        assert_eq!(archives[0].metadata.get("format"), Some(&"gz".to_string()));
+        assert!(archives[0].path.exists(), "gz archive file should exist");
+        assert!(
+            archives[0].path.to_string_lossy().ends_with(".gz"),
+            "gz archive should have .gz extension"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // meta archive test
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_archive_stage_meta_no_binaries() {
+        use anodize_core::config::{
+            ArchiveConfig, ArchiveFileSpec, ArchivesConfig, Config, CrateConfig,
+        };
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+
+        // Create extra files but no binary
+        let license = tmp.path().join("LICENSE");
+        fs::write(&license, b"MIT License").unwrap();
+        let license_path = license.to_string_lossy().to_string();
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                meta: Some(true),
+                format: Some("tar.gz".to_string()),
+                files: Some(vec![ArchiveFileSpec::Glob(license_path)]),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = dist;
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+        // No binary artifacts registered at all
+
+        ArchiveStage.run(&mut ctx).unwrap();
+
+        let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+        assert_eq!(archives.len(), 1, "meta archive should be created");
+        assert_eq!(
+            archives[0].metadata.get("meta"),
+            Some(&"true".to_string()),
+            "should be marked as meta"
+        );
+        assert!(archives[0].path.exists());
+
+        // Verify the archive only contains the LICENSE file, no binaries
+        let file = File::open(&archives[0].path).unwrap();
+        let dec = flate2::read::GzDecoder::new(file);
+        let found = read_tar_entries(tar::Archive::new(dec));
+        assert_eq!(found.len(), 1, "meta archive should contain only the extra file");
+        assert!(found.contains_key("LICENSE"));
+    }
+
+    // -----------------------------------------------------------------------
+    // format_overrides.formats plural test
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_format_override_formats_plural() {
+        // FormatOverride with plural formats should produce multiple formats
+        let overrides = vec![FormatOverride {
+            os: "windows".to_string(),
+            format: None,
+            formats: Some(vec!["zip".to_string(), "tar.gz".to_string()]),
+        }];
+        let result = formats_for_target("x86_64-pc-windows-msvc", "tar.xz", &overrides);
+        assert_eq!(result, vec!["zip", "tar.gz"]);
+    }
+
+    #[test]
+    fn test_format_override_formats_plural_priority_over_singular() {
+        // When both format and formats are set, formats takes priority
+        let overrides = vec![FormatOverride {
+            os: "windows".to_string(),
+            format: Some("tar.gz".to_string()),
+            formats: Some(vec!["zip".to_string()]),
+        }];
+        let result = formats_for_target("x86_64-pc-windows-msvc", "tar.xz", &overrides);
+        assert_eq!(result, vec!["zip"]);
+    }
+
+    #[test]
+    fn test_format_override_formats_empty_falls_back_to_singular() {
+        // Empty formats falls back to singular format
+        let overrides = vec![FormatOverride {
+            os: "windows".to_string(),
+            format: Some("zip".to_string()),
+            formats: Some(vec![]),
+        }];
+        let result = formats_for_target("x86_64-pc-windows-msvc", "tar.xz", &overrides);
+        assert_eq!(result, vec!["zip"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // allow_different_binary_count test (warning only)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_allow_different_binary_count_default_errors_on_mismatch() {
+        // GoReleaser errors (not warns) when binary counts differ and
+        // allow_different_binary_count is false (default).
+        use anodize_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
+        use anodize_core::test_helpers::TestContextBuilder;
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+
+        let linux_bin = tmp.path().join("myapp-linux");
+        let win_bin1 = tmp.path().join("myapp-win1");
+        let win_bin2 = tmp.path().join("myapp-win2");
+        fs::write(&linux_bin, b"linux binary").unwrap();
+        fs::write(&win_bin1, b"windows binary 1").unwrap();
+        fs::write(&win_bin2, b"windows binary 2").unwrap();
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .tag("v1.0.0")
+            .dist(dist)
+            .crates(vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                    format: Some("tar.gz".to_string()),
+                    // allow_different_binary_count is None (default false) - should error
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }])
+            .build();
+
+        // Different binary counts per target
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: linux_bin,
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("binary".to_string(), "myapp".to_string())]),
+        });
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: win_bin1,
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("binary".to_string(), "myapp".to_string())]),
+        });
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: win_bin2,
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("binary".to_string(), "helper".to_string())]),
+        });
+
+        // Should error when binary counts differ (matching GoReleaser behavior)
+        let result = ArchiveStage.run(&mut ctx);
+        assert!(result.is_err(), "different binary counts should error, not warn");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("binary counts differ"),
+            "error should mention binary count mismatch, got: {err}"
+        );
+        assert!(
+            err.contains("allow_different_binary_count"),
+            "error should suggest the fix, got: {err}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // strip_binary_directory metadata test
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_strip_binary_directory_metadata() {
+        use anodize_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
+        use anodize_core::test_helpers::TestContextBuilder;
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        let bin = tmp.path().join("myapp");
+        fs::write(&bin, b"binary").unwrap();
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .tag("v1.0.0")
+            .dist(dist)
+            .crates(vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                    format: Some("tar.gz".to_string()),
+                    strip_binary_directory: Some(true),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }])
+            .build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: bin,
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("binary".to_string(), "myapp".to_string())]),
+        });
+
+        ArchiveStage.run(&mut ctx).unwrap();
+
+        let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+        assert_eq!(archives.len(), 1);
+        assert_eq!(
+            archives[0].metadata.get("strip_binary_directory"),
+            Some(&"true".to_string()),
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_file_specs tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_resolve_file_specs_glob() {
+        use anodize_core::config::ArchiveFileSpec;
+
+        let tmp = TempDir::new().unwrap();
+        let license = tmp.path().join("LICENSE");
+        fs::write(&license, b"MIT").unwrap();
+
+        let specs = vec![ArchiveFileSpec::Glob(
+            license.to_string_lossy().to_string(),
+        )];
+        let resolved = resolve_file_specs(&specs).unwrap();
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].src, license);
+        assert!(resolved[0].dst.is_none());
+        assert!(resolved[0].info.is_none());
+    }
+
+    #[test]
+    fn test_resolve_file_specs_detailed() {
+        use anodize_core::config::{ArchiveFileInfo, ArchiveFileSpec};
+
+        let tmp = TempDir::new().unwrap();
+        let license = tmp.path().join("LICENSE");
+        fs::write(&license, b"MIT").unwrap();
+
+        let specs = vec![ArchiveFileSpec::Detailed {
+            src: license.to_string_lossy().to_string(),
+            dst: Some("licenses/".to_string()),
+            info: Some(ArchiveFileInfo {
+                owner: Some("root".to_string()),
+                group: Some("root".to_string()),
+                mode: Some("0644".to_string()),
+                mtime: None,
+            }),
+        }];
+        let resolved = resolve_file_specs(&specs).unwrap();
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].src, license);
+        assert_eq!(resolved[0].dst.as_deref(), Some("licenses/"));
+        let info = resolved[0].info.as_ref().unwrap();
+        assert_eq!(info.owner.as_deref(), Some("root"));
+        assert_eq!(info.mode.as_deref(), Some("0644"));
+    }
+
+    // -----------------------------------------------------------------------
+    // builds_info: verify permissions apply to tar entries
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_append_tar_entry_with_file_info_mode() {
+        use anodize_core::config::ArchiveFileInfo;
+
+        let tmp = TempDir::new().unwrap();
+        let bin_path = tmp.path().join("mybin");
+        fs::write(&bin_path, b"binary content").unwrap();
+
+        let archive_path = tmp.path().join("test.tar");
+        let out_file = File::create(&archive_path).unwrap();
+        let mut tar = tar::Builder::new(out_file);
+
+        let info = ArchiveFileInfo {
+            mode: Some("0755".to_string()),
+            owner: Some("deploy".to_string()),
+            group: Some("staff".to_string()),
+            mtime: None,
+        };
+
+        append_tar_entry(
+            &mut tar,
+            &bin_path,
+            Path::new("mybin"),
+            None,
+            Some(&info),
+        )
+        .unwrap();
+        tar.finish().unwrap();
+
+        // Read back the archive and verify permissions
+        let file = File::open(&archive_path).unwrap();
+        let mut tar = tar::Archive::new(file);
+        let mut entries = tar.entries().unwrap();
+        let entry = entries.next().unwrap().unwrap();
+        let header = entry.header();
+
+        // Mode should be 0o755
+        assert_eq!(
+            header.mode().unwrap() & 0o777,
+            0o755,
+            "mode should be 0755"
+        );
+        assert_eq!(
+            header.username().unwrap().unwrap(),
+            "deploy",
+            "owner should be 'deploy'"
+        );
+        assert_eq!(
+            header.groupname().unwrap().unwrap(),
+            "staff",
+            "group should be 'staff'"
+        );
+    }
+
+    #[test]
+    fn test_write_tar_entries_with_file_info() {
+        use anodize_core::config::ArchiveFileInfo;
+
+        let tmp = TempDir::new().unwrap();
+        let bin_path = tmp.path().join("mybin");
+        fs::write(&bin_path, b"binary content").unwrap();
+
+        let archive_path = tmp.path().join("test.tar");
+        let out_file = File::create(&archive_path).unwrap();
+        let mut tar = tar::Builder::new(out_file);
+
+        let info = ArchiveFileInfo {
+            mode: Some("0755".to_string()),
+            owner: None,
+            group: None,
+            mtime: None,
+        };
+
+        write_tar_entries(
+            &mut tar,
+            &[bin_path.as_path()],
+            None,
+            None,
+            None,
+            Some(&info),
+            "test",
+        )
+        .unwrap();
+        tar.finish().unwrap();
+
+        // Read back and verify
+        let file = File::open(&archive_path).unwrap();
+        let mut tar = tar::Archive::new(file);
+        let mut entries = tar.entries().unwrap();
+        let entry = entries.next().unwrap().unwrap();
+        assert_eq!(
+            entry.header().mode().unwrap() & 0o777,
+            0o755,
+            "write_tar_entries should apply file_info mode"
         );
     }
 }

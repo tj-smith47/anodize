@@ -68,14 +68,21 @@ version = "0.1.0"
 dependencies = [
  "anodize-core",
  "anyhow",
+ "blake2",
+ "blake3",
  "chrono",
  "colored",
+ "crc32fast",
+ "md-5",
  "regex",
  "schemars",
  "serde",
  "serde_json",
  "serde_yaml_ng",
  "serial_test",
+ "sha1",
+ "sha2",
+ "sha3",
  "tempfile",
  "tera",
  "toml",
@@ -130,7 +137,9 @@ version = "0.1.0"
 dependencies = [
  "anodize-core",
  "anyhow",
+ "filetime",
  "glob",
+ "serde_yaml_ng",
  "tempfile",
  "toml_edit",
 ]
@@ -154,10 +163,14 @@ dependencies = [
  "anodize-core",
  "anyhow",
  "blake2",
+ "blake3",
+ "crc32fast",
  "glob",
+ "md-5",
  "serde_yaml_ng",
  "sha1",
  "sha2",
+ "sha3",
  "tempfile",
 ]
 
@@ -235,8 +248,10 @@ dependencies = [
  "anyhow",
  "glob",
  "octocrab",
+ "reqwest",
  "serde_json",
  "serde_yaml_ng",
+ "tempfile",
  "tokio",
 ]
 
@@ -360,6 +375,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "arrayref"
+version = "0.3.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "76a2e8124351fda1ef8aaaa3bbd7ebbcb486bbcd4225aca0aa0d84bb2db8fecb"
+
+[[package]]
+name = "arrayvec"
+version = "0.7.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c02d123df017efcdfbd739ef81735b36c5ba83ec3c59c80a9d7ecc718f92e50"
+
+[[package]]
 name = "async-trait"
 version = "0.1.89"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -401,6 +428,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "46502ad458c9a52b69d4d4d32775c788b7a1b85e8bc9d482d92250fc0e3f8efe"
 dependencies = [
  "digest",
+]
+
+[[package]]
+name = "blake3"
+version = "1.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2468ef7d57b3fb7e16b576e8377cdbde2320c60e1491e961d11da40fc4f02a2d"
+dependencies = [
+ "arrayref",
+ "arrayvec",
+ "cc",
+ "cfg-if",
+ "constant_time_eq",
+ "cpufeatures 0.2.17",
 ]
 
 [[package]]
@@ -569,6 +610,12 @@ dependencies = [
  "lazy_static",
  "windows-sys 0.59.0",
 ]
+
+[[package]]
+name = "constant_time_eq"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
 
 [[package]]
 name = "core-foundation"
@@ -1399,6 +1446,15 @@ dependencies = [
  "serde",
  "serde_json",
  "simple_asn1",
+]
+
+[[package]]
+name = "keccak"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb26cec98cce3a3d96cbb7bced3c4b16e3d13f27ec56dbd62cbc8f39cfb9d653"
+dependencies = [
+ "cpufeatures 0.2.17",
 ]
 
 [[package]]
@@ -2523,6 +2579,16 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.2.17",
  "digest",
+]
+
+[[package]]
+name = "sha3"
+version = "0.10.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75872d278a8f37ef87fa0ddbda7802605cb18344497949862c0d4dcb291eba60"
+dependencies = [
+ "digest",
+ "keccak",
 ]
 
 [[package]]

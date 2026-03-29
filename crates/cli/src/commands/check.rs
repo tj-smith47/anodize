@@ -199,7 +199,7 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
 
     // 6. Warn if changelog is disabled but has other fields configured
     if let Some(cl) = &config.changelog
-        && cl.disable == Some(true)
+        && cl.disable == Some(anodize_core::config::StringOrBool::Bool(true))
     {
         let has_other = cl.sort.is_some()
             || cl.filters.is_some()
@@ -230,7 +230,7 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
     // 7. Warn if checksum is disabled but has other fields configured (global defaults)
     if let Some(defaults) = &config.defaults
         && let Some(cksum) = &defaults.checksum
-        && cksum.disable == Some(true)
+        && cksum.disable.as_ref().is_some_and(|d| d.as_bool())
     {
         let has_other = cksum.algorithm.is_some()
             || cksum.name_template.is_some()
@@ -246,7 +246,7 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
     // 8. Warn if per-crate checksum is disabled but has other fields configured
     for c in &config.crates {
         if let Some(cksum) = &c.checksum
-            && cksum.disable == Some(true)
+            && cksum.disable.as_ref().is_some_and(|d| d.as_bool())
         {
             let has_other = cksum.algorithm.is_some()
                 || cksum.name_template.is_some()
@@ -744,7 +744,7 @@ mod tests {
         use anodize_core::config::{ChangelogConfig, ChangelogGroup};
         let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
         config.changelog = Some(ChangelogConfig {
-            disable: Some(true),
+            disable: Some(anodize_core::config::StringOrBool::Bool(true)),
             sort: Some("desc".to_string()),
             header: Some("header".to_string()),
             footer: None,
@@ -753,6 +753,7 @@ mod tests {
                 title: "Features".to_string(),
                 regexp: Some("^feat".to_string()),
                 order: Some(0),
+                groups: None,
             }]),
             use_source: None,
             abbrev: None,
@@ -764,11 +765,11 @@ mod tests {
 
     #[test]
     fn test_check_checksum_disabled_with_other_fields_passes() {
-        use anodize_core::config::{ChecksumConfig, Defaults};
+        use anodize_core::config::{ChecksumConfig, Defaults, StringOrBool};
         let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
         config.defaults = Some(Defaults {
             checksum: Some(ChecksumConfig {
-                disable: Some(true),
+                disable: Some(StringOrBool::Bool(true)),
                 algorithm: Some("sha512".to_string()),
                 ..Default::default()
             }),
@@ -865,10 +866,10 @@ mod tests {
 
     #[test]
     fn test_check_per_crate_checksum_disabled_with_other_fields_passes() {
-        use anodize_core::config::ChecksumConfig;
+        use anodize_core::config::{ChecksumConfig, StringOrBool};
         let mut c = make_crate("a", "a-v{{ .Version }}", None);
         c.checksum = Some(ChecksumConfig {
-            disable: Some(true),
+            disable: Some(StringOrBool::Bool(true)),
             algorithm: Some("sha512".to_string()),
             name_template: Some("checksums.txt".to_string()),
             ..Default::default()

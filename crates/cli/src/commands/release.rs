@@ -72,7 +72,7 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
             )
         })?;
         let release = config.release.get_or_insert_with(Default::default);
-        release.header = Some(header_content);
+        release.header = Some(anodize_core::config::ContentSource::Inline(header_content));
     }
     if let Some(ref footer_path) = opts.release_footer {
         let footer_content = std::fs::read_to_string(footer_path).with_context(|| {
@@ -82,7 +82,7 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
             )
         })?;
         let release = config.release.get_or_insert_with(Default::default);
-        release.footer = Some(footer_content);
+        release.footer = Some(anodize_core::config::ContentSource::Inline(footer_content));
     }
 
     if opts.clean {
@@ -109,7 +109,9 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
 
     // Run hooks before pipeline
     if let Some(before) = &config.before {
-        pipeline::run_hooks(&before.hooks, "before", opts.dry_run, &log)?;
+        if let Some(ref hooks) = before.pre {
+            pipeline::run_hooks(hooks, "before", opts.dry_run, &log)?;
+        }
     }
 
     let ctx_opts = ContextOptions {
@@ -265,7 +267,9 @@ fn run_post_pipeline(
 
     // Run after hooks
     if let Some(after) = &config.after {
-        pipeline::run_hooks(&after.hooks, "after", dry_run, log)?;
+        if let Some(ref hooks) = after.post {
+            pipeline::run_hooks(hooks, "after", dry_run, log)?;
+        }
     }
 
     Ok(())

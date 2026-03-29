@@ -1,16 +1,19 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
 use blake2::{Blake2b512, Blake2s256};
+use md5::Md5;
 use sha1::Sha1;
 use sha2::{Digest, Sha224, Sha256, Sha384, Sha512};
+use sha3::{Sha3_224, Sha3_256, Sha3_384, Sha3_512};
 
 use anodize_core::artifact::{Artifact, ArtifactKind};
-use anodize_core::config::ArchivesConfig;
+use anodize_core::config::{ArchivesConfig, ExtraFileSpec, StringOrBool};
 use anodize_core::context::Context;
+use anodize_core::log::StageLogger;
 use anodize_core::stage::Stage;
 
 // ---------------------------------------------------------------------------
@@ -65,6 +68,60 @@ pub fn blake2s_file(path: &Path) -> Result<String> {
     hash_file_with::<Blake2s256>(path, "blake2s")
 }
 
+pub fn sha3_224_file(path: &Path) -> Result<String> {
+    hash_file_with::<Sha3_224>(path, "sha3-224")
+}
+
+pub fn sha3_256_file(path: &Path) -> Result<String> {
+    hash_file_with::<Sha3_256>(path, "sha3-256")
+}
+
+pub fn sha3_384_file(path: &Path) -> Result<String> {
+    hash_file_with::<Sha3_384>(path, "sha3-384")
+}
+
+pub fn sha3_512_file(path: &Path) -> Result<String> {
+    hash_file_with::<Sha3_512>(path, "sha3-512")
+}
+
+pub fn blake3_file(path: &Path) -> Result<String> {
+    let mut file =
+        File::open(path).with_context(|| format!("blake3: open {}", path.display()))?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = file
+            .read(&mut buf)
+            .with_context(|| format!("blake3: read {}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hasher.finalize().to_hex().to_string())
+}
+
+pub fn crc32_file(path: &Path) -> Result<String> {
+    let mut file =
+        File::open(path).with_context(|| format!("crc32: open {}", path.display()))?;
+    let mut hasher = crc32fast::Hasher::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = file
+            .read(&mut buf)
+            .with_context(|| format!("crc32: read {}", path.display()))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("{:08x}", hasher.finalize()))
+}
+
+pub fn md5_file(path: &Path) -> Result<String> {
+    hash_file_with::<Md5>(path, "md5")
+}
+
 pub fn hash_file(path: &Path, algorithm: &str) -> Result<String> {
     match algorithm {
         "sha1" => sha1_file(path),
@@ -72,8 +129,15 @@ pub fn hash_file(path: &Path, algorithm: &str) -> Result<String> {
         "sha256" => sha256_file(path),
         "sha384" => sha384_file(path),
         "sha512" => sha512_file(path),
+        "sha3-224" => sha3_224_file(path),
+        "sha3-256" => sha3_256_file(path),
+        "sha3-384" => sha3_384_file(path),
+        "sha3-512" => sha3_512_file(path),
         "blake2b" => blake2b_file(path),
         "blake2s" => blake2s_file(path),
+        "blake3" => blake3_file(path),
+        "crc32" => crc32_file(path),
+        "md5" => md5_file(path),
         _ => bail!("unsupported checksum algorithm: {}", algorithm),
     }
 }
@@ -86,22 +150,54 @@ pub fn format_checksum_line(hash: &str, filename: &str) -> String {
 // Extra-files glob resolution
 // ---------------------------------------------------------------------------
 
-/// Resolve a list of glob patterns into deduplicated, sorted file paths.
-fn resolve_extra_files(patterns: &[String]) -> Result<Vec<PathBuf>> {
-    let mut paths: Vec<PathBuf> = Vec::new();
-    for pattern in patterns {
+/// Resolved extra file: the path on disk and an optional name_template override.
+struct ResolvedExtraFile {
+    path: PathBuf,
+    name_template: Option<String>,
+}
+
+/// Resolve a list of extra file specs into deduplicated, sorted file paths.
+fn resolve_extra_files(specs: &[ExtraFileSpec]) -> Result<Vec<ResolvedExtraFile>> {
+    let mut seen: HashSet<PathBuf> = HashSet::new();
+    let mut results: Vec<ResolvedExtraFile> = Vec::new();
+    for spec in specs {
+        let pattern = spec.glob();
+        let name_tmpl = spec.name_template().map(|s| s.to_owned());
         let matches: Vec<_> = glob::glob(pattern)
             .with_context(|| format!("checksum: invalid extra_files glob: {pattern}"))?
             .collect::<std::result::Result<Vec<_>, _>>()
             .with_context(|| format!("checksum: error reading glob results for: {pattern}"))?;
         for m in matches {
-            if m.is_file() && !paths.contains(&m) {
-                paths.push(m);
+            if m.is_file() && seen.insert(m.clone()) {
+                results.push(ResolvedExtraFile {
+                    path: m,
+                    name_template: name_tmpl.clone(),
+                });
             }
         }
     }
-    paths.sort();
-    Ok(paths)
+    results.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(results)
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+fn is_disabled(
+    disable: &Option<StringOrBool>,
+    ctx: &Context,
+    log: &StageLogger,
+    label: &str,
+) -> bool {
+    let Some(d) = disable else {
+        return false;
+    };
+    let should_disable = d.is_disabled(|s| ctx.render_template(s));
+    if should_disable {
+        log.status(&format!("{} disabled", label));
+    }
+    should_disable
 }
 
 // ---------------------------------------------------------------------------
@@ -132,8 +228,8 @@ impl Stage for ChecksumStage {
             .as_ref()
             .and_then(|d| d.checksum.as_ref());
 
-        if global_cksum.and_then(|c| c.disable).unwrap_or(false) {
-            log.status("globally disabled, skipping");
+        let global_disable = global_cksum.and_then(|c| c.disable.clone());
+        if is_disabled(&global_disable, ctx, &log, "checksum globally") {
             return Ok(());
         }
 
@@ -160,13 +256,13 @@ impl Stage for ChecksumStage {
             let crate_name = &crate_cfg.name;
 
             // Skip crates that have checksum explicitly disabled
-            if crate_cfg
-                .checksum
-                .as_ref()
-                .and_then(|c| c.disable)
-                .unwrap_or(false)
-            {
-                log.verbose(&format!("disabled for crate {crate_name}, skipping"));
+            let crate_disable = crate_cfg.checksum.as_ref().and_then(|c| c.disable.clone());
+            if is_disabled(
+                &crate_disable,
+                ctx,
+                &log,
+                &format!("checksum for crate {crate_name}"),
+            ) {
                 continue;
             }
 
@@ -217,15 +313,20 @@ impl Stage for ChecksumStage {
             }
 
             // Resolve extra_files globs and create synthetic artifacts for them
-            if let Some(ref patterns) = extra_files {
-                let extra_paths = resolve_extra_files(patterns)?;
-                for ep in extra_paths {
+            if let Some(ref specs) = extra_files {
+                let resolved = resolve_extra_files(specs)?;
+                for ef in resolved {
+                    let mut metadata =
+                        HashMap::from([("extra_file".to_string(), "true".to_string())]);
+                    if let Some(tmpl) = ef.name_template {
+                        metadata.insert("extra_name_template".to_string(), tmpl);
+                    }
                     source_artifacts.push(Artifact {
                         kind: ArtifactKind::Archive, // treated as a checksummable file
-                        path: ep,
+                        path: ef.path,
                         target: None,
                         crate_name: crate_name.clone(),
-                        metadata: HashMap::from([("extra_file".to_string(), "true".to_string())]),
+                        metadata,
                     });
                 }
             }
@@ -256,54 +357,91 @@ impl Stage for ChecksumStage {
                     .and_then(|n| n.to_str())
                     .unwrap_or("unknown");
 
-                // Build the sidecar path next to the artifact: e.g. myapp.tar.gz.sha256
-                let sidecar_path = artifact
-                    .path
-                    .parent()
-                    .unwrap_or(Path::new("."))
-                    .join(format!("{}.{}", filename, ext));
+                // Determine the display name for this artifact in the checksum line.
+                // If the extra file has a name_template, render it to get an alias.
+                let checksum_name = if let Some(tmpl) =
+                    artifact.metadata.get("extra_name_template")
+                {
+                    let mut vars = ctx.template_vars().clone();
+                    vars.set("ArtifactName", filename);
+                    anodize_core::template::render(tmpl, &vars)
+                        .unwrap_or_else(|_| filename.to_string())
+                } else {
+                    filename.to_string()
+                };
 
-                let line = format_checksum_line(&hash, filename);
-                let mut sidecar_file = File::create(&sidecar_path).with_context(|| {
-                    format!("checksum: create sidecar {}", sidecar_path.display())
-                })?;
-                writeln!(sidecar_file, "{}", line).with_context(|| {
-                    format!("checksum: write sidecar {}", sidecar_path.display())
-                })?;
-
-                log.verbose(&format!(
-                    "{} -> {} ({})",
-                    artifact.path.display(),
-                    sidecar_path.display(),
-                    algorithm
-                ));
-
+                let line = format_checksum_line(&hash, &checksum_name);
                 combined_lines.push(line);
 
-                // Register sidecar as a Checksum artifact
-                new_artifacts.push(Artifact {
-                    kind: ArtifactKind::Checksum,
-                    path: sidecar_path,
-                    target: artifact.target.clone(),
-                    crate_name: crate_name.clone(),
-                    metadata: HashMap::from([
-                        ("algorithm".to_string(), algorithm.clone()),
-                        (
-                            "source".to_string(),
-                            artifact.path.to_string_lossy().into_owned(),
-                        ),
-                    ]),
-                });
+                // Only create sidecar files in split mode
+                if split {
+                    let sidecar_path = if let Some(tmpl) = &name_template {
+                        // Use name_template for sidecar naming when provided
+                        let mut vars = ctx.template_vars().clone();
+                        vars.set("ArtifactName", filename);
+                        let rendered = anodize_core::template::render(tmpl, &vars)
+                            .with_context(|| {
+                                format!(
+                                    "checksum: render split name_template for {}",
+                                    artifact.path.display()
+                                )
+                            })?;
+                        artifact
+                            .path
+                            .parent()
+                            .unwrap_or(Path::new("."))
+                            .join(rendered)
+                    } else {
+                        // Default sidecar naming: {artifact}.{algorithm}
+                        artifact
+                            .path
+                            .parent()
+                            .unwrap_or(Path::new("."))
+                            .join(format!("{}.{}", filename, ext))
+                    };
+
+                    let sidecar_line = format_checksum_line(&hash, &checksum_name);
+                    let mut sidecar_file = File::create(&sidecar_path).with_context(|| {
+                        format!("checksum: create sidecar {}", sidecar_path.display())
+                    })?;
+                    writeln!(sidecar_file, "{}", sidecar_line).with_context(|| {
+                        format!("checksum: write sidecar {}", sidecar_path.display())
+                    })?;
+
+                    log.verbose(&format!(
+                        "{} -> {} ({})",
+                        artifact.path.display(),
+                        sidecar_path.display(),
+                        algorithm
+                    ));
+
+                    // Register sidecar as a Checksum artifact
+                    new_artifacts.push(Artifact {
+                        kind: ArtifactKind::Checksum,
+                        path: sidecar_path,
+                        target: artifact.target.clone(),
+                        crate_name: crate_name.clone(),
+                        metadata: HashMap::from([
+                            ("algorithm".to_string(), algorithm.clone()),
+                            (
+                                "source".to_string(),
+                                artifact.path.to_string_lossy().into_owned(),
+                            ),
+                        ]),
+                    });
+                }
             }
 
-            // Write combined checksums file (skip when split mode is enabled)
+            // Write combined checksums file (only when NOT in split mode)
             if !split {
                 let combined_filename = if let Some(tmpl) = &name_template {
                     ctx.render_template(tmpl).with_context(|| {
                         format!("checksum: render name_template for {crate_name}")
                     })?
                 } else {
-                    format!("{}_checksums.{}", crate_name, ext)
+                    let project = &ctx.config.project_name;
+                    let version = ctx.version();
+                    format!("{project}_{version}_checksums.txt")
                 };
 
                 let combined_path = dist.join(&combined_filename);
@@ -439,6 +577,76 @@ mod tests {
         assert_eq!(hash.len(), 64); // Blake2s-256 hex length
     }
 
+    #[test]
+    fn test_sha3_224_file() {
+        let tmp = TempDir::new().unwrap();
+        let f = tmp.path().join("test.txt");
+        fs::write(&f, b"hello world").unwrap();
+        let hash = sha3_224_file(&f).unwrap();
+        assert_eq!(hash.len(), 56); // SHA3-224 hex length = 28 bytes * 2
+    }
+
+    #[test]
+    fn test_sha3_256_file() {
+        let tmp = TempDir::new().unwrap();
+        let f = tmp.path().join("test.txt");
+        fs::write(&f, b"hello world").unwrap();
+        let hash = sha3_256_file(&f).unwrap();
+        assert_eq!(
+            hash,
+            "644bcc7e564373040999aac89e7622f3ca71fba1d972fd94a31c3bfbf24e3938"
+        );
+    }
+
+    #[test]
+    fn test_sha3_384_file() {
+        let tmp = TempDir::new().unwrap();
+        let f = tmp.path().join("test.txt");
+        fs::write(&f, b"hello world").unwrap();
+        let hash = sha3_384_file(&f).unwrap();
+        assert_eq!(hash.len(), 96); // SHA3-384 hex length = 48 bytes * 2
+    }
+
+    #[test]
+    fn test_sha3_512_file() {
+        let tmp = TempDir::new().unwrap();
+        let f = tmp.path().join("test.txt");
+        fs::write(&f, b"hello world").unwrap();
+        let hash = sha3_512_file(&f).unwrap();
+        assert!(hash.starts_with("840006653e9ac9e95117a15c915caab81662918e925de9e004f774ff82d7079a"));
+        assert_eq!(hash.len(), 128); // SHA3-512 hex length
+    }
+
+    #[test]
+    fn test_blake3_file() {
+        let tmp = TempDir::new().unwrap();
+        let f = tmp.path().join("test.txt");
+        fs::write(&f, b"hello world").unwrap();
+        let hash = blake3_file(&f).unwrap();
+        assert_eq!(
+            hash,
+            "d74981efa70a0c880b8d8c1985d075dbcbf679b99a5f9914e5aaf96b831a9e24"
+        );
+    }
+
+    #[test]
+    fn test_crc32_file() {
+        let tmp = TempDir::new().unwrap();
+        let f = tmp.path().join("test.txt");
+        fs::write(&f, b"hello world").unwrap();
+        let hash = crc32_file(&f).unwrap();
+        assert_eq!(hash, "0d4a1185");
+    }
+
+    #[test]
+    fn test_md5_file() {
+        let tmp = TempDir::new().unwrap();
+        let f = tmp.path().join("test.txt");
+        fs::write(&f, b"hello world").unwrap();
+        let hash = md5_file(&f).unwrap();
+        assert_eq!(hash, "5eb63bbbe01eeed093cb22bb8f5acdc3");
+    }
+
     // -- Dispatch tests -------------------------------------------------------
 
     #[test]
@@ -468,8 +676,29 @@ mod tests {
         let hb2s = hash_file(&f, "blake2s").unwrap();
         assert_eq!(hb2s.len(), 64);
 
+        let hsha3_224 = hash_file(&f, "sha3-224").unwrap();
+        assert_eq!(hsha3_224.len(), 56);
+
+        let hsha3_256 = hash_file(&f, "sha3-256").unwrap();
+        assert_eq!(hsha3_256.len(), 64);
+
+        let hsha3_384 = hash_file(&f, "sha3-384").unwrap();
+        assert_eq!(hsha3_384.len(), 96);
+
+        let hsha3_512 = hash_file(&f, "sha3-512").unwrap();
+        assert_eq!(hsha3_512.len(), 128);
+
+        let hblake3 = hash_file(&f, "blake3").unwrap();
+        assert_eq!(hblake3.len(), 64);
+
+        let hcrc32 = hash_file(&f, "crc32").unwrap();
+        assert_eq!(hcrc32.len(), 8);
+
+        let hmd5 = hash_file(&f, "md5").unwrap();
+        assert_eq!(hmd5.len(), 32);
+
         // Unsupported algorithm should fail
-        assert!(hash_file(&f, "md5").is_err());
+        assert!(hash_file(&f, "bogus").is_err());
     }
 
     #[test]
@@ -482,6 +711,8 @@ mod tests {
 
     #[test]
     fn test_extra_files_config_parsing() {
+        use anodize_core::config::ExtraFileSpec;
+
         let yaml = r#"
 name_template: "checksums.txt"
 algorithm: "sha256"
@@ -492,7 +723,10 @@ extra_files:
         let cfg: anodize_core::config::ChecksumConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(
             cfg.extra_files,
-            Some(vec!["dist/*.bin".to_string(), "README.md".to_string()])
+            Some(vec![
+                ExtraFileSpec::Glob("dist/*.bin".to_string()),
+                ExtraFileSpec::Glob("README.md".to_string()),
+            ])
         );
     }
 
@@ -550,18 +784,16 @@ ids:
         let stage = ChecksumStage;
         stage.run(&mut ctx).unwrap();
 
-        // Should have registered Checksum artifacts (sidecar + combined)
+        // Default (non-split) mode: only combined file, no sidecars
         let checksums = ctx.artifacts.by_kind(ArtifactKind::Checksum);
-        assert_eq!(checksums.len(), 2);
+        assert_eq!(checksums.len(), 1, "non-split mode should only produce combined file");
 
-        // Sidecar file should exist next to the archive
+        // Sidecar file should NOT exist in non-split mode
         let sidecar = dist.join("myapp-1.0.0-linux-amd64.tar.gz.sha256");
-        assert!(sidecar.exists(), "sidecar file should exist");
-        let sidecar_content = fs::read_to_string(&sidecar).unwrap();
-        assert!(sidecar_content.contains("  myapp-1.0.0-linux-amd64.tar.gz"));
+        assert!(!sidecar.exists(), "sidecar file should NOT exist in non-split mode");
 
         // Combined file should exist in dist
-        let combined = dist.join("myapp_checksums.sha256");
+        let combined = dist.join("myapp_1.0.0_checksums.txt");
         assert!(combined.exists(), "combined checksums file should exist");
         let combined_content = fs::read_to_string(&combined).unwrap();
         assert!(combined_content.contains("  myapp-1.0.0-linux-amd64.tar.gz"));
@@ -647,15 +879,16 @@ ids:
         let stage = ChecksumStage;
         stage.run(&mut ctx).unwrap();
 
+        // Non-split mode: no sidecar, only combined
         let sidecar = dist.join("myapp.tar.gz.sha512");
-        assert!(sidecar.exists(), "sha512 sidecar should exist");
-        let content = fs::read_to_string(&sidecar).unwrap();
-        // SHA512 hex is 128 chars
-        let hash_part = content.split_whitespace().next().unwrap_or("");
-        assert_eq!(hash_part.len(), 128);
+        assert!(!sidecar.exists(), "sidecar should NOT exist in non-split mode");
 
-        let combined = dist.join("myapp_checksums.sha512");
+        let combined = dist.join("myapp_1.0.0_checksums.txt");
         assert!(combined.exists());
+        let content = fs::read_to_string(&combined).unwrap();
+        // SHA512 hex is 128 chars
+        let hash_part = content.trim().split_whitespace().next().unwrap_or("");
+        assert_eq!(hash_part.len(), 128);
     }
 
     #[test]
@@ -688,7 +921,7 @@ ids:
 
     #[test]
     fn test_checksum_stage_global_disable() {
-        use anodize_core::config::{ChecksumConfig, CrateConfig, Defaults};
+        use anodize_core::config::{ChecksumConfig, CrateConfig, Defaults, StringOrBool};
         use anodize_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
@@ -704,7 +937,7 @@ ids:
             .dist(dist)
             .defaults(Defaults {
                 checksum: Some(ChecksumConfig {
-                    disable: Some(true),
+                    disable: Some(StringOrBool::Bool(true)),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -735,7 +968,7 @@ ids:
 
     #[test]
     fn test_checksum_stage_per_crate_disable() {
-        use anodize_core::config::{ChecksumConfig, Config, CrateConfig};
+        use anodize_core::config::{ChecksumConfig, Config, CrateConfig, StringOrBool};
         use anodize_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
@@ -754,7 +987,7 @@ ids:
             tag_template: "v{{ .Version }}".to_string(),
             checksum: Some(ChecksumConfig {
                 algorithm: Some("sha256".to_string()),
-                disable: Some(true),
+                disable: Some(StringOrBool::Bool(true)),
                 ..Default::default()
             }),
             ..Default::default()
@@ -779,7 +1012,7 @@ ids:
 
     #[test]
     fn test_checksum_stage_with_extra_files() {
-        use anodize_core::config::{ChecksumConfig, Config, CrateConfig};
+        use anodize_core::config::{ChecksumConfig, Config, CrateConfig, ExtraFileSpec};
         use anodize_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
@@ -806,13 +1039,14 @@ ids:
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
             checksum: Some(ChecksumConfig {
-                extra_files: Some(vec![glob_pattern]),
+                extra_files: Some(vec![ExtraFileSpec::Glob(glob_pattern)]),
                 ..Default::default()
             }),
             ..Default::default()
         }];
 
         let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
@@ -825,12 +1059,12 @@ ids:
         let stage = ChecksumStage;
         stage.run(&mut ctx).unwrap();
 
-        // 3 sidecar files (archive + 2 extra) + 1 combined = 4 artifacts
+        // Non-split mode: only 1 combined artifact (no sidecars)
         let checksums = ctx.artifacts.by_kind(ArtifactKind::Checksum);
-        assert_eq!(checksums.len(), 4);
+        assert_eq!(checksums.len(), 1);
 
         // Combined file should include all three files
-        let combined = dist.join("myapp_checksums.sha256");
+        let combined = dist.join("myapp_1.0.0_checksums.txt");
         assert!(combined.exists());
         let content = fs::read_to_string(&combined).unwrap();
         assert!(content.contains("myapp.tar.gz"));
@@ -867,6 +1101,7 @@ ids:
         }];
 
         let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
 
         // Archive with matching id
         ctx.artifacts.add(Artifact {
@@ -897,12 +1132,12 @@ ids:
         let stage = ChecksumStage;
         stage.run(&mut ctx).unwrap();
 
-        // Only the linux archive should be checksummed: 1 sidecar + 1 combined = 2
+        // Non-split mode: only combined artifact (no sidecars)
         let checksums = ctx.artifacts.by_kind(ArtifactKind::Checksum);
-        assert_eq!(checksums.len(), 2);
+        assert_eq!(checksums.len(), 1);
 
         // Combined file should only contain the linux archive
-        let combined = dist.join("myapp_checksums.sha256");
+        let combined = dist.join("myapp_1.0.0_checksums.txt");
         let content = fs::read_to_string(&combined).unwrap();
         assert!(content.contains("myapp-linux.tar.gz"));
         assert!(!content.contains("myapp-darwin.tar.gz"));
@@ -963,39 +1198,14 @@ ids:
         let stage = ChecksumStage;
         stage.run(&mut ctx).unwrap();
 
-        // Verify sidecar file format: each line is "<hash>  <filename>\n"
+        // Non-split mode: no sidecars, only combined file
         let sidecar1 = dist.join("app-linux.tar.gz.sha256");
-        assert!(sidecar1.exists());
-        let sidecar1_content = fs::read_to_string(&sidecar1).unwrap();
-        let sidecar1_line = sidecar1_content.trim();
-
-        // Verify format: exactly two spaces between hash and filename
-        let parts: Vec<&str> = sidecar1_line.splitn(2, "  ").collect();
-        assert_eq!(
-            parts.len(),
-            2,
-            "checksum line should have hash and filename separated by two spaces"
-        );
-        assert_eq!(
-            parts[0],
-            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
-        );
-        assert_eq!(parts[1], "app-linux.tar.gz");
-
-        // Verify second sidecar
+        assert!(!sidecar1.exists(), "sidecar should NOT exist in non-split mode");
         let sidecar2 = dist.join("app-darwin.tar.gz.sha256");
-        assert!(sidecar2.exists());
-        let sidecar2_content = fs::read_to_string(&sidecar2).unwrap();
-        let sidecar2_line = sidecar2_content.trim();
-        let parts2: Vec<&str> = sidecar2_line.splitn(2, "  ").collect();
-        assert_eq!(
-            parts2[0],
-            "916f0027a575074ce72a331777c3478d6513f786a591bd892da1a577bf2335f9"
-        );
-        assert_eq!(parts2[1], "app-darwin.tar.gz");
+        assert!(!sidecar2.exists(), "sidecar should NOT exist in non-split mode");
 
         // Verify combined checksums file has correct multi-line format
-        let combined = dist.join("app_checksums.sha256");
+        let combined = dist.join("app_2.0.0_checksums.txt");
         assert!(combined.exists());
         let combined_content = fs::read_to_string(&combined).unwrap();
         let lines: Vec<&str> = combined_content.trim().lines().collect();
@@ -1016,9 +1226,9 @@ ids:
             );
         }
 
-        // Verify the combined file contains both filenames
-        assert!(combined_content.contains("app-linux.tar.gz"));
-        assert!(combined_content.contains("app-darwin.tar.gz"));
+        // Verify the combined file contains both filenames with correct hashes
+        assert!(combined_content.contains("b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9  app-linux.tar.gz"));
+        assert!(combined_content.contains("916f0027a575074ce72a331777c3478d6513f786a591bd892da1a577bf2335f9  app-darwin.tar.gz"));
     }
 
     #[test]
@@ -1049,6 +1259,7 @@ ids:
         };
 
         let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
             path: archive.clone(),
@@ -1063,23 +1274,16 @@ ids:
         // Independently compute the SHA-256 hash using the crate's own function
         let expected_hash = sha256_file(&archive).unwrap();
 
-        // Read the sidecar and extract the hash
+        // Non-split mode: no sidecar, verify via combined file
         let sidecar = dist.join("release.tar.gz.sha256");
-        let sidecar_content = fs::read_to_string(&sidecar).unwrap();
-        let actual_hash = sidecar_content.trim().split("  ").next().unwrap();
+        assert!(!sidecar.exists(), "sidecar should NOT exist in non-split mode");
 
-        assert_eq!(
-            actual_hash, expected_hash,
-            "sidecar hash should match independently computed hash"
-        );
-
-        // Also verify via the combined file
-        let combined = dist.join("fox_checksums.sha256");
+        let combined = dist.join("fox_1.0.0_checksums.txt");
         let combined_content = fs::read_to_string(&combined).unwrap();
         let combined_hash = combined_content.trim().split("  ").next().unwrap();
         assert_eq!(
             combined_hash, expected_hash,
-            "combined file hash should match too"
+            "combined file hash should match independently computed hash"
         );
     }
 
@@ -1113,6 +1317,7 @@ ids:
         };
 
         let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
             path: archive.clone(),
@@ -1124,9 +1329,13 @@ ids:
         let stage = ChecksumStage;
         stage.run(&mut ctx).unwrap();
 
+        // Non-split mode: verify via combined file
         let sidecar = dist.join("pkg.tar.gz.sha512");
-        assert!(sidecar.exists());
-        let content = fs::read_to_string(&sidecar).unwrap();
+        assert!(!sidecar.exists(), "sidecar should NOT exist in non-split mode");
+
+        let combined = dist.join("pkg_1.0.0_checksums.txt");
+        assert!(combined.exists());
+        let content = fs::read_to_string(&combined).unwrap();
         let hash = content.trim().split("  ").next().unwrap();
         assert_eq!(hash.len(), 128, "SHA-512 should produce 128 hex chars");
 
@@ -1170,15 +1379,18 @@ ids:
         let stage = ChecksumStage;
         stage.run(&mut ctx).unwrap();
 
-        // Verify sidecar was created with correct hash
+        // Non-split mode: verify via combined file (no sidecar)
         let sidecar = dist.join("myapp-linux.tar.gz.sha256");
         assert!(
-            sidecar.exists(),
-            "sidecar should be created for fake binary"
+            !sidecar.exists(),
+            "sidecar should NOT exist in non-split mode"
         );
-        let sidecar_content = fs::read_to_string(&sidecar).unwrap();
+
+        let combined = dist.join("checksum-test_2.0.0_checksums.txt");
+        assert!(combined.exists(), "combined file should exist");
+        let combined_content = fs::read_to_string(&combined).unwrap();
         let expected_hash = sha256_file(&fake_bin).unwrap();
-        assert!(sidecar_content.starts_with(&expected_hash));
+        assert!(combined_content.starts_with(&expected_hash));
     }
 
     // -----------------------------------------------------------------------
@@ -1245,17 +1457,19 @@ ids:
 
         ChecksumStage.run(&mut ctx).unwrap();
 
+        // Non-split mode: only combined artifact (no sidecars)
+        let checksums = ctx.artifacts.by_kind(ArtifactKind::Checksum);
+        assert_eq!(checksums.len(), 1, "non-split mode should only produce combined file");
+
         // All checksum artifacts should have kind = Checksum
-        for a in ctx.artifacts.by_kind(ArtifactKind::Checksum) {
+        for a in &checksums {
             assert_eq!(a.kind, ArtifactKind::Checksum);
             assert!(a.metadata.contains_key("algorithm"));
         }
 
         // Combined file should have "combined" metadata
-        let combined = ctx
-            .artifacts
-            .by_kind(ArtifactKind::Checksum)
-            .into_iter()
+        let combined = checksums
+            .iter()
             .find(|a| a.metadata.get("combined") == Some(&"true".to_string()));
         assert!(
             combined.is_some(),
@@ -1309,7 +1523,7 @@ ids:
 
     #[test]
     fn test_extra_files_appear_in_combined_checksum() {
-        use anodize_core::config::{ChecksumConfig, Config, CrateConfig};
+        use anodize_core::config::{ChecksumConfig, Config, CrateConfig, ExtraFileSpec};
         use anodize_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
@@ -1332,7 +1546,7 @@ ids:
                 path: ".".to_string(),
                 tag_template: "v{{ .Version }}".to_string(),
                 checksum: Some(ChecksumConfig {
-                    extra_files: Some(vec![glob_pattern]),
+                    extra_files: Some(vec![ExtraFileSpec::Glob(glob_pattern)]),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -1341,6 +1555,7 @@ ids:
         };
 
         let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
             path: archive,
@@ -1352,7 +1567,7 @@ ids:
         ChecksumStage.run(&mut ctx).unwrap();
 
         // Combined file should include both archive and extra file
-        let combined = dist.join("app_checksums.sha256");
+        let combined = dist.join("app_1.0.0_checksums.txt");
         let content = fs::read_to_string(&combined).unwrap();
         assert!(
             content.contains("app.tar.gz"),
@@ -1397,6 +1612,7 @@ ids:
         };
 
         let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
 
         // Add 3 artifacts, only 2 have matching ids
         ctx.artifacts.add(Artifact {
@@ -1436,7 +1652,7 @@ ids:
         ChecksumStage.run(&mut ctx).unwrap();
 
         // Combined file should include only linux and darwin
-        let combined = dist.join("app_checksums.sha256");
+        let combined = dist.join("app_1.0.0_checksums.txt");
         let content = fs::read_to_string(&combined).unwrap();
         assert!(content.contains("app-linux.tar.gz"));
         assert!(content.contains("app-darwin.tar.gz"));
@@ -1465,26 +1681,26 @@ ids:
         let f = tmp.path().join("test.txt");
         fs::write(&f, b"hello").unwrap();
 
-        let result = hash_file(&f, "md5");
+        let result = hash_file(&f, "whirlpool");
         assert!(result.is_err(), "unsupported algorithm should fail");
         let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("unsupported checksum algorithm") && err.contains("md5"),
-            "error should mention 'unsupported checksum algorithm' and 'md5', got: {err}"
+            err.contains("unsupported checksum algorithm") && err.contains("whirlpool"),
+            "error should mention 'unsupported checksum algorithm' and 'whirlpool', got: {err}"
         );
     }
 
     #[test]
-    fn test_unsupported_algorithm_crc32() {
+    fn test_unsupported_algorithm_ripemd() {
         let tmp = TempDir::new().unwrap();
         let f = tmp.path().join("test.txt");
         fs::write(&f, b"hello").unwrap();
 
-        let result = hash_file(&f, "crc32");
+        let result = hash_file(&f, "ripemd160");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("unsupported") && err.contains("crc32"),
+            err.contains("unsupported") && err.contains("ripemd160"),
             "error should name the unsupported algorithm, got: {err}"
         );
     }
@@ -1612,7 +1828,7 @@ algorithm: "sha256"
         assert!(sidecar.exists(), "sidecar file should exist");
 
         // Combined file should NOT exist
-        let combined = dist.join("myapp_checksums.sha256");
+        let combined = dist.join("myapp_1.0.0_checksums.txt");
         assert!(
             !combined.exists(),
             "combined checksums file should NOT exist in split mode"
@@ -1620,7 +1836,7 @@ algorithm: "sha256"
     }
 
     #[test]
-    fn test_checksum_stage_split_false_creates_both() {
+    fn test_checksum_stage_split_false_only_combined() {
         use anodize_core::config::{ChecksumConfig, CrateConfig};
         use anodize_core::test_helpers::TestContextBuilder;
 
@@ -1658,19 +1874,19 @@ algorithm: "sha256"
         let stage = ChecksumStage;
         stage.run(&mut ctx).unwrap();
 
-        // Both sidecar and combined should be created
+        // split=false: only combined file, no sidecars
         let checksums = ctx.artifacts.by_kind(ArtifactKind::Checksum);
         assert_eq!(
             checksums.len(),
-            2,
-            "split=false should create sidecar + combined artifacts, got {}",
+            1,
+            "split=false should create only combined artifact, got {}",
             checksums.len()
         );
 
         let sidecar = dist.join("myapp-1.0.0-linux-amd64.tar.gz.sha256");
-        assert!(sidecar.exists(), "sidecar file should exist");
+        assert!(!sidecar.exists(), "sidecar should NOT exist when split=false");
 
-        let combined = dist.join("myapp_checksums.sha256");
+        let combined = dist.join("myapp_1.0.0_checksums.txt");
         assert!(
             combined.exists(),
             "combined checksums file should exist when split=false"
@@ -1678,8 +1894,8 @@ algorithm: "sha256"
     }
 
     #[test]
-    fn test_checksum_stage_default_split_creates_both() {
-        // When split is not set (None), default behavior creates both
+    fn test_checksum_stage_default_split_only_combined() {
+        // When split is not set (None), default behavior creates only combined (no sidecars)
         use anodize_core::config::CrateConfig;
         use anodize_core::test_helpers::TestContextBuilder;
 
@@ -1716,8 +1932,8 @@ algorithm: "sha256"
         let checksums = ctx.artifacts.by_kind(ArtifactKind::Checksum);
         assert_eq!(
             checksums.len(),
-            2,
-            "default (no split) should create sidecar + combined"
+            1,
+            "default (no split) should create only combined"
         );
     }
 
@@ -1771,6 +1987,456 @@ algorithm: "sha256"
             checksums.len(),
             1,
             "global split: true should cascade to crate — only sidecar, no combined"
+        );
+    }
+
+    // -- Default filename format tests -----------------------------------------
+
+    #[test]
+    fn test_default_checksum_filename_uses_project_name_and_version() {
+        use anodize_core::config::CrateConfig;
+        use anodize_core::test_helpers::TestContextBuilder;
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        fs::create_dir_all(&dist).unwrap();
+
+        let archive_path = dist.join("coolapp-3.0.0-linux-amd64.tar.gz");
+        fs::write(&archive_path, b"archive content").unwrap();
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("coolapp")
+            .tag("v3.0.0")
+            .dist(dist.clone())
+            .crates(vec![CrateConfig {
+                name: "coolapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                ..Default::default()
+            }])
+            .build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: archive_path,
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "coolapp".to_string(),
+            metadata: Default::default(),
+        });
+
+        ChecksumStage.run(&mut ctx).unwrap();
+
+        // Default filename should be {project_name}_{version}_checksums.txt
+        let combined = dist.join("coolapp_3.0.0_checksums.txt");
+        assert!(
+            combined.exists(),
+            "default checksum filename should be coolapp_3.0.0_checksums.txt, \
+             files in dist: {:?}",
+            fs::read_dir(&dist)
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    // -- SHA3-224 and SHA3-384 dispatch tests ----------------------------------
+
+    #[test]
+    fn test_sha3_224_dispatches_via_hash_file() {
+        let tmp = TempDir::new().unwrap();
+        let f = tmp.path().join("test.txt");
+        fs::write(&f, b"hello world").unwrap();
+
+        let h = hash_file(&f, "sha3-224").unwrap();
+        assert_eq!(h.len(), 56, "SHA3-224 should produce 56 hex chars");
+        // Also verify it matches the direct function
+        assert_eq!(h, sha3_224_file(&f).unwrap());
+    }
+
+    #[test]
+    fn test_sha3_384_dispatches_via_hash_file() {
+        let tmp = TempDir::new().unwrap();
+        let f = tmp.path().join("test.txt");
+        fs::write(&f, b"hello world").unwrap();
+
+        let h = hash_file(&f, "sha3-384").unwrap();
+        assert_eq!(h.len(), 96, "SHA3-384 should produce 96 hex chars");
+        // Also verify it matches the direct function
+        assert_eq!(h, sha3_384_file(&f).unwrap());
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 4: Config + wiring parity tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_config_disable_template_string_parsing() {
+        let yaml = r#"
+algorithm: "sha256"
+disable: "{{ if .IsSnapshot }}true{{ end }}"
+"#;
+        let cfg: anodize_core::config::ChecksumConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        match &cfg.disable {
+            Some(anodize_core::config::StringOrBool::String(s)) => {
+                assert!(s.contains("IsSnapshot"));
+                assert!(cfg.disable.as_ref().unwrap().is_template());
+            }
+            other => panic!("expected StringOrBool::String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_config_disable_bool_parsing() {
+        let yaml = r#"
+algorithm: "sha256"
+disable: true
+"#;
+        let cfg: anodize_core::config::ChecksumConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(
+            cfg.disable,
+            Some(anodize_core::config::StringOrBool::Bool(true))
+        );
+        assert!(!cfg.disable.as_ref().unwrap().is_template());
+    }
+
+    #[test]
+    fn test_config_extra_files_object_form() {
+        use anodize_core::config::ExtraFileSpec;
+
+        let yaml = r#"
+extra_files:
+  - "dist/*.bin"
+  - glob: "release/*.deb"
+    name_template: "{{ .ArtifactName }}.checksum"
+"#;
+        let cfg: anodize_core::config::ChecksumConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let extra = cfg.extra_files.unwrap();
+        assert_eq!(extra.len(), 2);
+        assert_eq!(extra[0], ExtraFileSpec::Glob("dist/*.bin".to_string()));
+        match &extra[1] {
+            ExtraFileSpec::Detailed { glob, name_template } => {
+                assert_eq!(glob, "release/*.deb");
+                assert_eq!(
+                    name_template.as_deref(),
+                    Some("{{ .ArtifactName }}.checksum")
+                );
+            }
+            other => panic!("expected ExtraFileSpec::Detailed, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_nonsplit_mode_does_not_create_sidecars() {
+        use anodize_core::config::CrateConfig;
+        use anodize_core::test_helpers::TestContextBuilder;
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        fs::create_dir_all(&dist).unwrap();
+
+        let archive1 = dist.join("app-linux.tar.gz");
+        let archive2 = dist.join("app-darwin.tar.gz");
+        fs::write(&archive1, b"linux").unwrap();
+        fs::write(&archive2, b"darwin").unwrap();
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("app")
+            .tag("v1.0.0")
+            .dist(dist.clone())
+            .crates(vec![CrateConfig {
+                name: "app".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                ..Default::default()
+            }])
+            .build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: archive1,
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: Default::default(),
+        });
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: archive2,
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: Default::default(),
+        });
+
+        ChecksumStage.run(&mut ctx).unwrap();
+
+        // Non-split: only 1 combined artifact
+        let checksums = ctx.artifacts.by_kind(ArtifactKind::Checksum);
+        assert_eq!(checksums.len(), 1, "non-split should produce only combined");
+        assert_eq!(
+            checksums[0].metadata.get("combined"),
+            Some(&"true".to_string())
+        );
+
+        // No sidecar files on disk
+        assert!(!dist.join("app-linux.tar.gz.sha256").exists());
+        assert!(!dist.join("app-darwin.tar.gz.sha256").exists());
+
+        // Combined file should contain both
+        let combined = dist.join("app_1.0.0_checksums.txt");
+        assert!(combined.exists());
+        let content = fs::read_to_string(&combined).unwrap();
+        assert!(content.contains("app-linux.tar.gz"));
+        assert!(content.contains("app-darwin.tar.gz"));
+    }
+
+    #[test]
+    fn test_split_mode_creates_sidecars_no_combined() {
+        use anodize_core::config::{ChecksumConfig, CrateConfig};
+        use anodize_core::test_helpers::TestContextBuilder;
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        fs::create_dir_all(&dist).unwrap();
+
+        let archive1 = dist.join("app-linux.tar.gz");
+        let archive2 = dist.join("app-darwin.tar.gz");
+        fs::write(&archive1, b"linux").unwrap();
+        fs::write(&archive2, b"darwin").unwrap();
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("app")
+            .tag("v1.0.0")
+            .dist(dist.clone())
+            .crates(vec![CrateConfig {
+                name: "app".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                checksum: Some(ChecksumConfig {
+                    split: Some(true),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: archive1,
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: Default::default(),
+        });
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: archive2,
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: Default::default(),
+        });
+
+        ChecksumStage.run(&mut ctx).unwrap();
+
+        // Split mode: 2 sidecar artifacts, no combined
+        let checksums = ctx.artifacts.by_kind(ArtifactKind::Checksum);
+        assert_eq!(checksums.len(), 2, "split mode should produce 2 sidecars");
+        for a in &checksums {
+            assert!(
+                a.metadata.get("source").is_some(),
+                "sidecar artifact should have source metadata"
+            );
+            assert!(
+                a.metadata.get("combined").is_none(),
+                "sidecar artifact should NOT have combined metadata"
+            );
+        }
+
+        // Sidecar files on disk
+        assert!(dist.join("app-linux.tar.gz.sha256").exists());
+        assert!(dist.join("app-darwin.tar.gz.sha256").exists());
+
+        // No combined file
+        assert!(!dist.join("app_1.0.0_checksums.txt").exists());
+    }
+
+    #[test]
+    fn test_split_mode_with_name_template() {
+        use anodize_core::config::{ChecksumConfig, CrateConfig};
+        use anodize_core::test_helpers::TestContextBuilder;
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        fs::create_dir_all(&dist).unwrap();
+
+        let archive = dist.join("app-linux.tar.gz");
+        fs::write(&archive, b"linux content").unwrap();
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("app")
+            .tag("v1.0.0")
+            .dist(dist.clone())
+            .crates(vec![CrateConfig {
+                name: "app".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                checksum: Some(ChecksumConfig {
+                    split: Some(true),
+                    name_template: Some("{{ .ArtifactName }}.checksumfile".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: archive.clone(),
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: Default::default(),
+        });
+
+        ChecksumStage.run(&mut ctx).unwrap();
+
+        // Sidecar should use the rendered name_template
+        let custom_sidecar = dist.join("app-linux.tar.gz.checksumfile");
+        assert!(
+            custom_sidecar.exists(),
+            "sidecar should be named via name_template, expected: app-linux.tar.gz.checksumfile, \
+             files: {:?}",
+            fs::read_dir(&dist)
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect::<Vec<_>>()
+        );
+
+        // Default-named sidecar should NOT exist
+        let default_sidecar = dist.join("app-linux.tar.gz.sha256");
+        assert!(
+            !default_sidecar.exists(),
+            "default sidecar name should NOT be used when name_template is set"
+        );
+
+        // Verify content is correct
+        let content = fs::read_to_string(&custom_sidecar).unwrap();
+        let expected_hash = sha256_file(&archive).unwrap();
+        assert!(content.starts_with(&expected_hash));
+        assert!(content.contains("app-linux.tar.gz"));
+    }
+
+    #[test]
+    fn test_disable_template_string_skips_when_true() {
+        use anodize_core::config::{ChecksumConfig, CrateConfig, StringOrBool};
+        use anodize_core::test_helpers::TestContextBuilder;
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        fs::create_dir_all(&dist).unwrap();
+
+        let archive = dist.join("app.tar.gz");
+        fs::write(&archive, b"content").unwrap();
+
+        // Use a template that resolves to "true" (via simple string, not real template)
+        let mut ctx = TestContextBuilder::new()
+            .project_name("app")
+            .tag("v1.0.0")
+            .dist(dist.clone())
+            .crates(vec![CrateConfig {
+                name: "app".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                checksum: Some(ChecksumConfig {
+                    disable: Some(StringOrBool::String("true".to_string())),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: archive,
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: Default::default(),
+        });
+
+        ChecksumStage.run(&mut ctx).unwrap();
+
+        // Should be disabled via template evaluation
+        let checksums = ctx.artifacts.by_kind(ArtifactKind::Checksum);
+        assert!(checksums.is_empty(), "disable: 'true' string should disable checksums");
+    }
+
+    #[test]
+    fn test_extra_file_detailed_name_template_combined_mode() {
+        // Verifies that ExtraFileSpec::Detailed with name_template correctly renames
+        // the entry in the combined (non-split) checksum file via the template engine.
+        use anodize_core::config::{ChecksumConfig, Config, CrateConfig, ExtraFileSpec};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        fs::create_dir_all(&dist).unwrap();
+
+        // Create the archive and extra file
+        let archive = dist.join("myapp.tar.gz");
+        fs::write(&archive, b"archive content").unwrap();
+
+        let extra = dist.join("RELEASE_NOTES.txt");
+        fs::write(&extra, b"release notes content").unwrap();
+
+        let glob_pattern = format!("{}/RELEASE_NOTES.txt", dist.display());
+
+        let config = Config {
+            project_name: "myapp".to_string(),
+            dist: dist.clone(),
+            crates: vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                checksum: Some(ChecksumConfig {
+                    // split defaults to false — combined mode
+                    extra_files: Some(vec![ExtraFileSpec::Detailed {
+                        glob: glob_pattern,
+                        name_template: Some("custom-{{ .ArtifactName }}".to_string()),
+                    }]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: archive,
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+        });
+
+        ChecksumStage.run(&mut ctx).unwrap();
+
+        // Non-split mode: only 1 combined artifact
+        let checksums = ctx.artifacts.by_kind(ArtifactKind::Checksum);
+        assert_eq!(checksums.len(), 1, "non-split mode should produce one combined artifact");
+
+        // Combined file should contain the custom-named entry for the extra file
+        let combined = dist.join("myapp_1.0.0_checksums.txt");
+        assert!(combined.exists(), "combined checksum file should exist");
+        let content = fs::read_to_string(&combined).unwrap();
+
+        // The extra file should appear with its custom name (template rendered)
+        assert!(
+            content.contains("custom-RELEASE_NOTES.txt"),
+            "combined file should contain the custom-named extra file entry, got:\n{content}"
+        );
+        // The original archive should still appear by its real name
+        assert!(
+            content.contains("myapp.tar.gz"),
+            "combined file should contain the archive, got:\n{content}"
         );
     }
 }

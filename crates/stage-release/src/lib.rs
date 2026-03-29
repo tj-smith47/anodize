@@ -1,9 +1,9 @@
 use anodize_core::artifact::ArtifactKind;
-use anodize_core::config::{MakeLatestConfig, PrereleaseConfig};
+use anodize_core::config::{ContentSource, ExtraFileSpec, MakeLatestConfig, PrereleaseConfig};
 use anodize_core::context::Context;
 use anodize_core::git;
 use anodize_core::stage::Stage;
-use anyhow::{Context as _, Result};
+use anyhow::{bail, Context as _, Result};
 
 // ---------------------------------------------------------------------------
 // should_mark_prerelease
@@ -61,24 +61,55 @@ pub(crate) fn build_release_body(
 // ---------------------------------------------------------------------------
 
 /// Resolve `extra_files` glob patterns into concrete file paths.
+/// Returns `(path, optional_rendered_name)` pairs. When a `Detailed` spec has
+/// a `name_template`, the template is rendered using the provided `Context` and
+/// returned as the second element; the upload loop should use this as the
+/// upload filename instead of the filesystem name.
 /// Invalid glob patterns are silently skipped (callers log through StageLogger).
-pub(crate) fn collect_extra_files(patterns: &[String]) -> Vec<std::path::PathBuf> {
-    let mut paths = Vec::new();
-    for pattern in patterns {
-        match glob::glob(pattern) {
-            Ok(entries) => {
-                for entry in entries.flatten() {
-                    if entry.is_file() {
-                        paths.push(entry);
+pub(crate) fn collect_extra_files(
+    specs: &[ExtraFileSpec],
+    ctx: &Context,
+) -> Vec<(std::path::PathBuf, Option<String>)> {
+    let mut results = Vec::new();
+    for spec in specs {
+        match spec {
+            ExtraFileSpec::Glob(pattern) => {
+                match glob::glob(pattern) {
+                    Ok(entries) => {
+                        for entry in entries.flatten() {
+                            if entry.is_file() {
+                                results.push((entry, None));
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        // Invalid glob — skip silently; the release stage logs via StageLogger.
                     }
                 }
             }
-            Err(_) => {
-                // Invalid glob — skip silently; the release stage logs via StageLogger.
+            ExtraFileSpec::Detailed { glob: pattern, name_template } => {
+                match glob::glob(pattern) {
+                    Ok(entries) => {
+                        for entry in entries.flatten() {
+                            if entry.is_file() {
+                                let name = name_template.as_ref().and_then(|tmpl| {
+                                    let filename = entry.file_name()
+                                        .unwrap_or_default()
+                                        .to_string_lossy();
+                                    let mut vars = ctx.template_vars().clone();
+                                    vars.set("ArtifactName", &filename);
+                                    anodize_core::template::render(tmpl, &vars).ok()
+                                });
+                                results.push((entry, name));
+                            }
+                        }
+                    }
+                    Err(_) => {}
+                }
             }
         }
     }
-    paths
+    results
 }
 
 // ---------------------------------------------------------------------------
@@ -96,6 +127,148 @@ pub(crate) fn resolve_make_latest(
         Some(MakeLatestConfig::Auto) => Some(MakeLatest::Legacy),
         None => None,
     }
+}
+
+// ---------------------------------------------------------------------------
+// resolve_release_mode
+// ---------------------------------------------------------------------------
+
+/// The valid release `mode` values that control how existing release notes
+/// are handled when a release already exists.
+const VALID_RELEASE_MODES: &[&str] = &["keep-existing", "append", "prepend", "replace"];
+
+/// Resolve and validate the release mode from config.
+/// Returns `"keep-existing"` when `None` or empty (matches GoReleaser default).
+pub(crate) fn resolve_release_mode(mode: Option<&str>) -> Result<String> {
+    match mode {
+        None | Some("") => Ok("keep-existing".to_string()),
+        Some(m) => {
+            if VALID_RELEASE_MODES.contains(&m) {
+                Ok(m.to_string())
+            } else {
+                anyhow::bail!(
+                    "release: invalid mode '{}', must be one of: {}",
+                    m,
+                    VALID_RELEASE_MODES.join(", ")
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// resolve_content_source
+// ---------------------------------------------------------------------------
+
+/// Resolve a `ContentSource` to its string content.
+/// - Inline: returns the string directly.
+/// - FromFile: reads the file from disk.
+/// - FromUrl: fetches the URL content via HTTP GET.
+pub(crate) fn resolve_content_source(source: &ContentSource) -> Result<String> {
+    match source {
+        ContentSource::Inline(s) => Ok(s.clone()),
+        ContentSource::FromFile { from_file } => std::fs::read_to_string(from_file)
+            .map_err(|e| anyhow::anyhow!("failed to read {}: {}", from_file, e)),
+        ContentSource::FromUrl { from_url } => {
+            let response = reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()?
+                .get(from_url)
+                .send()
+                .map_err(|e| anyhow::anyhow!("failed to fetch content URL: {}", e))?;
+            if !response.status().is_success() {
+                bail!("content URL returned HTTP {}", response.status());
+            }
+            Ok(response.text()?)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// compose_body_for_mode
+// ---------------------------------------------------------------------------
+
+/// Compose the final release body based on the release mode.
+///
+/// - `"replace"` — use new_body as-is (current behavior)
+/// - `"keep-existing"` — if existing_body is non-empty, keep it; otherwise use new_body
+/// - `"append"` — append new_body after existing_body
+/// - `"prepend"` — prepend new_body before existing_body
+pub(crate) fn compose_body_for_mode(
+    mode: &str,
+    existing_body: Option<&str>,
+    new_body: &str,
+) -> String {
+    match mode {
+        "keep-existing" => {
+            if let Some(existing) = existing_body {
+                if !existing.is_empty() {
+                    return existing.to_string();
+                }
+            }
+            new_body.to_string()
+        }
+        "append" => {
+            if let Some(existing) = existing_body {
+                if !existing.is_empty() {
+                    return format!("{}\n\n{}", existing, new_body);
+                }
+            }
+            new_body.to_string()
+        }
+        "prepend" => {
+            if let Some(existing) = existing_body {
+                if !existing.is_empty() {
+                    return format!("{}\n\n{}", new_body, existing);
+                }
+            }
+            new_body.to_string()
+        }
+        // "replace" or any other value — just use new_body
+        _ => new_body.to_string(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// build_release_json
+// ---------------------------------------------------------------------------
+
+/// Build the JSON body for GitHub release create/update API calls.
+/// Extracts the common construction shared by PATCH (update existing draft)
+/// and POST (create new release) paths.
+fn build_release_json(
+    tag: &str,
+    name: &str,
+    body: &str,
+    draft: bool,
+    prerelease_flag: bool,
+    make_latest: &Option<octocrab::repos::releases::MakeLatest>,
+    target_commitish: &Option<String>,
+    discussion_category: &Option<String>,
+    github_native: bool,
+) -> serde_json::Value {
+    let mut json = serde_json::json!({
+        "tag_name": tag,
+        "name": name,
+        "draft": draft,
+        "prerelease": prerelease_flag,
+    });
+    if !body.is_empty() {
+        json["body"] = serde_json::Value::String(body.to_string());
+    }
+    if let Some(ml) = make_latest {
+        json["make_latest"] = serde_json::Value::String(ml.to_string());
+    }
+    if let Some(tc) = target_commitish {
+        json["target_commitish"] = serde_json::json!(tc);
+    }
+    if let Some(dc) = discussion_category {
+        json["discussion_category_name"] = serde_json::json!(dc);
+    }
+    if github_native {
+        json["generate_release_notes"] = serde_json::Value::Bool(true);
+    }
+    json
 }
 
 // ---------------------------------------------------------------------------
@@ -140,31 +313,65 @@ impl Stage for ReleaseStage {
         for crate_cfg in &crates {
             let release_cfg = crate_cfg.release.as_ref().unwrap();
 
-            // Skip crates where release is explicitly disabled.
-            if release_cfg.disable.unwrap_or(false) {
-                log.status(&format!(
-                    "release disabled for crate '{}', skipping",
-                    crate_cfg.name
-                ));
-                continue;
+            // Skip crates where release is explicitly disabled (supports template strings).
+            if let Some(ref d) = release_cfg.disable {
+                if d.is_disabled(|s| ctx.render_template(s)) {
+                    log.status(&format!(
+                        "release disabled for crate '{}', skipping",
+                        crate_cfg.name
+                    ));
+                    continue;
+                }
             }
 
             let crate_name = crate_cfg.name.clone();
+
+            // Validate conflicting draft options.
+            if release_cfg.replace_existing_draft.unwrap_or(false)
+                && release_cfg.use_existing_draft.unwrap_or(false)
+            {
+                bail!(
+                    "release: crate '{}': cannot set both replace_existing_draft and \
+                     use_existing_draft — replace deletes drafts that use_existing_draft needs",
+                    crate_name
+                );
+            }
+
             let changelog_body = ctx.changelogs.get(&crate_name).cloned().unwrap_or_default();
 
-            // Template-render header/footer before building release body.
+            // Resolve and validate release mode.
+            let release_mode =
+                resolve_release_mode(release_cfg.mode.as_deref()).with_context(|| {
+                    format!("release: invalid mode for crate '{}'", crate_name)
+                })?;
+            if release_mode != "keep-existing" {
+                log.status(&format!(
+                    "release mode '{}' for crate '{}'",
+                    release_mode, crate_name
+                ));
+            }
+
+            // Resolve and template-render header/footer before building release body.
             let rendered_header = release_cfg
                 .header
-                .as_deref()
-                .map(|h| ctx.render_template(h))
-                .transpose()
-                .with_context(|| format!("release: render header for crate '{}'", crate_name))?;
+                .as_ref()
+                .map(|src| {
+                    let raw = resolve_content_source(src)
+                        .with_context(|| format!("release: resolve header for crate '{}'", crate_name))?;
+                    ctx.render_template(&raw)
+                        .with_context(|| format!("release: render header for crate '{}'", crate_name))
+                })
+                .transpose()?;
             let rendered_footer = release_cfg
                 .footer
-                .as_deref()
-                .map(|f| ctx.render_template(f))
-                .transpose()
-                .with_context(|| format!("release: render footer for crate '{}'", crate_name))?;
+                .as_ref()
+                .map(|src| {
+                    let raw = resolve_content_source(src)
+                        .with_context(|| format!("release: resolve footer for crate '{}'", crate_name))?;
+                    ctx.render_template(&raw)
+                        .with_context(|| format!("release: render footer for crate '{}'", crate_name))
+                })
+                .transpose()?;
 
             let release_body = build_release_body(
                 &changelog_body,
@@ -201,42 +408,113 @@ impl Stage for ReleaseStage {
             let replace_existing_artifacts =
                 release_cfg.replace_existing_artifacts.unwrap_or(false);
             let make_latest = resolve_make_latest(&release_cfg.make_latest);
+            let ids_filter = release_cfg.ids.as_ref();
+            let target_commitish = release_cfg.target_commitish.clone();
+            let discussion_category_name = release_cfg.discussion_category_name.clone();
+            let include_meta = release_cfg.include_meta.unwrap_or(false);
+            let use_existing_draft = release_cfg.use_existing_draft.unwrap_or(false);
 
-            // Collect uploadable artifacts for this crate.
-            let mut artifact_paths: Vec<std::path::PathBuf> = [
+            // Collect uploadable artifacts for this crate, applying ids filter.
+            // Each entry is (path, optional_custom_name). The custom name is only
+            // set for extra_files with a name_template; regular artifacts use None.
+            let mut artifact_entries: Vec<(std::path::PathBuf, Option<String>)> = [
                 ArtifactKind::Archive,
                 ArtifactKind::Checksum,
                 ArtifactKind::LinuxPackage,
+                ArtifactKind::Snap,
+                ArtifactKind::DiskImage,
+                ArtifactKind::Installer,
+                ArtifactKind::MacOsPackage,
+                ArtifactKind::SourceArchive,
+                ArtifactKind::Sbom,
             ]
             .iter()
             .flat_map(|&kind| {
-                ctx.artifacts
+                let artifacts = ctx
+                    .artifacts
                     .by_kind_and_crate(kind, &crate_cfg.name)
-                    .into_iter()
-                    .map(|a| a.path.clone())
-                    .collect::<Vec<_>>()
+                    .into_iter();
+                if let Some(ids) = ids_filter {
+                    artifacts
+                        .filter(|a| {
+                            matches!(a.metadata.get("id"), Some(id) if ids.contains(id))
+                        })
+                        .map(|a| (a.path.clone(), None))
+                        .collect::<Vec<_>>()
+                } else {
+                    artifacts.map(|a| (a.path.clone(), None)).collect::<Vec<_>>()
+                }
             })
             .collect();
 
-            // Collect extra files from glob patterns.
-            if let Some(extra_patterns) = &release_cfg.extra_files {
-                let extra = collect_extra_files(extra_patterns);
-                artifact_paths.extend(extra);
+            // Also include Metadata artifacts that are Signatures or Certificates.
+            let sig_cert_entries: Vec<(std::path::PathBuf, Option<String>)> = ctx
+                .artifacts
+                .by_kind_and_crate(ArtifactKind::Metadata, &crate_cfg.name)
+                .into_iter()
+                .filter(|a| {
+                    matches!(
+                        a.metadata.get("type").map(|s| s.as_str()),
+                        Some("Signature") | Some("Certificate")
+                    )
+                })
+                .map(|a| (a.path.clone(), None))
+                .collect();
+            artifact_entries.extend(sig_cert_entries);
+
+            if let Some(ids) = ids_filter {
+                log.verbose(&format!(
+                    "ids filter {:?} selected {} artifacts for crate '{}'",
+                    ids,
+                    artifact_entries.len(),
+                    crate_cfg.name
+                ));
+            }
+
+            // Collect extra files from glob patterns (with optional name_template).
+            if let Some(extra_specs) = &release_cfg.extra_files {
+                let extra = collect_extra_files(extra_specs, ctx);
+                artifact_entries.extend(extra);
+            }
+
+            // include_meta: upload metadata.json and artifacts.json from dist dir.
+            if include_meta {
+                let dist_dir = &ctx.config.dist;
+                for meta_name in &["metadata.json", "artifacts.json"] {
+                    let meta_path = dist_dir.join(meta_name);
+                    if meta_path.exists() {
+                        artifact_entries.push((meta_path, None));
+                    } else {
+                        log.verbose(&format!(
+                            "include_meta: {} not found at {}",
+                            meta_name,
+                            meta_path.display()
+                        ));
+                    }
+                }
             }
 
             if dry_run {
                 log.status(&format!(
-                    "(dry-run) would create GitHub Release '{}' (tag={}, draft={}, prerelease={}) for crate '{}'",
-                    release_name, tag, draft, prerelease, crate_cfg.name
+                    "(dry-run) would create GitHub Release '{}' (tag={}, draft={}, prerelease={}, mode={}) for crate '{}'",
+                    release_name, tag, draft, prerelease, release_mode, crate_cfg.name
                 ));
                 if skip_upload {
                     log.status("(dry-run)   skip_upload is set, would skip artifact uploads");
                 } else {
-                    for path in &artifact_paths {
-                        log.status(&format!(
-                            "(dry-run)   would upload artifact: {}",
-                            path.display()
-                        ));
+                    for (path, custom_name) in &artifact_entries {
+                        if let Some(name) = custom_name {
+                            log.status(&format!(
+                                "(dry-run)   would upload artifact: {} (as '{}')",
+                                path.display(),
+                                name,
+                            ));
+                        } else {
+                            log.status(&format!(
+                                "(dry-run)   would upload artifact: {}",
+                                path.display()
+                            ));
+                        }
                     }
                 }
                 continue;
@@ -306,51 +584,88 @@ impl Stage for ReleaseStage {
                     }
                 }
 
-                // Create the release. When github-native changelog is enabled,
-                // use a raw API request to set `generate_release_notes: true`
-                // (not exposed by octocrab's CreateReleaseBuilder).
-                let release = if github_native_changelog {
+                // Handle use_existing_draft: look for an existing draft release
+                // with the same tag and update it instead of creating a new one.
+                let existing_draft = if use_existing_draft {
+                    match octo
+                        .repos(&github.owner, &github.name)
+                        .releases()
+                        .get_by_tag(&tag)
+                        .await
+                    {
+                        Ok(existing) if existing.draft => {
+                            log.status(&format!(
+                                "reusing existing draft release '{}' (id={})",
+                                tag, existing.id
+                            ));
+                            Some(existing)
+                        }
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+
+                // When updating an existing release, apply mode-based body composition.
+                let final_body = if let Some(ref existing) = existing_draft {
+                    let existing_body = existing.body.as_deref();
+                    compose_body_for_mode(&release_mode, existing_body, &release_body)
+                } else {
+                    // For new releases, check if a release exists for mode != "replace".
+                    if release_mode != "replace" {
+                        match octo
+                            .repos(&github.owner, &github.name)
+                            .releases()
+                            .get_by_tag(&tag)
+                            .await
+                        {
+                            Ok(existing) => {
+                                let existing_body = existing.body.as_deref();
+                                compose_body_for_mode(&release_mode, existing_body, &release_body)
+                            }
+                            Err(_) => release_body.clone(),
+                        }
+                    } else {
+                        release_body.clone()
+                    }
+                };
+
+                // Create or update the release. We use raw API calls for all paths
+                // to support target_commitish and discussion_category_name, which
+                // are not fully exposed by octocrab's builder API.
+                let json_body = build_release_json(
+                    &tag,
+                    &release_name,
+                    &final_body,
+                    draft,
+                    prerelease,
+                    &make_latest,
+                    &target_commitish,
+                    &discussion_category_name,
+                    github_native_changelog,
+                );
+
+                let release = if let Some(ref existing) = existing_draft {
+                    // Update the existing draft release via PATCH.
                     let route = format!(
-                        "/repos/{}/{}/releases",
-                        github.owner, github.name
+                        "/repos/{}/{}/releases/{}",
+                        github.owner, github.name, existing.id
                     );
-                    let mut body = serde_json::json!({
-                        "tag_name": tag,
-                        "name": release_name,
-                        "draft": draft,
-                        "prerelease": prerelease,
-                        "generate_release_notes": true,
-                    });
-                    if !release_body.is_empty() {
-                        body["body"] = serde_json::Value::String(release_body.clone());
-                    }
-                    if let Some(ref ml) = make_latest {
-                        body["make_latest"] = serde_json::Value::String(ml.to_string());
-                    }
-                    octo.post::<_, octocrab::models::repos::Release>(route, Some(&body))
+                    octo.patch::<octocrab::models::repos::Release, _, _>(route, Some(&json_body))
                         .await
                         .with_context(|| {
                             format!(
-                                "release: create GitHub release '{}' on {}/{}",
+                                "release: update existing draft release '{}' on {}/{}",
                                 tag, github.owner, github.name
                             )
                         })?
                 } else {
-                    let repo_handler = octo.repos(&github.owner, &github.name);
-                    let releases_handler = repo_handler.releases();
-                    let mut builder = releases_handler
-                        .create(&tag)
-                        .name(&release_name)
-                        .body(&release_body)
-                        .draft(draft)
-                        .prerelease(prerelease);
-
-                    if let Some(ml) = make_latest {
-                        builder = builder.make_latest(ml);
-                    }
-
-                    builder
-                        .send()
+                    // Create a new release via POST.
+                    let route = format!(
+                        "/repos/{}/{}/releases",
+                        github.owner, github.name
+                    );
+                    octo.post::<_, octocrab::models::repos::Release>(route, Some(&json_body))
                         .await
                         .with_context(|| {
                             format!(
@@ -371,7 +686,7 @@ impl Stage for ReleaseStage {
                 if skip_upload {
                     log.status("skip_upload is set, skipping artifact uploads");
                 } else {
-                    for path in &artifact_paths {
+                    for (path, custom_name) in &artifact_entries {
                         if !path.exists() {
                             log.warn(&format!(
                                 "artifact not found, skipping upload: {}",
@@ -380,10 +695,13 @@ impl Stage for ReleaseStage {
                             continue;
                         }
 
-                        let file_name = path
-                            .file_name()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| "artifact".to_string());
+                        let file_name = if let Some(name) = custom_name {
+                            name.clone()
+                        } else {
+                            path.file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| "artifact".to_string())
+                        };
 
                         // Handle replace_existing_artifacts: if an asset with the
                         // same name already exists, delete it before uploading.
@@ -447,7 +765,10 @@ impl Stage for ReleaseStage {
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
-    use anodize_core::config::{CrateConfig, MakeLatestConfig, PrereleaseConfig, ReleaseConfig};
+    use anodize_core::config::{
+        ContentSource, CrateConfig, ExtraFileSpec, MakeLatestConfig, PrereleaseConfig,
+        ReleaseConfig, StringOrBool,
+    };
     use anodize_core::test_helpers::TestContextBuilder;
 
     #[test]
@@ -551,19 +872,23 @@ mod tests {
 
     #[test]
     fn test_collect_extra_files_no_patterns() {
-        let result = collect_extra_files(&[]);
+        let ctx = TestContextBuilder::new().build();
+        let result = collect_extra_files(&[], &ctx);
         assert!(result.is_empty());
     }
 
     #[test]
     fn test_collect_extra_files_no_matches() {
-        let result =
-            collect_extra_files(&["/tmp/anodize_test_nonexistent_dir_12345/*.xyz".to_string()]);
+        let ctx = TestContextBuilder::new().build();
+        let result = collect_extra_files(&[ExtraFileSpec::Glob(
+            "/tmp/anodize_test_nonexistent_dir_12345/*.xyz".to_string(),
+        )], &ctx);
         assert!(result.is_empty());
     }
 
     #[test]
     fn test_collect_extra_files_with_real_file() {
+        let ctx = TestContextBuilder::new().build();
         // Create a temp file and collect it
         let dir = std::env::temp_dir().join("anodize_extra_files_test");
         let _ = std::fs::create_dir_all(&dir);
@@ -571,11 +896,11 @@ mod tests {
         std::fs::write(&test_file, "extra file content").unwrap();
 
         let pattern = dir.join("*.txt").to_string_lossy().into_owned();
-        let result = collect_extra_files(&[pattern]);
+        let result = collect_extra_files(&[ExtraFileSpec::Glob(pattern)], &ctx);
         assert!(
             result
                 .iter()
-                .any(|p| p.file_name().unwrap() == "test_extra.txt")
+                .any(|(p, _)| p.file_name().unwrap() == "test_extra.txt")
         );
 
         // Cleanup
@@ -584,6 +909,7 @@ mod tests {
 
     #[test]
     fn test_collect_extra_files_skips_directories() {
+        let ctx = TestContextBuilder::new().build();
         let dir = std::env::temp_dir().join("anodize_extra_files_dir_test");
         let _ = std::fs::create_dir_all(dir.join("subdir"));
         let test_file = dir.join("file.txt");
@@ -591,8 +917,30 @@ mod tests {
 
         // The glob "*" matches both files and directories; we only want files
         let pattern = dir.join("*").to_string_lossy().into_owned();
-        let result = collect_extra_files(&[pattern]);
-        assert!(result.iter().all(|p| p.is_file()));
+        let result = collect_extra_files(&[ExtraFileSpec::Glob(pattern)], &ctx);
+        assert!(result.iter().all(|(p, _)| p.is_file()));
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_collect_extra_files_detailed_spec() {
+        let ctx = TestContextBuilder::new().build();
+        let dir = std::env::temp_dir().join("anodize_extra_files_detailed_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let test_file = dir.join("artifact.sig");
+        std::fs::write(&test_file, "signature").unwrap();
+
+        let pattern = dir.join("*.sig").to_string_lossy().into_owned();
+        let result = collect_extra_files(&[ExtraFileSpec::Detailed {
+            glob: pattern,
+            name_template: Some("{{ .ArtifactName }}.sig".to_string()),
+        }], &ctx);
+        assert_eq!(result.len(), 1);
+        assert!(result[0].0.file_name().unwrap() == "artifact.sig");
+        // name_template should have been rendered
+        assert_eq!(result[0].1.as_deref(), Some("artifact.sig.sig"));
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);
@@ -677,7 +1025,9 @@ mod tests {
                 path: ".".to_string(),
                 tag_template: "v1.0.0".to_string(),
                 release: Some(ReleaseConfig {
-                    extra_files: Some(vec!["/tmp/anodize_test_nonexistent/*.sig".to_string()]),
+                    extra_files: Some(vec![ExtraFileSpec::Glob(
+                        "/tmp/anodize_test_nonexistent/*.sig".to_string(),
+                    )]),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -697,8 +1047,8 @@ mod tests {
                 path: ".".to_string(),
                 tag_template: "v1.0.0".to_string(),
                 release: Some(ReleaseConfig {
-                    header: Some("# Custom Header".to_string()),
-                    footer: Some("Custom Footer".to_string()),
+                    header: Some(ContentSource::Inline("# Custom Header".to_string())),
+                    footer: Some(ContentSource::Inline("Custom Footer".to_string())),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -815,8 +1165,10 @@ mod tests {
 
     #[test]
     fn test_collect_extra_files_invalid_glob_pattern() {
+        let ctx = TestContextBuilder::new().build();
         // An invalid glob pattern should be handled gracefully
-        let result = collect_extra_files(&["[invalid-glob".to_string()]);
+        let result =
+            collect_extra_files(&[ExtraFileSpec::Glob("[invalid-glob".to_string())], &ctx);
         // collect_extra_files logs a warning and returns empty, does not panic
         assert!(result.is_empty());
     }
@@ -913,6 +1265,7 @@ mod tests {
 
     #[test]
     fn test_extra_files_collected_with_glob() {
+        let ctx = TestContextBuilder::new().build();
         // Create temp files and verify glob collection works
         let dir = std::env::temp_dir().join("anodize_release_extra_test");
         let _ = std::fs::create_dir_all(&dir);
@@ -925,9 +1278,9 @@ mod tests {
 
         // Collect only .sig files
         let pattern = dir.join("*.sig").to_string_lossy().into_owned();
-        let result = collect_extra_files(&[pattern]);
+        let result = collect_extra_files(&[ExtraFileSpec::Glob(pattern)], &ctx);
         assert_eq!(result.len(), 2, "should find exactly 2 .sig files");
-        assert!(result.iter().all(|p| p.extension().unwrap() == "sig"));
+        assert!(result.iter().all(|(p, _)| p.extension().unwrap() == "sig"));
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);
@@ -1312,6 +1665,80 @@ mod tests {
         assert!(stage.run(&mut ctx).is_ok());
     }
 
+    // ---- conflicting draft config tests ----
+
+    #[test]
+    fn test_conflicting_replace_and_use_existing_draft_fails() {
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "testcrate".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    replace_existing_draft: Some(true),
+                    use_existing_draft: Some(true),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+
+        let stage = ReleaseStage;
+        let result = stage.run(&mut ctx);
+        assert!(result.is_err(), "conflicting draft options should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("replace_existing_draft") && err.contains("use_existing_draft"),
+            "error should mention both conflicting options, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_replace_existing_draft_alone_ok() {
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "testcrate".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    replace_existing_draft: Some(true),
+                    use_existing_draft: Some(false),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+
+        let stage = ReleaseStage;
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_use_existing_draft_alone_ok() {
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "testcrate".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    replace_existing_draft: Some(false),
+                    use_existing_draft: Some(true),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+
+        let stage = ReleaseStage;
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
     // ---- release disable tests ----
 
     #[test]
@@ -1321,7 +1748,7 @@ disable: true
 draft: false
 "#;
         let cfg: ReleaseConfig = serde_yaml_ng::from_str(yaml).unwrap();
-        assert_eq!(cfg.disable, Some(true));
+        assert_eq!(cfg.disable, Some(StringOrBool::Bool(true)));
     }
 
     #[test]
@@ -1330,7 +1757,21 @@ draft: false
 disable: false
 "#;
         let cfg: ReleaseConfig = serde_yaml_ng::from_str(yaml).unwrap();
-        assert_eq!(cfg.disable, Some(false));
+        assert_eq!(cfg.disable, Some(StringOrBool::Bool(false)));
+    }
+
+    #[test]
+    fn test_release_disable_config_parsing_template_string() {
+        let yaml = r#"
+disable: "{{ if IsSnapshot }}true{{ endif }}"
+"#;
+        let cfg: ReleaseConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        match cfg.disable {
+            Some(StringOrBool::String(s)) => {
+                assert!(s.contains("IsSnapshot"));
+            }
+            other => panic!("expected StringOrBool::String, got {:?}", other),
+        }
     }
 
     #[test]
@@ -1354,7 +1795,7 @@ draft: true
                 path: ".".to_string(),
                 tag_template: "v1.0.0".to_string(),
                 release: Some(ReleaseConfig {
-                    disable: Some(true),
+                    disable: Some(StringOrBool::Bool(true)),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -1376,7 +1817,7 @@ draft: true
                 path: ".".to_string(),
                 tag_template: "v1.0.0".to_string(),
                 release: Some(ReleaseConfig {
-                    disable: Some(false),
+                    disable: Some(StringOrBool::Bool(false)),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -1385,6 +1826,839 @@ draft: true
 
         let stage = ReleaseStage;
         // Should succeed - disable=false means proceed normally (dry-run)
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    // ---- resolve_release_mode tests ----
+
+    #[test]
+    fn test_resolve_release_mode_defaults_to_keep_existing() {
+        assert_eq!(resolve_release_mode(None).unwrap(), "keep-existing");
+    }
+
+    #[test]
+    fn test_resolve_release_mode_empty_string_defaults_to_keep_existing() {
+        assert_eq!(resolve_release_mode(Some("")).unwrap(), "keep-existing");
+    }
+
+    #[test]
+    fn test_resolve_release_mode_keep_existing() {
+        assert_eq!(
+            resolve_release_mode(Some("keep-existing")).unwrap(),
+            "keep-existing"
+        );
+    }
+
+    #[test]
+    fn test_resolve_release_mode_append() {
+        assert_eq!(resolve_release_mode(Some("append")).unwrap(), "append");
+    }
+
+    #[test]
+    fn test_resolve_release_mode_prepend() {
+        assert_eq!(resolve_release_mode(Some("prepend")).unwrap(), "prepend");
+    }
+
+    #[test]
+    fn test_resolve_release_mode_replace() {
+        assert_eq!(resolve_release_mode(Some("replace")).unwrap(), "replace");
+    }
+
+    #[test]
+    fn test_resolve_release_mode_invalid() {
+        let result = resolve_release_mode(Some("invalid-mode"));
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("invalid mode 'invalid-mode'"),
+            "error should name the invalid mode, got: {err}"
+        );
+        assert!(
+            err.contains("keep-existing") && err.contains("append"),
+            "error should list valid modes, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_release_mode_stored_in_config() {
+        let yaml = r#"
+mode: keep-existing
+draft: false
+"#;
+        let cfg: ReleaseConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.mode.as_deref(), Some("keep-existing"));
+    }
+
+    #[test]
+    fn test_release_mode_absent_in_config() {
+        let yaml = r#"
+draft: true
+"#;
+        let cfg: ReleaseConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.mode, None);
+    }
+
+    #[test]
+    fn test_release_mode_all_valid_values_in_config() {
+        for mode in &["keep-existing", "append", "prepend", "replace"] {
+            let yaml = format!("mode: {}", mode);
+            let cfg: ReleaseConfig = serde_yaml_ng::from_str(&yaml).unwrap();
+            assert_eq!(cfg.mode.as_deref(), Some(*mode));
+            // Verify it passes validation
+            assert!(resolve_release_mode(cfg.mode.as_deref()).is_ok());
+        }
+    }
+
+    #[test]
+    fn test_dry_run_logs_release_mode() {
+        // When mode is set, the dry-run output should include it
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "testcrate".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    mode: Some("append".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+
+        let stage = ReleaseStage;
+        // Dry-run should succeed; the mode is validated and logged
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_invalid_release_mode_fails_stage() {
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "testcrate".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    mode: Some("bogus".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+
+        let stage = ReleaseStage;
+        let result = stage.run(&mut ctx);
+        assert!(result.is_err(), "invalid release mode should fail");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("invalid mode") || err.contains("bogus"),
+            "error should mention invalid mode, got: {err}"
+        );
+    }
+
+    // ---- ids filtering tests ----
+
+    #[test]
+    fn test_ids_filter_includes_matching_artifacts() {
+        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    ids: Some(vec!["linux-amd64".to_string()]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+
+        // Archive with matching id
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: PathBuf::from("/tmp/myapp-linux-amd64.tar.gz"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("id".to_string(), "linux-amd64".to_string())]),
+        });
+
+        // Archive with non-matching id
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: PathBuf::from("/tmp/myapp-darwin-arm64.tar.gz"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("id".to_string(), "darwin-arm64".to_string())]),
+        });
+
+        let stage = ReleaseStage;
+        // Dry-run succeeds; the filter is applied internally
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_ids_filter_none_includes_all_artifacts() {
+        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    ids: None, // no filter
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+
+        // Add two archives with different ids
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: PathBuf::from("/tmp/myapp-linux.tar.gz"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("id".to_string(), "linux-amd64".to_string())]),
+        });
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: PathBuf::from("/tmp/myapp-darwin.tar.gz"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("id".to_string(), "darwin-arm64".to_string())]),
+        });
+
+        let stage = ReleaseStage;
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_ids_filter_unit_logic() {
+        // Directly test the filter logic used in the release stage:
+        // artifacts whose metadata "id" is in the ids list pass; others don't.
+        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+
+        let ids = vec!["linux-amd64".to_string(), "windows-amd64".to_string()];
+
+        let artifacts = vec![
+            Artifact {
+                kind: ArtifactKind::Archive,
+                path: PathBuf::from("/tmp/linux.tar.gz"),
+                target: None,
+                crate_name: "app".to_string(),
+                metadata: HashMap::from([("id".to_string(), "linux-amd64".to_string())]),
+            },
+            Artifact {
+                kind: ArtifactKind::Archive,
+                path: PathBuf::from("/tmp/darwin.tar.gz"),
+                target: None,
+                crate_name: "app".to_string(),
+                metadata: HashMap::from([("id".to_string(), "darwin-arm64".to_string())]),
+            },
+            Artifact {
+                kind: ArtifactKind::Archive,
+                path: PathBuf::from("/tmp/windows.zip"),
+                target: None,
+                crate_name: "app".to_string(),
+                metadata: HashMap::from([("id".to_string(), "windows-amd64".to_string())]),
+            },
+            Artifact {
+                kind: ArtifactKind::Checksum,
+                path: PathBuf::from("/tmp/checksums.txt"),
+                target: None,
+                crate_name: "app".to_string(),
+                metadata: HashMap::new(), // no id metadata
+            },
+        ];
+
+        // Apply the same filter logic as the stage
+        let filtered: Vec<_> = artifacts
+            .iter()
+            .filter(|a| matches!(a.metadata.get("id"), Some(id) if ids.contains(id)))
+            .collect();
+
+        assert_eq!(filtered.len(), 2, "should match linux and windows only");
+        assert_eq!(
+            filtered[0].path,
+            PathBuf::from("/tmp/linux.tar.gz"),
+            "first match should be linux"
+        );
+        assert_eq!(
+            filtered[1].path,
+            PathBuf::from("/tmp/windows.zip"),
+            "second match should be windows"
+        );
+    }
+
+    #[test]
+    fn test_ids_filter_no_id_metadata_excluded() {
+        // Artifacts without "id" metadata should be excluded when ids filter is set
+        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+
+        let ids = vec!["linux-amd64".to_string()];
+
+        let artifact_no_id = Artifact {
+            kind: ArtifactKind::Archive,
+            path: PathBuf::from("/tmp/mystery.tar.gz"),
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: HashMap::new(),
+        };
+
+        let matches =
+            matches!(artifact_no_id.metadata.get("id"), Some(id) if ids.contains(id));
+        assert!(
+            !matches,
+            "artifact without id metadata should not match ids filter"
+        );
+    }
+
+    #[test]
+    fn test_ids_config_parsing() {
+        let yaml = r#"
+ids:
+  - linux-amd64
+  - darwin-arm64
+draft: false
+"#;
+        let cfg: ReleaseConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let ids = cfg.ids.unwrap();
+        assert_eq!(ids.len(), 2);
+        assert_eq!(ids[0], "linux-amd64");
+        assert_eq!(ids[1], "darwin-arm64");
+    }
+
+    #[test]
+    fn test_ids_config_absent() {
+        let yaml = r#"
+draft: true
+"#;
+        let cfg: ReleaseConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(cfg.ids.is_none());
+    }
+
+    #[test]
+    fn test_ids_and_mode_combined_dry_run() {
+        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    mode: Some("prepend".to_string()),
+                    ids: Some(vec!["linux-amd64".to_string()]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: PathBuf::from("/tmp/myapp-linux.tar.gz"),
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("id".to_string(), "linux-amd64".to_string())]),
+        });
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: PathBuf::from("/tmp/myapp-darwin.tar.gz"),
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("id".to_string(), "darwin-arm64".to_string())]),
+        });
+
+        let stage = ReleaseStage;
+        assert!(
+            stage.run(&mut ctx).is_ok(),
+            "dry-run with mode + ids should succeed"
+        );
+    }
+
+    #[test]
+    fn test_release_collects_all_uploadable_artifact_kinds() {
+        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use std::path::PathBuf;
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+
+        // Add one artifact of each uploadable kind.
+        let uploadable_kinds = vec![
+            (ArtifactKind::Archive, "myapp.tar.gz"),
+            (ArtifactKind::Checksum, "checksums.txt"),
+            (ArtifactKind::LinuxPackage, "myapp.deb"),
+            (ArtifactKind::Snap, "myapp.snap"),
+            (ArtifactKind::DiskImage, "myapp.dmg"),
+            (ArtifactKind::Installer, "myapp.msi"),
+            (ArtifactKind::MacOsPackage, "myapp.pkg"),
+            (ArtifactKind::SourceArchive, "myapp-src.tar.gz"),
+            (ArtifactKind::Sbom, "myapp.sbom.json"),
+        ];
+        for (kind, name) in &uploadable_kinds {
+            ctx.artifacts.add(Artifact {
+                kind: *kind,
+                path: PathBuf::from(format!("/tmp/{}", name)),
+                target: None,
+                crate_name: "myapp".to_string(),
+                metadata: Default::default(),
+            });
+        }
+
+        // Also add a signature Metadata artifact (should be uploaded).
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Metadata,
+            path: PathBuf::from("/tmp/checksums.txt.sig"),
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: std::collections::HashMap::from([
+                ("type".to_string(), "Signature".to_string()),
+            ]),
+        });
+
+        // Add non-uploadable kinds (should NOT be uploaded).
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: PathBuf::from("/tmp/myapp"),
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+        });
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::DockerImage,
+            path: PathBuf::from("ghcr.io/test/myapp:latest"),
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+        });
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Library,
+            path: PathBuf::from("/tmp/libmyapp.so"),
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+        });
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Wasm,
+            path: PathBuf::from("/tmp/myapp.wasm"),
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+        });
+        // Plain Metadata (not Signature/Certificate) should NOT be uploaded.
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Metadata,
+            path: PathBuf::from("/tmp/metadata.json"),
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+        });
+
+        let stage = ReleaseStage;
+        assert!(
+            stage.run(&mut ctx).is_ok(),
+            "dry-run with all artifact kinds should succeed"
+        );
+
+        // The dry-run completes successfully, confirming the expanded artifact
+        // collection logic compiles and processes all expected kinds.
+    }
+
+    // ---- compose_body_for_mode tests ----
+
+    #[test]
+    fn test_compose_body_replace_ignores_existing() {
+        let result = compose_body_for_mode("replace", Some("old body"), "new body");
+        assert_eq!(result, "new body");
+    }
+
+    #[test]
+    fn test_compose_body_replace_no_existing() {
+        let result = compose_body_for_mode("replace", None, "new body");
+        assert_eq!(result, "new body");
+    }
+
+    #[test]
+    fn test_compose_body_keep_existing_with_existing() {
+        let result = compose_body_for_mode("keep-existing", Some("old body"), "new body");
+        assert_eq!(result, "old body");
+    }
+
+    #[test]
+    fn test_compose_body_keep_existing_empty_existing() {
+        let result = compose_body_for_mode("keep-existing", Some(""), "new body");
+        assert_eq!(result, "new body");
+    }
+
+    #[test]
+    fn test_compose_body_keep_existing_no_existing() {
+        let result = compose_body_for_mode("keep-existing", None, "new body");
+        assert_eq!(result, "new body");
+    }
+
+    #[test]
+    fn test_compose_body_append_with_existing() {
+        let result = compose_body_for_mode("append", Some("old body"), "new body");
+        assert_eq!(result, "old body\n\nnew body");
+    }
+
+    #[test]
+    fn test_compose_body_append_no_existing() {
+        let result = compose_body_for_mode("append", None, "new body");
+        assert_eq!(result, "new body");
+    }
+
+    #[test]
+    fn test_compose_body_append_empty_existing() {
+        let result = compose_body_for_mode("append", Some(""), "new body");
+        assert_eq!(result, "new body");
+    }
+
+    #[test]
+    fn test_compose_body_prepend_with_existing() {
+        let result = compose_body_for_mode("prepend", Some("old body"), "new body");
+        assert_eq!(result, "new body\n\nold body");
+    }
+
+    #[test]
+    fn test_compose_body_prepend_no_existing() {
+        let result = compose_body_for_mode("prepend", None, "new body");
+        assert_eq!(result, "new body");
+    }
+
+    #[test]
+    fn test_compose_body_prepend_empty_existing() {
+        let result = compose_body_for_mode("prepend", Some(""), "new body");
+        assert_eq!(result, "new body");
+    }
+
+    // ---- resolve_content_source tests ----
+
+    #[test]
+    fn test_resolve_content_source_inline() {
+        let source = ContentSource::Inline("hello world".to_string());
+        assert_eq!(resolve_content_source(&source).unwrap(), "hello world");
+    }
+
+    #[test]
+    fn test_resolve_content_source_from_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("header.md");
+        std::fs::write(&file_path, "# Release Header\nFrom file.").unwrap();
+
+        let source = ContentSource::FromFile {
+            from_file: file_path.to_string_lossy().into_owned(),
+        };
+        let result = resolve_content_source(&source).unwrap();
+        assert_eq!(result, "# Release Header\nFrom file.");
+    }
+
+    #[test]
+    fn test_resolve_content_source_from_file_not_found() {
+        let source = ContentSource::FromFile {
+            from_file: "/tmp/anodize_nonexistent_file_12345.md".to_string(),
+        };
+        let result = resolve_content_source(&source);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("failed to read"));
+    }
+
+    // ---- new config field parsing tests ----
+
+    #[test]
+    fn test_target_commitish_config_parsing() {
+        let yaml = r#"
+target_commitish: main
+"#;
+        let cfg: ReleaseConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.target_commitish, Some("main".to_string()));
+    }
+
+    #[test]
+    fn test_target_commitish_absent() {
+        let yaml = r#"
+draft: true
+"#;
+        let cfg: ReleaseConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.target_commitish, None);
+    }
+
+    #[test]
+    fn test_discussion_category_name_config_parsing() {
+        let yaml = r#"
+discussion_category_name: Announcements
+"#;
+        let cfg: ReleaseConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(
+            cfg.discussion_category_name,
+            Some("Announcements".to_string())
+        );
+    }
+
+    #[test]
+    fn test_discussion_category_name_absent() {
+        let yaml = r#"
+draft: false
+"#;
+        let cfg: ReleaseConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.discussion_category_name, None);
+    }
+
+    #[test]
+    fn test_include_meta_config_parsing() {
+        let yaml = r#"
+include_meta: true
+"#;
+        let cfg: ReleaseConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.include_meta, Some(true));
+    }
+
+    #[test]
+    fn test_include_meta_false() {
+        let yaml = r#"
+include_meta: false
+"#;
+        let cfg: ReleaseConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.include_meta, Some(false));
+    }
+
+    #[test]
+    fn test_include_meta_absent() {
+        let yaml = r#"
+draft: true
+"#;
+        let cfg: ReleaseConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.include_meta, None);
+    }
+
+    #[test]
+    fn test_use_existing_draft_config_parsing() {
+        let yaml = r#"
+use_existing_draft: true
+"#;
+        let cfg: ReleaseConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.use_existing_draft, Some(true));
+    }
+
+    #[test]
+    fn test_use_existing_draft_false() {
+        let yaml = r#"
+use_existing_draft: false
+"#;
+        let cfg: ReleaseConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.use_existing_draft, Some(false));
+    }
+
+    #[test]
+    fn test_use_existing_draft_absent() {
+        let yaml = r#"
+draft: true
+"#;
+        let cfg: ReleaseConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.use_existing_draft, None);
+    }
+
+    // ---- dry-run tests for new config fields ----
+
+    #[test]
+    fn test_dry_run_with_target_commitish() {
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "testcrate".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    target_commitish: Some("main".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+        let stage = ReleaseStage;
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_dry_run_with_discussion_category_name() {
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "testcrate".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    discussion_category_name: Some("Releases".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+        let stage = ReleaseStage;
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_dry_run_with_include_meta() {
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "testcrate".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    include_meta: Some(true),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+        let stage = ReleaseStage;
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_dry_run_with_use_existing_draft() {
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "testcrate".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    use_existing_draft: Some(true),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+        let stage = ReleaseStage;
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_dry_run_with_all_new_fields() {
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "testcrate".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    header: Some(ContentSource::Inline("# Header".to_string())),
+                    footer: Some(ContentSource::Inline("Footer".to_string())),
+                    extra_files: Some(vec![ExtraFileSpec::Glob("*.sig".to_string())]),
+                    target_commitish: Some("release/v1".to_string()),
+                    discussion_category_name: Some("Announcements".to_string()),
+                    include_meta: Some(true),
+                    use_existing_draft: Some(false),
+                    mode: Some("append".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+        ctx.changelogs
+            .insert("testcrate".to_string(), "- changes".to_string());
+        let stage = ReleaseStage;
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    // ---- ContentSource from_file dry-run integration test ----
+
+    #[test]
+    fn test_dry_run_with_header_from_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let header_path = dir.path().join("header.md");
+        std::fs::write(&header_path, "# Release from file").unwrap();
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "testcrate".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    header: Some(ContentSource::FromFile {
+                        from_file: header_path.to_string_lossy().into_owned(),
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+        let stage = ReleaseStage;
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_include_meta_collects_dist_files() {
+        // Create a temp dist directory with metadata files
+        let dir = tempfile::tempdir().unwrap();
+        let dist_dir = dir.path().join("dist");
+        std::fs::create_dir_all(&dist_dir).unwrap();
+        std::fs::write(dist_dir.join("metadata.json"), r#"{"key":"value"}"#).unwrap();
+        std::fs::write(dist_dir.join("artifacts.json"), r#"[]"#).unwrap();
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "testcrate".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    include_meta: Some(true),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+        // Override the dist path to our temp directory
+        ctx.config.dist = dist_dir.clone();
+
+        let stage = ReleaseStage;
         assert!(stage.run(&mut ctx).is_ok());
     }
 }

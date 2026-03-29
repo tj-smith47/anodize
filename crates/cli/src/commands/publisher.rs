@@ -107,7 +107,11 @@ pub fn run_publishers(
 /// - If `ids` is set, the artifact's metadata `"id"` value must be in the list.
 /// - If `artifact_types` is set, the artifact's kind (as snake_case string)
 ///   must be in the list.
-/// - If neither filter is set, all non-metadata artifacts match.
+/// - Checksum artifacts are excluded unless `publisher.checksum` is `true`.
+/// - Signature artifacts (metadata `"type"` == `"Signature"`) are excluded
+///   unless `publisher.signature` is `true`.
+/// - If neither filter is set, all non-metadata artifacts match (subject to
+///   checksum/signature rules above).
 pub fn matches_publisher_filter(artifact: &Artifact, publisher: &PublisherConfig) -> bool {
     // Never publish metadata artifacts through custom publishers
     if artifact.kind == ArtifactKind::Metadata {
@@ -124,9 +128,27 @@ pub fn matches_publisher_filter(artifact: &Artifact, publisher: &PublisherConfig
     }
 
     // Check artifact_types filter
-    if let Some(ref types) = publisher.artifact_types
-        && !types.iter().any(|t| t == artifact.kind.as_str())
-    {
+    if let Some(ref types) = publisher.artifact_types {
+        // Explicit artifact_types list takes full control — if "checksum" or
+        // signature kinds are listed, they pass regardless of the boolean flags.
+        return types.iter().any(|t| t == artifact.kind.as_str());
+    }
+
+    // When no artifact_types filter is set, apply the checksum/signature toggles.
+    // By default, checksums and signatures are excluded (GoReleaser parity).
+    if artifact.kind == ArtifactKind::Checksum && !publisher.checksum.unwrap_or(false) {
+        return false;
+    }
+
+    let is_signature = artifact
+        .metadata
+        .get("type")
+        .is_some_and(|t| t == "Signature")
+        || artifact
+            .path
+            .extension()
+            .is_some_and(|ext| ext == "sig" || ext == "asc" || ext == "pem");
+    if is_signature && !publisher.signature.unwrap_or(false) {
         return false;
     }
 
@@ -231,6 +253,8 @@ mod tests {
             env: None,
             dir: None,
             disable: None,
+            checksum: None,
+            signature: None,
         }
     }
 
@@ -259,11 +283,20 @@ mod tests {
 
         assert!(matches_publisher_filter(&binary, &publisher));
         assert!(matches_publisher_filter(&archive, &publisher));
-        assert!(matches_publisher_filter(&checksum, &publisher));
+        // Checksums excluded by default (GoReleaser parity) unless checksum=true
+        assert!(
+            !matches_publisher_filter(&checksum, &publisher),
+            "checksums excluded by default"
+        );
         assert!(
             !matches_publisher_filter(&metadata, &publisher),
             "metadata artifacts should never match"
         );
+
+        // Opt in to checksums
+        let mut pub_with_checksums = make_publisher("echo", None, None);
+        pub_with_checksums.checksum = Some(true);
+        assert!(matches_publisher_filter(&checksum, &pub_with_checksums));
     }
 
     #[test]
@@ -385,6 +418,8 @@ mod tests {
             env: None,
             dir: None,
             disable: None,
+            checksum: None,
+            signature: None,
         }];
 
         // In dry-run mode, the command is never executed, so a non-existent
@@ -423,6 +458,8 @@ mod tests {
             env: None,
             dir: None,
             disable: None,
+            checksum: None,
+            signature: None,
         }];
 
         let result = run_publishers(&publishers, &artifacts, &vars, false, &test_logger());
@@ -576,6 +613,8 @@ crates:
             env: None,
             dir: Some("/tmp/work".to_string()),
             disable: None,
+            checksum: None,
+            signature: None,
         };
         assert_eq!(publisher.dir.as_deref(), Some("/tmp/work"));
     }
@@ -597,6 +636,8 @@ crates:
             env: None,
             dir: None,
             disable: Some("true".to_string()),
+            checksum: None,
+            signature: None,
         }];
 
         // Publisher with disable="true" should be skipped entirely
@@ -627,6 +668,8 @@ crates:
             env: None,
             dir: None,
             disable: Some("{{ IsSnapshot }}".to_string()),
+            checksum: None,
+            signature: None,
         }];
 
         // When IsSnapshot is "true", the disable template renders to "true" and publisher is skipped

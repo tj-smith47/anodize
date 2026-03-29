@@ -3,6 +3,7 @@ pub mod config;
 pub mod context;
 pub mod git;
 pub mod github_client;
+pub mod hooks;
 pub mod log;
 pub mod partial;
 pub mod stage;

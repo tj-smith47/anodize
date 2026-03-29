@@ -119,6 +119,15 @@ pub(crate) fn clone_repo_with_auth(
     Ok(())
 }
 
+/// Optional overrides for the git commit step.
+#[derive(Default)]
+pub(crate) struct CommitOptions<'a> {
+    /// Git commit author name (passed via `-c user.name=X`).
+    pub author_name: Option<&'a str>,
+    /// Git commit author email (passed via `-c user.email=X`).
+    pub author_email: Option<&'a str>,
+}
+
 /// Stage files, commit, and push. Optionally creates a new branch first.
 pub(crate) fn commit_and_push(
     repo_path: &Path,
@@ -126,6 +135,18 @@ pub(crate) fn commit_and_push(
     message: &str,
     branch: Option<&str>,
     label: &str,
+) -> Result<()> {
+    commit_and_push_with_opts(repo_path, files, message, branch, label, &CommitOptions::default())
+}
+
+/// Stage files, commit, and push with optional commit author overrides.
+pub(crate) fn commit_and_push_with_opts(
+    repo_path: &Path,
+    files: &[&str],
+    message: &str,
+    branch: Option<&str>,
+    label: &str,
+    opts: &CommitOptions<'_>,
 ) -> Result<()> {
     if let Some(branch_name) = branch {
         run_cmd_in(
@@ -145,10 +166,24 @@ pub(crate) fn commit_and_push(
         )?;
     }
 
+    // Build commit args, optionally injecting -c user.name / -c user.email.
+    let mut commit_args: Vec<&str> = Vec::new();
+    let name_cfg;
+    let email_cfg;
+    if let Some(name) = opts.author_name {
+        name_cfg = format!("user.name={}", name);
+        commit_args.extend_from_slice(&["-c", &name_cfg]);
+    }
+    if let Some(email) = opts.author_email {
+        email_cfg = format!("user.email={}", email);
+        commit_args.extend_from_slice(&["-c", &email_cfg]);
+    }
+    commit_args.extend_from_slice(&["commit", "-m", message]);
+
     run_cmd_in(
         repo_path,
         "git",
-        &["commit", "-m", message],
+        &commit_args,
         &format!("{label}: git commit"),
     )?;
 

@@ -210,16 +210,7 @@ fn build_put_options(
 fn is_disabled(disable: &Option<StringOrBool>, ctx: &Context) -> Result<bool> {
     match disable {
         None => Ok(false),
-        Some(StringOrBool::Bool(b)) => Ok(*b),
-        Some(StringOrBool::String(tmpl)) => {
-            if !tmpl.contains('{') {
-                // Plain string, not a template — treat "true"/"1" as disabled
-                return Ok(matches!(tmpl.trim(), "true" | "1"));
-            }
-            let rendered = template::render(tmpl, ctx.template_vars())
-                .with_context(|| format!("blobs: render disable template: {tmpl}"))?;
-            Ok(matches!(rendered.trim(), "true" | "1"))
-        }
+        Some(d) => Ok(d.is_disabled(|s| ctx.render_template(s))),
     }
 }
 

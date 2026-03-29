@@ -7,9 +7,10 @@ use anyhow::{Context as _, Result};
 
 use anodize_core::artifact::{Artifact, ArtifactKind};
 use anodize_core::config::{
-    BuildConfig, BuildIgnore, BuildOverride, CrossStrategy, UniversalBinaryConfig,
+    BuildConfig, BuildIgnore, BuildOverride, CrossStrategy, HookEntry, UniversalBinaryConfig,
 };
 use anodize_core::context::Context;
+use anodize_core::hooks::run_hooks;
 use anodize_core::stage::Stage;
 use anodize_core::target::map_target;
 use anodize_core::util::find_binary;
@@ -45,6 +46,36 @@ pub(crate) fn detect_cross_strategy() -> CrossStrategy {
 }
 
 // ---------------------------------------------------------------------------
+// resolve_build_program — shared cross_tool / strategy resolution
+// ---------------------------------------------------------------------------
+
+/// Resolve the build program and subcommand from the cross strategy and
+/// optional cross_tool override. When `cross_tool` is set it takes precedence
+/// over any strategy — the tool is used directly with "build" as the subcommand.
+pub(crate) fn resolve_build_program(
+    strategy: &CrossStrategy,
+    cross_tool: Option<&str>,
+) -> (String, &'static str) {
+    if let Some(tool) = cross_tool {
+        return (tool.to_string(), "build");
+    }
+
+    // Resolve Auto strategy at runtime
+    let resolved = if *strategy == CrossStrategy::Auto {
+        detect_cross_strategy()
+    } else {
+        strategy.clone()
+    };
+
+    match resolved {
+        CrossStrategy::Zigbuild => ("cargo".to_string(), "zigbuild"),
+        CrossStrategy::Cross => ("cross".to_string(), "build"),
+        // Cargo and Auto (already resolved above)
+        _ => ("cargo".to_string(), "build"),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // build_command
 // ---------------------------------------------------------------------------
 
@@ -58,23 +89,12 @@ pub(crate) fn build_command(
     features: &[String],
     no_default_features: bool,
     env: &HashMap<String, String>,
+    cross_tool: Option<&str>,
 ) -> BuildCommand {
-    // Resolve Auto strategy
-    let resolved = if *strategy == CrossStrategy::Auto {
-        detect_cross_strategy()
-    } else {
-        strategy.clone()
-    };
-
-    let (program, subcommand) = match resolved {
-        CrossStrategy::Zigbuild => ("cargo".to_string(), "zigbuild".to_string()),
-        CrossStrategy::Cross => ("cross".to_string(), "build".to_string()),
-        // Cargo and Auto (already resolved above)
-        _ => ("cargo".to_string(), "build".to_string()),
-    };
+    let (program, subcommand) = resolve_build_program(strategy, cross_tool);
 
     let mut args: Vec<String> = vec![
-        subcommand,
+        subcommand.to_string(),
         "--bin".to_string(),
         binary.to_string(),
         "--target".to_string(),
@@ -121,22 +141,12 @@ pub(crate) fn build_lib_command(
     features: &[String],
     no_default_features: bool,
     env: &HashMap<String, String>,
+    cross_tool: Option<&str>,
 ) -> BuildCommand {
-    // Resolve Auto strategy
-    let resolved = if *strategy == CrossStrategy::Auto {
-        detect_cross_strategy()
-    } else {
-        strategy.clone()
-    };
-
-    let (program, subcommand) = match resolved {
-        CrossStrategy::Zigbuild => ("cargo".to_string(), "zigbuild".to_string()),
-        CrossStrategy::Cross => ("cross".to_string(), "build".to_string()),
-        _ => ("cargo".to_string(), "build".to_string()),
-    };
+    let (program, subcommand) = resolve_build_program(strategy, cross_tool);
 
     let mut args: Vec<String> = vec![
-        subcommand,
+        subcommand.to_string(),
         "--lib".to_string(),
         "--target".to_string(),
         target.to_string(),
@@ -170,6 +180,28 @@ pub(crate) fn build_lib_command(
 // ---------------------------------------------------------------------------
 // detect_crate_type
 // ---------------------------------------------------------------------------
+
+/// Check if a crate has a binary target (src/main.rs or [[bin]] in Cargo.toml).
+/// Returns false for library-only crates.
+fn crate_has_binary_target(crate_path: &str) -> bool {
+    let path = Path::new(crate_path);
+    // Check for src/main.rs
+    if path.join("src/main.rs").exists() {
+        return true;
+    }
+    // Check for [[bin]] section in Cargo.toml
+    let cargo_toml = path.join("Cargo.toml");
+    if let Ok(content) = std::fs::read_to_string(&cargo_toml) {
+        if let Ok(doc) = content.parse::<toml_edit::DocumentMut>() {
+            if let Some(bins) = doc.get("bin") {
+                if let Some(arr) = bins.as_array_of_tables() {
+                    return !arr.is_empty();
+                }
+            }
+        }
+    }
+    false
+}
 
 /// Read a crate's Cargo.toml and return the first `crate-type` from [lib],
 /// if present (e.g. "cdylib", "staticlib", "rlib").
@@ -359,6 +391,78 @@ pub(crate) fn find_matching_override<'a>(
 }
 
 // ---------------------------------------------------------------------------
+// Default targets — used when neither build.targets nor defaults.targets is set
+// ---------------------------------------------------------------------------
+
+const DEFAULT_TARGETS: &[&str] = &[
+    "x86_64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "aarch64-unknown-linux-gnu",
+];
+
+// run_hooks is imported from anodize_core::hooks
+
+// ---------------------------------------------------------------------------
+// resolve_reproducible_epoch — parse SOURCE_DATE_EPOCH with commit_timestamp fallback
+// ---------------------------------------------------------------------------
+
+fn resolve_reproducible_epoch(commit_timestamp: &str) -> i64 {
+    std::env::var("SOURCE_DATE_EPOCH")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| commit_timestamp.parse::<i64>().unwrap_or(0))
+}
+
+// ---------------------------------------------------------------------------
+// set_file_mtime — reproducible builds: set binary mtime to SOURCE_DATE_EPOCH
+// ---------------------------------------------------------------------------
+
+fn set_file_mtime(path: &Path, epoch_secs: i64) -> anyhow::Result<()> {
+    let ft = filetime::FileTime::from_unix_time(epoch_secs, 0);
+    filetime::set_file_mtime(path, ft)
+        .with_context(|| format!("failed to set mtime on {}", path.display()))?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// copy_from resolution helper
+// ---------------------------------------------------------------------------
+
+/// Resolve a copy_from job: look up the source binary from registered artifacts
+/// (filtering by target **and** crate_name to avoid cross-crate collisions),
+/// copy it to the destination, and return Ok.
+fn resolve_copy_from(
+    ctx: &Context,
+    src: &Path,
+    dst: &Path,
+    target: &str,
+    crate_name: &str,
+) -> Result<()> {
+    let resolved_src = ctx
+        .artifacts
+        .by_kind(ArtifactKind::Binary)
+        .into_iter()
+        .find(|a| {
+            a.target.as_deref() == Some(target)
+                && a.crate_name == crate_name
+                && a.path == *src
+        })
+        .map(|a| a.path.clone())
+        .unwrap_or_else(|| src.to_path_buf());
+
+    std::fs::copy(&resolved_src, dst).with_context(|| {
+        format!(
+            "copy_from: failed to copy {} -> {}",
+            resolved_src.display(),
+            dst.display()
+        )
+    })?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // BuildStage
 // ---------------------------------------------------------------------------
 
@@ -378,15 +482,17 @@ impl Stage for BuildStage {
 
         // Collect global defaults
         let defaults = ctx.config.defaults.as_ref();
-        let default_targets: Vec<String> =
-            defaults.and_then(|d| d.targets.clone()).unwrap_or_default();
+        let default_targets: Vec<String> = defaults
+            .and_then(|d| d.targets.clone())
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| DEFAULT_TARGETS.iter().map(|s| (*s).to_string()).collect());
         let default_strategy = defaults
             .and_then(|d| d.cross.clone())
             .unwrap_or(CrossStrategy::Auto);
         let default_flags: Option<String> = defaults.and_then(|d| d.flags.clone());
-        let build_ignores: Vec<BuildIgnore> =
+        let default_ignores: Vec<BuildIgnore> =
             defaults.and_then(|d| d.ignore.clone()).unwrap_or_default();
-        let build_overrides: Vec<BuildOverride> = defaults
+        let default_overrides: Vec<BuildOverride> = defaults
             .and_then(|d| d.overrides.clone())
             .unwrap_or_default();
 
@@ -445,6 +551,16 @@ impl Stage for BuildStage {
             crate_name: String,
             /// Binary name (for metadata).
             binary_name: String,
+            /// Build config ID (for downstream filtering).
+            build_id: Option<String>,
+            /// Whether reproducible mtime should be applied.
+            reproducible: bool,
+            /// Pre-build hooks to execute before compilation.
+            pre_hooks: Vec<HookEntry>,
+            /// Post-build hooks to execute after compilation.
+            post_hooks: Vec<HookEntry>,
+            /// When true, output binaries to flat dist/ instead of dist/{target}/.
+            no_unique_dist_dir: bool,
         }
 
         /// Result of executing a build job.
@@ -454,6 +570,17 @@ impl Stage for BuildStage {
             target: String,
             crate_name: String,
             binary_name: String,
+            build_id: Option<String>,
+            no_unique_dist_dir: bool,
+        }
+
+        /// Build artifact metadata, always including "binary" and optionally "id".
+        fn artifact_meta(binary: &str, build_id: &Option<String>) -> HashMap<String, String> {
+            let mut m = HashMap::from([("binary".to_string(), binary.to_string())]);
+            if let Some(id) = build_id {
+                m.insert("id".to_string(), id.clone());
+            }
+            m
         }
 
         let mut build_jobs: Vec<BuildJob> = Vec::new();
@@ -470,11 +597,21 @@ impl Stage for BuildStage {
             let builds: Vec<BuildConfig> = match &crate_cfg.builds {
                 Some(b) if !b.is_empty() => b.clone(),
                 _ => {
-                    // Default build: binary name == crate name
-                    vec![BuildConfig {
-                        binary: crate_cfg.name.clone(),
-                        ..Default::default()
-                    }]
+                    // No builds configured — only create a default binary build if
+                    // the crate actually has a binary target (src/main.rs or [[bin]]).
+                    // Library-only crates should not get a default --bin build.
+                    if crate_has_binary_target(&crate_cfg.path) {
+                        vec![BuildConfig {
+                            binary: crate_cfg.name.clone(),
+                            ..Default::default()
+                        }]
+                    } else {
+                        log.status(&format!(
+                            "skipping crate '{}' — no builds configured and no binary target found",
+                            crate_cfg.name
+                        ));
+                        continue;
+                    }
                 }
             };
 
@@ -487,19 +624,35 @@ impl Stage for BuildStage {
             );
 
             for build in &builds {
-                // Targets: per-build override, else global defaults, else host only
-                let mut targets: Vec<String> = build
-                    .targets
-                    .clone()
-                    .filter(|t| !t.is_empty())
-                    .or_else(|| {
-                        if default_targets.is_empty() {
-                            None
-                        } else {
-                            Some(default_targets.clone())
-                        }
-                    })
-                    .unwrap_or_default();
+                // Skip builds marked with skip: true
+                if build.skip.unwrap_or(false) {
+                    log.status(&format!(
+                        "skipping build '{}' (skip: true)",
+                        build.id.as_deref().unwrap_or(&build.binary)
+                    ));
+                    continue;
+                }
+
+                // Render binary name through template engine
+                let binary_name = ctx.render_template(&build.binary)
+                    .unwrap_or_else(|e| {
+                        log.warn(&format!(
+                            "failed to render binary template '{}': {}, using raw value",
+                            build.binary, e
+                        ));
+                        build.binary.clone()
+                    });
+
+                // Targets: per-build override (even if empty), else global defaults.
+                // An explicitly empty list (Some(vec![])) means "skip this build".
+                // Only None (not specified) falls through to defaults.
+                let mut targets: Vec<String> = if build.targets.is_some() {
+                    build.targets.clone().unwrap_or_default()
+                } else if !default_targets.is_empty() {
+                    default_targets.clone()
+                } else {
+                    Vec::new()
+                };
 
                 // --single-target: filter targets to only the specified triple
                 if let Some(ref single) = ctx.options.single_target {
@@ -508,7 +661,7 @@ impl Stage for BuildStage {
                     if had_targets && targets.is_empty() {
                         log.warn(&format!(
                             "--single-target: host triple '{}' not in configured targets for {}/{}, skipping",
-                            single, crate_cfg.name, build.binary
+                            single, crate_cfg.name, binary_name
                         ));
                         continue;
                     }
@@ -521,7 +674,7 @@ impl Stage for BuildStage {
                     if had_targets && targets.is_empty() {
                         log.verbose(&format!(
                             "split: no targets match partial filter for {}/{}, skipping",
-                            crate_cfg.name, build.binary
+                            crate_cfg.name, binary_name
                         ));
                         continue;
                     }
@@ -531,7 +684,7 @@ impl Stage for BuildStage {
                 if targets.is_empty() {
                     log.warn(&format!(
                         "no targets configured for {}/{}, skipping",
-                        crate_cfg.name, build.binary
+                        crate_cfg.name, binary_name
                     ));
                     continue;
                 }
@@ -542,12 +695,36 @@ impl Stage for BuildStage {
                     .clone()
                     .unwrap_or_else(|| default_strategy.clone());
 
-                // Flags: per-build or global default
-                let flags: Option<&str> = build.flags.as_deref().or(default_flags.as_deref());
+                // Flags: per-build, else global default, else "--release".
+                // Default to --release for production builds. Users can explicitly set
+                // `flags: ""` (empty string) in their config to get a debug build.
+                // This works because `Some("")` is not `None`, so `.or(Some("--release"))`
+                // will not override an explicit empty string.
+                let flags: Option<&str> = build
+                    .flags
+                    .as_deref()
+                    .or(default_flags.as_deref())
+                    .or(Some("--release"));
 
                 // Features and no_default_features
                 let features: Vec<String> = build.features.clone().unwrap_or_default();
                 let no_default_features: bool = build.no_default_features.unwrap_or(false);
+
+                // Per-build ignore/overrides, falling back to defaults
+                let build_ignores: Vec<BuildIgnore> = build
+                    .ignore
+                    .clone()
+                    .unwrap_or_else(|| default_ignores.clone());
+                let build_overrides: Vec<BuildOverride> = build
+                    .overrides
+                    .clone()
+                    .unwrap_or_else(|| default_overrides.clone());
+
+                // Cross tool override — takes precedence over the `cross` strategy
+                let cross_tool = build.cross_tool.clone();
+                if cross_tool.is_some() && crate_cfg.cross.is_some() {
+                    log.warn("both `cross` strategy and `cross_tool` are set; `cross_tool` takes precedence");
+                }
 
                 // Per-target env (target-keyed map in BuildConfig.env)
                 for target in &targets {
@@ -597,7 +774,7 @@ impl Stage for BuildStage {
                     // Determine the output file name based on target and crate type
                     let (output_name, artifact_kind) = if is_wasm_target && is_wasm_crate {
                         // wasm32 target with cdylib — output is .wasm
-                        (format!("{}.wasm", build.binary), ArtifactKind::Wasm)
+                        (format!("{}.wasm", binary_name), ArtifactKind::Wasm)
                     } else if is_library && !is_wasm_target {
                         // Library target — output is .so/.dylib/.dll
                         let ext = match os.as_str() {
@@ -607,15 +784,15 @@ impl Stage for BuildStage {
                         };
                         let prefix = if os == "windows" { "" } else { "lib" };
                         (
-                            format!("{}{}.{}", prefix, build.binary, ext),
+                            format!("{}{}.{}", prefix, binary_name, ext),
                             ArtifactKind::Library,
                         )
                     } else {
                         // Standard binary
                         let name = if os == "windows" {
-                            format!("{}.exe", build.binary)
+                            format!("{}.exe", binary_name)
                         } else {
-                            build.binary.clone()
+                            binary_name.clone()
                         };
                         (name, ArtifactKind::Binary)
                     };
@@ -645,7 +822,12 @@ impl Stage for BuildStage {
                             artifact_kind,
                             target: target.clone(),
                             crate_name: crate_cfg.name.clone(),
-                            binary_name: build.binary.clone(),
+                            binary_name: binary_name.clone(),
+                            build_id: build.id.clone(),
+                            reproducible: false,
+                            pre_hooks: Vec::new(),
+                            post_hooks: Vec::new(),
+                            no_unique_dist_dir: crate_cfg.no_unique_dist_dir.unwrap_or(false),
                         });
                         continue;
                     }
@@ -658,12 +840,33 @@ impl Stage for BuildStage {
                         .cloned()
                         .unwrap_or_default();
 
+                    // Render env values through template engine
+                    let mut rendered_env: HashMap<String, String> = HashMap::new();
+                    for (k, v) in &target_env {
+                        let rendered_val = ctx.render_template(v).unwrap_or_else(|e| {
+                            log.warn(&format!(
+                                "failed to render env value for '{}': {}, using raw value",
+                                k, e
+                            ));
+                            v.clone()
+                        });
+                        rendered_env.insert(k.clone(), rendered_val);
+                    }
+                    target_env = rendered_env;
+
                     // Merge override env if matched
                     if let Some(ov) = matched_override
                         && let Some(ref ov_env) = ov.env
                     {
                         for (k, v) in ov_env {
-                            target_env.insert(k.clone(), v.clone());
+                            let rendered_val = ctx.render_template(v).unwrap_or_else(|e| {
+                                log.warn(&format!(
+                                    "failed to render override env value for '{}': {}, using raw value",
+                                    k, e
+                                ));
+                                v.clone()
+                            });
+                            target_env.insert(k.clone(), rendered_val);
                         }
                     }
 
@@ -698,10 +901,11 @@ impl Stage for BuildStage {
                             &effective_features,
                             no_default_features,
                             &target_env,
+                            cross_tool.as_deref(),
                         )
                     } else {
                         build_command(
-                            &build.binary,
+                            &binary_name,
                             &crate_cfg.path,
                             target,
                             &strategy,
@@ -709,6 +913,7 @@ impl Stage for BuildStage {
                             &effective_features,
                             no_default_features,
                             &target_env,
+                            cross_tool.as_deref(),
                         )
                     };
 
@@ -719,7 +924,12 @@ impl Stage for BuildStage {
                         artifact_kind,
                         target: target.clone(),
                         crate_name: crate_cfg.name.clone(),
-                        binary_name: build.binary.clone(),
+                        binary_name: binary_name.clone(),
+                        build_id: build.id.clone(),
+                        reproducible: build.reproducible.unwrap_or(false),
+                        pre_hooks: build.hooks.as_ref().and_then(|h| h.pre.clone()).unwrap_or_default(),
+                        post_hooks: build.hooks.as_ref().and_then(|h| h.post.clone()).unwrap_or_default(),
+                        no_unique_dist_dir: crate_cfg.no_unique_dist_dir.unwrap_or(false),
                     });
                 }
             }
@@ -729,9 +939,71 @@ impl Stage for BuildStage {
         // Phase 2: Execute build jobs (with parallelism) then copy_from jobs.
         // -----------------------------------------------------------------
 
+        let dist_dir = ctx.config.dist.clone();
+
+        // Helper: register a build artifact, respecting no_unique_dist_dir.
+        // When no_unique_dist_dir is true, the binary is copied from cargo's
+        // target/{triple}/{profile}/ to a flat {dist}/{name} path, and that
+        // flattened path is registered as the artifact. In dry-run mode, the
+        // flat path is registered without actually copying.
+        let add_artifact = |ctx: &mut Context,
+                                job_bin_path: &Path,
+                                artifact_kind: ArtifactKind,
+                                target: &str,
+                                crate_name: &str,
+                                binary_name: &str,
+                                build_id: &Option<String>,
+                                no_unique_dist_dir: bool| -> Result<()> {
+            ctx.template_vars_mut().set("Binary", binary_name);
+            let mut meta = artifact_meta(binary_name, build_id);
+
+            let artifact_path = if no_unique_dist_dir {
+                meta.insert("no_unique_dist_dir".to_string(), "true".to_string());
+                // Flatten: copy binary to dist/{name} instead of keeping the
+                // per-target cargo output path.
+                let file_name = job_bin_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| binary_name.to_string());
+                let flat_path = dist_dir.join(&file_name);
+                if !dry_run {
+                    if let Some(parent) = flat_path.parent() {
+                        std::fs::create_dir_all(parent).with_context(|| {
+                            format!("failed to create dist dir: {}", parent.display())
+                        })?;
+                    }
+                    if job_bin_path.exists() {
+                        std::fs::copy(job_bin_path, &flat_path).with_context(|| {
+                            format!(
+                                "no_unique_dist_dir: failed to copy {} -> {}",
+                                job_bin_path.display(),
+                                flat_path.display()
+                            )
+                        })?;
+                    }
+                }
+                flat_path
+            } else {
+                job_bin_path.to_path_buf()
+            };
+
+            ctx.artifacts.add(Artifact {
+                kind: artifact_kind,
+                path: artifact_path,
+                target: Some(target.to_string()),
+                crate_name: crate_name.to_string(),
+                metadata: meta,
+            });
+            Ok(())
+        };
+
         if dry_run {
             // Dry-run: just log what would happen, register artifacts sequentially.
             for job in build_jobs.iter().chain(copy_jobs.iter()) {
+                // Log pre-hooks (dry-run)
+                if !job.pre_hooks.is_empty() {
+                    run_hooks(&job.pre_hooks, "pre-build", true, &log)?;
+                }
                 if let Some(ref cmd) = job.cmd {
                     log.status(&format!("(dry-run) {} {}", cmd.program, cmd.args.join(" ")));
                 } else if let Some((ref src, ref dst)) = job.copy_from {
@@ -741,18 +1013,29 @@ impl Stage for BuildStage {
                         dst.display()
                     ));
                 }
-                ctx.template_vars_mut().set("Binary", &job.binary_name);
-                ctx.artifacts.add(Artifact {
-                    kind: job.artifact_kind,
-                    path: job.bin_path.clone(),
-                    target: Some(job.target.clone()),
-                    crate_name: job.crate_name.clone(),
-                    metadata: HashMap::from([("binary".to_string(), job.binary_name.clone())]),
-                });
+                // Log post-hooks (dry-run)
+                if !job.post_hooks.is_empty() {
+                    run_hooks(&job.post_hooks, "post-build", true, &log)?;
+                }
+                add_artifact(
+                    ctx,
+                    &job.bin_path,
+                    job.artifact_kind,
+                    &job.target,
+                    &job.crate_name,
+                    &job.binary_name,
+                    &job.build_id,
+                    job.no_unique_dist_dir,
+                )?;
             }
         } else if parallelism <= 1 || build_jobs.len() <= 1 {
             // Sequential execution (parallelism == 1 or single job).
             for job in &build_jobs {
+                // Execute pre-build hooks
+                if !job.pre_hooks.is_empty() {
+                    run_hooks(&job.pre_hooks, "pre-build", false, &log)?;
+                }
+
                 let cmd = job.cmd.as_ref().unwrap();
                 log.status(&format!("running: {} {}", cmd.program, cmd.args.join(" ")));
                 let output = Command::new(&cmd.program)
@@ -763,47 +1046,50 @@ impl Stage for BuildStage {
                     .with_context(|| format!("failed to spawn {}", cmd.program))?;
                 log.check_output(output, &cmd.program)?;
 
-                ctx.template_vars_mut().set("Binary", &job.binary_name);
-                ctx.artifacts.add(Artifact {
-                    kind: job.artifact_kind,
-                    path: job.bin_path.clone(),
-                    target: Some(job.target.clone()),
-                    crate_name: job.crate_name.clone(),
-                    metadata: HashMap::from([("binary".to_string(), job.binary_name.clone())]),
-                });
+                // Reproducible mtime: set binary mtime to SOURCE_DATE_EPOCH
+                if job.reproducible && job.bin_path.exists() {
+                    let epoch = resolve_reproducible_epoch(&commit_timestamp);
+                    if epoch > 0 {
+                        set_file_mtime(&job.bin_path, epoch)?;
+                    }
+                }
+
+                // Execute post-build hooks
+                if !job.post_hooks.is_empty() {
+                    run_hooks(&job.post_hooks, "post-build", false, &log)?;
+                }
+
+                add_artifact(
+                    ctx,
+                    &job.bin_path,
+                    job.artifact_kind,
+                    &job.target,
+                    &job.crate_name,
+                    &job.binary_name,
+                    &job.build_id,
+                    job.no_unique_dist_dir,
+                )?;
             }
 
             // Copy-from jobs (must run after source builds complete)
             for job in &copy_jobs {
                 let (src, dst) = job.copy_from.as_ref().unwrap();
-                // Resolve from registered artifacts if available
-                let resolved_src = ctx
-                    .artifacts
-                    .by_kind(ArtifactKind::Binary)
-                    .into_iter()
-                    .find(|a| a.target.as_deref() == Some(job.target.as_str()) && a.path == *src)
-                    .map(|a| a.path.clone())
-                    .unwrap_or_else(|| src.clone());
+                resolve_copy_from(ctx, src, dst, &job.target, &job.crate_name)?;
 
-                std::fs::copy(&resolved_src, dst).with_context(|| {
-                    format!(
-                        "copy_from: failed to copy {} -> {}",
-                        resolved_src.display(),
-                        dst.display()
-                    )
-                })?;
-
-                ctx.template_vars_mut().set("Binary", &job.binary_name);
-                ctx.artifacts.add(Artifact {
-                    kind: job.artifact_kind,
-                    path: job.bin_path.clone(),
-                    target: Some(job.target.clone()),
-                    crate_name: job.crate_name.clone(),
-                    metadata: HashMap::from([("binary".to_string(), job.binary_name.clone())]),
-                });
+                add_artifact(
+                    ctx,
+                    &job.bin_path,
+                    job.artifact_kind,
+                    &job.target,
+                    &job.crate_name,
+                    &job.binary_name,
+                    &job.build_id,
+                    job.no_unique_dist_dir,
+                )?;
             }
         } else {
             // Parallel execution: process build jobs in chunks.
+            // Note: pre/post hooks run sequentially before/after each parallel chunk.
             log.status(&format!(
                 "building {} jobs with parallelism={}",
                 build_jobs.len(),
@@ -812,6 +1098,8 @@ impl Stage for BuildStage {
 
             for chunk in build_jobs.chunks(parallelism) {
                 // Each chunk runs in parallel via thread::scope.
+                // Pre/post hooks run inside each thread so they properly bracket
+                // their specific build, matching the sequential path's semantics.
                 let results: Vec<Result<BuildResult>> = std::thread::scope(|s| {
                     let handles: Vec<_> = chunk
                         .iter()
@@ -826,8 +1114,21 @@ impl Stage for BuildStage {
                             let target = job.target.clone();
                             let crate_name = job.crate_name.clone();
                             let binary_name = job.binary_name.clone();
+                            let build_id = job.build_id.clone();
+                            let reproducible = job.reproducible;
+                            let no_unique_dist_dir = job.no_unique_dist_dir;
+                            let commit_ts = commit_timestamp.clone();
+                            let pre_hooks = job.pre_hooks.clone();
+                            let post_hooks = job.post_hooks.clone();
+                            // StageLogger is not Clone, so create a fresh one per thread
+                            let thread_log = anodize_core::log::StageLogger::new("build", log.verbosity());
 
                             s.spawn(move || -> Result<BuildResult> {
+                                // Execute pre-build hooks before compilation
+                                if !pre_hooks.is_empty() {
+                                    run_hooks(&pre_hooks, "pre-build", false, &thread_log)?;
+                                }
+
                                 let output = Command::new(&program)
                                     .args(&args)
                                     .envs(&env)
@@ -852,12 +1153,27 @@ impl Stage for BuildStage {
                                     anyhow::bail!("{}", msg);
                                 }
 
+                                // Reproducible mtime: set binary mtime to SOURCE_DATE_EPOCH
+                                if reproducible && bin_path.exists() {
+                                    let epoch = resolve_reproducible_epoch(&commit_ts);
+                                    if epoch > 0 {
+                                        set_file_mtime(&bin_path, epoch)?;
+                                    }
+                                }
+
+                                // Execute post-build hooks after compilation
+                                if !post_hooks.is_empty() {
+                                    run_hooks(&post_hooks, "post-build", false, &thread_log)?;
+                                }
+
                                 Ok(BuildResult {
                                     bin_path,
                                     artifact_kind,
                                     target,
                                     crate_name,
                                     binary_name,
+                                    build_id,
+                                    no_unique_dist_dir,
                                 })
                             })
                         })
@@ -879,44 +1195,34 @@ impl Stage for BuildStage {
                         "built {}/{} for {}",
                         r.crate_name, r.binary_name, r.target
                     ));
-                    ctx.template_vars_mut().set("Binary", &r.binary_name);
-                    ctx.artifacts.add(Artifact {
-                        kind: r.artifact_kind,
-                        path: r.bin_path,
-                        target: Some(r.target),
-                        crate_name: r.crate_name,
-                        metadata: HashMap::from([("binary".to_string(), r.binary_name)]),
-                    });
+                    add_artifact(
+                        ctx,
+                        &r.bin_path,
+                        r.artifact_kind,
+                        &r.target,
+                        &r.crate_name,
+                        &r.binary_name,
+                        &r.build_id,
+                        r.no_unique_dist_dir,
+                    )?;
                 }
             }
 
             // Copy-from jobs (must run after source builds complete)
             for job in &copy_jobs {
                 let (src, dst) = job.copy_from.as_ref().unwrap();
-                let resolved_src = ctx
-                    .artifacts
-                    .by_kind(ArtifactKind::Binary)
-                    .into_iter()
-                    .find(|a| a.target.as_deref() == Some(job.target.as_str()) && a.path == *src)
-                    .map(|a| a.path.clone())
-                    .unwrap_or_else(|| src.clone());
+                resolve_copy_from(ctx, src, dst, &job.target, &job.crate_name)?;
 
-                std::fs::copy(&resolved_src, dst).with_context(|| {
-                    format!(
-                        "copy_from: failed to copy {} -> {}",
-                        resolved_src.display(),
-                        dst.display()
-                    )
-                })?;
-
-                ctx.template_vars_mut().set("Binary", &job.binary_name);
-                ctx.artifacts.add(Artifact {
-                    kind: job.artifact_kind,
-                    path: job.bin_path.clone(),
-                    target: Some(job.target.clone()),
-                    crate_name: job.crate_name.clone(),
-                    metadata: HashMap::from([("binary".to_string(), job.binary_name.clone())]),
-                });
+                add_artifact(
+                    ctx,
+                    &job.bin_path,
+                    job.artifact_kind,
+                    &job.target,
+                    &job.crate_name,
+                    &job.binary_name,
+                    &job.build_id,
+                    job.no_unique_dist_dir,
+                )?;
             }
         }
 
@@ -958,6 +1264,7 @@ mod tests {
             &[],
             false,
             &Default::default(),
+            None,
         );
         assert_eq!(cmd.program, "cargo");
         assert!(cmd.args.contains(&"build".to_string()));
@@ -979,6 +1286,7 @@ mod tests {
             &[],
             false,
             &Default::default(),
+            None,
         );
         assert_eq!(cmd.program, "cargo");
         assert!(cmd.args.contains(&"zigbuild".to_string()));
@@ -996,6 +1304,7 @@ mod tests {
             &[],
             false,
             &Default::default(),
+            None,
         );
         assert_eq!(cmd.program, "cross");
         assert!(cmd.args.contains(&"build".to_string()));
@@ -1012,6 +1321,7 @@ mod tests {
             &["tls".to_string(), "json".to_string()],
             false,
             &Default::default(),
+            None,
         );
         assert!(cmd.args.contains(&"--features".to_string()));
         assert!(cmd.args.contains(&"tls,json".to_string()));
@@ -1028,6 +1338,7 @@ mod tests {
             &[],
             true,
             &Default::default(),
+            None,
         );
         assert!(cmd.args.contains(&"--no-default-features".to_string()));
     }
@@ -1058,6 +1369,7 @@ mod tests {
             &[],
             false,
             &Default::default(),
+            None,
         );
         assert!(cmd.args.contains(&"this-is-not-a-valid-triple".to_string()));
         assert_eq!(cmd.program, "cargo");
@@ -1075,6 +1387,7 @@ mod tests {
             &[],
             false,
             &Default::default(),
+            None,
         );
         assert!(cmd.args.contains(&"--bin".to_string()));
         // Empty string is present in args
@@ -1226,6 +1539,7 @@ mod tests {
             &[],
             false,
             &env,
+            None,
         );
         assert_eq!(cmd.env.get("CC").unwrap(), "gcc-12");
         assert_eq!(
@@ -1336,6 +1650,7 @@ crate_type = ["dylib"]
             &[],
             false,
             &Default::default(),
+            None,
         );
         assert_eq!(cmd.program, "cargo");
         assert!(cmd.args.contains(&"build".to_string()));
@@ -1357,6 +1672,7 @@ crate_type = ["dylib"]
             &["wasm-bindgen".to_string()],
             true,
             &Default::default(),
+            None,
         );
         assert!(cmd.args.contains(&"--lib".to_string()));
         assert!(cmd.args.contains(&"--features".to_string()));
@@ -1374,6 +1690,7 @@ crate_type = ["dylib"]
             &[],
             false,
             &Default::default(),
+            None,
         );
         assert_eq!(cmd.program, "cargo");
         assert!(cmd.args.contains(&"zigbuild".to_string()));
@@ -1946,5 +2263,125 @@ crate_type = ["dylib"]
         }];
         let result = find_matching_override("x86_64-unknown-linux-gnu", &overrides, &log);
         assert!(result.is_none(), "invalid glob should not match anything");
+    }
+
+    // ---- Fix 5: cross_tool override test ----
+
+    #[test]
+    fn test_build_command_with_cross_tool() {
+        let cmd = build_command(
+            "test-crate",
+            ".",
+            "x86_64-unknown-linux-gnu",
+            &CrossStrategy::Auto,
+            Some("--release"),
+            &[],
+            false,
+            &Default::default(),
+            Some("/usr/bin/my-cross"),
+        );
+        assert_eq!(cmd.program, "/usr/bin/my-cross");
+        assert!(cmd.args.contains(&"build".to_string()));
+    }
+
+    // ---- Fix 5: DEFAULT_TARGETS const test ----
+
+    #[test]
+    fn test_default_targets_has_five_entries() {
+        assert_eq!(DEFAULT_TARGETS.len(), 5);
+        assert!(DEFAULT_TARGETS.contains(&"x86_64-unknown-linux-gnu"));
+        assert!(DEFAULT_TARGETS.contains(&"x86_64-apple-darwin"));
+        assert!(DEFAULT_TARGETS.contains(&"aarch64-apple-darwin"));
+        assert!(DEFAULT_TARGETS.contains(&"x86_64-pc-windows-msvc"));
+        assert!(DEFAULT_TARGETS.contains(&"aarch64-unknown-linux-gnu"));
+    }
+
+    // ---- Fix 5: resolve_build_program tests ----
+
+    #[test]
+    fn test_resolve_build_program_auto() {
+        let (prog, sub) = resolve_build_program(&CrossStrategy::Auto, None);
+        // Auto resolves at runtime — at minimum it falls back to cargo
+        assert!(
+            prog == "cargo" || prog == "cross",
+            "Auto should resolve to cargo or cross, got: {prog}"
+        );
+        assert!(sub == "build" || sub == "zigbuild");
+    }
+
+    #[test]
+    fn test_resolve_build_program_zigbuild() {
+        let (prog, sub) = resolve_build_program(&CrossStrategy::Zigbuild, None);
+        assert_eq!(prog, "cargo");
+        assert_eq!(sub, "zigbuild");
+    }
+
+    #[test]
+    fn test_resolve_build_program_cross() {
+        let (prog, sub) = resolve_build_program(&CrossStrategy::Cross, None);
+        assert_eq!(prog, "cross");
+        assert_eq!(sub, "build");
+    }
+
+    #[test]
+    fn test_resolve_build_program_cross_tool_overrides() {
+        let (prog, sub) = resolve_build_program(&CrossStrategy::Zigbuild, Some("/usr/bin/custom"));
+        assert_eq!(prog, "/usr/bin/custom");
+        assert_eq!(sub, "build");
+    }
+
+    // ---- Fix 5: resolve_reproducible_epoch tests ----
+
+    #[test]
+    fn test_resolve_reproducible_epoch_from_timestamp() {
+        // Unset SOURCE_DATE_EPOCH to test the commit_timestamp fallback path.
+        // Safety: set_var/remove_var are unsafe in edition 2024 due to potential
+        // data races. This test runs sequentially and restores the env var.
+        let saved = std::env::var("SOURCE_DATE_EPOCH").ok();
+        unsafe { std::env::remove_var("SOURCE_DATE_EPOCH") };
+        let epoch = resolve_reproducible_epoch("1700000000");
+        if let Some(val) = saved {
+            unsafe { std::env::set_var("SOURCE_DATE_EPOCH", val) };
+        }
+        assert_eq!(epoch, 1700000000);
+    }
+
+    #[test]
+    fn test_resolve_reproducible_epoch_invalid_timestamp() {
+        // Safety: same rationale as above — temporary env manipulation in a test.
+        let saved = std::env::var("SOURCE_DATE_EPOCH").ok();
+        unsafe { std::env::remove_var("SOURCE_DATE_EPOCH") };
+        let epoch = resolve_reproducible_epoch("not-a-number");
+        if let Some(val) = saved {
+            unsafe { std::env::set_var("SOURCE_DATE_EPOCH", val) };
+        }
+        assert_eq!(epoch, 0);
+    }
+
+    // ---- Fix 5: config parsing with hooks test ----
+
+    #[test]
+    fn test_build_config_with_hooks() {
+        use anodize_core::config::Config;
+
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    builds:
+      - binary: myapp
+        hooks:
+          pre:
+            - "echo pre-build"
+          post:
+            - "echo post-build"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let build = &config.crates[0].builds.as_ref().unwrap()[0];
+        let hooks = build.hooks.as_ref().unwrap();
+        assert_eq!(hooks.pre.as_ref().unwrap().len(), 1);
+        assert_eq!(hooks.post.as_ref().unwrap().len(), 1);
     }
 }

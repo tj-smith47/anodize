@@ -68,6 +68,7 @@ pub struct TestContextBuilder {
     populate_git_vars: bool,
     dist: Option<PathBuf>,
     signs: Vec<SignConfig>,
+    binary_signs: Vec<SignConfig>,
     upx: Vec<UpxConfig>,
     defaults: Option<Defaults>,
     source: Option<crate::config::SourceConfig>,
@@ -105,6 +106,7 @@ impl Default for TestContextBuilder {
             populate_git_vars: true,
             dist: None,
             signs: Vec::new(),
+            binary_signs: Vec::new(),
             upx: Vec::new(),
             defaults: None,
             source: None,
@@ -245,6 +247,12 @@ impl TestContextBuilder {
         self
     }
 
+    /// Set binary-specific sign configurations.
+    pub fn binary_signs(mut self, binary_signs: Vec<SignConfig>) -> Self {
+        self.binary_signs = binary_signs;
+        self
+    }
+
     /// Set UPX configurations.
     pub fn upx(mut self, upx: Vec<UpxConfig>) -> Self {
         self.upx = upx;
@@ -276,6 +284,7 @@ impl TestContextBuilder {
         config.project_name = self.project_name;
         config.crates = self.crates;
         config.signs = self.signs;
+        config.binary_signs = self.binary_signs;
         config.upx = self.upx;
         config.defaults = self.defaults;
         config.source = self.source;

@@ -27,6 +27,10 @@ pub struct Config {
     #[serde(default, alias = "sign", deserialize_with = "deserialize_signs")]
     #[schemars(schema_with = "signs_schema")]
     pub signs: Vec<SignConfig>,
+    /// Binary-specific signing configs (same shape as `signs` but only for binary artifacts).
+    #[serde(default, alias = "binary_sign", deserialize_with = "deserialize_signs")]
+    #[schemars(schema_with = "signs_schema")]
+    pub binary_signs: Vec<SignConfig>,
     pub docker_signs: Option<Vec<DockerSignConfig>>,
     // No `alias` attribute needed: unlike `signs`/`sign`, "upx" is already
     // both singular and plural, so a separate alias adds no value.
@@ -75,6 +79,7 @@ impl Default for Config {
             crates: Vec::new(),
             changelog: None,
             signs: Vec::new(),
+            binary_signs: Vec::new(),
             docker_signs: None,
             upx: Vec::new(),
             snapshot: None,
@@ -244,6 +249,7 @@ pub struct CrateConfig {
     pub release: Option<ReleaseConfig>,
     pub publish: Option<PublishConfig>,
     pub docker: Option<Vec<DockerConfig>>,
+    pub docker_manifests: Option<Vec<DockerManifestConfig>>,
     pub nfpm: Option<Vec<NfpmConfig>>,
     pub snapcrafts: Option<Vec<SnapcraftConfig>>,
     pub dmgs: Option<Vec<DmgConfig>>,
@@ -253,6 +259,9 @@ pub struct CrateConfig {
     pub binstall: Option<BinstallConfig>,
     pub version_sync: Option<VersionSyncConfig>,
     pub universal_binaries: Option<Vec<UniversalBinaryConfig>>,
+    /// When true, all build outputs are placed in a flat `dist/` directory
+    /// instead of `dist/{target}/`.
+    pub no_unique_dist_dir: Option<bool>,
 }
 
 /// Helper schema function for archives (accepts false or array).
@@ -274,6 +283,7 @@ impl Default for CrateConfig {
             release: None,
             publish: None,
             docker: None,
+            docker_manifests: None,
             nfpm: None,
             snapcrafts: None,
             dmgs: None,
@@ -283,6 +293,7 @@ impl Default for CrateConfig {
             binstall: None,
             version_sync: None,
             universal_binaries: None,
+            no_unique_dist_dir: None,
         }
     }
 }
@@ -306,7 +317,9 @@ pub struct UniversalBinaryConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct BuildConfig {
+    pub id: Option<String>,
     pub binary: String,
+    pub skip: Option<bool>,
     pub targets: Option<Vec<String>>,
     pub features: Option<Vec<String>>,
     pub no_default_features: Option<bool>,
@@ -314,6 +327,30 @@ pub struct BuildConfig {
     pub copy_from: Option<String>,
     pub flags: Option<String>,
     pub reproducible: Option<bool>,
+    /// Per-build hooks executed before and after compilation.
+    pub hooks: Option<BuildHooksConfig>,
+    /// Exclude specific os/arch combinations from this build's target matrix.
+    /// Falls back to `defaults.ignore` when not set.
+    pub ignore: Option<Vec<BuildIgnore>>,
+    /// Per-target overrides for env, flags, and features for this build.
+    /// Falls back to `defaults.overrides` when not set.
+    pub overrides: Option<Vec<BuildOverride>>,
+    /// Override the cross-compilation tool binary path (e.g., a custom `cross` wrapper).
+    /// When set, this binary is used instead of cargo/cross/zigbuild.
+    pub cross_tool: Option<String>,
+}
+
+/// Pre/post hook configuration shared across multiple stages. Despite the
+/// `Build` prefix in the name, this type is used by both the **build** stage
+/// (pre/post compilation hooks) and the **archive** stage (pre/post archiving
+/// hooks). The name is kept for backward compatibility with existing configs.
+/// **Not** to be confused with the top-level `HooksConfig` (which carries a
+/// flat `hooks: Vec<String>` list for `before`/`after` lifecycle hooks).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct BuildHooksConfig {
+    pub pre: Option<Vec<HookEntry>>,
+    pub post: Option<Vec<HookEntry>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -447,33 +484,177 @@ where
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct ArchiveConfig {
+    /// Unique identifier for cross-referencing this archive from other configs.
+    pub id: Option<String>,
     pub name_template: Option<String>,
     pub format: Option<String>,
+    /// Produce multiple archive formats per config (plural, in addition to singular `format`).
+    pub formats: Option<Vec<String>>,
     pub format_overrides: Option<Vec<FormatOverride>>,
-    pub files: Option<Vec<String>>,
+    pub files: Option<Vec<ArchiveFileSpec>>,
     pub binaries: Option<Vec<String>>,
     pub wrap_in_directory: Option<String>,
+    /// Build IDs filter: only include artifacts from builds whose `id` is in this list.
+    pub ids: Option<Vec<String>>,
+    /// When true, create archive with no binaries (metadata-only).
+    pub meta: Option<bool>,
+    /// File permissions applied to binaries in archives.
+    pub builds_info: Option<ArchiveFileInfo>,
+    /// Strip binary parent directory in archive (place binaries at archive root).
+    pub strip_binary_directory: Option<bool>,
+    /// Allow different binary counts across targets. Default false (warn on mismatch).
+    pub allow_different_binary_count: Option<bool>,
+    /// Pre/post archive hooks.
+    pub hooks: Option<BuildHooksConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct FormatOverride {
     pub os: String,
-    pub format: String,
+    pub format: Option<String>,
+    /// Plural format overrides (v2.6+). Takes priority over singular format.
+    pub formats: Option<Vec<String>>,
 }
+
+/// Specifies a file to include in archives. Can be a simple glob string or a
+/// detailed object with src/dst/info fields for controlling archive placement
+/// and file metadata.
+///
+/// NOTE: This is intentionally a separate type from [`ExtraFileSpec`] (used for
+/// checksum/release extra_files). `ArchiveFileSpec` needs `src`/`dst`/`info`
+/// fields for archive placement and file metadata (owner, group, mode, mtime),
+/// while `ExtraFileSpec` needs `glob`/`name_template` for checksumming and
+/// upload renaming. The fields and semantics are different enough that a unified
+/// type would be confusing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum ArchiveFileSpec {
+    Glob(String),
+    Detailed {
+        src: String,
+        dst: Option<String>,
+        info: Option<ArchiveFileInfo>,
+    },
+}
+
+impl PartialEq<&str> for ArchiveFileSpec {
+    fn eq(&self, other: &&str) -> bool {
+        match self {
+            ArchiveFileSpec::Glob(s) => s.as_str() == *other,
+            _ => false,
+        }
+    }
+}
+
+/// Shared file metadata (owner, group, mode, mtime) used by both archive entries
+/// and nFPM package contents. Previously duplicated as `ArchiveFileInfo` and
+/// `NfpmFileInfo`; now unified.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct FileInfo {
+    pub owner: Option<String>,
+    pub group: Option<String>,
+    pub mode: Option<String>,
+    pub mtime: Option<String>,
+}
+
+/// Backward-compatible alias for archive code.
+pub type ArchiveFileInfo = FileInfo;
+
+/// Parse an octal mode string into a `u32`, handling common YAML-friendly
+/// representations: `"0755"`, `"0o755"`, `"0O755"`, `"755"`, and `"0"`.
+pub fn parse_octal_mode(s: &str) -> Option<u32> {
+    let cleaned = s.strip_prefix("0o").or_else(|| s.strip_prefix("0O")).unwrap_or(s);
+    let cleaned = if cleaned.is_empty() { "0" } else { cleaned };
+    u32::from_str_radix(cleaned, 8).ok()
+}
+
+/// The set of archive format strings recognised by the archive stage.
+/// Used for early validation so typos are caught at config load time rather
+/// than mid-pipeline.
+pub const VALID_ARCHIVE_FORMATS: &[&str] = &[
+    "tar.gz", "tgz", "tar.xz", "txz", "tar.zst", "tzst", "tar", "zip", "gz", "binary",
+];
 
 // ---------------------------------------------------------------------------
 // ChecksumConfig
 // ---------------------------------------------------------------------------
+
+/// Specifies an extra file to include in checksums or release uploads. Can be a
+/// simple glob string or a detailed object with glob and name_template fields.
+///
+/// See [`ArchiveFileSpec`] doc comment for why this is a separate type.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum ExtraFileSpec {
+    Glob(String),
+    Detailed {
+        glob: String,
+        name_template: Option<String>,
+    },
+}
+
+impl ExtraFileSpec {
+    /// Return the glob pattern for this spec.
+    pub fn glob(&self) -> &str {
+        match self {
+            ExtraFileSpec::Glob(s) => s,
+            ExtraFileSpec::Detailed { glob, .. } => glob,
+        }
+    }
+
+    /// Return the optional name_template (only present in Detailed variant).
+    pub fn name_template(&self) -> Option<&str> {
+        match self {
+            ExtraFileSpec::Glob(_) => None,
+            ExtraFileSpec::Detailed { name_template, .. } => name_template.as_deref(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct ChecksumConfig {
     pub name_template: Option<String>,
     pub algorithm: Option<String>,
-    pub disable: Option<bool>,
-    pub extra_files: Option<Vec<String>>,
+    /// Disable checksums. Accepts bool or template string.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub disable: Option<StringOrBool>,
+    pub extra_files: Option<Vec<ExtraFileSpec>>,
     pub ids: Option<Vec<String>>,
     pub split: Option<bool>,
+}
+
+// ---------------------------------------------------------------------------
+// ContentSource — inline string, from_file, or from_url
+// ---------------------------------------------------------------------------
+
+/// A content source that can be an inline string, read from a file, or fetched
+/// from a URL. Used for release header/footer values.
+///
+/// YAML examples:
+///   header: "inline text"
+///   header:
+///     from_file: ./RELEASE_HEADER.md
+///   header:
+///     from_url: https://example.com/header.md
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum ContentSource {
+    Inline(String),
+    FromFile { from_file: String },
+    FromUrl { from_url: String },
+}
+
+impl PartialEq for ContentSource {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Inline(a), Self::Inline(b)) => a == b,
+            (Self::FromFile { from_file: a }, Self::FromFile { from_file: b }) => a == b,
+            (Self::FromUrl { from_url: a }, Self::FromUrl { from_url: b }) => a == b,
+            _ => false,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -490,13 +671,29 @@ pub struct ReleaseConfig {
     #[schemars(schema_with = "make_latest_schema")]
     pub make_latest: Option<MakeLatestConfig>,
     pub name_template: Option<String>,
-    pub header: Option<String>,
-    pub footer: Option<String>,
-    pub extra_files: Option<Vec<String>>,
+    pub header: Option<ContentSource>,
+    pub footer: Option<ContentSource>,
+    pub extra_files: Option<Vec<ExtraFileSpec>>,
     pub skip_upload: Option<bool>,
     pub replace_existing_draft: Option<bool>,
     pub replace_existing_artifacts: Option<bool>,
-    pub disable: Option<bool>,
+    /// Disable the release stage. Accepts bool or template string
+    /// (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional disable).
+    /// GoReleaser supports template strings here since v1.15.0.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub disable: Option<StringOrBool>,
+    /// Release mode: "keep-existing", "append", "prepend", or "replace".
+    pub mode: Option<String>,
+    /// Artifact IDs filter for uploads.
+    pub ids: Option<Vec<String>>,
+    /// Target branch or SHA for the release tag.
+    pub target_commitish: Option<String>,
+    /// GitHub Discussion category name for the release.
+    pub discussion_category_name: Option<String>,
+    /// Upload metadata.json and artifacts.json as release assets.
+    pub include_meta: Option<bool>,
+    /// Reuse an existing draft release instead of creating a new one.
+    pub use_existing_draft: Option<bool>,
 }
 
 /// Schema for prerelease: "auto" or boolean.
@@ -525,6 +722,30 @@ fn prerelease_schema(
 
 /// Schema for make_latest: "auto" or boolean.
 fn make_latest_schema(
+    _generator: &mut schemars::r#gen::SchemaGenerator,
+) -> schemars::schema::Schema {
+    use schemars::schema::{InstanceType, Schema, SchemaObject, SingleOrVec, SubschemaValidation};
+    Schema::Object(SchemaObject {
+        subschemas: Some(Box::new(SubschemaValidation {
+            one_of: Some(vec![
+                Schema::Object(SchemaObject {
+                    instance_type: Some(SingleOrVec::Single(Box::new(InstanceType::String))),
+                    enum_values: Some(vec![serde_json::json!("auto")]),
+                    ..Default::default()
+                }),
+                Schema::Object(SchemaObject {
+                    instance_type: Some(SingleOrVec::Single(Box::new(InstanceType::Boolean))),
+                    ..Default::default()
+                }),
+            ]),
+            ..Default::default()
+        })),
+        ..Default::default()
+    })
+}
+
+/// Schema for skip_push: "auto" or boolean.
+fn skip_push_schema(
     _generator: &mut schemars::r#gen::SchemaGenerator,
 ) -> schemars::schema::Schema {
     use schemars::schema::{InstanceType, Schema, SchemaObject, SingleOrVec, SubschemaValidation};
@@ -632,6 +853,19 @@ impl_auto_or_bool_serde!(
     MakeLatestConfig::Bool
 );
 
+/// `skip_push` can be the string `"auto"` (skip for prereleases) or a boolean.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SkipPushConfig {
+    Auto,
+    Bool(bool),
+}
+
+impl_auto_or_bool_serde!(
+    SkipPushConfig,
+    SkipPushConfig::Auto,
+    SkipPushConfig::Bool
+);
+
 // ---------------------------------------------------------------------------
 // PublishConfig
 // ---------------------------------------------------------------------------
@@ -716,6 +950,8 @@ impl Default for CratesPublishSettings {
 pub struct HomebrewConfig {
     pub tap: Option<TapConfig>,
     pub folder: Option<String>,
+    /// Override the formula name (default: crate name).
+    pub name: Option<String>,
     pub description: Option<String>,
     pub license: Option<String>,
     pub install: Option<String>,
@@ -731,6 +967,13 @@ pub struct HomebrewConfig {
     /// Skip publishing the formula.  `"true"` always skips; `"auto"` skips
     /// for prerelease versions.
     pub skip_upload: Option<String>,
+    /// Custom commit message template.  Rendered via Tera with `name` and
+    /// `version` variables.  Defaults to `"chore: update {{ name }} formula to {{ version }}"`.
+    pub commit_msg_template: Option<String>,
+    /// Git commit author name for tap updates.
+    pub commit_author_name: Option<String>,
+    /// Git commit author email for tap updates.
+    pub commit_author_email: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, JsonSchema)]
@@ -743,6 +986,9 @@ pub struct HomebrewDependency {
     /// Dependency type, e.g. `"optional"`.
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub dep_type: Option<String>,
+    /// Version constraint for the dependency (e.g. `">= 1.1"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
 
 /// A Homebrew conflict entry, supporting both a bare name string and a
@@ -779,6 +1025,10 @@ impl HomebrewConflict {
 #[serde(default)]
 pub struct ScoopConfig {
     pub bucket: Option<BucketConfig>,
+    /// Override the manifest name (default: crate name).
+    pub name: Option<String>,
+    /// Subdirectory in the bucket repo for manifest placement.
+    pub directory: Option<String>,
     pub description: Option<String>,
     pub license: Option<String>,
     /// Project homepage URL. Falls back to the GitHub-derived URL when unset.
@@ -796,6 +1046,13 @@ pub struct ScoopConfig {
     /// Skip publishing the manifest.  `"true"` always skips; `"auto"` skips
     /// for prerelease versions.
     pub skip_upload: Option<String>,
+    /// Custom commit message template.  Rendered via Tera with `name` and
+    /// `version` variables.  Defaults to `"chore: update {{ name }} manifest to {{ version }}"`.
+    pub commit_msg_template: Option<String>,
+    /// Git commit author name for bucket updates.
+    pub commit_author_name: Option<String>,
+    /// Git commit author email for bucket updates.
+    pub commit_author_email: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -941,13 +1198,55 @@ pub struct DockerConfig {
     pub platforms: Option<Vec<String>>,
     pub binaries: Option<Vec<String>>,
     pub build_flag_templates: Option<Vec<String>>,
-    pub skip_push: Option<bool>,
+    /// Skip push: true, false, or "auto" (skip for prereleases).
+    #[schemars(schema_with = "skip_push_schema")]
+    pub skip_push: Option<SkipPushConfig>,
     pub extra_files: Option<Vec<String>>,
     pub push_flags: Option<Vec<String>>,
     /// Build IDs filter: only include binary artifacts whose metadata `id` is in this list.
     pub ids: Option<Vec<String>>,
     /// OCI labels to apply to the image via `--label key=value` flags.
     pub labels: Option<HashMap<String, String>>,
+    /// Retry configuration for docker push operations.
+    pub retry: Option<DockerRetryConfig>,
+    /// Docker backend: "docker", "buildx" (default), or "podman".
+    #[serde(rename = "use")]
+    pub use_backend: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct DockerRetryConfig {
+    pub attempts: Option<u32>,
+    /// Duration string, e.g. "1s", "500ms".
+    pub delay: Option<String>,
+    /// Maximum delay between retries, e.g. "30s".
+    pub max_delay: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// DockerManifestConfig
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct DockerManifestConfig {
+    /// Template for the manifest name, e.g. "ghcr.io/owner/app:{{ .Version }}".
+    pub name_template: String,
+    /// Image references to include in the manifest.
+    pub image_templates: Vec<String>,
+    /// Extra flags for `docker manifest create`.
+    pub create_flags: Option<Vec<String>>,
+    /// Extra flags for `docker manifest push`.
+    pub push_flags: Option<Vec<String>>,
+    /// Skip push: true, false, or "auto" (skip for prereleases).
+    #[schemars(schema_with = "skip_push_schema")]
+    pub skip_push: Option<SkipPushConfig>,
+    /// Unique identifier for this manifest config.
+    pub id: Option<String>,
+    /// Docker backend for manifest commands: "docker" (default) or "podman".
+    #[serde(rename = "use")]
+    pub use_backend: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -957,6 +1256,8 @@ pub struct DockerConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct NfpmConfig {
+    /// Unique identifier for cross-referencing this nFPM config.
+    pub id: Option<String>,
     pub package_name: Option<String>,
     pub formats: Vec<String>,
     pub vendor: Option<String>,
@@ -975,6 +1276,34 @@ pub struct NfpmConfig {
     pub conflicts: Option<Vec<String>>,
     pub replaces: Option<Vec<String>>,
     pub provides: Option<Vec<String>>,
+    /// Build IDs filter: only include artifacts from builds whose `id` is in this list.
+    pub ids: Option<Vec<String>>,
+    /// Package epoch for versioning (integer as string).
+    pub epoch: Option<String>,
+    /// Package release number.
+    pub release: Option<String>,
+    /// Prerelease version suffix.
+    pub prerelease: Option<String>,
+    /// Version metadata (e.g. git commit hash).
+    pub version_metadata: Option<String>,
+    /// Package section (e.g. "utils", "devel").
+    pub section: Option<String>,
+    /// Package priority (e.g. "optional", "required").
+    pub priority: Option<String>,
+    /// Whether this is a meta-package (no files, only dependencies).
+    pub meta: Option<bool>,
+    /// File permission umask (e.g. "0o002").
+    pub umask: Option<String>,
+    /// Default modification time for files in the package.
+    pub mtime: Option<String>,
+    /// RPM-specific configuration.
+    pub rpm: Option<NfpmRpmConfig>,
+    /// Deb-specific configuration.
+    pub deb: Option<NfpmDebConfig>,
+    /// APK-specific configuration.
+    pub apk: Option<NfpmApkConfig>,
+    /// Archlinux-specific configuration.
+    pub archlinux: Option<NfpmArchlinuxConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -986,14 +1315,14 @@ pub struct NfpmScripts {
     pub postremove: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
-pub struct NfpmFileInfo {
-    pub owner: Option<String>,
-    pub group: Option<String>,
-    pub mode: Option<String>,
-}
+/// Backward-compatible alias — nFPM contents share the same `FileInfo` struct.
+pub type NfpmFileInfo = FileInfo;
 
+/// A single file/directory entry in an nFPM package's `contents` list.
+///
+/// `Default` is intentionally **not** derived because `src` and `dst` are
+/// required fields with no meaningful defaults — forcing callers to provide
+/// them explicitly prevents accidentally packaging empty paths.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct NfpmContent {
     pub src: String,
@@ -1001,6 +1330,138 @@ pub struct NfpmContent {
     #[serde(rename = "type")]
     pub content_type: Option<String>,
     pub file_info: Option<NfpmFileInfo>,
+}
+
+// ---------------------------------------------------------------------------
+// nFPM format-specific configs
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct NfpmRpmConfig {
+    /// One-line package summary (RPM Summary tag).
+    pub summary: Option<String>,
+    /// RPM compression algorithm (e.g. "lzma", "gzip", "xz", "zstd").
+    pub compression: Option<String>,
+    /// RPM group classification (e.g. "System/Tools").
+    pub group: Option<String>,
+    /// RPM packager identity (e.g. "Build Team <build@example.com>").
+    pub packager: Option<String>,
+    /// Relocatable RPM prefix paths (e.g. ["/usr", "/etc"]).
+    pub prefixes: Option<Vec<String>>,
+    /// RPM signing configuration.
+    pub signature: Option<NfpmSignatureConfig>,
+}
+
+impl NfpmRpmConfig {
+    /// Returns `true` when every field is `None` — the YAML section would be
+    /// empty and should be omitted.
+    pub fn is_empty(&self) -> bool {
+        self.summary.is_none()
+            && self.compression.is_none()
+            && self.group.is_none()
+            && self.packager.is_none()
+            && self.prefixes.is_none()
+            && self.signature.is_none()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct NfpmDebConfig {
+    /// Deb compression algorithm (e.g. "gzip", "xz", "zstd", "none").
+    pub compression: Option<String>,
+    /// Pre-dependency packages (stronger than Depends).
+    pub predepends: Option<Vec<String>>,
+    /// Deb trigger definitions.
+    pub triggers: Option<NfpmDebTriggers>,
+    /// Packages this package breaks (Breaks relationship).
+    pub breaks: Option<Vec<String>>,
+    /// Lintian overrides to embed in the package.
+    pub lintian_overrides: Option<Vec<String>>,
+    /// Deb signing configuration.
+    pub signature: Option<NfpmSignatureConfig>,
+    /// Additional control fields (e.g. Bugs, Built-Using).
+    pub fields: Option<HashMap<String, String>>,
+}
+
+impl NfpmDebConfig {
+    /// Returns `true` when every field is `None` — the YAML section would be
+    /// empty and should be omitted.
+    pub fn is_empty(&self) -> bool {
+        self.compression.is_none()
+            && self.predepends.is_none()
+            && self.triggers.is_none()
+            && self.breaks.is_none()
+            && self.lintian_overrides.is_none()
+            && self.signature.is_none()
+            && self.fields.is_none()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct NfpmDebTriggers {
+    pub interest: Option<Vec<String>>,
+    pub interest_await: Option<Vec<String>>,
+    pub interest_noawait: Option<Vec<String>>,
+    pub activate: Option<Vec<String>>,
+    pub activate_await: Option<Vec<String>>,
+    pub activate_noawait: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct NfpmApkConfig {
+    /// APK signing configuration.
+    pub signature: Option<NfpmSignatureConfig>,
+}
+
+impl NfpmApkConfig {
+    /// Returns `true` when every field is `None` — the YAML section would be
+    /// empty and should be omitted.
+    pub fn is_empty(&self) -> bool {
+        self.signature.is_none()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct NfpmArchlinuxConfig {
+    /// Base package name for split packages.
+    pub pkgbase: Option<String>,
+    /// Packager identity (e.g. "Build Team <build@example.com>").
+    pub packager: Option<String>,
+    /// Archlinux-specific lifecycle scripts.
+    pub scripts: Option<NfpmArchlinuxScripts>,
+}
+
+impl NfpmArchlinuxConfig {
+    /// Returns `true` when every field is `None` — the YAML section would be
+    /// empty and should be omitted.
+    pub fn is_empty(&self) -> bool {
+        self.pkgbase.is_none() && self.packager.is_none() && self.scripts.is_none()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct NfpmArchlinuxScripts {
+    /// Script to run before upgrading an existing package.
+    pub preupgrade: Option<String>,
+    /// Script to run after upgrading an existing package.
+    pub postupgrade: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct NfpmSignatureConfig {
+    /// Path to the signing key file.
+    pub key_file: Option<String>,
+    /// Key ID to use for signing.
+    pub key_id: Option<String>,
+    /// Passphrase for the signing key.
+    pub key_passphrase: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1322,15 +1783,22 @@ pub struct ChangelogConfig {
     pub groups: Option<Vec<ChangelogGroup>>,
     pub header: Option<String>,
     pub footer: Option<String>,
-    pub disable: Option<bool>,
-    /// Changelog source: `"git"` (default) or `"github-native"`.
+    /// Disable changelog generation. Accepts bool or template string
+    /// (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional disable).
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub disable: Option<StringOrBool>,
+    /// Changelog source: `"git"` (default), `"github"`, or `"github-native"`.
+    /// `"github"` fetches commits via the GitHub API, enriching entries with
+    /// author login information (available as the `Logins` template variable).
+    /// `"github-native"` delegates entirely to GitHub's auto-generated notes.
     #[serde(rename = "use")]
     pub use_source: Option<String>,
-    /// Hash abbreviation length (default 7).
-    pub abbrev: Option<usize>,
+    /// Hash abbreviation length. Default: 7. Set to -1 to omit the hash entirely.
+    pub abbrev: Option<i32>,
     /// Template for each changelog commit line.
     /// Available variables: SHA (full hash), ShortSHA (abbreviated), Message (commit subject),
-    /// AuthorName, AuthorEmail.
+    /// AuthorName, AuthorEmail, Login (per-commit GitHub username, `github` backend only),
+    /// Logins (comma-separated list of all GitHub usernames in the release, `github` backend only).
     /// Default: `"{{ ShortSHA }} {{ Message }}"`
     pub format: Option<String>,
 }
@@ -1348,6 +1816,8 @@ pub struct ChangelogGroup {
     pub title: String,
     pub regexp: Option<String>,
     pub order: Option<i32>,
+    /// Nested subgroups within this group. Rendered as sub-sections (e.g. `###`).
+    pub groups: Option<Vec<ChangelogGroup>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1367,17 +1837,29 @@ pub struct SignConfig {
     pub ids: Option<Vec<String>>,
     pub env: Option<HashMap<String, String>>,
     pub certificate: Option<String>,
+    /// Capture and log stdout/stderr of the signing command.
+    pub output: Option<bool>,
+    /// Template-conditional: skip this sign config if rendered result is "false" or empty.
+    #[serde(rename = "if")]
+    pub if_condition: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct DockerSignConfig {
+    pub id: Option<String>,
     pub artifacts: Option<String>,
     pub cmd: Option<String>,
     pub args: Option<Vec<String>>,
     pub ids: Option<Vec<String>>,
     pub stdin: Option<String>,
     pub stdin_file: Option<String>,
+    pub env: Option<HashMap<String, String>>,
+    /// Capture and log stdout/stderr of the docker signing command.
+    pub output: Option<bool>,
+    /// Template-conditional: skip this docker sign config if rendered result is "false" or empty.
+    #[serde(rename = "if")]
+    pub if_condition: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1484,8 +1966,8 @@ pub struct NightlyConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct AnnounceConfig {
-    pub discord: Option<AnnounceProviderConfig>,
-    pub slack: Option<AnnounceProviderConfig>,
+    pub discord: Option<DiscordAnnounce>,
+    pub slack: Option<SlackAnnounce>,
     pub webhook: Option<WebhookConfig>,
     pub telegram: Option<TelegramAnnounce>,
     pub teams: Option<TeamsAnnounce>,
@@ -1495,10 +1977,16 @@ pub struct AnnounceConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
-pub struct AnnounceProviderConfig {
+pub struct DiscordAnnounce {
     pub enabled: Option<bool>,
     pub webhook_url: Option<String>,
     pub message_template: Option<String>,
+    /// Author name displayed in the embed (optional)
+    pub author: Option<String>,
+    /// Embed color as a decimal integer (default: 3553599, GoReleaser blue)
+    pub color: Option<u32>,
+    /// Icon URL for the embed footer (optional)
+    pub icon_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -1509,6 +1997,8 @@ pub struct WebhookConfig {
     pub headers: Option<HashMap<String, String>>,
     pub content_type: Option<String>,
     pub message_template: Option<String>,
+    /// When true, skip TLS certificate verification for the webhook endpoint
+    pub skip_tls_verify: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -1518,8 +2008,10 @@ pub struct TelegramAnnounce {
     pub bot_token: Option<String>,
     pub chat_id: Option<String>,
     pub message_template: Option<String>,
-    /// Optional parse mode: "MarkdownV2" or "HTML"
+    /// Optional parse mode: "MarkdownV2" or "HTML" (defaults to "MarkdownV2")
     pub parse_mode: Option<String>,
+    /// Optional message thread ID for sending to a specific topic in a forum group
+    pub message_thread_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -1528,6 +2020,10 @@ pub struct TeamsAnnounce {
     pub enabled: Option<bool>,
     pub webhook_url: Option<String>,
     pub message_template: Option<String>,
+    /// Optional title template for the Adaptive Card header
+    pub title_template: Option<String>,
+    /// Optional theme color for the card (hex string, e.g. "0076D7")
+    pub color: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -1541,6 +2037,10 @@ pub struct MattermostAnnounce {
     pub username: Option<String>,
     /// Optional icon URL for the bot post
     pub icon_url: Option<String>,
+    /// Optional icon emoji for the bot post (e.g. ":rocket:")
+    pub icon_emoji: Option<String>,
+    /// Optional attachment color (hex string, e.g. "#36a64f")
+    pub color: Option<String>,
     pub message_template: Option<String>,
 }
 
@@ -1553,6 +2053,20 @@ pub struct EmailAnnounce {
     pub to: Vec<String>,
     pub subject_template: Option<String>,
     pub message_template: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct SlackAnnounce {
+    pub enabled: Option<bool>,
+    pub webhook_url: Option<String>,
+    pub message_template: Option<String>,
+    pub channel: Option<String>,
+    pub username: Option<String>,
+    pub icon_emoji: Option<String>,
+    pub icon_url: Option<String>,
+    pub blocks: Option<serde_json::Value>,
+    pub attachments: Option<serde_json::Value>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1572,16 +2086,69 @@ pub struct PublisherConfig {
     pub dir: Option<String>,
     /// Template-conditional disable: if rendered result is `"true"`, skip this publisher.
     pub disable: Option<String>,
+    /// Include checksums in published artifacts.
+    pub checksum: Option<bool>,
+    /// Include signatures in published artifacts.
+    pub signature: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
 // HooksConfig
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+/// Top-level lifecycle hooks for `before` and `after` blocks.
+/// Each block has `pre` and `post` lists of hook commands that run around the
+/// entire pipeline (not individual stages).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct HooksConfig {
-    pub hooks: Vec<String>,
+    pub pre: Option<Vec<HookEntry>>,
+    pub post: Option<Vec<HookEntry>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct StructuredHook {
+    pub cmd: String,
+    pub dir: Option<String>,
+    pub env: Option<HashMap<String, String>>,
+    pub output: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum HookEntry {
+    Simple(String),
+    Structured(StructuredHook),
+}
+
+impl PartialEq<&str> for HookEntry {
+    fn eq(&self, other: &&str) -> bool {
+        match self {
+            HookEntry::Simple(s) => s.as_str() == *other,
+            HookEntry::Structured(h) => h.cmd.as_str() == *other,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for HookEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        match &value {
+            serde_json::Value::String(s) => Ok(HookEntry::Simple(s.clone())),
+            serde_json::Value::Object(_) => {
+                let hook: StructuredHook =
+                    serde_json::from_value(value).map_err(serde::de::Error::custom)?;
+                Ok(HookEntry::Structured(hook))
+            }
+            _ => Err(serde::de::Error::custom(
+                "hook entry must be a string or an object with cmd/dir/env/output",
+            )),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1626,6 +2193,10 @@ pub struct WorkspaceConfig {
     #[serde(default, alias = "sign", deserialize_with = "deserialize_signs")]
     #[schemars(schema_with = "signs_schema")]
     pub signs: Vec<SignConfig>,
+    /// Binary-specific signing configs (same shape as `signs` but only for binary artifacts).
+    #[serde(default, alias = "binary_sign", deserialize_with = "deserialize_signs")]
+    #[schemars(schema_with = "signs_schema")]
+    pub binary_signs: Vec<SignConfig>,
     pub before: Option<HooksConfig>,
     pub after: Option<HooksConfig>,
     pub env: Option<HashMap<String, String>>,
@@ -1667,6 +2238,21 @@ impl StringOrBool {
     /// Whether this value contains a template expression that needs rendering.
     pub fn is_template(&self) -> bool {
         matches!(self, StringOrBool::String(s) if s.contains('{'))
+    }
+
+    /// Evaluate whether this value means "disabled".
+    ///
+    /// If the value is a template string (contains `{`), it is rendered via
+    /// the provided closure and the result is compared to `"true"`.
+    /// Otherwise, the plain bool / string value is evaluated directly.
+    pub fn is_disabled(&self, render: impl Fn(&str) -> anyhow::Result<String>) -> bool {
+        if self.is_template() {
+            render(self.as_str())
+                .map(|r| r.trim() == "true")
+                .unwrap_or(false)
+        } else {
+            self.as_bool()
+        }
     }
 }
 
@@ -2035,7 +2621,7 @@ crates:
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let cl = config.changelog.as_ref().unwrap();
-        assert_eq!(cl.disable, Some(true));
+        assert_eq!(cl.disable, Some(StringOrBool::Bool(true)));
     }
 
     #[test]
@@ -2052,7 +2638,7 @@ crates:
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let cl = config.changelog.as_ref().unwrap();
-        assert_eq!(cl.disable, Some(false));
+        assert_eq!(cl.disable, Some(StringOrBool::Bool(false)));
         assert_eq!(cl.sort, Some("desc".to_string()));
     }
 
@@ -2072,7 +2658,7 @@ crates:
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let checksum = config.defaults.as_ref().unwrap().checksum.as_ref().unwrap();
-        assert_eq!(checksum.disable, Some(true));
+        assert_eq!(checksum.disable, Some(StringOrBool::Bool(true)));
     }
 
     #[test]
@@ -2089,8 +2675,61 @@ crates:
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let checksum = config.crates[0].checksum.as_ref().unwrap();
-        assert_eq!(checksum.disable, Some(true));
+        assert_eq!(checksum.disable, Some(StringOrBool::Bool(true)));
         assert_eq!(checksum.algorithm, Some("sha512".to_string()));
+    }
+
+    #[test]
+    fn test_checksum_disable_template_string() {
+        let yaml = r#"
+project_name: test
+defaults:
+  checksum:
+    disable: "{{ if .IsSnapshot }}true{{ end }}"
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let checksum = config.defaults.as_ref().unwrap().checksum.as_ref().unwrap();
+        match &checksum.disable {
+            Some(StringOrBool::String(s)) => {
+                assert!(s.contains("IsSnapshot"));
+            }
+            other => panic!("expected StringOrBool::String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_checksum_extra_files_object_form() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    checksum:
+      extra_files:
+        - "dist/*.bin"
+        - glob: "release/*.deb"
+          name_template: "{{ .ArtifactName }}.checksum"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let checksum = config.crates[0].checksum.as_ref().unwrap();
+        let extra = checksum.extra_files.as_ref().unwrap();
+        assert_eq!(extra.len(), 2);
+        assert_eq!(extra[0], ExtraFileSpec::Glob("dist/*.bin".to_string()));
+        match &extra[1] {
+            ExtraFileSpec::Detailed { glob, name_template } => {
+                assert_eq!(glob, "release/*.deb");
+                assert_eq!(
+                    name_template.as_deref(),
+                    Some("{{ .ArtifactName }}.checksum")
+                );
+            }
+            other => panic!("expected ExtraFileSpec::Detailed, got {:?}", other),
+        }
     }
 
     // ---- MakeLatestConfig serialization roundtrip ----
@@ -2113,7 +2752,7 @@ crates:
     // ---- ReleaseConfig header/footer tests ----
 
     #[test]
-    fn test_release_header_footer() {
+    fn test_release_header_footer_inline() {
         let yaml = r###"
 project_name: test
 crates:
@@ -2126,8 +2765,76 @@ crates:
 "###;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let release = config.crates[0].release.as_ref().unwrap();
-        assert_eq!(release.header, Some("## Custom Header".to_string()));
-        assert_eq!(release.footer, Some("---\nPowered by anodize".to_string()));
+        assert_eq!(
+            release.header,
+            Some(ContentSource::Inline("## Custom Header".to_string()))
+        );
+        assert_eq!(
+            release.footer,
+            Some(ContentSource::Inline(
+                "---\nPowered by anodize".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn test_release_header_footer_from_file() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    release:
+      header:
+        from_file: ./RELEASE_HEADER.md
+      footer:
+        from_file: ./RELEASE_FOOTER.md
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let release = config.crates[0].release.as_ref().unwrap();
+        assert_eq!(
+            release.header,
+            Some(ContentSource::FromFile {
+                from_file: "./RELEASE_HEADER.md".to_string()
+            })
+        );
+        assert_eq!(
+            release.footer,
+            Some(ContentSource::FromFile {
+                from_file: "./RELEASE_FOOTER.md".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn test_release_header_footer_from_url() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    release:
+      header:
+        from_url: https://example.com/header.md
+      footer:
+        from_url: https://example.com/footer.md
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let release = config.crates[0].release.as_ref().unwrap();
+        assert_eq!(
+            release.header,
+            Some(ContentSource::FromUrl {
+                from_url: "https://example.com/header.md".to_string()
+            })
+        );
+        assert_eq!(
+            release.footer,
+            Some(ContentSource::FromUrl {
+                from_url: "https://example.com/footer.md".to_string()
+            })
+        );
     }
 
     #[test]
@@ -2150,7 +2857,7 @@ crates:
     // ---- ReleaseConfig extra_files tests ----
 
     #[test]
-    fn test_release_extra_files() {
+    fn test_release_extra_files_glob_strings() {
         let yaml = r#"
 project_name: test
 crates:
@@ -2166,8 +2873,57 @@ crates:
         let release = config.crates[0].release.as_ref().unwrap();
         let files = release.extra_files.as_ref().unwrap();
         assert_eq!(files.len(), 2);
-        assert_eq!(files[0], "dist/*.sig");
-        assert_eq!(files[1], "CHANGELOG.md");
+        assert_eq!(files[0], ExtraFileSpec::Glob("dist/*.sig".to_string()));
+        assert_eq!(files[1], ExtraFileSpec::Glob("CHANGELOG.md".to_string()));
+    }
+
+    #[test]
+    fn test_release_extra_files_detailed_objects() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    release:
+      extra_files:
+        - glob: "dist/*.sig"
+          name_template: "{{ .ArtifactName }}.sig"
+        - glob: "docs/*.pdf"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let release = config.crates[0].release.as_ref().unwrap();
+        let files = release.extra_files.as_ref().unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].glob(), "dist/*.sig");
+        assert_eq!(
+            files[0].name_template(),
+            Some("{{ .ArtifactName }}.sig")
+        );
+        assert_eq!(files[1].glob(), "docs/*.pdf");
+        assert_eq!(files[1].name_template(), None);
+    }
+
+    #[test]
+    fn test_release_extra_files_mixed() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    release:
+      extra_files:
+        - "dist/*.sig"
+        - glob: "docs/*.pdf"
+          name_template: "{{ .ArtifactName }}"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let release = config.crates[0].release.as_ref().unwrap();
+        let files = release.extra_files.as_ref().unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0], ExtraFileSpec::Glob("dist/*.sig".to_string()));
+        assert_eq!(files[1].glob(), "docs/*.pdf");
     }
 
     #[test]
@@ -2275,16 +3031,36 @@ crates:
       skip_upload: false
       replace_existing_draft: true
       replace_existing_artifacts: false
+      target_commitish: main
+      discussion_category_name: Announcements
+      include_meta: true
+      use_existing_draft: false
 "##;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let release = config.crates[0].release.as_ref().unwrap();
-        assert_eq!(release.header, Some("# Release Notes".to_string()));
-        assert_eq!(release.footer, Some("Thank you!".to_string()));
-        assert_eq!(release.extra_files.as_ref().unwrap(), &["dist/extra.zip"]);
+        assert_eq!(
+            release.header,
+            Some(ContentSource::Inline("# Release Notes".to_string()))
+        );
+        assert_eq!(
+            release.footer,
+            Some(ContentSource::Inline("Thank you!".to_string()))
+        );
+        assert_eq!(
+            release.extra_files.as_ref().unwrap(),
+            &[ExtraFileSpec::Glob("dist/extra.zip".to_string())]
+        );
         assert_eq!(release.skip_upload, Some(false));
         assert_eq!(release.replace_existing_draft, Some(true));
         assert_eq!(release.replace_existing_artifacts, Some(false));
         assert_eq!(release.make_latest, Some(MakeLatestConfig::Auto));
+        assert_eq!(release.target_commitish, Some("main".to_string()));
+        assert_eq!(
+            release.discussion_category_name,
+            Some("Announcements".to_string())
+        );
+        assert_eq!(release.include_meta, Some(true));
+        assert_eq!(release.use_existing_draft, Some(false));
     }
 
     // ---- SignConfig / signs migration tests ----

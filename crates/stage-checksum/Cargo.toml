@@ -1,6 +1,6 @@
 [package]
 name = "anodize-stage-checksum"
-description = "Checksum stage for the anodize release tool — generates SHA-256, SHA-1, SHA-512, and BLAKE2 checksums"
+description = "Checksum stage for the anodize release tool — generates SHA, SHA-3, BLAKE2, BLAKE3, CRC32, and MD5 checksums"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -14,7 +14,11 @@ anodize-core.workspace = true
 anyhow.workspace = true
 sha1.workspace = true
 sha2.workspace = true
+sha3.workspace = true
 blake2.workspace = true
+blake3.workspace = true
+crc32fast.workspace = true
+md-5.workspace = true
 glob.workspace = true
 
 [dev-dependencies]

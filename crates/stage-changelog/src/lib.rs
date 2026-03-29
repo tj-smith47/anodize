@@ -23,12 +23,28 @@ pub(crate) struct CommitInfo {
     pub full_hash: String,
     pub author_name: String,
     pub author_email: String,
+    /// GitHub login (populated only when `use: github`).
+    pub login: String,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct GroupedCommits {
     pub title: String,
     pub commits: Vec<CommitInfo>,
+    /// Nested subgroups within this group.
+    pub subgroups: Vec<GroupedCommits>,
+}
+
+impl GroupedCommits {
+    /// Create a GroupedCommits with no subgroups (convenience for tests and simple use).
+    #[cfg(test)]
+    fn new(title: impl Into<String>, commits: Vec<CommitInfo>) -> Self {
+        Self {
+            title: title.into(),
+            commits,
+            subgroups: Vec::new(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -49,20 +65,14 @@ pub(crate) fn parse_commit_message(msg: &str) -> CommitInfo {
             raw_message: msg.to_string(),
             kind: caps[1].to_string(),
             description: caps[2].to_string(),
-            hash: String::new(),
-            full_hash: String::new(),
-            author_name: String::new(),
-            author_email: String::new(),
+            ..Default::default()
         }
     } else {
         CommitInfo {
             raw_message: msg.to_string(),
             kind: "other".to_string(),
             description: msg.to_string(),
-            hash: String::new(),
-            full_hash: String::new(),
-            author_name: String::new(),
-            author_email: String::new(),
+            ..Default::default()
         }
     }
 }
@@ -133,12 +143,13 @@ pub(crate) fn apply_include_filters(
 // ---------------------------------------------------------------------------
 
 /// Sort commits in-place by description. `order` must be `"asc"` or `"desc"`.
-/// Any other value is treated as ascending.
+/// An empty string or `"none"` preserves the original git log order (no sorting).
 pub(crate) fn sort_commits(commits: &mut [CommitInfo], order: &str) {
-    if order == "desc" {
-        commits.sort_by(|a, b| b.description.cmp(&a.description));
-    } else {
-        commits.sort_by(|a, b| a.description.cmp(&b.description));
+    match order {
+        "asc" => commits.sort_by(|a, b| a.description.cmp(&b.description)),
+        "desc" => commits.sort_by(|a, b| b.description.cmp(&a.description)),
+        // Empty or "none" — preserve original git log order
+        _ => {}
     }
 }
 
@@ -150,11 +161,37 @@ pub(crate) fn sort_commits(commits: &mut [CommitInfo], order: &str) {
 /// Groups are emitted in `order` (ascending). Commits that do not match any
 /// group are collected into an implicit "Others" group appended at the end.
 /// Groups with zero matching commits are omitted from the output.
+///
+/// When a group has nested `groups`, the commits that matched the parent group
+/// are further partitioned into subgroups using the same algorithm recursively.
+/// Recursion depth is capped at 6 (matching Markdown's `######` max heading level).
 pub(crate) fn group_commits(
     commits: &[CommitInfo],
     groups: &[ChangelogGroup],
     log: &anodize_core::log::StageLogger,
 ) -> Vec<GroupedCommits> {
+    group_commits_inner(commits, groups, log, 1)
+}
+
+fn group_commits_inner(
+    commits: &[CommitInfo],
+    groups: &[ChangelogGroup],
+    log: &anodize_core::log::StageLogger,
+    depth: usize,
+) -> Vec<GroupedCommits> {
+    // Cap recursion at 6 to match Markdown's maximum heading level.
+    if depth > 6 {
+        // At max depth, return all commits as a single flat group.
+        return if commits.is_empty() {
+            Vec::new()
+        } else {
+            vec![GroupedCommits {
+                title: "Others".to_string(),
+                commits: commits.to_vec(),
+                subgroups: Vec::new(),
+            }]
+        };
+    }
     // Sort groups by their `order` field (None sorts last).
     let mut sorted_groups: Vec<&ChangelogGroup> = groups.iter().collect();
     sorted_groups.sort_by_key(|g| g.order.unwrap_or(i32::MAX));
@@ -195,10 +232,28 @@ pub(crate) fn group_commits(
     let mut result: Vec<GroupedCommits> = compiled
         .iter()
         .zip(buckets)
-        .filter(|(_, bucket)| !bucket.is_empty())
-        .map(|((_, group), bucket)| GroupedCommits {
-            title: group.title.clone(),
-            commits: bucket,
+        .filter(|((_, group), bucket)| !bucket.is_empty() || group.groups.as_ref().is_some_and(|g| !g.is_empty()))
+        .map(|((_, group), bucket)| {
+            // Recursively process nested subgroups if present.
+            let subgroups = match &group.groups {
+                Some(sub) if !sub.is_empty() => group_commits_inner(&bucket, sub, log, depth + 1),
+                _ => Vec::new(),
+            };
+            // When there are subgroups, the parent's "commits" are only those
+            // that did NOT match any subgroup (the subgroup "Others" bucket
+            // is handled inside the recursive call).
+            let own_commits = if subgroups.is_empty() {
+                bucket
+            } else {
+                // All commits are distributed into subgroups already;
+                // the parent shows no direct commits.
+                Vec::new()
+            };
+            GroupedCommits {
+                title: group.title.clone(),
+                commits: own_commits,
+                subgroups,
+            }
         })
         .collect();
 
@@ -206,6 +261,7 @@ pub(crate) fn group_commits(
         result.push(GroupedCommits {
             title: "Others".to_string(),
             commits: others,
+            subgroups: Vec::new(),
         });
     }
 
@@ -219,41 +275,99 @@ pub(crate) fn group_commits(
 /// Render grouped commits as a Markdown string. Each group becomes a `## Title`
 /// section, and each commit is a bullet formatted according to `format_template`.
 ///
-/// `abbrev` controls the hash abbreviation length (default 7).
+/// `abbrev` controls the hash abbreviation length (default 7). Values <= 0 omit
+/// the hash entirely.
 ///
 /// If `format_template` is `None`, the default format `{{ ShortSHA }} {{ Message }}`
-/// is used (matching GoReleaser defaults). Available template variables:
-/// `SHA`, `ShortSHA`, `Message`, `AuthorName`, `AuthorEmail`.
+/// is used (matching GoReleaser defaults). When `abbrev <= 0`, the default format
+/// becomes `{{ Message }}` (no hash prefix). Available template variables:
+/// `SHA`, `ShortSHA`, `Message`, `AuthorName`, `AuthorEmail`, `Login`, `Logins`.
 pub(crate) fn render_changelog(
     grouped: &[GroupedCommits],
-    abbrev: usize,
+    abbrev: i32,
     format_template: Option<&str>,
+    logins: &str,
 ) -> String {
-    let abbrev = abbrev.max(1); // Enforce minimum of 1 to avoid empty hashes
-    let default_format = "{{ ShortSHA }} {{ Message }}";
+    let default_format = if abbrev <= 0 {
+        "{{ Message }}"
+    } else {
+        "{{ ShortSHA }} {{ Message }}"
+    };
     let tmpl = format_template.unwrap_or(default_format);
     let mut out = String::new();
-    for group in grouped {
-        out.push_str(&format!("## {}\n\n", group.title));
-        for commit in &group.commits {
-            let short_sha = if commit.hash.len() > abbrev {
-                &commit.hash[..abbrev]
-            } else {
-                &commit.hash
-            };
-            let mut vars = TemplateVars::new();
-            vars.set("SHA", &commit.full_hash);
-            vars.set("ShortSHA", short_sha);
-            vars.set("Message", &commit.description);
-            vars.set("AuthorName", &commit.author_name);
-            vars.set("AuthorEmail", &commit.author_email);
-            let rendered = template::render(tmpl, &vars)
-                .unwrap_or_else(|_| format!("{} {}", short_sha, commit.description));
-            out.push_str(&format!("- {}\n", rendered));
-        }
-        out.push('\n');
-    }
+    render_groups(&mut out, grouped, abbrev, tmpl, logins, 2);
     out
+}
+
+/// Recursively render grouped commits at the given heading depth.
+/// Depth is capped at 6 (matching Markdown's `######` max heading level).
+fn render_groups(
+    out: &mut String,
+    groups: &[GroupedCommits],
+    abbrev: i32,
+    tmpl: &str,
+    logins: &str,
+    depth: usize,
+) {
+    if depth > 6 {
+        return;
+    }
+    let hashes = "#".repeat(depth);
+    for group in groups {
+        out.push_str(&format!("{} {}\n\n", hashes, group.title));
+        for commit in &group.commits {
+            render_commit_line(out, commit, abbrev, tmpl, logins);
+        }
+        // Render nested subgroups one level deeper.
+        if !group.subgroups.is_empty() {
+            render_groups(out, &group.subgroups, abbrev, tmpl, logins, depth + 1);
+        }
+        // Add trailing newline after commits. Skip if this group has subgroups
+        // (they add their own spacing) and no direct commits.
+        if !group.commits.is_empty() || group.subgroups.is_empty() {
+            out.push('\n');
+        }
+    }
+}
+
+/// Render a single commit as a bullet line.
+///
+/// Template variables available:
+/// - `SHA` — full commit hash
+/// - `ShortSHA` — abbreviated commit hash (controlled by `abbrev`)
+/// - `Message` — commit subject / description
+/// - `AuthorName` — commit author name
+/// - `AuthorEmail` — commit author email
+/// - `Login` — per-commit GitHub username (populated only with `github` backend)
+/// - `Logins` — comma-separated list of all GitHub usernames in the release
+fn render_commit_line(out: &mut String, commit: &CommitInfo, abbrev: i32, tmpl: &str, logins: &str) {
+    let short_sha = if abbrev <= 0 {
+        String::new()
+    } else {
+        let a = abbrev as usize;
+        if commit.hash.len() > a {
+            commit.hash[..a].to_string()
+        } else {
+            commit.hash.clone()
+        }
+    };
+    let mut vars = TemplateVars::new();
+    vars.set("SHA", &commit.full_hash);
+    vars.set("ShortSHA", &short_sha);
+    vars.set("Message", &commit.description);
+    vars.set("AuthorName", &commit.author_name);
+    vars.set("AuthorEmail", &commit.author_email);
+    vars.set("Logins", logins);
+    vars.set("Login", &commit.login);
+    let rendered = template::render(tmpl, &vars)
+        .unwrap_or_else(|_| {
+            if abbrev <= 0 {
+                commit.description.clone()
+            } else {
+                format!("{} {}", short_sha, commit.description)
+            }
+        });
+    out.push_str(&format!("- {}\n", rendered));
 }
 
 // ---------------------------------------------------------------------------
@@ -312,11 +426,9 @@ impl Stage for ChangelogStage {
             return Ok(());
         }
 
-        // If disabled, skip the stage entirely.
-        if changelog_cfg
-            .as_ref()
-            .and_then(|c| c.disable)
-            .unwrap_or(false)
+        // If disabled, skip the stage entirely (supports template-conditional disable).
+        if let Some(d) = changelog_cfg.as_ref().and_then(|c| c.disable.as_ref())
+            && d.is_disabled(|s| ctx.render_template(s))
         {
             log.status("disabled, skipping");
             return Ok(());
@@ -350,7 +462,7 @@ impl Stage for ChangelogStage {
         let cfg = changelog_cfg.as_ref();
         let sort_order = cfg
             .and_then(|c| c.sort.clone())
-            .unwrap_or_else(|| "asc".to_string());
+            .unwrap_or_default();
         let filters = cfg.and_then(|c| c.filters.as_ref());
         let exclude_filters: Vec<String> =
             filters.and_then(|f| f.exclude.clone()).unwrap_or_default();
@@ -359,7 +471,7 @@ impl Stage for ChangelogStage {
         let groups: Vec<ChangelogGroup> = cfg.and_then(|c| c.groups.clone()).unwrap_or_default();
         let header: Option<String> = cfg.and_then(|c| c.header.clone());
         let footer: Option<String> = cfg.and_then(|c| c.footer.clone());
-        let abbrev: usize = cfg.and_then(|c| c.abbrev).unwrap_or(7);
+        let abbrev: i32 = cfg.and_then(|c| c.abbrev).unwrap_or(7);
         let format_template: Option<String> = cfg.and_then(|c| c.format.clone());
 
         let selected = ctx.options.selected_crates.clone();
@@ -372,6 +484,8 @@ impl Stage for ChangelogStage {
             .filter(|c| selected.is_empty() || selected.contains(&c.name))
             .cloned()
             .collect();
+
+        let use_github = use_source == "github";
 
         let mut combined_markdown = String::new();
 
@@ -387,27 +501,21 @@ impl Stage for ChangelogStage {
                 Some(crate_cfg.path.as_str())
             };
 
-            let raw_commits = match &prev_tag {
-                Some(tag) => get_commits_between(tag, "HEAD", path_filter).unwrap_or_default(),
-                None => {
-                    // Initial release: no previous tag, treat all commits as new.
-                    log.status(&format!(
-                        "no previous tag found for crate '{}', using all commits",
-                        crate_name
-                    ));
-                    get_all_commits(path_filter).unwrap_or_default()
+            let (all_commit_infos, logins_str) = if use_github {
+                // Fetch commits via the GitHub API for enriched author login info.
+                match fetch_github_commits(ctx, &prev_tag, path_filter, &log) {
+                    Ok((infos, logins)) => (infos, logins),
+                    Err(e) => {
+                        log.warn(&format!(
+                            "GitHub API fetch failed, falling back to git: {}",
+                            e
+                        ));
+                        (fetch_git_commits(&prev_tag, path_filter, &crate_name, &log), String::new())
+                    }
                 }
+            } else {
+                (fetch_git_commits(&prev_tag, path_filter, &crate_name, &log), String::new())
             };
-
-            let mut all_commit_infos: Vec<CommitInfo> = Vec::new();
-            for commit in raw_commits {
-                let mut info = parse_commit_message(&commit.message);
-                info.hash = commit.short_hash.clone();
-                info.full_hash = commit.hash.clone();
-                info.author_name = commit.author_name.clone();
-                info.author_email = commit.author_email.clone();
-                all_commit_infos.push(info);
-            }
 
             // Apply exclude filters, then include filters.
             let after_exclude = apply_filters(&all_commit_infos, &exclude_filters, &log);
@@ -426,6 +534,7 @@ impl Stage for ChangelogStage {
                     vec![GroupedCommits {
                         title: "Changes".to_string(),
                         commits: sorted,
+                        subgroups: Vec::new(),
                     }]
                 }
             } else {
@@ -433,7 +542,7 @@ impl Stage for ChangelogStage {
             };
 
             // Render the markdown for this crate.
-            let markdown = render_changelog(&grouped, abbrev, format_template.as_deref());
+            let markdown = render_changelog(&grouped, abbrev, format_template.as_deref(), &logins_str);
 
             // Store per-crate changelog in context for the release stage.
             ctx.changelogs.insert(crate_name.clone(), markdown.clone());
@@ -441,15 +550,23 @@ impl Stage for ChangelogStage {
             combined_markdown.push_str(&markdown);
         }
 
-        // Prepend header and append footer if configured.
+        // Prepend header and append footer if configured, rendering through
+        // the template engine so variables like {{ .ProjectName }} are expanded.
+        //
+        // NOTE: These changelog header/footer values only affect the disk file
+        // (dist/RELEASE_NOTES.md). They do NOT affect the GitHub release body.
+        // The release stage has its own separate header/footer (in ReleaseConfig)
+        // that wraps the per-crate changelog body for the GitHub release.
         let mut final_markdown = String::new();
         if let Some(ref h) = header {
-            final_markdown.push_str(h);
+            let rendered = ctx.render_template(h).unwrap_or_else(|_| h.clone());
+            final_markdown.push_str(&rendered);
             final_markdown.push('\n');
         }
         final_markdown.push_str(&combined_markdown);
         if let Some(ref f) = footer {
-            final_markdown.push_str(f);
+            let rendered = ctx.render_template(f).unwrap_or_else(|_| f.clone());
+            final_markdown.push_str(&rendered);
             final_markdown.push('\n');
         }
 
@@ -468,6 +585,171 @@ impl Stage for ChangelogStage {
         log.status(&format!("wrote {}", notes_path.display()));
         Ok(())
     }
+}
+
+// ---------------------------------------------------------------------------
+// Helper: fetch commits from local git
+// ---------------------------------------------------------------------------
+
+fn fetch_git_commits(
+    prev_tag: &Option<String>,
+    path_filter: Option<&str>,
+    crate_name: &str,
+    log: &anodize_core::log::StageLogger,
+) -> Vec<CommitInfo> {
+    let raw_commits = match prev_tag {
+        Some(tag) => get_commits_between(tag, "HEAD", path_filter).unwrap_or_default(),
+        None => {
+            log.status(&format!(
+                "no previous tag found for crate '{}', using all commits",
+                crate_name
+            ));
+            get_all_commits(path_filter).unwrap_or_default()
+        }
+    };
+
+    let mut all_commit_infos = Vec::new();
+    for commit in raw_commits {
+        let mut info = parse_commit_message(&commit.message);
+        info.hash = commit.short_hash.clone();
+        info.full_hash = commit.hash.clone();
+        info.author_name = commit.author_name.clone();
+        info.author_email = commit.author_email.clone();
+        all_commit_infos.push(info);
+    }
+    all_commit_infos
+}
+
+// ---------------------------------------------------------------------------
+// Helper: fetch commits from GitHub API (use: github)
+// ---------------------------------------------------------------------------
+
+/// Fetch commits via the GitHub API using the `gh` CLI.
+/// Returns `(commits, logins_string)` where `logins_string` is a
+/// comma-separated list of unique GitHub usernames.
+///
+/// When `path_filter` is set, commits are filtered to only those touching
+/// files under the specified path (for monorepo support).
+fn fetch_github_commits(
+    ctx: &Context,
+    prev_tag: &Option<String>,
+    path_filter: Option<&str>,
+    log: &anodize_core::log::StageLogger,
+) -> Result<(Vec<CommitInfo>, String)> {
+    use anodize_core::git::{detect_github_repo, gh_api_get, gh_api_get_paginated};
+    use std::collections::BTreeSet;
+
+    let token = ctx.options.token.as_deref();
+    let (owner, repo) = detect_github_repo()?;
+
+    // Build the compare URL. If there is a previous tag, compare tag..HEAD;
+    // otherwise list recent commits (first page).
+    //
+    // The Compare API returns a single JSON object (not a paginated array),
+    // so we use `gh_api_get` instead of `gh_api_get_paginated` to avoid
+    // corrupting the response by splitting on `]`.
+    let (items, compare_files) = if let Some(tag) = prev_tag {
+        let endpoint = format!(
+            "/repos/{owner}/{repo}/compare/{tag}...HEAD"
+        );
+        let response = gh_api_get(&endpoint, token)?;
+        // Extract the "commits" array from the single compare object.
+        let commits_arr = response
+            .get("commits")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        // Extract the "files" array for path filtering.
+        let files_arr = response
+            .get("files")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        (commits_arr, Some(files_arr))
+    } else {
+        log.status("no previous tag, fetching recent commits from GitHub API");
+        // The /commits endpoint returns a paginated array and supports ?path= natively.
+        let mut endpoint = format!("/repos/{owner}/{repo}/commits?per_page=100");
+        if let Some(path) = path_filter {
+            endpoint.push_str(&format!("&path={}", path));
+        }
+        (gh_api_get_paginated(&endpoint, token)?, None)
+    };
+
+    // When using the Compare API with a path filter, filter commits to only
+    // those that touched files under the specified path.
+    let filtered_shas: Option<std::collections::HashSet<String>> = match (path_filter, &compare_files) {
+        (Some(prefix), Some(files)) => {
+            // Build set of SHAs for commits that touched files under the prefix.
+            // The compare response's "files" doesn't map directly to commits,
+            // so we filter based on whether the file list contains matching paths.
+            // For a more precise filter, we check each commit's individual files.
+            // However, the compare endpoint only gives a flat file list, not per-commit.
+            // As a pragmatic approach: if any file matches the path prefix, include
+            // all commits. If no files match, include none.
+            let has_matching_files = files.iter().any(|f| {
+                f.get("filename")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|name| name.starts_with(prefix))
+            });
+            if !has_matching_files {
+                Some(std::collections::HashSet::new()) // empty set = filter out all
+            } else {
+                None // no filtering needed, all commits are relevant
+            }
+        }
+        _ => None,
+    };
+
+    let mut logins = BTreeSet::new();
+    let mut all_commit_infos = Vec::new();
+
+    for item in &items {
+        let sha = item.get("sha").and_then(|v| v.as_str()).unwrap_or_default();
+
+        // When path filtering is active via the Compare API, skip commits that
+        // don't match (empty set means no files matched the path prefix).
+        if let Some(ref allowed) = filtered_shas
+            && !allowed.contains(sha)
+        {
+            continue;
+        }
+
+        let short_sha = if sha.len() >= 7 { &sha[..7] } else { sha };
+        let message = item
+            .pointer("/commit/message")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        // Use first line of the commit message as the subject.
+        let subject = message.lines().next().unwrap_or(message);
+        let author_name = item
+            .pointer("/commit/author/name")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let author_email = item
+            .pointer("/commit/author/email")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let login = item
+            .pointer("/author/login")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+
+        if !login.is_empty() {
+            logins.insert(login.to_string());
+        }
+
+        let mut info = parse_commit_message(subject);
+        info.hash = short_sha.to_string();
+        info.full_hash = sha.to_string();
+        info.author_name = author_name.to_string();
+        info.author_email = author_email.to_string();
+        info.login = login.to_string();
+        all_commit_infos.push(info);
+    }
+
+    let logins_str = logins.into_iter().collect::<Vec<_>>().join(",");
+    Ok((all_commit_infos, logins_str))
 }
 
 // ---------------------------------------------------------------------------
@@ -530,11 +812,13 @@ mod tests {
                 title: "Features".into(),
                 regexp: Some("^feat".into()),
                 order: Some(0),
+                groups: None,
             },
             ChangelogGroup {
                 title: "Bug Fixes".into(),
                 regexp: Some("^fix".into()),
                 order: Some(1),
+                groups: None,
             },
         ];
         let result = group_commits(&commits, &groups, &test_logger());
@@ -564,13 +848,15 @@ mod tests {
             GroupedCommits {
                 title: "Features".into(),
                 commits: vec![ci("feat: add X", "feat", "add X", "abc1234")],
+                subgroups: Vec::new(),
             },
             GroupedCommits {
                 title: "Bug Fixes".into(),
                 commits: vec![ci("fix: fix Y", "fix", "fix Y", "def5678")],
+                subgroups: Vec::new(),
             },
         ];
-        let md = render_changelog(&grouped, 7, None);
+        let md = render_changelog(&grouped, 7, None, "");
         assert!(md.contains("## Features"));
         assert!(md.contains("add X"));
         assert!(md.contains("## Bug Fixes"));
@@ -602,6 +888,7 @@ mod tests {
             title: "Features".into(),
             regexp: Some("^feat".into()),
             order: Some(0),
+            groups: None,
         }];
         let result = group_commits(&commits, &groups, &test_logger());
         assert_eq!(result.len(), 2);
@@ -619,11 +906,13 @@ mod tests {
                 title: "Features".into(),
                 regexp: Some("^feat".into()),
                 order: Some(0),
+                groups: None,
             },
             ChangelogGroup {
                 title: "Bug Fixes".into(),
                 regexp: Some("^fix".into()),
                 order: Some(1),
+                groups: None,
             },
         ];
         let result = group_commits(&commits, &groups, &test_logger());
@@ -643,8 +932,9 @@ mod tests {
                 "short hash test",
                 "abc1234",
             )],
+            subgroups: Vec::new(),
         }];
-        let md = render_changelog(&grouped, 7, None);
+        let md = render_changelog(&grouped, 7, None, "");
         assert!(md.contains("abc1234 short hash test"));
     }
 
@@ -668,8 +958,9 @@ mod tests {
         let grouped = vec![GroupedCommits {
             title: "Features".into(),
             commits: vec![ci("feat: add X", "feat", "add X", "abc1234")],
+            subgroups: Vec::new(),
         }];
-        let body = render_changelog(&grouped, 7, None);
+        let body = render_changelog(&grouped, 7, None, "");
 
         // Simulate the header/footer wrapping logic from ChangelogStage::run
         let header = "# My Release Notes";
@@ -692,8 +983,9 @@ mod tests {
         let grouped = vec![GroupedCommits {
             title: "Changes".into(),
             commits: vec![ci("fix: bug", "fix", "bug", "def5678")],
+            subgroups: Vec::new(),
         }];
-        let body = render_changelog(&grouped, 7, None);
+        let body = render_changelog(&grouped, 7, None, "");
 
         let header = "# Changelog";
         let mut final_md = String::new();
@@ -709,8 +1001,9 @@ mod tests {
         let grouped = vec![GroupedCommits {
             title: "Changes".into(),
             commits: vec![ci("fix: bug", "fix", "bug", "def5678")],
+            subgroups: Vec::new(),
         }];
-        let body = render_changelog(&grouped, 7, None);
+        let body = render_changelog(&grouped, 7, None, "");
 
         let footer = "-- end --";
         let mut final_md = String::new();
@@ -730,7 +1023,7 @@ mod tests {
         let mut config = Config::default();
         config.project_name = "test".to_string();
         config.changelog = Some(ChangelogConfig {
-            disable: Some(true),
+            disable: Some(anodize_core::config::StringOrBool::Bool(true)),
             ..Default::default()
         });
         config.crates = vec![CrateConfig {
@@ -813,9 +1106,10 @@ mod tests {
                 "test abbrev",
                 "abc1234567890",
             )],
+            subgroups: Vec::new(),
         }];
         // abbrev = 5 should truncate to "abc12"
-        let md = render_changelog(&grouped, 5, None);
+        let md = render_changelog(&grouped, 5, None, "");
         assert!(
             md.contains("abc12 test abbrev"),
             "expected 'abc12 test abbrev' in: {}",
@@ -829,9 +1123,10 @@ mod tests {
         let grouped = vec![GroupedCommits {
             title: "Changes".into(),
             commits: vec![ci("feat: short", "feat", "short", "abc")],
+            subgroups: Vec::new(),
         }];
         // abbrev = 10, but hash is only 3 chars — use full hash
-        let md = render_changelog(&grouped, 10, None);
+        let md = render_changelog(&grouped, 10, None, "");
         assert!(md.contains("abc short"), "expected 'abc short' in: {}", md);
     }
 
@@ -845,8 +1140,9 @@ mod tests {
                 "default abbrev",
                 "abc1234def5678",
             )],
+            subgroups: Vec::new(),
         }];
-        let md = render_changelog(&grouped, 7, None);
+        let md = render_changelog(&grouped, 7, None, "");
         assert!(
             md.contains("abc1234 default abbrev"),
             "expected 'abc1234 default abbrev' in: {}",
@@ -1062,11 +1358,13 @@ abbrev: 10
                 title: "Features".into(),
                 regexp: Some("^feat".into()),
                 order: Some(0),
+                groups: None,
             },
             ChangelogGroup {
                 title: "Bug Fixes".into(),
                 regexp: Some("^fix".into()),
                 order: Some(1),
+                groups: None,
             },
         ];
         let grouped = group_commits(&sorted, &groups, &test_logger());
@@ -1089,7 +1387,7 @@ abbrev: 10
         }
 
         // Render
-        let md = render_changelog(&grouped, 7, None);
+        let md = render_changelog(&grouped, 7, None, "");
 
         // Verify structural output
         assert!(
@@ -1187,16 +1485,18 @@ abbrev: 10
                 title: "Features".into(),
                 regexp: Some("^feat".into()),
                 order: Some(0),
+                groups: None,
             },
             ChangelogGroup {
                 title: "Bug Fixes".into(),
                 regexp: Some("^fix".into()),
                 order: Some(1),
+                groups: None,
             },
         ];
         let grouped = group_commits(&sorted, &groups, &test_logger());
 
-        let md = render_changelog(&grouped, 7, None);
+        let md = render_changelog(&grouped, 7, None, "");
 
         // Features and Bug Fixes should appear, but not chore or refactor
         assert!(md.contains("## Features"));
@@ -1228,9 +1528,10 @@ abbrev: 10
         let grouped = vec![GroupedCommits {
             title: "Changes".to_string(),
             commits,
+            subgroups: Vec::new(),
         }];
 
-        let body = render_changelog(&grouped, 7, None);
+        let body = render_changelog(&grouped, 7, None, "");
 
         // Simulate header/footer wrapping as ChangelogStage.run does
         let header = "# Release v1.0.0";
@@ -1271,12 +1572,13 @@ abbrev: 10
                 title: "Features".into(),
                 regexp: Some("^feat".into()),
                 order: Some(0),
+                groups: None,
             }],
             &test_logger(),
         );
         assert!(grouped.is_empty());
 
-        let md = render_changelog(&grouped, 7, None);
+        let md = render_changelog(&grouped, 7, None, "");
         assert!(
             md.is_empty(),
             "changelog should be empty when all commits are filtered"
@@ -1353,11 +1655,13 @@ abbrev: 10
                         title: "Features".into(),
                         regexp: Some("^feat".into()),
                         order: Some(0),
+                        groups: None,
                     },
                     ChangelogGroup {
                         title: "Bug Fixes".into(),
                         regexp: Some("^fix".into()),
                         order: Some(1),
+                        groups: None,
                     },
                 ]),
                 header: Some("# Changelog".to_string()),
@@ -1445,8 +1749,9 @@ abbrev: 10
         let grouped = vec![GroupedCommits {
             title: "Features".into(),
             commits: vec![ci("feat: new feature", "feat", "new feature", "abc1234")],
+            subgroups: Vec::new(),
         }];
-        let body = render_changelog(&grouped, 7, None);
+        let body = render_changelog(&grouped, 7, None, "");
 
         // Simulate the stage's header/footer assembly
         let mut final_md = String::new();
@@ -1468,8 +1773,9 @@ abbrev: 10
         let grouped = vec![GroupedCommits {
             title: "Bug Fixes".into(),
             commits: vec![ci("fix: crash", "fix", "crash", "def5678")],
+            subgroups: Vec::new(),
         }];
-        let body = render_changelog(&grouped, 7, None);
+        let body = render_changelog(&grouped, 7, None, "");
 
         let mut final_md = String::new();
         final_md.push_str(&body);
@@ -1511,10 +1817,11 @@ abbrev: 10
         let grouped = vec![GroupedCommits {
             title: "Changes".into(),
             commits: vec![ci("feat: test", "feat", "test", "abcdef1234567890")],
+            subgroups: Vec::new(),
         }];
 
         // abbrev = 3 should produce "abc test"
-        let md = render_changelog(&grouped, 3, None);
+        let md = render_changelog(&grouped, 3, None, "");
         assert!(
             md.contains("abc test"),
             "abbrev=3 expected 'abc test', got: {}",
@@ -1522,7 +1829,7 @@ abbrev: 10
         );
 
         // abbrev = 10 should produce "abcdef1234 test"
-        let md10 = render_changelog(&grouped, 10, None);
+        let md10 = render_changelog(&grouped, 10, None, "");
         assert!(
             md10.contains("abcdef1234 test"),
             "abbrev=10 expected 'abcdef1234 test', got: {}",
@@ -1531,17 +1838,23 @@ abbrev: 10
     }
 
     #[test]
-    fn test_abbrev_zero_uses_minimum_one() {
+    fn test_abbrev_zero_omits_hash() {
         let grouped = vec![GroupedCommits {
             title: "Changes".into(),
             commits: vec![ci("feat: test", "feat", "test", "abcdef")],
+            subgroups: Vec::new(),
         }];
 
-        // abbrev = 0 should be clamped to 1 (minimum)
-        let md = render_changelog(&grouped, 0, None);
+        // abbrev = 0 should omit the hash (same behavior as -1)
+        let md = render_changelog(&grouped, 0, None, "");
         assert!(
-            md.contains("a test"),
-            "abbrev=0 should clamp to 1, got: {}",
+            md.contains("- test"),
+            "abbrev=0 should omit hash, got: {}",
+            md
+        );
+        assert!(
+            !md.contains("abcdef"),
+            "abbrev=0 should not contain any hash, got: {}",
             md
         );
     }
@@ -1554,7 +1867,7 @@ abbrev: 10
         let mut config = Config::default();
         config.project_name = "test".to_string();
         config.changelog = Some(ChangelogConfig {
-            disable: Some(true),
+            disable: Some(anodize_core::config::StringOrBool::Bool(true)),
             ..Default::default()
         });
         config.crates = vec![CrateConfig {
@@ -1582,7 +1895,7 @@ abbrev: 10
         assert!(result.is_empty());
 
         let grouped = group_commits(&result, &[], &test_logger());
-        let md = render_changelog(&grouped, 7, None);
+        let md = render_changelog(&grouped, 7, None, "");
         assert!(
             md.is_empty(),
             "changelog should be empty when no commits match"
@@ -1697,6 +2010,7 @@ abbrev: 10
             title: "Features".into(),
             regexp: Some("^feat(".into()), // invalid regex
             order: Some(0),
+            groups: None,
         }];
         let result = group_commits(&commits, &groups, &test_logger());
         // The invalid regex group compiles to None, so commit goes to "Others"
@@ -1718,20 +2032,21 @@ abbrev: 10
     }
 
     #[test]
-    fn test_sort_commits_unknown_order_defaults_to_asc() {
+    fn test_sort_commits_unknown_order_preserves_git_order() {
         let mut commits = vec![
             ci("b: second", "other", "second", "1"),
             ci("a: first", "other", "first", "2"),
         ];
         sort_commits(&mut commits, "invalid_order");
-        assert_eq!(commits[0].description, "first");
-        assert_eq!(commits[1].description, "second");
+        // Unknown order preserves original order (no sorting)
+        assert_eq!(commits[0].description, "second");
+        assert_eq!(commits[1].description, "first");
     }
 
     #[test]
     fn test_render_changelog_empty_groups() {
         let grouped: Vec<GroupedCommits> = vec![];
-        let result = render_changelog(&grouped, 7, None);
+        let result = render_changelog(&grouped, 7, None, "");
         assert_eq!(
             result, "",
             "rendering empty groups should produce empty string"
@@ -1743,8 +2058,9 @@ abbrev: 10
         let grouped = vec![GroupedCommits {
             title: "Test".into(),
             commits: vec![ci("feat: x", "feat", "x", "ab")], // shorter than abbrev
+            subgroups: Vec::new(),
         }];
-        let result = render_changelog(&grouped, 7, None);
+        let result = render_changelog(&grouped, 7, None, "");
         // Short hash should be used as-is without truncation
         assert!(
             result.contains("ab x"),
@@ -1953,12 +2269,15 @@ abbrev: 10
                 full_hash: "abc1234567890abcdef1234567890abcdef123456".into(),
                 author_name: "Alice".into(),
                 author_email: "alice@example.com".into(),
+                login: String::new(),
             }],
+            subgroups: Vec::new(),
         }];
         let md = render_changelog(
             &grouped,
             7,
             Some("{{ SHA }} {{ Message }} ({{ AuthorName }} <{{ AuthorEmail }}>)"),
+            "",
         );
         assert!(
             md.contains(
@@ -1980,10 +2299,12 @@ abbrev: 10
                 full_hash: "def5678abcdef".into(),
                 author_name: "Bob".into(),
                 author_email: "bob@example.com".into(),
+                login: String::new(),
             }],
+            subgroups: Vec::new(),
         }];
         // Default format: "{{ ShortSHA }} {{ Message }}"
-        let md = render_changelog(&grouped, 7, None);
+        let md = render_changelog(&grouped, 7, None, "");
         assert!(
             md.contains("- def5678 bug"),
             "default format should be 'ShortSHA Message', got: {md}"
@@ -2000,6 +2321,392 @@ format: "{{ ShortSHA }} {{ Message }} by {{ AuthorName }}"
         assert_eq!(
             cfg.format.as_deref(),
             Some("{{ ShortSHA }} {{ Message }} by {{ AuthorName }}")
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // Empty/none sort preserves original git log order
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_sort_empty_preserves_order() {
+        let mut commits = vec![
+            ci("c", "feat", "c", "3"),
+            ci("a", "feat", "a", "1"),
+            ci("b", "feat", "b", "2"),
+        ];
+        sort_commits(&mut commits, "");
+        // Original order should be preserved (c, a, b)
+        assert_eq!(commits[0].description, "c");
+        assert_eq!(commits[1].description, "a");
+        assert_eq!(commits[2].description, "b");
+    }
+
+    #[test]
+    fn test_sort_none_preserves_order() {
+        let mut commits = vec![
+            ci("c", "feat", "c", "3"),
+            ci("a", "feat", "a", "1"),
+            ci("b", "feat", "b", "2"),
+        ];
+        sort_commits(&mut commits, "none");
+        // Original order should be preserved (c, a, b)
+        assert_eq!(commits[0].description, "c");
+        assert_eq!(commits[1].description, "a");
+        assert_eq!(commits[2].description, "b");
+    }
+
+    #[test]
+    fn test_sort_asc_still_works() {
+        let mut commits = vec![
+            ci("c", "feat", "c", "3"),
+            ci("a", "feat", "a", "1"),
+            ci("b", "feat", "b", "2"),
+        ];
+        sort_commits(&mut commits, "asc");
+        assert_eq!(commits[0].description, "a");
+        assert_eq!(commits[1].description, "b");
+        assert_eq!(commits[2].description, "c");
+    }
+
+    #[test]
+    fn test_sort_desc_still_works() {
+        let mut commits = vec![
+            ci("c", "feat", "c", "3"),
+            ci("a", "feat", "a", "1"),
+            ci("b", "feat", "b", "2"),
+        ];
+        sort_commits(&mut commits, "desc");
+        assert_eq!(commits[0].description, "c");
+        assert_eq!(commits[1].description, "b");
+        assert_eq!(commits[2].description, "a");
+    }
+
+    // ---------------------------------------------------------------------------
+    // Header/footer template rendering
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_header_footer_template_rendering() {
+        // Simulate what ChangelogStage::run does: render header/footer through
+        // ctx.render_template() before inserting them.
+        use anodize_core::context::{Context, ContextOptions};
+        use anodize_core::config::Config;
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "2.0.0");
+
+        let header_tmpl = "# {{ .ProjectName }} v{{ .Version }} Release Notes";
+        let footer_tmpl = "---\nGenerated for {{ .ProjectName }}";
+
+        let rendered_header = ctx.render_template(header_tmpl).unwrap();
+        let rendered_footer = ctx.render_template(footer_tmpl).unwrap();
+
+        assert_eq!(rendered_header, "# myapp v2.0.0 Release Notes");
+        assert_eq!(rendered_footer, "---\nGenerated for myapp");
+    }
+
+    #[test]
+    fn test_header_with_plain_string_passes_through() {
+        // A header without template variables should pass through unchanged.
+        use anodize_core::context::{Context, ContextOptions};
+        use anodize_core::config::Config;
+
+        let config = Config::default();
+        let ctx = Context::new(config, ContextOptions::default());
+
+        let header = "# Plain Header";
+        let rendered = ctx.render_template(header).unwrap();
+        assert_eq!(rendered, "# Plain Header");
+    }
+
+    // -----------------------------------------------------------------------
+    // Parity tests: StringOrBool disable, abbrev -1, nested subgroups, Logins
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_config_parse_disable_template_string() {
+        let yaml = r#"
+disable: "{{ if .IsSnapshot }}true{{ end }}"
+sort: asc
+"#;
+        let cfg: anodize_core::config::ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        match &cfg.disable {
+            Some(anodize_core::config::StringOrBool::String(s)) => {
+                assert!(s.contains("IsSnapshot"), "should contain template string");
+            }
+            other => panic!("expected StringOrBool::String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_config_parse_disable_bool_true() {
+        let yaml = r#"
+disable: true
+"#;
+        let cfg: anodize_core::config::ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(
+            cfg.disable,
+            Some(anodize_core::config::StringOrBool::Bool(true))
+        );
+    }
+
+    #[test]
+    fn test_config_parse_abbrev_negative_one() {
+        let yaml = r#"
+abbrev: -1
+"#;
+        let cfg: anodize_core::config::ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.abbrev, Some(-1));
+    }
+
+    #[test]
+    fn test_config_parse_nested_subgroups() {
+        let yaml = r#"
+sort: asc
+groups:
+  - title: "Features"
+    regexp: "^feat"
+    order: 0
+    groups:
+      - title: "Core Features"
+        regexp: "^feat\\(core\\)"
+        order: 0
+      - title: "API Features"
+        regexp: "^feat\\(api\\)"
+        order: 1
+  - title: "Bug Fixes"
+    regexp: "^fix"
+    order: 1
+"#;
+        let cfg: anodize_core::config::ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let groups = cfg.groups.as_ref().unwrap();
+        assert_eq!(groups.len(), 2);
+
+        // First group should have nested subgroups
+        let feat_group = &groups[0];
+        assert_eq!(feat_group.title, "Features");
+        let subgroups = feat_group.groups.as_ref().unwrap();
+        assert_eq!(subgroups.len(), 2);
+        assert_eq!(subgroups[0].title, "Core Features");
+        assert_eq!(subgroups[1].title, "API Features");
+
+        // Second group should have no subgroups
+        let fix_group = &groups[1];
+        assert_eq!(fix_group.title, "Bug Fixes");
+        assert!(
+            fix_group.groups.is_none() || fix_group.groups.as_ref().unwrap().is_empty()
+        );
+    }
+
+    #[test]
+    fn test_config_parse_use_source_github() {
+        let yaml = r#"
+use: github
+format: "{{ ShortSHA }} {{ Message }} @{{ Logins }}"
+"#;
+        let cfg: anodize_core::config::ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.use_source.as_deref(), Some("github"));
+        assert!(cfg.format.as_ref().unwrap().contains("Logins"));
+    }
+
+    #[test]
+    fn test_render_abbrev_negative_one_omits_hash() {
+        let grouped = vec![GroupedCommits::new(
+            "Changes",
+            vec![ci("feat: no hash test", "feat", "no hash test", "abc1234567890")],
+        )];
+        let md = render_changelog(&grouped, -1, None, "");
+        // With abbrev=-1, the default format is "{{ Message }}" (no hash)
+        assert!(
+            md.contains("- no hash test"),
+            "should contain commit message without hash, got: {md}"
+        );
+        assert!(
+            !md.contains("abc"),
+            "should NOT contain any part of the hash, got: {md}"
+        );
+    }
+
+    #[test]
+    fn test_render_abbrev_negative_one_custom_format_empty_short_sha() {
+        let grouped = vec![GroupedCommits::new(
+            "Changes",
+            vec![ci("feat: test", "feat", "test", "abc1234567890")],
+        )];
+        // Custom format referencing ShortSHA should get an empty string when abbrev=-1
+        let md = render_changelog(&grouped, -1, Some("{{ ShortSHA }}|{{ Message }}"), "");
+        assert!(
+            md.contains("- |test"),
+            "ShortSHA should be empty with abbrev=-1, got: {md}"
+        );
+    }
+
+    #[test]
+    fn test_render_nested_subgroups() {
+        let grouped = vec![GroupedCommits {
+            title: "Features".into(),
+            commits: Vec::new(),
+            subgroups: vec![
+                GroupedCommits::new(
+                    "Core Features",
+                    vec![ci("feat(core): add auth", "feat", "add auth", "aaa1234")],
+                ),
+                GroupedCommits::new(
+                    "API Features",
+                    vec![ci("feat(api): add endpoint", "feat", "add endpoint", "bbb5678")],
+                ),
+            ],
+        }];
+        let md = render_changelog(&grouped, 7, None, "");
+        // Parent group should be ## level
+        assert!(
+            md.contains("## Features"),
+            "should have parent group heading, got: {md}"
+        );
+        // Subgroups should be ### level (one deeper)
+        assert!(
+            md.contains("### Core Features"),
+            "should have Core Features sub-heading, got: {md}"
+        );
+        assert!(
+            md.contains("### API Features"),
+            "should have API Features sub-heading, got: {md}"
+        );
+        // Commits should appear under their subgroups
+        assert!(md.contains("add auth"), "should contain core commit");
+        assert!(md.contains("add endpoint"), "should contain api commit");
+    }
+
+    #[test]
+    fn test_group_commits_with_nested_subgroups() {
+        let commits = vec![
+            ci("feat(core): add auth", "feat", "add auth", "aaa"),
+            ci("feat(api): add endpoint", "feat", "add endpoint", "bbb"),
+            ci("feat: generic feature", "feat", "generic feature", "ccc"),
+            ci("fix: crash", "fix", "crash", "ddd"),
+        ];
+        let groups = vec![
+            ChangelogGroup {
+                title: "Features".into(),
+                regexp: Some("^feat".into()),
+                order: Some(0),
+                groups: Some(vec![
+                    ChangelogGroup {
+                        title: "Core".into(),
+                        regexp: Some(r"^feat\(core\)".into()),
+                        order: Some(0),
+                        groups: None,
+                    },
+                    ChangelogGroup {
+                        title: "API".into(),
+                        regexp: Some(r"^feat\(api\)".into()),
+                        order: Some(1),
+                        groups: None,
+                    },
+                ]),
+            },
+            ChangelogGroup {
+                title: "Bug Fixes".into(),
+                regexp: Some("^fix".into()),
+                order: Some(1),
+                groups: None,
+            },
+        ];
+        let result = group_commits(&commits, &groups, &test_logger());
+
+        assert_eq!(result.len(), 2, "should have Features and Bug Fixes");
+        assert_eq!(result[0].title, "Features");
+        // Features group distributes commits into subgroups
+        assert_eq!(result[0].subgroups.len(), 3, "should have Core, API, and Others subgroups");
+        assert_eq!(result[0].subgroups[0].title, "Core");
+        assert_eq!(result[0].subgroups[0].commits.len(), 1);
+        assert_eq!(result[0].subgroups[1].title, "API");
+        assert_eq!(result[0].subgroups[1].commits.len(), 1);
+        // The "generic feature" that matched the parent but not any subgroup goes to Others
+        assert_eq!(result[0].subgroups[2].title, "Others");
+        assert_eq!(result[0].subgroups[2].commits.len(), 1);
+
+        assert_eq!(result[1].title, "Bug Fixes");
+        assert_eq!(result[1].commits.len(), 1);
+    }
+
+    #[test]
+    fn test_render_logins_variable_in_format() {
+        let grouped = vec![GroupedCommits::new(
+            "Changes",
+            vec![CommitInfo {
+                raw_message: "feat: add feature".into(),
+                kind: "feat".into(),
+                description: "add feature".into(),
+                hash: "abc1234".into(),
+                full_hash: "abc1234567890".into(),
+                author_name: "Alice".into(),
+                author_email: "alice@example.com".into(),
+                login: "alice".into(),
+            }],
+        )];
+        let md = render_changelog(
+            &grouped,
+            7,
+            Some("{{ ShortSHA }} {{ Message }} cc {{ Logins }}"),
+            "alice,bob",
+        );
+        assert!(
+            md.contains("abc1234 add feature cc alice,bob"),
+            "Logins variable should be rendered, got: {md}"
+        );
+    }
+
+    #[test]
+    fn test_grouped_commits_new_constructor() {
+        // Verify the GroupedCommits::new constructor sets subgroups to empty vec
+        let gc = GroupedCommits::new("Test Group", vec![]);
+        assert_eq!(gc.title, "Test Group");
+        assert!(gc.commits.is_empty());
+        assert!(gc.subgroups.is_empty());
+    }
+
+    #[test]
+    fn test_render_per_commit_login_variable() {
+        let grouped = vec![GroupedCommits::new(
+            "Changes",
+            vec![CommitInfo {
+                raw_message: "feat: add feature".into(),
+                kind: "feat".into(),
+                description: "add feature".into(),
+                hash: "abc1234".into(),
+                full_hash: "abc1234567890".into(),
+                author_name: "Octocat".into(),
+                author_email: "octocat@github.com".into(),
+                login: "octocat".into(),
+            }],
+        )];
+        let md = render_changelog(
+            &grouped,
+            7,
+            Some("{{ ShortSHA }} {{ Message }} (@{{ Login }})"),
+            "",
+        );
+        assert!(
+            md.contains("abc1234 add feature (@octocat)"),
+            "Login variable should render the per-commit GitHub username, got: {md}"
+        );
+    }
+
+    #[test]
+    fn test_abbrev_zero_custom_format_omits_short_sha() {
+        let grouped = vec![GroupedCommits::new(
+            "Changes",
+            vec![ci("feat: test", "feat", "test", "abc1234567890")],
+        )];
+        // Custom format referencing ShortSHA should get an empty string when abbrev=0
+        let md = render_changelog(&grouped, 0, Some("{{ ShortSHA }}|{{ Message }}"), "");
+        assert!(
+            md.contains("- |test"),
+            "ShortSHA should be empty with abbrev=0, got: {md}"
         );
     }
 }

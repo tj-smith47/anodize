@@ -235,7 +235,7 @@ fn test_timeout_kills_long_running_release() {
         r#"
 project_name: test-project
 before:
-  hooks:
+  pre:
     - "sleep 60"
 crates:
   - name: test-project
@@ -3330,7 +3330,7 @@ fn test_e2e_before_hooks_execute() {
     let config = format!(
         r#"project_name: test-project
 before:
-  hooks:
+  pre:
     - "echo before-hook-executed > {marker}"
 crates:
   - name: test-project
@@ -3397,7 +3397,7 @@ fn test_e2e_before_hooks_dry_run() {
     let config = format!(
         r#"project_name: test-project
 before:
-  hooks:
+  pre:
     - "echo should-not-run > {marker}"
 crates:
   - name: test-project

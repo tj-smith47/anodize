@@ -7,7 +7,10 @@ use anyhow::{Context as _, Result};
 use serde::Serialize;
 
 use anodize_core::artifact::{Artifact, ArtifactKind};
-use anodize_core::config::NfpmConfig;
+use anodize_core::config::{
+    NfpmApkConfig, NfpmArchlinuxConfig, NfpmConfig, NfpmDebConfig, NfpmRpmConfig,
+    NfpmSignatureConfig,
+};
 use anodize_core::context::Context;
 use anodize_core::stage::Stage;
 
@@ -25,6 +28,14 @@ struct NfpmYamlConfig {
     name: Option<String>,
     version: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    epoch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    release: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prerelease: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version_metadata: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     vendor: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     homepage: Option<String>,
@@ -34,6 +45,16 @@ struct NfpmYamlConfig {
     description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     license: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    section: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    priority: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    meta: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    umask: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mtime: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     scripts: Option<NfpmYamlScripts>,
     #[serde(skip_serializing_if = "is_empty_vec")]
@@ -50,7 +71,15 @@ struct NfpmYamlConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     overrides: Option<HashMap<String, serde_yaml_ng::Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    dependencies: Option<HashMap<String, Vec<String>>>,
+    depends: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rpm: Option<NfpmYamlRpm>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deb: Option<NfpmYamlDeb>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    apk: Option<NfpmYamlApk>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    archlinux: Option<NfpmYamlArchlinux>,
 }
 
 #[derive(Serialize)]
@@ -84,6 +113,96 @@ struct NfpmYamlFileInfo {
     group: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mtime: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Format-specific YAML model structs
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct NfpmYamlSignature {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    key_file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    key_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    key_passphrase: Option<String>,
+}
+
+#[derive(Serialize)]
+struct NfpmYamlRpm {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    compression: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    group: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    packager: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prefixes: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    signature: Option<NfpmYamlSignature>,
+}
+
+#[derive(Serialize)]
+struct NfpmYamlDebTriggers {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    interest: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    interest_await: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    interest_noawait: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    activate: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    activate_await: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    activate_noawait: Option<Vec<String>>,
+}
+
+#[derive(Serialize)]
+struct NfpmYamlDeb {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    compression: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    predepends: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    triggers: Option<NfpmYamlDebTriggers>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    breaks: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lintian_overrides: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    signature: Option<NfpmYamlSignature>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fields: Option<HashMap<String, String>>,
+}
+
+#[derive(Serialize)]
+struct NfpmYamlApk {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    signature: Option<NfpmYamlSignature>,
+}
+
+#[derive(Serialize)]
+struct NfpmYamlArchlinuxScripts {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    preupgrade: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    postupgrade: Option<String>,
+}
+
+#[derive(Serialize)]
+struct NfpmYamlArchlinux {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pkgbase: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    packager: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scripts: Option<NfpmYamlArchlinuxScripts>,
 }
 
 // ---------------------------------------------------------------------------
@@ -91,7 +210,16 @@ struct NfpmYamlFileInfo {
 // ---------------------------------------------------------------------------
 
 /// Generate an nfpm YAML configuration string from the anodize nfpm config.
-pub fn generate_nfpm_yaml(config: &NfpmConfig, version: &str, binary_path: &str) -> String {
+///
+/// `format` is the target packager format (e.g. "deb", "rpm") used to select
+/// format-specific dependencies from the `dependencies` HashMap.  Pass `None`
+/// to include deps for *all* formats.
+pub fn generate_nfpm_yaml(
+    config: &NfpmConfig,
+    version: &str,
+    binary_path: &str,
+    format: Option<&str>,
+) -> String {
     // Build the binary content entry
     let bindir = config.bindir.as_deref().unwrap_or("/usr/local/bin");
     let binary_name = PathBuf::from(binary_path)
@@ -118,6 +246,7 @@ pub fn generate_nfpm_yaml(config: &NfpmConfig, version: &str, binary_path: &str)
                     owner: fi.owner.clone(),
                     group: fi.group.clone(),
                     mode: fi.mode.clone(),
+                    mtime: fi.mtime.clone(),
                 }),
             });
         }
@@ -158,20 +287,68 @@ pub fn generate_nfpm_yaml(config: &NfpmConfig, version: &str, binary_path: &str)
                 .collect()
         });
 
-    let dependencies = config
-        .dependencies
+    // Flatten the format-keyed dependencies HashMap into a flat Vec<String>.
+    // When a target format is supplied we take only deps for that format;
+    // otherwise we merge deps from all formats (deduped, order-preserving).
+    let depends: Option<Vec<String>> = config.dependencies.as_ref().and_then(|m| {
+        let mut flat: Vec<String> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for (key, vals) in m {
+            if format.is_none_or(|f| f == key) {
+                for v in vals {
+                    if seen.insert(v.clone()) {
+                        flat.push(v.clone());
+                    }
+                }
+            }
+        }
+        if flat.is_empty() {
+            None
+        } else {
+            Some(flat)
+        }
+    });
+
+    // Only emit format-specific YAML sections when the config has at least
+    // one non-None field — avoids emitting empty `rpm: {}` blocks.
+    let rpm = config
+        .rpm
         .as_ref()
-        .filter(|m| !m.is_empty())
-        .cloned();
+        .filter(|r| !r.is_empty())
+        .map(build_yaml_rpm);
+    let deb = config
+        .deb
+        .as_ref()
+        .filter(|d| !d.is_empty())
+        .map(build_yaml_deb);
+    let apk = config
+        .apk
+        .as_ref()
+        .filter(|a| !a.is_empty())
+        .map(build_yaml_apk);
+    let archlinux = config
+        .archlinux
+        .as_ref()
+        .filter(|a| !a.is_empty())
+        .map(build_yaml_archlinux);
 
     let yaml_config = NfpmYamlConfig {
         name: config.package_name.clone(),
         version: version.to_string(),
+        epoch: config.epoch.clone(),
+        release: config.release.clone(),
+        prerelease: config.prerelease.clone(),
+        version_metadata: config.version_metadata.clone(),
         vendor: config.vendor.clone(),
         homepage: config.homepage.clone(),
         maintainer: config.maintainer.clone(),
         description: config.description.clone(),
         license: config.license.clone(),
+        section: config.section.clone(),
+        priority: config.priority.clone(),
+        meta: config.meta,
+        umask: config.umask.clone(),
+        mtime: config.mtime.clone(),
         scripts,
         recommends: config.recommends.clone().unwrap_or_default(),
         suggests: config.suggests.clone().unwrap_or_default(),
@@ -180,7 +357,11 @@ pub fn generate_nfpm_yaml(config: &NfpmConfig, version: &str, binary_path: &str)
         provides: config.provides.clone().unwrap_or_default(),
         contents,
         overrides,
-        dependencies,
+        depends,
+        rpm,
+        deb,
+        apk,
+        archlinux,
     };
 
     // SAFETY: serde_yaml_ng::to_string can only fail if the type contains
@@ -190,6 +371,65 @@ pub fn generate_nfpm_yaml(config: &NfpmConfig, version: &str, binary_path: &str)
     let yaml = serde_yaml_ng::to_string(&yaml_config).expect("failed to serialize nfpm YAML");
     // serde_yaml_ng emits a trailing newline; trim it for consistency
     yaml.trim_end().to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Format-specific YAML builders
+// ---------------------------------------------------------------------------
+
+fn build_yaml_signature(sig: &NfpmSignatureConfig) -> NfpmYamlSignature {
+    NfpmYamlSignature {
+        key_file: sig.key_file.clone(),
+        key_id: sig.key_id.clone(),
+        key_passphrase: sig.key_passphrase.clone(),
+    }
+}
+
+fn build_yaml_rpm(rpm: &NfpmRpmConfig) -> NfpmYamlRpm {
+    NfpmYamlRpm {
+        summary: rpm.summary.clone(),
+        compression: rpm.compression.clone(),
+        group: rpm.group.clone(),
+        packager: rpm.packager.clone(),
+        prefixes: rpm.prefixes.clone(),
+        signature: rpm.signature.as_ref().map(build_yaml_signature),
+    }
+}
+
+fn build_yaml_deb(deb: &NfpmDebConfig) -> NfpmYamlDeb {
+    NfpmYamlDeb {
+        compression: deb.compression.clone(),
+        predepends: deb.predepends.clone(),
+        triggers: deb.triggers.as_ref().map(|t| NfpmYamlDebTriggers {
+            interest: t.interest.clone(),
+            interest_await: t.interest_await.clone(),
+            interest_noawait: t.interest_noawait.clone(),
+            activate: t.activate.clone(),
+            activate_await: t.activate_await.clone(),
+            activate_noawait: t.activate_noawait.clone(),
+        }),
+        breaks: deb.breaks.clone(),
+        lintian_overrides: deb.lintian_overrides.clone(),
+        signature: deb.signature.as_ref().map(build_yaml_signature),
+        fields: deb.fields.clone(),
+    }
+}
+
+fn build_yaml_apk(apk: &NfpmApkConfig) -> NfpmYamlApk {
+    NfpmYamlApk {
+        signature: apk.signature.as_ref().map(build_yaml_signature),
+    }
+}
+
+fn build_yaml_archlinux(arch: &NfpmArchlinuxConfig) -> NfpmYamlArchlinux {
+    NfpmYamlArchlinux {
+        pkgbase: arch.pkgbase.clone(),
+        packager: arch.packager.clone(),
+        scripts: arch.scripts.as_ref().map(|s| NfpmYamlArchlinuxScripts {
+            preupgrade: s.preupgrade.clone(),
+            postupgrade: s.postupgrade.clone(),
+        }),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -208,6 +448,26 @@ pub fn nfpm_command(config_path: &str, format: &str, output_dir: &str) -> Vec<St
         "--target".to_string(),
         output_dir.to_string(),
     ]
+}
+
+// ---------------------------------------------------------------------------
+// Format validation
+// ---------------------------------------------------------------------------
+
+/// Recognized nfpm packager format names.
+const KNOWN_FORMATS: &[&str] = &["deb", "rpm", "apk", "archlinux", "termux-deb", "ipk"];
+
+/// Validate that a format string is a known nfpm packager.
+fn validate_format(format: &str) -> Result<()> {
+    if KNOWN_FORMATS.contains(&format) {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "unknown nfpm packager format {:?} (known: {})",
+            format,
+            KNOWN_FORMATS.join(", ")
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -267,17 +527,46 @@ impl Stage for NfpmStage {
                 .cloned()
                 .collect();
 
-            // If no linux binaries found, use a single synthetic entry with a default path
-            let effective_binaries: Vec<(Option<String>, String)> = if linux_binaries.is_empty() {
-                vec![(None, format!("dist/{}", krate.name))]
-            } else {
-                linux_binaries
-                    .iter()
-                    .map(|b| (b.target.clone(), b.path.to_string_lossy().into_owned()))
-                    .collect()
-            };
-
             for nfpm_cfg in nfpm_configs {
+                // Apply ids filter: when the nfpm config specifies `ids`,
+                // only include binaries whose metadata "id" is in the list.
+                let filtered_binaries: Vec<_> = if let Some(ref ids) = nfpm_cfg.ids {
+                    linux_binaries
+                        .iter()
+                        .filter(|b| {
+                            b.metadata
+                                .get("id")
+                                .map(|bid| ids.contains(bid))
+                                .unwrap_or(false)
+                        })
+                        .collect()
+                } else {
+                    linux_binaries.iter().collect()
+                };
+
+                // If the ids filter matched nothing but there ARE linux
+                // binaries, warn and skip — the user likely misconfigured ids.
+                if filtered_binaries.is_empty() && !linux_binaries.is_empty() {
+                    let nfpm_id = nfpm_cfg.id.as_deref().unwrap_or("default");
+                    log.warn(&format!(
+                        "nfpm config '{}': ids filter matched no binaries, skipping",
+                        nfpm_id
+                    ));
+                    continue;
+                }
+
+                // If no linux binaries found at all, use a single synthetic
+                // entry with a default path.
+                let effective_binaries: Vec<(Option<String>, String)> =
+                    if filtered_binaries.is_empty() {
+                        vec![(None, format!("dist/{}", krate.name))]
+                    } else {
+                        filtered_binaries
+                            .iter()
+                            .map(|b| (b.target.clone(), b.path.to_string_lossy().into_owned()))
+                            .collect()
+                    };
+
                 for (target, binary_path) in &effective_binaries {
                     // Derive Os/Arch from the target triple for template rendering
                     let (os, arch) = target
@@ -285,10 +574,15 @@ impl Stage for NfpmStage {
                         .map(anodize_core::target::map_target)
                         .unwrap_or_else(|| ("linux".to_string(), "amd64".to_string()));
 
-                    // Generate YAML content for this specific binary
-                    let yaml_content = generate_nfpm_yaml(nfpm_cfg, &version, binary_path);
-
                     for format in &nfpm_cfg.formats {
+                        validate_format(format).with_context(|| {
+                            format!("nfpm config for crate {}", krate.name)
+                        })?;
+
+                        // Generate YAML per format so format-specific deps are selected
+                        let yaml_content =
+                            generate_nfpm_yaml(nfpm_cfg, &version, binary_path, Some(format));
+
                         // Ensure output directory exists
                         let output_dir = dist.join("linux");
                         if !dry_run {
@@ -316,6 +610,13 @@ impl Stage for NfpmStage {
                         };
                         let pkg_path = output_dir.join(&pkg_filename);
 
+                        // Build metadata: always include format, optionally include nfpm id
+                        let mut pkg_metadata =
+                            HashMap::from([("format".to_string(), format.clone())]);
+                        if let Some(ref id) = nfpm_cfg.id {
+                            pkg_metadata.insert("id".to_string(), id.clone());
+                        }
+
                         if dry_run {
                             log.status(&format!(
                                 "(dry-run) would run: nfpm pkg --packager {format} for crate {} target {:?}",
@@ -326,7 +627,7 @@ impl Stage for NfpmStage {
                                 path: pkg_path,
                                 target: target.clone(),
                                 crate_name: krate.name.clone(),
-                                metadata: HashMap::from([("format".to_string(), format.clone())]),
+                                metadata: pkg_metadata,
                             });
                             continue;
                         }
@@ -363,12 +664,16 @@ impl Stage for NfpmStage {
                             path: pkg_path,
                             target: target.clone(),
                             crate_name: krate.name.clone(),
-                            metadata: HashMap::from([("format".to_string(), format.clone())]),
+                            metadata: pkg_metadata,
                         });
                     }
                 }
             }
         }
+
+        // Clear per-target template vars so they don't leak to downstream stages.
+        ctx.template_vars_mut().set("Os", "");
+        ctx.template_vars_mut().set("Arch", "");
 
         for artifact in new_artifacts {
             ctx.artifacts.add(artifact);
@@ -381,10 +686,11 @@ impl Stage for NfpmStage {
 /// Return the file extension for a given nfpm packager format.
 fn format_extension(format: &str) -> &str {
     match format {
-        "deb" => ".deb",
+        "deb" | "termux-deb" => ".deb",
         "rpm" => ".rpm",
         "apk" => ".apk",
         "archlinux" => ".pkg.tar.zst",
+        "ipk" => ".ipk",
         _ => "",
     }
 }
@@ -394,7 +700,6 @@ fn format_extension(format: &str) -> &str {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use std::fs;
@@ -413,7 +718,7 @@ mod tests {
             bindir: Some("/usr/bin".to_string()),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/path/to/binary");
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/path/to/binary", None);
         assert!(yaml.contains("name: myapp"));
         assert!(yaml.contains("version: 1.0.0"));
         assert!(yaml.contains("vendor: Test Vendor"));
@@ -456,7 +761,7 @@ mod tests {
             }]),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "2.0.0", "/dist/myapp");
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "2.0.0", "/dist/myapp", None);
         assert!(yaml.contains("version: 2.0.0"));
         assert!(yaml.contains("/etc/myapp/config"));
         assert!(yaml.contains("/usr/local/bin/myapp"));
@@ -530,15 +835,6 @@ mod tests {
         assert!(formats.contains(&"rpm"));
     }
 
-    // Ensure unused import from task spec compiles (tempfile::TempDir is used above)
-    #[test]
-    fn test_tempdir_compiles() {
-        let _tmp = TempDir::new().unwrap();
-        let _path = _tmp.path().join("test.yaml");
-        fs::write(&_path, "test").unwrap();
-        assert!(_path.exists());
-    }
-
     #[test]
     fn test_generate_nfpm_yaml_with_scripts() {
         use anodize_core::config::NfpmScripts;
@@ -553,7 +849,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp");
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
         assert!(yaml.contains("scripts:"));
         assert!(yaml.contains("  preinstall: /scripts/preinstall.sh"));
         assert!(yaml.contains("  postinstall: /scripts/postinstall.sh"));
@@ -573,7 +869,7 @@ mod tests {
             provides: Some(vec!["myapp-bin".to_string()]),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp");
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
         assert!(yaml.contains("recommends:"));
         assert!(yaml.contains("- libfoo"));
         assert!(yaml.contains("- libbar"));
@@ -600,11 +896,12 @@ mod tests {
                     owner: Some("root".to_string()),
                     group: Some("root".to_string()),
                     mode: Some("0644".to_string()),
+                    ..Default::default()
                 }),
             }]),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp");
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
         assert!(yaml.contains("  type: config"));
         assert!(yaml.contains("  file_info:"));
         assert!(yaml.contains("    owner: root"));
@@ -626,7 +923,7 @@ mod tests {
             }]),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp");
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
         assert!(yaml.contains("  type: dir"));
         assert!(!yaml.contains("file_info"));
     }
@@ -725,14 +1022,14 @@ crates:
             suggests: None,
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp");
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
         // Empty lists should not produce a section
         assert!(!yaml.contains("recommends:"));
         assert!(!yaml.contains("suggests:"));
     }
 
     // -----------------------------------------------------------------------
-    // Task 4C: Additional behavior tests — config fields actually do things
+    // Task 4C: Additional behavior tests -- config fields actually do things
     // -----------------------------------------------------------------------
 
     #[test]
@@ -749,7 +1046,7 @@ crates:
             }),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp");
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
         assert!(yaml.contains("scripts:"));
         assert!(yaml.contains("  preinstall: /scripts/pre.sh"));
         assert!(yaml.contains("  postinstall: /scripts/post.sh"));
@@ -769,7 +1066,7 @@ crates:
             provides: Some(vec!["myapp-bin".to_string()]),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp");
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
 
         // Each field should appear with its items
         assert!(yaml.contains("recommends:\n- libfoo\n- libbar"));
@@ -794,6 +1091,7 @@ crates:
                         owner: Some("root".to_string()),
                         group: Some("admin".to_string()),
                         mode: Some("0640".to_string()),
+                        ..Default::default()
                     }),
                 },
                 NfpmContent {
@@ -805,7 +1103,7 @@ crates:
             ]),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "2.0.0", "/dist/myapp");
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "2.0.0", "/dist/myapp", None);
 
         // First content entry with type and file_info
         assert!(yaml.contains("- src: /src/config.toml"));
@@ -979,7 +1277,7 @@ crates:
             bindir: Some("/usr/local/bin".to_string()),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/build/myapp");
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/build/myapp", None);
 
         // Binary should appear in the contents section
         assert!(yaml.contains("contents:"));
@@ -995,7 +1293,7 @@ crates:
             bindir: Some("/opt/myapp/bin".to_string()),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/build/myapp");
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/build/myapp", None);
         assert!(yaml.contains("dst: /opt/myapp/bin/myapp"));
     }
 
@@ -1062,7 +1360,7 @@ crates:
             formats: vec!["deb".to_string()],
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp");
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
         assert!(
             !yaml.contains("name:"),
             "no name: line should appear when package_name is None"
@@ -1077,7 +1375,7 @@ crates:
             formats: vec!["deb".to_string()],
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "0.1.0", "/bin/test");
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "0.1.0", "/bin/test", None);
         assert!(yaml.contains("version: 0.1.0"));
         assert!(yaml.contains("contents:"));
         assert!(yaml.contains("- src: /bin/test"));
@@ -1094,7 +1392,7 @@ crates:
         let nfpm_cfg = NfpmConfig {
             package_name: Some("myapp".to_string()),
             formats: vec!["deb".to_string()],
-            // Invalid Tera template — unclosed tag
+            // Invalid Tera template -- unclosed tag
             file_name_template: Some("{{ bad_template".to_string()),
             ..Default::default()
         };
@@ -1172,6 +1470,1324 @@ crates:
         assert!(
             err.contains("nfpm") || err.contains("dir") || err.contains("create"),
             "error should mention directory creation context, got: {err}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // ids filtering and id metadata tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_ids_filter_includes_matching_binaries_only() {
+        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+
+        // nfpm config that only wants binaries with id "build-server"
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            ids: Some(vec!["build-server".to_string()]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nfpm: Some(vec![nfpm_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        // Add two linux binary artifacts: one matching the ids filter, one not
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: std::path::PathBuf::from("dist/myapp-server"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("id".to_string(), "build-server".to_string())]),
+        });
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: std::path::PathBuf::from("dist/myapp-cli"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("id".to_string(), "build-cli".to_string())]),
+        });
+
+        NfpmStage.run(&mut ctx).unwrap();
+
+        // Only the "build-server" binary should produce a package
+        let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+        assert_eq!(pkgs.len(), 1, "only one binary matched ids filter");
+    }
+
+    #[test]
+    fn test_ids_filter_no_match_produces_no_packages() {
+        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            ids: Some(vec!["nonexistent-build".to_string()]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nfpm: Some(vec![nfpm_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        // Binary exists but its id doesn't match the filter
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: std::path::PathBuf::from("dist/myapp"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("id".to_string(), "build-default".to_string())]),
+        });
+
+        NfpmStage.run(&mut ctx).unwrap();
+
+        // No packages should be created since filter matched nothing
+        let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+        assert_eq!(pkgs.len(), 0, "no binaries matched ids filter");
+    }
+
+    #[test]
+    fn test_no_ids_includes_all_binaries() {
+        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+
+        // No ids set -- should include all binaries (backward compat)
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            ids: None,
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nfpm: Some(vec![nfpm_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        // Add two linux binary artifacts with different ids
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: std::path::PathBuf::from("dist/myapp-server"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("id".to_string(), "build-server".to_string())]),
+        });
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: std::path::PathBuf::from("dist/myapp-cli"),
+            target: Some("aarch64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("id".to_string(), "build-cli".to_string())]),
+        });
+
+        NfpmStage.run(&mut ctx).unwrap();
+
+        // Both binaries should produce packages
+        let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+        assert_eq!(pkgs.len(), 2, "all binaries included when ids is None");
+    }
+
+    #[test]
+    fn test_id_metadata_set_on_created_artifacts() {
+        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            id: Some("server-pkg".to_string()),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nfpm: Some(vec![nfpm_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        NfpmStage.run(&mut ctx).unwrap();
+
+        let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(
+            pkgs[0].metadata.get("id"),
+            Some(&"server-pkg".to_string()),
+            "nfpm config id should be in artifact metadata"
+        );
+        // format should still be present
+        assert_eq!(
+            pkgs[0].metadata.get("format"),
+            Some(&"deb".to_string()),
+        );
+    }
+
+    #[test]
+    fn test_no_id_means_no_id_in_metadata() {
+        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            id: None,
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nfpm: Some(vec![nfpm_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        NfpmStage.run(&mut ctx).unwrap();
+
+        let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(
+            pkgs[0].metadata.get("id"),
+            None,
+            "no id in metadata when nfpm config has no id"
+        );
+    }
+
+    #[test]
+    fn test_ids_filter_with_multiple_matching_ids() {
+        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+
+        // ids filter accepts both "build-server" and "build-cli"
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            ids: Some(vec!["build-server".to_string(), "build-cli".to_string()]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nfpm: Some(vec![nfpm_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        // Add three binaries: two match, one does not
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: std::path::PathBuf::from("dist/myapp-server"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("id".to_string(), "build-server".to_string())]),
+        });
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: std::path::PathBuf::from("dist/myapp-cli"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("id".to_string(), "build-cli".to_string())]),
+        });
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: std::path::PathBuf::from("dist/myapp-worker"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("id".to_string(), "build-worker".to_string())]),
+        });
+
+        NfpmStage.run(&mut ctx).unwrap();
+
+        let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+        assert_eq!(pkgs.len(), 2, "two binaries should match the ids filter");
+    }
+
+    #[test]
+    fn test_nfpm_yaml_dependencies_serializes_as_flat_depends() {
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            dependencies: Some({
+                let mut m = HashMap::new();
+                m.insert(
+                    "deb".to_string(),
+                    vec!["libc6".to_string(), "libssl-dev".to_string()],
+                );
+                m
+            }),
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/usr/bin/myapp", Some("deb"));
+        // The YAML key must be "depends" (what nfpm expects), not "dependencies"
+        assert!(
+            yaml.contains("depends:"),
+            "YAML should contain 'depends:' key, got:\n{}",
+            yaml
+        );
+        assert!(
+            !yaml.contains("dependencies:"),
+            "YAML should NOT contain 'dependencies:' key, got:\n{}",
+            yaml
+        );
+        // Should be a flat list, not a nested map
+        assert!(
+            yaml.contains("- libc6"),
+            "YAML should contain flat dep 'libc6', got:\n{}",
+            yaml
+        );
+        assert!(
+            yaml.contains("- libssl-dev"),
+            "YAML should contain flat dep 'libssl-dev', got:\n{}",
+            yaml
+        );
+    }
+
+    #[test]
+    fn test_nfpm_yaml_dependencies_format_filtering() {
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string(), "rpm".to_string()],
+            dependencies: Some({
+                let mut m = HashMap::new();
+                m.insert("deb".to_string(), vec!["libc6".to_string()]);
+                m.insert("rpm".to_string(), vec!["glibc".to_string()]);
+                m
+            }),
+            ..Default::default()
+        };
+
+        // When generating for deb, only deb deps should appear
+        let yaml_deb = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/usr/bin/myapp", Some("deb"));
+        assert!(yaml_deb.contains("- libc6"), "deb deps expected:\n{yaml_deb}");
+        assert!(!yaml_deb.contains("glibc"), "rpm deps should not appear in deb yaml:\n{yaml_deb}");
+
+        // When generating for rpm, only rpm deps should appear
+        let yaml_rpm = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/usr/bin/myapp", Some("rpm"));
+        assert!(yaml_rpm.contains("- glibc"), "rpm deps expected:\n{yaml_rpm}");
+        assert!(!yaml_rpm.contains("libc6"), "deb deps should not appear in rpm yaml:\n{yaml_rpm}");
+    }
+
+    #[test]
+    fn test_nfpm_yaml_dependencies_none_format_merges_all() {
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string(), "rpm".to_string()],
+            dependencies: Some({
+                let mut m = HashMap::new();
+                m.insert("deb".to_string(), vec!["libc6".to_string()]);
+                m.insert("rpm".to_string(), vec!["glibc".to_string()]);
+                m
+            }),
+            ..Default::default()
+        };
+
+        // When format is None, all deps should be merged
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/usr/bin/myapp", None);
+        assert!(yaml.contains("depends:"), "depends key expected:\n{yaml}");
+        assert!(yaml.contains("- libc6") || yaml.contains("- glibc"),
+            "at least some deps expected:\n{yaml}");
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 9: nFPM parity -- versioning, metadata, format-specific, mtime
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_generate_nfpm_yaml_version_fields() {
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            epoch: Some("1".to_string()),
+            release: Some("2".to_string()),
+            prerelease: Some("beta1".to_string()),
+            version_metadata: Some("git.abc123".to_string()),
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        assert!(yaml.contains("epoch: '1'"), "epoch missing from YAML:\n{yaml}");
+        assert!(yaml.contains("release: '2'"), "release missing from YAML:\n{yaml}");
+        assert!(yaml.contains("prerelease: beta1"), "prerelease missing from YAML:\n{yaml}");
+        assert!(
+            yaml.contains("version_metadata: git.abc123"),
+            "version_metadata missing from YAML:\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn test_generate_nfpm_yaml_package_metadata_fields() {
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            section: Some("utils".to_string()),
+            priority: Some("optional".to_string()),
+            meta: Some(true),
+            umask: Some("0o002".to_string()),
+            mtime: Some("2023-01-01T00:00:00Z".to_string()),
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        assert!(yaml.contains("section: utils"), "section missing:\n{yaml}");
+        assert!(yaml.contains("priority: optional"), "priority missing:\n{yaml}");
+        assert!(yaml.contains("meta: true"), "meta missing:\n{yaml}");
+        assert!(yaml.contains("umask: '0o002'"), "umask missing:\n{yaml}");
+        assert!(
+            yaml.contains("mtime: 2023-01-01T00:00:00Z") || yaml.contains("mtime: '2023-01-01T00:00:00Z'"),
+            "mtime missing:\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn test_generate_nfpm_yaml_metadata_fields_omitted_when_none() {
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        assert!(!yaml.contains("epoch:"), "epoch should not appear:\n{yaml}");
+        assert!(!yaml.contains("release:"), "release should not appear:\n{yaml}");
+        assert!(!yaml.contains("prerelease:"), "prerelease should not appear:\n{yaml}");
+        assert!(
+            !yaml.contains("version_metadata:"),
+            "version_metadata should not appear:\n{yaml}"
+        );
+        assert!(!yaml.contains("section:"), "section should not appear:\n{yaml}");
+        assert!(!yaml.contains("priority:"), "priority should not appear:\n{yaml}");
+        assert!(!yaml.contains("meta:"), "meta should not appear:\n{yaml}");
+        assert!(!yaml.contains("umask:"), "umask should not appear:\n{yaml}");
+        assert!(!yaml.contains("mtime:"), "top-level mtime should not appear:\n{yaml}");
+        assert!(!yaml.contains("rpm:"), "rpm should not appear:\n{yaml}");
+        assert!(!yaml.contains("deb:"), "deb should not appear:\n{yaml}");
+        assert!(!yaml.contains("apk:"), "apk should not appear:\n{yaml}");
+        assert!(!yaml.contains("archlinux:"), "archlinux should not appear:\n{yaml}");
+    }
+
+    #[test]
+    fn test_generate_nfpm_yaml_file_info_mtime() {
+        use anodize_core::config::{NfpmContent, NfpmFileInfo};
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            contents: Some(vec![NfpmContent {
+                src: "/src/file".to_string(),
+                dst: "/usr/bin/file".to_string(),
+                content_type: None,
+                file_info: Some(NfpmFileInfo {
+                    owner: Some("root".to_string()),
+                    group: Some("root".to_string()),
+                    mode: Some("0755".to_string()),
+                    mtime: Some("2023-01-01T00:00:00Z".to_string()),
+                }),
+            }]),
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        assert!(yaml.contains("file_info:"), "file_info block missing:\n{yaml}");
+        assert!(
+            yaml.contains("mtime: 2023-01-01T00:00:00Z") || yaml.contains("mtime: '2023-01-01T00:00:00Z'"),
+            "file_info mtime missing:\n{yaml}"
+        );
+        assert!(yaml.contains("owner: root"), "owner missing:\n{yaml}");
+        assert!(yaml.contains("mode: '0755'"), "mode missing:\n{yaml}");
+    }
+
+    #[test]
+    fn test_generate_nfpm_yaml_rpm_config() {
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["rpm".to_string()],
+            rpm: Some(NfpmRpmConfig {
+                summary: Some("My package summary".to_string()),
+                compression: Some("lzma".to_string()),
+                group: Some("System/Tools".to_string()),
+                packager: Some("Build Team <build@example.com>".to_string()),
+                signature: Some(NfpmSignatureConfig {
+                    key_file: Some("/path/to/key.gpg".to_string()),
+                    key_id: Some("ABCD1234".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        assert!(yaml.contains("rpm:"), "rpm section missing:\n{yaml}");
+        assert!(
+            yaml.contains("summary: My package summary"),
+            "rpm summary missing:\n{yaml}"
+        );
+        assert!(yaml.contains("compression: lzma"), "rpm compression missing:\n{yaml}");
+        assert!(yaml.contains("group: System/Tools"), "rpm group missing:\n{yaml}");
+        assert!(
+            yaml.contains("packager: Build Team <build@example.com>"),
+            "rpm packager missing:\n{yaml}"
+        );
+        assert!(yaml.contains("signature:"), "rpm signature missing:\n{yaml}");
+        assert!(
+            yaml.contains("key_file: /path/to/key.gpg"),
+            "rpm key_file missing:\n{yaml}"
+        );
+        assert!(
+            yaml.contains("key_id: ABCD1234"),
+            "rpm key_id missing:\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn test_generate_nfpm_yaml_rpm_prefixes() {
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["rpm".to_string()],
+            rpm: Some(NfpmRpmConfig {
+                prefixes: Some(vec!["/usr".to_string(), "/etc".to_string()]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        assert!(yaml.contains("prefixes:"), "rpm prefixes missing:\n{yaml}");
+        assert!(yaml.contains("- /usr"), "rpm prefix /usr missing:\n{yaml}");
+        assert!(yaml.contains("- /etc"), "rpm prefix /etc missing:\n{yaml}");
+    }
+
+    #[test]
+    fn test_generate_nfpm_yaml_deb_config() {
+        use anodize_core::config::{NfpmDebTriggers};
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            deb: Some(NfpmDebConfig {
+                triggers: Some(NfpmDebTriggers {
+                    interest: Some(vec!["/usr/share/applications".to_string()]),
+                    activate: Some(vec!["ldconfig".to_string()]),
+                    ..Default::default()
+                }),
+                breaks: Some(vec!["oldpackage (<< 2.0)".to_string()]),
+                lintian_overrides: Some(vec!["statically-linked-binary".to_string()]),
+                signature: Some(NfpmSignatureConfig {
+                    key_file: Some("/path/to/key.gpg".to_string()),
+                    ..Default::default()
+                }),
+                fields: Some({
+                    let mut m = HashMap::new();
+                    m.insert("Bugs".to_string(), "https://github.com/example/project/issues".to_string());
+                    m
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        assert!(yaml.contains("deb:"), "deb section missing:\n{yaml}");
+        assert!(yaml.contains("triggers:"), "deb triggers missing:\n{yaml}");
+        assert!(yaml.contains("interest:"), "deb interest triggers missing:\n{yaml}");
+        assert!(
+            yaml.contains("- /usr/share/applications"),
+            "deb interest value missing:\n{yaml}"
+        );
+        assert!(yaml.contains("activate:"), "deb activate triggers missing:\n{yaml}");
+        assert!(yaml.contains("- ldconfig"), "deb activate value missing:\n{yaml}");
+        assert!(yaml.contains("breaks:"), "deb breaks missing:\n{yaml}");
+        assert!(
+            yaml.contains("- oldpackage (<< 2.0)"),
+            "deb breaks value missing:\n{yaml}"
+        );
+        assert!(
+            yaml.contains("lintian_overrides:"),
+            "deb lintian_overrides missing:\n{yaml}"
+        );
+        assert!(
+            yaml.contains("- statically-linked-binary"),
+            "deb lintian_overrides value missing:\n{yaml}"
+        );
+        assert!(yaml.contains("signature:"), "deb signature missing:\n{yaml}");
+        assert!(
+            yaml.contains("key_file: /path/to/key.gpg"),
+            "deb key_file missing:\n{yaml}"
+        );
+        assert!(yaml.contains("fields:"), "deb fields missing:\n{yaml}");
+        assert!(
+            yaml.contains("Bugs:"),
+            "deb fields Bugs key missing:\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn test_generate_nfpm_yaml_deb_compression_and_predepends() {
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            deb: Some(NfpmDebConfig {
+                compression: Some("xz".to_string()),
+                predepends: Some(vec!["libc6".to_string(), "dpkg".to_string()]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        assert!(yaml.contains("compression: xz"), "deb compression missing:\n{yaml}");
+        assert!(yaml.contains("predepends:"), "deb predepends missing:\n{yaml}");
+        assert!(yaml.contains("- libc6"), "predepends libc6 missing:\n{yaml}");
+        assert!(yaml.contains("- dpkg"), "predepends dpkg missing:\n{yaml}");
+    }
+
+    #[test]
+    fn test_generate_nfpm_yaml_apk_config() {
+        use anodize_core::config::NfpmApkConfig;
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["apk".to_string()],
+            apk: Some(NfpmApkConfig {
+                signature: Some(NfpmSignatureConfig {
+                    key_file: Some("/path/to/key.rsa".to_string()),
+                    ..Default::default()
+                }),
+            }),
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        assert!(yaml.contains("apk:"), "apk section missing:\n{yaml}");
+        assert!(yaml.contains("signature:"), "apk signature missing:\n{yaml}");
+        assert!(
+            yaml.contains("key_file: /path/to/key.rsa"),
+            "apk key_file missing:\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn test_generate_nfpm_yaml_archlinux_config() {
+        use anodize_core::config::{NfpmArchlinuxConfig, NfpmArchlinuxScripts};
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["archlinux".to_string()],
+            archlinux: Some(NfpmArchlinuxConfig {
+                pkgbase: Some("myapp-base".to_string()),
+                packager: Some("Build Team <build@example.com>".to_string()),
+                scripts: Some(NfpmArchlinuxScripts {
+                    preupgrade: Some("scripts/preupgrade.sh".to_string()),
+                    postupgrade: Some("scripts/postupgrade.sh".to_string()),
+                }),
+            }),
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        assert!(yaml.contains("archlinux:"), "archlinux section missing:\n{yaml}");
+        assert!(
+            yaml.contains("pkgbase: myapp-base"),
+            "archlinux pkgbase missing:\n{yaml}"
+        );
+        assert!(
+            yaml.contains("packager: Build Team <build@example.com>"),
+            "archlinux packager missing:\n{yaml}"
+        );
+        assert!(yaml.contains("scripts:"), "archlinux scripts missing:\n{yaml}");
+        assert!(
+            yaml.contains("preupgrade: scripts/preupgrade.sh"),
+            "archlinux preupgrade missing:\n{yaml}"
+        );
+        assert!(
+            yaml.contains("postupgrade: scripts/postupgrade.sh"),
+            "archlinux postupgrade missing:\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn test_generate_nfpm_yaml_signature_key_passphrase() {
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["rpm".to_string()],
+            rpm: Some(NfpmRpmConfig {
+                signature: Some(NfpmSignatureConfig {
+                    key_file: Some("/path/to/key.gpg".to_string()),
+                    key_id: Some("ABCD1234".to_string()),
+                    key_passphrase: Some("secret123".to_string()),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        assert!(
+            yaml.contains("key_passphrase: secret123"),
+            "key_passphrase missing from signature:\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn test_generate_nfpm_yaml_deb_triggers_all_fields() {
+        use anodize_core::config::NfpmDebTriggers;
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            deb: Some(NfpmDebConfig {
+                triggers: Some(NfpmDebTriggers {
+                    interest: Some(vec!["/usr/share/apps".to_string()]),
+                    interest_await: Some(vec!["/usr/share/icons".to_string()]),
+                    interest_noawait: Some(vec!["/usr/share/mime".to_string()]),
+                    activate: Some(vec!["ldconfig".to_string()]),
+                    activate_await: Some(vec!["triggers-await".to_string()]),
+                    activate_noawait: Some(vec!["triggers-noawait".to_string()]),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        assert!(yaml.contains("interest:"), "interest missing:\n{yaml}");
+        assert!(yaml.contains("interest_await:"), "interest_await missing:\n{yaml}");
+        assert!(yaml.contains("interest_noawait:"), "interest_noawait missing:\n{yaml}");
+        assert!(yaml.contains("activate:"), "activate missing:\n{yaml}");
+        assert!(yaml.contains("activate_await:"), "activate_await missing:\n{yaml}");
+        assert!(yaml.contains("activate_noawait:"), "activate_noawait missing:\n{yaml}");
+    }
+
+    #[test]
+    fn test_format_extension_termux_deb() {
+        assert_eq!(format_extension("termux-deb"), ".deb");
+    }
+
+    #[test]
+    fn test_format_extension_ipk() {
+        assert_eq!(format_extension("ipk"), ".ipk");
+    }
+
+    #[test]
+    fn test_termux_deb_format_produces_artifact() {
+        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["termux-deb".to_string()],
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nfpm: Some(vec![nfpm_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        NfpmStage.run(&mut ctx).unwrap();
+
+        let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(
+            pkgs[0].metadata.get("format"),
+            Some(&"termux-deb".to_string())
+        );
+        let path_str = pkgs[0].path.to_string_lossy();
+        assert!(
+            path_str.ends_with(".deb"),
+            "termux-deb package should have .deb extension, got: {path_str}"
+        );
+    }
+
+    #[test]
+    fn test_ipk_format_produces_artifact() {
+        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["ipk".to_string()],
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nfpm: Some(vec![nfpm_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        NfpmStage.run(&mut ctx).unwrap();
+
+        let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(
+            pkgs[0].metadata.get("format"),
+            Some(&"ipk".to_string())
+        );
+        let path_str = pkgs[0].path.to_string_lossy();
+        assert!(
+            path_str.ends_with(".ipk"),
+            "ipk package should have .ipk extension, got: {path_str}"
+        );
+    }
+
+    #[test]
+    fn test_config_parse_nfpm_all_new_fields() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+    nfpm:
+      - package_name: test
+        formats: [deb]
+        epoch: "1"
+        release: "2"
+        prerelease: beta1
+        version_metadata: git.abc123
+        section: utils
+        priority: optional
+        meta: true
+        umask: "0o002"
+        mtime: "2023-01-01T00:00:00Z"
+"#;
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+        assert_eq!(nfpm.epoch.as_deref(), Some("1"));
+        assert_eq!(nfpm.release.as_deref(), Some("2"));
+        assert_eq!(nfpm.prerelease.as_deref(), Some("beta1"));
+        assert_eq!(nfpm.version_metadata.as_deref(), Some("git.abc123"));
+        assert_eq!(nfpm.section.as_deref(), Some("utils"));
+        assert_eq!(nfpm.priority.as_deref(), Some("optional"));
+        assert_eq!(nfpm.meta, Some(true));
+        assert_eq!(nfpm.umask.as_deref(), Some("0o002"));
+        assert_eq!(nfpm.mtime.as_deref(), Some("2023-01-01T00:00:00Z"));
+    }
+
+    #[test]
+    fn test_config_parse_nfpm_rpm_config() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+    nfpm:
+      - package_name: test
+        formats: [rpm]
+        rpm:
+          summary: "My package summary"
+          compression: lzma
+          group: System/Tools
+          packager: "Build Team <build@example.com>"
+          prefixes:
+            - /usr
+            - /etc
+          signature:
+            key_file: /path/to/key.gpg
+            key_id: ABCD1234
+"#;
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+        let rpm = nfpm.rpm.as_ref().unwrap();
+        assert_eq!(rpm.summary.as_deref(), Some("My package summary"));
+        assert_eq!(rpm.compression.as_deref(), Some("lzma"));
+        assert_eq!(rpm.group.as_deref(), Some("System/Tools"));
+        assert_eq!(rpm.packager.as_deref(), Some("Build Team <build@example.com>"));
+        assert_eq!(rpm.prefixes.as_ref().unwrap(), &["/usr", "/etc"]);
+        let sig = rpm.signature.as_ref().unwrap();
+        assert_eq!(sig.key_file.as_deref(), Some("/path/to/key.gpg"));
+        assert_eq!(sig.key_id.as_deref(), Some("ABCD1234"));
+    }
+
+    #[test]
+    fn test_config_parse_nfpm_deb_config() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+    nfpm:
+      - package_name: test
+        formats: [deb]
+        deb:
+          compression: xz
+          predepends:
+            - libc6
+          triggers:
+            interest:
+              - /usr/share/applications
+            activate:
+              - ldconfig
+          breaks:
+            - "oldpackage (<< 2.0)"
+          lintian_overrides:
+            - statically-linked-binary
+          signature:
+            key_file: /path/to/key.gpg
+          fields:
+            Bugs: "https://github.com/example/project/issues"
+"#;
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+        let deb = nfpm.deb.as_ref().unwrap();
+        assert_eq!(deb.compression.as_deref(), Some("xz"));
+        assert_eq!(deb.predepends.as_ref().unwrap(), &["libc6"]);
+        let triggers = deb.triggers.as_ref().unwrap();
+        assert_eq!(
+            triggers.interest.as_ref().unwrap(),
+            &["/usr/share/applications"]
+        );
+        assert_eq!(triggers.activate.as_ref().unwrap(), &["ldconfig"]);
+        assert_eq!(
+            deb.breaks.as_ref().unwrap(),
+            &["oldpackage (<< 2.0)"]
+        );
+        assert_eq!(
+            deb.lintian_overrides.as_ref().unwrap(),
+            &["statically-linked-binary"]
+        );
+        let sig = deb.signature.as_ref().unwrap();
+        assert_eq!(sig.key_file.as_deref(), Some("/path/to/key.gpg"));
+        let fields = deb.fields.as_ref().unwrap();
+        assert_eq!(
+            fields.get("Bugs").unwrap(),
+            "https://github.com/example/project/issues"
+        );
+    }
+
+    #[test]
+    fn test_config_parse_nfpm_apk_config() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+    nfpm:
+      - package_name: test
+        formats: [apk]
+        apk:
+          signature:
+            key_file: /path/to/key.rsa
+"#;
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+        let apk = nfpm.apk.as_ref().unwrap();
+        let sig = apk.signature.as_ref().unwrap();
+        assert_eq!(sig.key_file.as_deref(), Some("/path/to/key.rsa"));
+    }
+
+    #[test]
+    fn test_config_parse_nfpm_archlinux_config() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+    nfpm:
+      - package_name: test
+        formats: [archlinux]
+        archlinux:
+          pkgbase: myapp-base
+          packager: "Build Team <build@example.com>"
+          scripts:
+            preupgrade: scripts/preupgrade.sh
+            postupgrade: scripts/postupgrade.sh
+"#;
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+        let arch = nfpm.archlinux.as_ref().unwrap();
+        assert_eq!(arch.pkgbase.as_deref(), Some("myapp-base"));
+        assert_eq!(arch.packager.as_deref(), Some("Build Team <build@example.com>"));
+        let scripts = arch.scripts.as_ref().unwrap();
+        assert_eq!(scripts.preupgrade.as_deref(), Some("scripts/preupgrade.sh"));
+        assert_eq!(scripts.postupgrade.as_deref(), Some("scripts/postupgrade.sh"));
+    }
+
+    #[test]
+    fn test_config_parse_nfpm_file_info_mtime() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+    nfpm:
+      - package_name: test
+        formats: [deb]
+        contents:
+          - src: /src/file
+            dst: /usr/bin/file
+            file_info:
+              owner: root
+              group: root
+              mode: "0755"
+              mtime: "2023-01-01T00:00:00Z"
+"#;
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+        let fi = nfpm.contents.as_ref().unwrap()[0].file_info.as_ref().unwrap();
+        assert_eq!(fi.owner.as_deref(), Some("root"));
+        assert_eq!(fi.mtime.as_deref(), Some("2023-01-01T00:00:00Z"));
+    }
+
+    #[test]
+    fn test_config_parse_nfpm_signature_config() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+    nfpm:
+      - package_name: test
+        formats: [rpm]
+        rpm:
+          signature:
+            key_file: /path/to/key.gpg
+            key_id: ABCD1234
+            key_passphrase: secret
+"#;
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+        let sig = nfpm.rpm.as_ref().unwrap().signature.as_ref().unwrap();
+        assert_eq!(sig.key_file.as_deref(), Some("/path/to/key.gpg"));
+        assert_eq!(sig.key_id.as_deref(), Some("ABCD1234"));
+        assert_eq!(sig.key_passphrase.as_deref(), Some("secret"));
+    }
+
+    #[test]
+    fn test_config_parse_nfpm_deb_triggers_all_fields() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+    nfpm:
+      - package_name: test
+        formats: [deb]
+        deb:
+          triggers:
+            interest:
+              - /usr/share/apps
+            interest_await:
+              - /usr/share/icons
+            interest_noawait:
+              - /usr/share/mime
+            activate:
+              - ldconfig
+            activate_await:
+              - triggers-await
+            activate_noawait:
+              - triggers-noawait
+"#;
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+        let triggers = nfpm.deb.as_ref().unwrap().triggers.as_ref().unwrap();
+        assert_eq!(triggers.interest.as_ref().unwrap(), &["/usr/share/apps"]);
+        assert_eq!(triggers.interest_await.as_ref().unwrap(), &["/usr/share/icons"]);
+        assert_eq!(triggers.interest_noawait.as_ref().unwrap(), &["/usr/share/mime"]);
+        assert_eq!(triggers.activate.as_ref().unwrap(), &["ldconfig"]);
+        assert_eq!(triggers.activate_await.as_ref().unwrap(), &["triggers-await"]);
+        assert_eq!(triggers.activate_noawait.as_ref().unwrap(), &["triggers-noawait"]);
+    }
+
+    #[test]
+    fn test_generate_nfpm_yaml_all_format_sections_together() {
+        use anodize_core::config::{
+            NfpmApkConfig, NfpmArchlinuxConfig, NfpmArchlinuxScripts,
+            NfpmDebTriggers,
+        };
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec![
+                "deb".to_string(),
+                "rpm".to_string(),
+                "apk".to_string(),
+                "archlinux".to_string(),
+            ],
+            epoch: Some("2".to_string()),
+            release: Some("3".to_string()),
+            section: Some("devel".to_string()),
+            priority: Some("required".to_string()),
+            meta: Some(false),
+            umask: Some("0o022".to_string()),
+            mtime: Some("2024-06-01T12:00:00Z".to_string()),
+            rpm: Some(NfpmRpmConfig {
+                summary: Some("RPM summary".to_string()),
+                compression: Some("xz".to_string()),
+                ..Default::default()
+            }),
+            deb: Some(NfpmDebConfig {
+                triggers: Some(NfpmDebTriggers {
+                    interest: Some(vec!["/trigger/path".to_string()]),
+                    ..Default::default()
+                }),
+                breaks: Some(vec!["broken-pkg".to_string()]),
+                ..Default::default()
+            }),
+            apk: Some(NfpmApkConfig {
+                signature: Some(NfpmSignatureConfig {
+                    key_file: Some("/apk/key.rsa".to_string()),
+                    ..Default::default()
+                }),
+            }),
+            archlinux: Some(NfpmArchlinuxConfig {
+                pkgbase: Some("base-pkg".to_string()),
+                packager: Some("Packager <p@example.com>".to_string()),
+                scripts: Some(NfpmArchlinuxScripts {
+                    preupgrade: Some("pre.sh".to_string()),
+                    postupgrade: Some("post.sh".to_string()),
+                }),
+            }),
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "2.0.0", "/dist/myapp", None);
+
+        // Verify all sections present
+        assert!(yaml.contains("epoch:"), "epoch missing:\n{yaml}");
+        assert!(yaml.contains("release:"), "release missing:\n{yaml}");
+        assert!(yaml.contains("section: devel"), "section missing:\n{yaml}");
+        assert!(yaml.contains("priority: required"), "priority missing:\n{yaml}");
+        assert!(yaml.contains("meta: false"), "meta missing:\n{yaml}");
+        assert!(yaml.contains("umask:"), "umask missing:\n{yaml}");
+        assert!(yaml.contains("mtime:"), "mtime missing:\n{yaml}");
+        assert!(yaml.contains("rpm:"), "rpm section missing:\n{yaml}");
+        assert!(yaml.contains("summary: RPM summary"), "rpm summary missing:\n{yaml}");
+        assert!(yaml.contains("deb:"), "deb section missing:\n{yaml}");
+        assert!(yaml.contains("breaks:"), "deb breaks missing:\n{yaml}");
+        assert!(yaml.contains("apk:"), "apk section missing:\n{yaml}");
+        assert!(yaml.contains("archlinux:"), "archlinux section missing:\n{yaml}");
+        assert!(yaml.contains("pkgbase: base-pkg"), "archlinux pkgbase missing:\n{yaml}");
+    }
+
+    #[test]
+    fn test_config_parse_nfpm_termux_deb_and_ipk_formats() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+    nfpm:
+      - package_name: test
+        formats: [deb, termux-deb, ipk, rpm]
+"#;
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
+        assert_eq!(nfpm.formats, vec!["deb", "termux-deb", "ipk", "rpm"]);
+    }
+
+    #[test]
+    fn test_meta_false_emits_in_yaml() {
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            meta: Some(false),
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        assert!(
+            yaml.contains("meta: false"),
+            "meta: false should appear in YAML:\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn test_meta_none_omits_from_yaml() {
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            meta: None,
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        assert!(
+            !yaml.contains("meta:"),
+            "meta should not appear when None:\n{yaml}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Format validation tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_validate_format_accepts_known_formats() {
+        for fmt in KNOWN_FORMATS {
+            assert!(validate_format(fmt).is_ok(), "format {fmt} should be valid");
+        }
+    }
+
+    #[test]
+    fn test_validate_format_rejects_unknown() {
+        let result = validate_format("bogus");
+        assert!(result.is_err(), "bogus format should be rejected");
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("bogus"), "error should mention the bad format: {err}");
+        assert!(err.contains("deb"), "error should list known formats: {err}");
+    }
+
+    #[test]
+    fn test_stage_rejects_unknown_format() {
+        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["bogus".to_string()],
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nfpm: Some(vec![nfpm_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        let result = NfpmStage.run(&mut ctx);
+        assert!(result.is_err(), "bogus format should cause an error");
+        let err = format!("{:#}", result.unwrap_err());
+        assert!(
+            err.contains("bogus") || err.contains("unknown"),
+            "error should mention the unknown format: {err}"
         );
     }
 }

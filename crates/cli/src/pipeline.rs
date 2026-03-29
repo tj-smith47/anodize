@@ -1,11 +1,11 @@
 use anodize_core::config::Config;
 use anodize_core::context::Context;
+pub use anodize_core::hooks::run_hooks;
 use anodize_core::log::StageLogger;
 use anodize_core::stage::Stage;
 use anyhow::{Context as _, Result, bail};
 use colored::Colorize;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// Find config file. If `config_override` is provided, use that path directly;
 /// otherwise search the current directory for well-known config file names.
@@ -129,24 +129,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
     Ok(config)
 }
 
-/// Execute a list of shell hook commands.
-/// In dry-run mode, log but do not execute.
-pub fn run_hooks(hooks: &[String], label: &str, dry_run: bool, log: &StageLogger) -> Result<()> {
-    for hook in hooks {
-        if dry_run {
-            log.status(&format!("[dry-run] {} hook: {}", label, hook));
-        } else {
-            log.status(&format!("running {} hook: {}", label, hook));
-            let output = Command::new("sh")
-                .arg("-c")
-                .arg(hook)
-                .output()
-                .with_context(|| format!("failed to spawn {} hook: {}", label, hook))?;
-            log.check_output(output, &format!("{} hook: {}", label, hook))?;
-        }
-    }
-    Ok(())
-}
+// run_hooks is re-exported from anodize_core::hooks
 
 pub struct Pipeline {
     stages: Vec<Box<dyn Stage>>,

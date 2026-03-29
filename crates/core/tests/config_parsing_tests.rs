@@ -307,9 +307,9 @@ crates: []
     let overrides = archives.format_overrides.unwrap();
     assert_eq!(overrides.len(), 2);
     assert_eq!(overrides[0].os, "windows");
-    assert_eq!(overrides[0].format, "zip");
+    assert_eq!(overrides[0].format, Some("zip".to_string()));
     assert_eq!(overrides[1].os, "darwin");
-    assert_eq!(overrides[1].format, "tar.xz");
+    assert_eq!(overrides[1].format, Some("tar.xz".to_string()));
 }
 
 #[test]
@@ -385,7 +385,10 @@ crates: []
         Some("checksums-{{ version }}.txt".to_string())
     );
     assert_eq!(checksum.algorithm, Some("sha256".to_string()));
-    assert_eq!(checksum.disable, Some(false));
+    assert_eq!(
+        checksum.disable,
+        Some(anodize_core::config::StringOrBool::Bool(false))
+    );
     assert_eq!(checksum.extra_files.as_ref().unwrap().len(), 1);
     assert_eq!(checksum.ids.as_ref().unwrap(), &["my-archive"]);
 }
@@ -969,9 +972,9 @@ crates:
         let overrides = configs[0].format_overrides.as_ref().unwrap();
         assert_eq!(overrides.len(), 3);
         assert_eq!(overrides[0].os, "windows");
-        assert_eq!(overrides[0].format, "zip");
+        assert_eq!(overrides[0].format, Some("zip".to_string()));
         assert_eq!(overrides[2].os, "linux");
-        assert_eq!(overrides[2].format, "tar.zst");
+        assert_eq!(overrides[2].format, Some("tar.zst".to_string()));
     } else {
         panic!("expected ArchivesConfig::Configs");
     }
@@ -1280,7 +1283,10 @@ crates:
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let checksum = config.crates[0].checksum.as_ref().unwrap();
-    assert_eq!(checksum.disable, Some(true));
+    assert_eq!(
+        checksum.disable,
+        Some(anodize_core::config::StringOrBool::Bool(true))
+    );
     // Other fields are still parsed even when disabled
     assert_eq!(checksum.algorithm, Some("sha512".to_string()));
 }
@@ -1857,7 +1863,7 @@ crates:
     assert_eq!(docker.platforms.as_ref().unwrap().len(), 2);
     assert_eq!(docker.binaries.as_ref().unwrap(), &["app"]);
     assert_eq!(docker.build_flag_templates.as_ref().unwrap().len(), 2);
-    assert_eq!(docker.skip_push, Some(false));
+    assert_eq!(docker.skip_push, Some(SkipPushConfig::Bool(false)));
     assert_eq!(docker.extra_files.as_ref().unwrap(), &["config.yaml"]);
     assert_eq!(docker.push_flags.as_ref().unwrap(), &["--all-tags"]);
 }
@@ -2012,7 +2018,7 @@ crates:
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let docker = &config.crates[0].docker.as_ref().unwrap()[0];
-    assert_eq!(docker.skip_push, Some(true));
+    assert_eq!(docker.skip_push, Some(SkipPushConfig::Bool(true)));
 }
 
 #[test]
@@ -2144,16 +2150,17 @@ fn test_parse_hooks_before() {
     let yaml = r#"
 project_name: test
 before:
-  hooks:
+  pre:
     - "go mod tidy"
     - "make generate"
 crates: []
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    let hooks = config.before.as_ref().unwrap();
-    assert_eq!(hooks.hooks.len(), 2);
-    assert_eq!(hooks.hooks[0], "go mod tidy");
-    assert_eq!(hooks.hooks[1], "make generate");
+    let before = config.before.as_ref().unwrap();
+    let pre = before.pre.as_ref().unwrap();
+    assert_eq!(pre.len(), 2);
+    assert_eq!(pre[0], "go mod tidy");
+    assert_eq!(pre[1], "make generate");
 }
 
 #[test]
@@ -2161,15 +2168,16 @@ fn test_parse_hooks_after() {
     let yaml = r#"
 project_name: test
 after:
-  hooks:
+  post:
     - "echo done"
     - "./scripts/post-release.sh"
 crates: []
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    let hooks = config.after.as_ref().unwrap();
-    assert_eq!(hooks.hooks.len(), 2);
-    assert_eq!(hooks.hooks[0], "echo done");
+    let after = config.after.as_ref().unwrap();
+    let post = after.post.as_ref().unwrap();
+    assert_eq!(post.len(), 2);
+    assert_eq!(post[0], "echo done");
 }
 
 #[test]
@@ -2177,16 +2185,16 @@ fn test_parse_hooks_both_before_and_after() {
     let yaml = r#"
 project_name: test
 before:
-  hooks:
+  pre:
     - "pre-step"
 after:
-  hooks:
+  post:
     - "post-step"
 crates: []
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    assert_eq!(config.before.as_ref().unwrap().hooks.len(), 1);
-    assert_eq!(config.after.as_ref().unwrap().hooks.len(), 1);
+    assert_eq!(config.before.as_ref().unwrap().pre.as_ref().unwrap().len(), 1);
+    assert_eq!(config.after.as_ref().unwrap().post.as_ref().unwrap().len(), 1);
 }
 
 #[test]
@@ -2202,11 +2210,11 @@ fn test_parse_hooks_empty_hooks_list() {
     let yaml = r#"
 project_name: test
 before:
-  hooks: []
+  pre: []
 crates: []
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    assert!(config.before.as_ref().unwrap().hooks.is_empty());
+    assert!(config.before.as_ref().unwrap().pre.as_ref().unwrap().is_empty());
 }
 
 // ---- release.name_template tests ----
@@ -2675,7 +2683,7 @@ crates: []
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let cl = config.changelog.as_ref().unwrap();
-    assert_eq!(cl.disable, Some(true));
+    assert_eq!(cl.disable, Some(anodize_core::config::StringOrBool::Bool(true)));
     // Groups are still parsed even when disabled
     assert_eq!(cl.groups.as_ref().unwrap().len(), 1);
 }
@@ -2888,10 +2896,10 @@ fn test_parse_toml_hooks() {
 project_name = "test"
 
 [before]
-hooks = ["cargo fmt", "cargo clippy"]
+pre = ["cargo fmt", "cargo clippy"]
 
 [after]
-hooks = ["echo done"]
+post = ["echo done"]
 
 [[crates]]
 name = "app"
@@ -2899,8 +2907,8 @@ path = "."
 tag_template = "v{{ .Version }}"
 "#;
     let config: Config = toml::from_str(toml_str).unwrap();
-    assert_eq!(config.before.as_ref().unwrap().hooks.len(), 2);
-    assert_eq!(config.after.as_ref().unwrap().hooks.len(), 1);
+    assert_eq!(config.before.as_ref().unwrap().pre.as_ref().unwrap().len(), 2);
+    assert_eq!(config.after.as_ref().unwrap().post.as_ref().unwrap().len(), 1);
 }
 
 #[test]
@@ -3055,7 +3063,8 @@ crates: []
 }
 
 #[test]
-fn test_parse_invalid_type_checksum_disable_string() {
+fn test_parse_checksum_disable_string_is_valid() {
+    // checksum.disable now accepts StringOrBool, so string values are valid
     let yaml = r#"
 project_name: test
 defaults:
@@ -3063,8 +3072,12 @@ defaults:
     disable: "yes"
 crates: []
 "#;
-    let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
-    assert!(result.is_err());
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let checksum = config.defaults.unwrap().checksum.unwrap();
+    assert_eq!(
+        checksum.disable,
+        Some(anodize_core::config::StringOrBool::String("yes".to_string()))
+    );
 }
 
 // ---- Interaction tests (disable + other fields, etc.) ----
@@ -3090,7 +3103,7 @@ crates: []
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let cl = config.changelog.as_ref().unwrap();
-    assert_eq!(cl.disable, Some(true));
+    assert_eq!(cl.disable, Some(anodize_core::config::StringOrBool::Bool(true)));
     assert_eq!(cl.sort, Some("asc".to_string()));
     assert_eq!(cl.header, Some("header".to_string()));
     assert_eq!(cl.abbrev, Some(10));
@@ -3178,10 +3191,10 @@ env:
   GLOBAL_VAR: "value"
 report_sizes: true
 before:
-  hooks:
+  pre:
     - "cargo fmt --check"
 after:
-  hooks:
+  post:
     - "echo release complete"
 defaults:
   targets:
@@ -3551,7 +3564,8 @@ fn test_sign_config_default_struct() {
 #[test]
 fn test_hooks_config_default_struct() {
     let config = HooksConfig::default();
-    assert!(config.hooks.is_empty());
+    assert!(config.pre.is_none());
+    assert!(config.post.is_none());
 }
 
 #[test]
@@ -4090,4 +4104,199 @@ fn test_parse_crate_config_universal_binaries_in_default() {
         c.universal_binaries.is_none(),
         "universal_binaries should default to None"
     );
+}
+
+// ---- docker skip_push auto-or-bool ----
+
+#[test]
+fn test_parse_docker_skip_push_auto() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ version }}"
+    docker:
+      - image_templates:
+          - "myapp:latest"
+        skip_push: auto
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let docker = &config.crates[0].docker.as_ref().unwrap()[0];
+    assert_eq!(docker.skip_push, Some(SkipPushConfig::Auto));
+}
+
+#[test]
+fn test_parse_docker_use_backend_podman() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ version }}"
+    docker:
+      - image_templates:
+          - "myapp:latest"
+        use: podman
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let docker = &config.crates[0].docker.as_ref().unwrap()[0];
+    assert_eq!(docker.use_backend.as_deref(), Some("podman"));
+}
+
+#[test]
+fn test_parse_docker_use_backend_buildx() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ version }}"
+    docker:
+      - image_templates:
+          - "myapp:latest"
+        use: buildx
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let docker = &config.crates[0].docker.as_ref().unwrap()[0];
+    assert_eq!(docker.use_backend.as_deref(), Some("buildx"));
+}
+
+#[test]
+fn test_parse_docker_use_backend_default_none() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ version }}"
+    docker:
+      - image_templates:
+          - "myapp:latest"
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let docker = &config.crates[0].docker.as_ref().unwrap()[0];
+    assert_eq!(docker.use_backend, None);
+}
+
+// ---- docker_manifests tests ----
+
+#[test]
+fn test_parse_docker_manifests_full() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ version }}"
+    docker_manifests:
+      - name_template: "ghcr.io/owner/app:{{ version }}"
+        image_templates:
+          - "ghcr.io/owner/app:{{ version }}-amd64"
+          - "ghcr.io/owner/app:{{ version }}-arm64"
+        create_flags:
+          - "--amend"
+        push_flags:
+          - "--purge"
+        skip_push: auto
+        id: multi-arch
+        use: docker
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let manifests = config.crates[0].docker_manifests.as_ref().unwrap();
+    assert_eq!(manifests.len(), 1);
+    let m = &manifests[0];
+    assert_eq!(m.name_template, "ghcr.io/owner/app:{{ version }}");
+    assert_eq!(m.image_templates.len(), 2);
+    assert_eq!(m.create_flags.as_ref().unwrap(), &["--amend"]);
+    assert_eq!(m.push_flags.as_ref().unwrap(), &["--purge"]);
+    assert_eq!(m.skip_push, Some(SkipPushConfig::Auto));
+    assert_eq!(m.id.as_deref(), Some("multi-arch"));
+    assert_eq!(m.use_backend.as_deref(), Some("docker"));
+}
+
+#[test]
+fn test_parse_docker_manifests_minimal() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ version }}"
+    docker_manifests:
+      - name_template: "ghcr.io/owner/app:latest"
+        image_templates:
+          - "ghcr.io/owner/app:latest-amd64"
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let manifests = config.crates[0].docker_manifests.as_ref().unwrap();
+    assert_eq!(manifests.len(), 1);
+    let m = &manifests[0];
+    assert_eq!(m.name_template, "ghcr.io/owner/app:latest");
+    assert_eq!(m.image_templates.len(), 1);
+    assert!(m.create_flags.is_none());
+    assert!(m.push_flags.is_none());
+    assert!(m.skip_push.is_none());
+    assert!(m.id.is_none());
+    assert!(m.use_backend.is_none());
+}
+
+#[test]
+fn test_parse_docker_manifests_omitted() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ version }}"
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    assert!(config.crates[0].docker_manifests.is_none());
+}
+
+#[test]
+fn test_parse_docker_manifests_multiple() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ version }}"
+    docker_manifests:
+      - name_template: "ghcr.io/owner/app:latest"
+        image_templates:
+          - "ghcr.io/owner/app:latest-amd64"
+      - name_template: "ghcr.io/owner/app:v1"
+        image_templates:
+          - "ghcr.io/owner/app:v1-amd64"
+          - "ghcr.io/owner/app:v1-arm64"
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let manifests = config.crates[0].docker_manifests.as_ref().unwrap();
+    assert_eq!(manifests.len(), 2);
+}
+
+#[test]
+fn test_docker_manifest_config_default() {
+    let m = DockerManifestConfig::default();
+    assert_eq!(m.name_template, "");
+    assert!(m.image_templates.is_empty());
+    assert!(m.create_flags.is_none());
+    assert!(m.push_flags.is_none());
+    assert!(m.skip_push.is_none());
+    assert!(m.id.is_none());
+    assert!(m.use_backend.is_none());
+}
+
+#[test]
+fn test_docker_config_default_includes_new_fields() {
+    let config = DockerConfig::default();
+    assert!(config.skip_push.is_none());
+    assert!(config.use_backend.is_none());
+}
+
+#[test]
+fn test_crate_config_default_includes_docker_manifests() {
+    let c = CrateConfig::default();
+    assert!(c.docker_manifests.is_none());
 }

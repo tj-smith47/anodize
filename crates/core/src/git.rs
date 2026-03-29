@@ -323,6 +323,86 @@ pub fn create_and_push_tag(
     Ok(())
 }
 
+/// GET a GitHub API endpoint via the `gh` CLI (single request, no pagination).
+///
+/// Returns the parsed JSON response. Useful for endpoints that return a single
+/// object (e.g. the Compare API) rather than a paginated array.
+pub fn gh_api_get(endpoint: &str, token: Option<&str>) -> Result<serde_json::Value> {
+    let mut cmd = Command::new("gh");
+    cmd.args(["api", endpoint]);
+    if let Some(tok) = token {
+        cmd.env("GITHUB_TOKEN", tok);
+    }
+    let output = cmd
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .context("failed to spawn gh CLI")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("gh api GET {} failed: {}", endpoint, stderr.trim());
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str(&stdout).context("failed to parse gh api response")
+}
+
+/// GET a GitHub API endpoint via the `gh` CLI, with pagination.
+///
+/// Returns a JSON array of all pages concatenated. The caller is responsible for
+/// ensuring that `gh` is installed and authenticated.
+pub fn gh_api_get_paginated(endpoint: &str, token: Option<&str>) -> Result<Vec<serde_json::Value>> {
+    let mut cmd = Command::new("gh");
+    cmd.args(["api", "--paginate", endpoint]);
+    if let Some(tok) = token {
+        cmd.env("GITHUB_TOKEN", tok);
+    }
+    let output = cmd
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .context("failed to spawn gh CLI")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("gh api GET {} failed: {}", endpoint, stderr.trim());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Try parsing the entire response first before falling back to splitting.
+    // This avoids the split_inclusive(']') approach corrupting non-array responses.
+    if let Ok(serde_json::Value::Array(arr)) = serde_json::from_str::<serde_json::Value>(&stdout) {
+        return Ok(arr);
+    }
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&stdout) {
+        // Single object response (e.g. non-list endpoint) — wrap in a vec.
+        return Ok(vec![val]);
+    }
+
+    // Whole-parse failed — gh --paginate may return multiple JSON arrays
+    // concatenated (e.g. `[...][...]`). Split on `]` boundaries and parse each chunk.
+    let mut all_items = Vec::new();
+    for chunk in stdout.split_inclusive(']') {
+        let trimmed = chunk.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Ok(serde_json::Value::Array(arr)) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            all_items.extend(arr);
+        } else if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            all_items.push(val);
+        } else {
+            // Log unparseable chunks so corrupt data doesn't go unnoticed.
+            eprintln!(
+                "warning: gh_api_get_paginated: failed to parse JSON chunk (len={}): {:?}",
+                trimmed.len(),
+                &trimmed[..trimmed.len().min(200)]
+            );
+        }
+    }
+    Ok(all_items)
+}
+
 /// POST a JSON body to a GitHub API endpoint via the `gh` CLI.
 ///
 /// Returns the parsed JSON response on success. The caller is responsible for

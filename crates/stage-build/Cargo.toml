@@ -12,8 +12,10 @@ categories.workspace = true
 [dependencies]
 anodize-core.workspace = true
 anyhow.workspace = true
+filetime.workspace = true
 glob.workspace = true
 toml_edit.workspace = true
 
 [dev-dependencies]
+serde_yaml_ng.workspace = true
 tempfile = "3"

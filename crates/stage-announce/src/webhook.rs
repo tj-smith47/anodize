@@ -28,11 +28,15 @@ pub(crate) fn webhook_body(message: &str, content_type: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// POST to an arbitrary HTTP endpoint with custom headers and content type.
+///
+/// When `skip_tls_verify` is true the client will accept invalid / self-signed
+/// TLS certificates (mirrors GoReleaser's `skip_tls_verify` webhook option).
 pub fn send_webhook(
     endpoint_url: &str,
     message: &str,
     headers: &HashMap<String, String>,
     content_type: &str,
+    skip_tls_verify: bool,
 ) -> Result<()> {
     let body = webhook_body(message, content_type);
     let effective_ct = if content_type.is_empty() {
@@ -41,7 +45,10 @@ pub fn send_webhook(
         content_type
     };
 
-    let client = reqwest::blocking::Client::new();
+    let client = reqwest::blocking::Client::builder()
+        .danger_accept_invalid_certs(skip_tls_verify)
+        .build()?;
+
     let mut builder = client
         .post(endpoint_url)
         .header("Content-Type", effective_ct)

@@ -250,10 +250,17 @@ impl Context {
     /// Sets:
     /// - `RuntimeGoos` — host OS (e.g. "linux", "macos", "windows")
     /// - `RuntimeGoarch` — host architecture (e.g. "x86_64", "aarch64")
+    /// - `Runtime_Goos` / `Runtime_Goarch` — GoReleaser-compatible nested aliases
     pub fn populate_runtime_vars(&mut self) {
         self.template_vars.set("RuntimeGoos", std::env::consts::OS);
         self.template_vars
             .set("RuntimeGoarch", std::env::consts::ARCH);
+        // GoReleaser uses Runtime.Goos / Runtime.Goarch — after preprocessing
+        // the dot becomes an underscore-separated flat key. We expose both forms.
+        self.template_vars
+            .set("Runtime_Goos", std::env::consts::OS);
+        self.template_vars
+            .set("Runtime_Goarch", std::env::consts::ARCH);
     }
 
     /// Populate the `ReleaseNotes` template variable from stored changelogs.

@@ -17,12 +17,17 @@ use anodize_core::stage::Stage;
 /// string from `SignConfig::artifacts` / `DockerSignConfig::artifacts`.
 ///
 /// Filter values:
-/// - `"none"`     → nothing is signed
-/// - `"all"`      → every artifact kind is signed
-/// - `"source"`   → only `ArtifactKind::Archive` (source archives)
-/// - `"archive"`  → only `ArtifactKind::Archive`
-/// - `"binary"`   → only `ArtifactKind::Binary`
-/// - `"package"`  → only `ArtifactKind::LinuxPackage`
+/// - `"none"`          → nothing is signed
+/// - `"all"`           → every artifact kind is signed
+/// - `"source"`        → only `ArtifactKind::Archive` (source archives)
+/// - `"archive"`       → only `ArtifactKind::Archive`
+/// - `"binary"`        → only `ArtifactKind::Binary`
+/// - `"package"`       → only `ArtifactKind::LinuxPackage`
+/// - `"installer"`     → only `ArtifactKind::Installer`
+/// - `"diskimage"`     → only `ArtifactKind::DiskImage`
+/// - `"sbom"`          → only `ArtifactKind::Sbom`
+/// - `"snap"`          → only `ArtifactKind::Snap`
+/// - `"macos_package"` → only `ArtifactKind::MacOsPackage`
 /// - `"checksum"` (default) → only `ArtifactKind::Checksum`
 pub(crate) fn should_sign_artifact(kind: ArtifactKind, filter: &str) -> bool {
     match filter {
@@ -31,6 +36,11 @@ pub(crate) fn should_sign_artifact(kind: ArtifactKind, filter: &str) -> bool {
         "source" | "archive" => kind == ArtifactKind::Archive,
         "binary" => kind == ArtifactKind::Binary,
         "package" => kind == ArtifactKind::LinuxPackage,
+        "installer" => kind == ArtifactKind::Installer,
+        "diskimage" => kind == ArtifactKind::DiskImage,
+        "sbom" => kind == ArtifactKind::Sbom,
+        "snap" => kind == ArtifactKind::Snap,
+        "macos_package" => kind == ArtifactKind::MacOsPackage,
         _ => kind == ArtifactKind::Checksum,
     }
 }
@@ -64,27 +74,19 @@ fn resolve_signature_path(
 
 /// Pipe `stdin_content` or the contents of `stdin_file` to a child process's
 /// stdin. Returns the appropriate `Stdio` and an optional content buffer.
-fn prepare_stdin(sign_cfg: &SignConfig) -> Result<(Stdio, Option<Vec<u8>>)> {
-    if let Some(ref content) = sign_cfg.stdin {
-        Ok((Stdio::piped(), Some(content.as_bytes().to_vec())))
-    } else if let Some(ref path) = sign_cfg.stdin_file {
-        let data = std::fs::read(path)
-            .with_context(|| format!("sign: failed to read stdin_file '{}'", path))?;
-        Ok((Stdio::piped(), Some(data)))
-    } else {
-        Ok((Stdio::inherit(), None))
-    }
-}
-
-/// Same as `prepare_stdin` but for `DockerSignConfig`.
-fn prepare_docker_stdin(
-    cfg: &anodize_core::config::DockerSignConfig,
+///
+/// Shared by both `SignConfig` and `DockerSignConfig` — both expose the same
+/// `stdin` / `stdin_file` fields.
+fn prepare_stdin_from(
+    stdin: Option<&str>,
+    stdin_file: Option<&str>,
+    label: &str,
 ) -> Result<(Stdio, Option<Vec<u8>>)> {
-    if let Some(ref content) = cfg.stdin {
+    if let Some(content) = stdin {
         Ok((Stdio::piped(), Some(content.as_bytes().to_vec())))
-    } else if let Some(ref path) = cfg.stdin_file {
+    } else if let Some(path) = stdin_file {
         let data = std::fs::read(path)
-            .with_context(|| format!("sign: failed to read docker sign stdin_file '{}'", path))?;
+            .with_context(|| format!("{}: failed to read stdin_file '{}'", label, path))?;
         Ok((Stdio::piped(), Some(data)))
     } else {
         Ok((Stdio::inherit(), None))
@@ -114,6 +116,293 @@ pub(crate) fn resolve_sign_args(
 }
 
 // ---------------------------------------------------------------------------
+// Shared sign processing — used by both `signs` and `binary_signs` loops
+// ---------------------------------------------------------------------------
+
+/// Artifact filter mode for `process_sign_configs`.
+#[derive(Clone, Copy)]
+enum ArtifactFilter {
+    /// Use the `artifacts` field from each SignConfig (or default to "checksum").
+    FromConfig,
+    /// Always restrict to `ArtifactKind::Binary`, regardless of config.
+    BinaryOnly,
+}
+
+/// Process a list of `SignConfig` entries against a set of artifacts, executing
+/// the signing command for each matching artifact.  This is the shared
+/// implementation behind both the `signs` and `binary_signs` top-level config
+/// sections.
+fn process_sign_configs(
+    sign_configs: &[SignConfig],
+    ctx: &mut Context,
+    log: &StageLogger,
+    filter_mode: ArtifactFilter,
+    label: &str,
+) -> Result<()> {
+    for sign_cfg in sign_configs {
+        // Evaluate the `if` conditional template — skip when rendered
+        // result is "false" or empty/whitespace-only.
+        //
+        // NOTE: `if_condition` is `Option<String>` with inverted semantics
+        // compared to `disable: Option<StringOrBool>`:
+        //   - `if_condition`: skip when rendered to "false" or empty (opt-IN)
+        //   - `disable`:      skip when rendered to "true" (opt-OUT)
+        // This intentional difference mirrors GoReleaser's `if` vs `disable`.
+        if let Some(ref condition) = sign_cfg.if_condition {
+            match ctx.render_template(condition) {
+                Ok(result) => {
+                    let trimmed = result.trim();
+                    if trimmed.is_empty() || trimmed == "false" {
+                        log.verbose(&format!(
+                            "skipping {} config: if condition evaluated to '{}'",
+                            label, trimmed
+                        ));
+                        continue;
+                    }
+                }
+                Err(e) => {
+                    log.warn(&format!(
+                        "if condition render failed ({}), skipping: {}",
+                        condition, e
+                    ));
+                    continue;
+                }
+            }
+        }
+
+        let config_filter = sign_cfg.artifacts.as_deref().unwrap_or("checksum");
+
+        // For the normal `signs` path, respect the artifacts filter.
+        // For `binary_signs`, skip if the config explicitly says "none".
+        match filter_mode {
+            ArtifactFilter::FromConfig => {
+                if config_filter == "none" {
+                    continue;
+                }
+            }
+            ArtifactFilter::BinaryOnly => {
+                if config_filter == "none" {
+                    continue;
+                }
+            }
+        }
+
+        let cmd = sign_cfg.cmd.as_deref().unwrap_or("gpg").to_string();
+
+        if sign_cfg.args.as_ref().is_some_and(|a| a.is_empty()) {
+            log.warn(&format!(
+                "{} config has empty args — did you mean to omit args for defaults?",
+                label
+            ));
+        }
+
+        let args = sign_cfg.args.clone().unwrap_or_else(|| {
+            vec![
+                "--output".to_string(),
+                "{{ .Signature }}".to_string(),
+                "--detach-sig".to_string(),
+                "{{ .Artifact }}".to_string(),
+            ]
+        });
+
+        // Collect matching artifacts (avoid holding an immutable borrow
+        // while we later add new ones, so clone paths up-front).
+        let artifact_paths: Vec<(
+            std::path::PathBuf,
+            String,
+            std::collections::HashMap<String, String>,
+        )> = ctx
+            .artifacts
+            .all()
+            .iter()
+            .filter(|a| {
+                // Apply artifact kind filter.
+                match filter_mode {
+                    ArtifactFilter::FromConfig => {
+                        if !should_sign_artifact(a.kind, config_filter) {
+                            return false;
+                        }
+                    }
+                    ArtifactFilter::BinaryOnly => {
+                        if a.kind != ArtifactKind::Binary {
+                            return false;
+                        }
+                    }
+                }
+                // If `ids` filter is set, only sign artifacts whose metadata
+                // contains a matching "id" or "name" entry.
+                if let Some(ref ids) = sign_cfg.ids {
+                    let matches_id = a
+                        .metadata
+                        .get("id")
+                        .map(|id| ids.contains(id))
+                        .unwrap_or(false);
+                    let matches_name = a
+                        .metadata
+                        .get("name")
+                        .map(|name| ids.contains(name))
+                        .unwrap_or(false);
+                    return matches_id || matches_name;
+                }
+                true
+            })
+            .map(|a| (a.path.clone(), a.crate_name.clone(), a.metadata.clone()))
+            .collect();
+
+        // Collect new signature artifacts to register after the signing loop.
+        let mut new_signature_artifacts: Vec<anodize_core::artifact::Artifact> = Vec::new();
+
+        for (artifact_path, artifact_crate_name, _metadata) in &artifact_paths {
+            let artifact_str = artifact_path.to_string_lossy();
+            let signature_str = resolve_signature_path(sign_cfg, &artifact_str, ctx, log);
+
+            // Resolve the certificate path from template if configured.
+            let certificate_str = sign_cfg.certificate.as_ref().map(|tmpl| {
+                let preprocessed = tmpl
+                    .replace("{{ .Artifact }}", &artifact_str)
+                    .replace("{{ Artifact }}", &artifact_str);
+                ctx.render_template(&preprocessed).unwrap_or_else(|e| {
+                    log.warn(&format!(
+                        "failed to render certificate template '{}': {}, using raw value",
+                        tmpl, e
+                    ));
+                    preprocessed
+                })
+            });
+
+            let resolved = resolve_sign_args(
+                &args,
+                artifact_str.as_ref(),
+                &signature_str,
+                certificate_str.as_deref(),
+            );
+
+            // Also resolve any remaining template variables (e.g., {{ .Env.GPG_FINGERPRINT }})
+            let fully_resolved: Vec<String> = resolved
+                .iter()
+                .map(|arg| {
+                    ctx.render_template(arg).unwrap_or_else(|e| {
+                        log.warn(&format!(
+                            "failed to render {} arg '{}': {}, using raw value",
+                            label, arg, e
+                        ));
+                        arg.clone()
+                    })
+                })
+                .collect();
+
+            // Register signature (and certificate) artifacts regardless of
+            // dry-run mode so downstream stages (release) can reference them.
+            let sig_path = std::path::PathBuf::from(&signature_str);
+            let mut sig_metadata = std::collections::HashMap::new();
+            sig_metadata.insert("type".to_string(), "Signature".to_string());
+            new_signature_artifacts.push(anodize_core::artifact::Artifact {
+                kind: ArtifactKind::Metadata,
+                path: sig_path,
+                target: None,
+                crate_name: artifact_crate_name.clone(),
+                metadata: sig_metadata,
+            });
+
+            if let Some(ref cert_path_str) = certificate_str {
+                let cert_path = std::path::PathBuf::from(cert_path_str);
+                let mut cert_metadata = std::collections::HashMap::new();
+                cert_metadata.insert("type".to_string(), "Certificate".to_string());
+                new_signature_artifacts.push(anodize_core::artifact::Artifact {
+                    kind: ArtifactKind::Metadata,
+                    path: cert_path,
+                    target: None,
+                    crate_name: artifact_crate_name.clone(),
+                    metadata: cert_metadata,
+                });
+            }
+
+            if ctx.is_dry_run() {
+                log.status(&format!(
+                    "(dry-run) would run: {} {}",
+                    cmd,
+                    fully_resolved.join(" ")
+                ));
+                continue;
+            }
+
+            let id_label = sign_cfg.id.as_deref().unwrap_or("default");
+            log.status(&format!(
+                "[{}] {} {} -> {}",
+                id_label, label, artifact_str, signature_str
+            ));
+
+            let (stdin_cfg, stdin_data) = prepare_stdin_from(
+                sign_cfg.stdin.as_deref(),
+                sign_cfg.stdin_file.as_deref(),
+                label,
+            )?;
+
+            let mut command = Command::new(&cmd);
+            command
+                .args(&fully_resolved)
+                .stdin(stdin_cfg)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+
+            // Merge custom env vars if configured.
+            if let Some(ref env_vars) = sign_cfg.env {
+                command.envs(env_vars);
+            }
+
+            let mut child = command.spawn().with_context(|| {
+                format!("{}: failed to spawn '{}' for {}", label, cmd, artifact_str)
+            })?;
+
+            if let Some(data) = stdin_data {
+                if let Some(mut child_stdin) = child.stdin.take() {
+                    child_stdin.write_all(&data).with_context(|| {
+                        format!("{}: failed to write stdin for {}", label, artifact_str)
+                    })?;
+                    drop(child_stdin); // Explicitly close stdin so child sees EOF
+                } else {
+                    log.warn(&format!(
+                        "{}: stdin data provided but child process stdin unavailable for {}",
+                        label, artifact_str
+                    ));
+                }
+            }
+
+            let output = child.wait_with_output().with_context(|| {
+                format!(
+                    "{}: failed to wait for '{}' for {}",
+                    label, cmd, artifact_str
+                )
+            })?;
+
+            // Capture output BEFORE the error bail so stdout/stderr from a
+            // failed signing command is still logged when `output: true`.
+            let stdout_str = String::from_utf8_lossy(&output.stdout).to_string();
+            let stderr_str = String::from_utf8_lossy(&output.stderr).to_string();
+
+            if sign_cfg.output.unwrap_or(false) {
+                if !stdout_str.is_empty() {
+                    log.status(&format!("[{} stdout] {}", label, stdout_str.trim()));
+                }
+                if !stderr_str.is_empty() {
+                    log.status(&format!("[{} stderr] {}", label, stderr_str.trim()));
+                }
+            }
+
+            // Now check exit status (bails on non-zero).
+            log.check_output(output, &cmd)?;
+        }
+
+        // Register all signature/certificate artifacts collected during this sign config.
+        for artifact in new_signature_artifacts {
+            ctx.artifacts.add(artifact);
+        }
+    }
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // SignStage
 // ---------------------------------------------------------------------------
 
@@ -126,159 +415,62 @@ impl Stage for SignStage {
 
     fn run(&self, ctx: &mut Context) -> Result<()> {
         let log = ctx.logger("sign");
+
         // ----------------------------------------------------------------
         // GPG / generic signing via `signs` config (supports multiple)
         // ----------------------------------------------------------------
         let sign_configs = ctx.config.signs.clone();
-        for sign_cfg in &sign_configs {
-            let filter = sign_cfg.artifacts.as_deref().unwrap_or("checksum");
+        process_sign_configs(
+            &sign_configs,
+            ctx,
+            &log,
+            ArtifactFilter::FromConfig,
+            "sign",
+        )?;
 
-            if filter == "none" {
-                continue;
-            }
-
-            let cmd = sign_cfg.cmd.as_deref().unwrap_or("gpg").to_string();
-
-            let args = sign_cfg.args.clone().unwrap_or_else(|| {
-                vec![
-                    "--output".to_string(),
-                    "{{ .Signature }}".to_string(),
-                    "--detach-sig".to_string(),
-                    "{{ .Artifact }}".to_string(),
-                ]
-            });
-
-            // Collect matching artifacts (avoid holding an immutable borrow
-            // while we later add new ones, so clone paths up-front).
-            let artifact_paths: Vec<(
-                std::path::PathBuf,
-                std::collections::HashMap<String, String>,
-            )> = ctx
-                .artifacts
-                .all()
-                .iter()
-                .filter(|a| {
-                    if !should_sign_artifact(a.kind, filter) {
-                        return false;
-                    }
-                    // If `ids` filter is set, only sign artifacts whose metadata
-                    // contains a matching "id" or "name" entry.
-                    if let Some(ref ids) = sign_cfg.ids {
-                        let matches_id = a
-                            .metadata
-                            .get("id")
-                            .map(|id| ids.contains(id))
-                            .unwrap_or(false);
-                        let matches_name = a
-                            .metadata
-                            .get("name")
-                            .map(|name| ids.contains(name))
-                            .unwrap_or(false);
-                        return matches_id || matches_name;
-                    }
-                    true
-                })
-                .map(|a| (a.path.clone(), a.metadata.clone()))
-                .collect();
-
-            for (artifact_path, _metadata) in &artifact_paths {
-                let artifact_str = artifact_path.to_string_lossy();
-                let signature_str = resolve_signature_path(sign_cfg, &artifact_str, ctx, &log);
-
-                // Resolve the certificate path from template if configured.
-                let certificate_str = sign_cfg.certificate.as_ref().map(|tmpl| {
-                    let preprocessed = tmpl
-                        .replace("{{ .Artifact }}", &artifact_str)
-                        .replace("{{ Artifact }}", &artifact_str);
-                    ctx.render_template(&preprocessed).unwrap_or_else(|e| {
-                        log.warn(&format!(
-                            "failed to render certificate template '{}': {}, using raw value",
-                            tmpl, e
-                        ));
-                        preprocessed
-                    })
-                });
-
-                let resolved = resolve_sign_args(
-                    &args,
-                    artifact_str.as_ref(),
-                    &signature_str,
-                    certificate_str.as_deref(),
-                );
-
-                // Also resolve any remaining template variables (e.g., {{ .Env.GPG_FINGERPRINT }})
-                let fully_resolved: Vec<String> = resolved
-                    .iter()
-                    .map(|arg| {
-                        ctx.render_template(arg).unwrap_or_else(|e| {
-                            log.warn(&format!(
-                                "failed to render sign arg '{}': {}, using raw value",
-                                arg, e
-                            ));
-                            arg.clone()
-                        })
-                    })
-                    .collect();
-
-                if ctx.is_dry_run() {
-                    log.status(&format!(
-                        "(dry-run) would run: {} {}",
-                        cmd,
-                        fully_resolved.join(" ")
-                    ));
-                    continue;
-                }
-
-                let id_label = sign_cfg.id.as_deref().unwrap_or("default");
-                log.status(&format!(
-                    "[{}] signing {} -> {}",
-                    id_label, artifact_str, signature_str
-                ));
-
-                let (stdin_cfg, stdin_data) = prepare_stdin(sign_cfg)?;
-
-                let mut command = Command::new(&cmd);
-                command
-                    .args(&fully_resolved)
-                    .stdin(stdin_cfg)
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped());
-
-                // Merge custom env vars if configured.
-                if let Some(ref env_vars) = sign_cfg.env {
-                    command.envs(env_vars);
-                }
-
-                let mut child = command.spawn().with_context(|| {
-                    format!("sign: failed to spawn '{}' for {}", cmd, artifact_str)
-                })?;
-
-                if let Some(data) = stdin_data {
-                    if let Some(mut child_stdin) = child.stdin.take() {
-                        child_stdin.write_all(&data).with_context(|| {
-                            format!("sign: failed to write stdin for {}", artifact_str)
-                        })?;
-                        drop(child_stdin); // Explicitly close stdin so child sees EOF
-                    } else {
-                        log.warn(&format!(
-                            "sign: stdin data provided but child process stdin unavailable for {}",
-                            artifact_str
-                        ));
-                    }
-                }
-
-                let output = child.wait_with_output().with_context(|| {
-                    format!("sign: failed to wait for '{}' for {}", cmd, artifact_str)
-                })?;
-                log.check_output(output, &cmd)?;
-            }
-        }
+        // ----------------------------------------------------------------
+        // Binary-specific signing via `binary_signs` config
+        // Same as `signs` but always filters to Binary artifacts only.
+        // ----------------------------------------------------------------
+        let binary_sign_configs = ctx.config.binary_signs.clone();
+        process_sign_configs(
+            &binary_sign_configs,
+            ctx,
+            &log,
+            ArtifactFilter::BinaryOnly,
+            "binary-sign",
+        )?;
 
         // ----------------------------------------------------------------
         // Docker image signing via `docker_signs` config
         // ----------------------------------------------------------------
         if let Some(docker_signs) = ctx.config.docker_signs.clone() {
             for docker_sign_cfg in &docker_signs {
+                // Evaluate the `if` conditional template for docker signs.
+                // (See comment in process_sign_configs for why this uses
+                // inverted logic compared to `disable`.)
+                if let Some(ref condition) = docker_sign_cfg.if_condition {
+                    match ctx.render_template(condition) {
+                        Ok(result) => {
+                            let trimmed = result.trim();
+                            if trimmed.is_empty() || trimmed == "false" {
+                                log.verbose(&format!(
+                                    "skipping docker-sign config: if condition evaluated to '{}'",
+                                    trimmed
+                                ));
+                                continue;
+                            }
+                        }
+                        Err(e) => {
+                            log.warn(&format!(
+                                "docker-sign if condition render failed ({}), skipping: {}",
+                                condition, e
+                            ));
+                            continue;
+                        }
+                    }
+                }
+
                 let cmd = docker_sign_cfg
                     .cmd
                     .as_deref()
@@ -323,8 +515,19 @@ impl Stage for SignStage {
                     .map(|a| (a.path.clone(), a.metadata.clone()))
                     .collect();
 
-                for (image_path, _metadata) in &image_paths {
+                for (image_path, metadata) in &image_paths {
                     let image_str = image_path.to_string_lossy();
+
+                    // Set docker-specific template variables from artifact metadata.
+                    // `digest` — the docker image digest (e.g., sha256:abc123...)
+                    // `artifactID` — the artifact's id field from metadata
+                    // Always set (even to empty) to avoid stale values from a
+                    // previous iteration leaking to this image.
+                    ctx.template_vars_mut()
+                        .set("digest", metadata.get("digest").map(|s| s.as_str()).unwrap_or(""));
+                    ctx.template_vars_mut()
+                        .set("artifactID", metadata.get("id").map(|s| s.as_str()).unwrap_or(""));
+
                     // For Docker images the "signature" concept is embedded;
                     // use a placeholder `.sig` path to satisfy the template
                     // if the user has {{ .Signature }} in their args.
@@ -358,20 +561,30 @@ impl Stage for SignStage {
                     log.status(&format!("docker-sign {}", image_str));
 
                     // Prepare stdin piping for docker signs.
-                    let (stdin_cfg, stdin_data) = prepare_docker_stdin(docker_sign_cfg)?;
+                    let (stdin_cfg, stdin_data) = prepare_stdin_from(
+                        docker_sign_cfg.stdin.as_deref(),
+                        docker_sign_cfg.stdin_file.as_deref(),
+                        "docker-sign",
+                    )?;
 
-                    let mut child = Command::new(&cmd)
+                    let mut command = Command::new(&cmd);
+                    command
                         .args(&fully_resolved)
                         .stdin(stdin_cfg)
                         .stdout(Stdio::piped())
-                        .stderr(Stdio::piped())
-                        .spawn()
-                        .with_context(|| {
-                            format!(
-                                "sign: failed to spawn '{}' for docker image {}",
-                                cmd, image_str
-                            )
-                        })?;
+                        .stderr(Stdio::piped());
+
+                    // Merge custom env vars if configured on docker sign.
+                    if let Some(ref env_vars) = docker_sign_cfg.env {
+                        command.envs(env_vars);
+                    }
+
+                    let mut child = command.spawn().with_context(|| {
+                        format!(
+                            "sign: failed to spawn '{}' for docker image {}",
+                            cmd, image_str
+                        )
+                    })?;
 
                     if let Some(data) = stdin_data {
                         if let Some(mut child_stdin) = child.stdin.take() {
@@ -396,9 +609,30 @@ impl Stage for SignStage {
                             cmd, image_str
                         )
                     })?;
+
+                    // Capture output BEFORE the error bail so stdout/stderr from
+                    // a failed docker signing command is still logged.
+                    let stdout_str = String::from_utf8_lossy(&output.stdout).to_string();
+                    let stderr_str = String::from_utf8_lossy(&output.stderr).to_string();
+
+                    if docker_sign_cfg.output.unwrap_or(false) {
+                        if !stdout_str.is_empty() {
+                            log.status(&format!("[docker-sign stdout] {}", stdout_str.trim()));
+                        }
+                        if !stderr_str.is_empty() {
+                            log.status(&format!("[docker-sign stderr] {}", stderr_str.trim()));
+                        }
+                    }
+
+                    // Now check exit status (bails on non-zero).
                     log.check_output(output, &cmd)?;
                 }
             }
+
+            // Clear docker-specific template vars so they don't leak to
+            // downstream stages that may inspect the template context.
+            ctx.template_vars_mut().set("digest", "");
+            ctx.template_vars_mut().set("artifactID", "");
         }
 
         Ok(())
@@ -479,6 +713,51 @@ mod tests {
     }
 
     #[test]
+    fn test_filter_artifacts_installer() {
+        assert!(should_sign_artifact(ArtifactKind::Installer, "installer"));
+        assert!(!should_sign_artifact(ArtifactKind::Binary, "installer"));
+        assert!(!should_sign_artifact(ArtifactKind::Archive, "installer"));
+        assert!(!should_sign_artifact(ArtifactKind::Checksum, "installer"));
+        assert!(!should_sign_artifact(ArtifactKind::LinuxPackage, "installer"));
+    }
+
+    #[test]
+    fn test_filter_artifacts_diskimage() {
+        assert!(should_sign_artifact(ArtifactKind::DiskImage, "diskimage"));
+        assert!(!should_sign_artifact(ArtifactKind::Binary, "diskimage"));
+        assert!(!should_sign_artifact(ArtifactKind::Archive, "diskimage"));
+        assert!(!should_sign_artifact(ArtifactKind::Checksum, "diskimage"));
+        assert!(!should_sign_artifact(ArtifactKind::Installer, "diskimage"));
+    }
+
+    #[test]
+    fn test_filter_artifacts_sbom() {
+        assert!(should_sign_artifact(ArtifactKind::Sbom, "sbom"));
+        assert!(!should_sign_artifact(ArtifactKind::Binary, "sbom"));
+        assert!(!should_sign_artifact(ArtifactKind::Archive, "sbom"));
+        assert!(!should_sign_artifact(ArtifactKind::Checksum, "sbom"));
+        assert!(!should_sign_artifact(ArtifactKind::LinuxPackage, "sbom"));
+    }
+
+    #[test]
+    fn test_filter_artifacts_snap() {
+        assert!(should_sign_artifact(ArtifactKind::Snap, "snap"));
+        assert!(!should_sign_artifact(ArtifactKind::Binary, "snap"));
+        assert!(!should_sign_artifact(ArtifactKind::Archive, "snap"));
+        assert!(!should_sign_artifact(ArtifactKind::Checksum, "snap"));
+        assert!(!should_sign_artifact(ArtifactKind::LinuxPackage, "snap"));
+    }
+
+    #[test]
+    fn test_filter_artifacts_macos_package() {
+        assert!(should_sign_artifact(ArtifactKind::MacOsPackage, "macos_package"));
+        assert!(!should_sign_artifact(ArtifactKind::Binary, "macos_package"));
+        assert!(!should_sign_artifact(ArtifactKind::Archive, "macos_package"));
+        assert!(!should_sign_artifact(ArtifactKind::Checksum, "macos_package"));
+        assert!(!should_sign_artifact(ArtifactKind::Installer, "macos_package"));
+    }
+
+    #[test]
     fn test_stage_skips_without_sign_config() {
         let mut ctx = TestContextBuilder::new().build();
         let stage = SignStage;
@@ -513,6 +792,8 @@ mod tests {
                 stdin_file: None,
                 env: None,
                 certificate: None,
+                output: None,
+                if_condition: None,
             },
             SignConfig {
                 id: Some("cosign".to_string()),
@@ -525,6 +806,8 @@ mod tests {
                 stdin_file: None,
                 env: None,
                 certificate: None,
+                output: None,
+                if_condition: None,
             },
         ];
 
@@ -558,12 +841,22 @@ mod tests {
         assert!(should_sign_artifact(ArtifactKind::Binary, "all"));
         assert!(should_sign_artifact(ArtifactKind::Checksum, "all"));
         assert!(should_sign_artifact(ArtifactKind::LinuxPackage, "all"));
+        assert!(should_sign_artifact(ArtifactKind::Installer, "all"));
+        assert!(should_sign_artifact(ArtifactKind::DiskImage, "all"));
+        assert!(should_sign_artifact(ArtifactKind::Sbom, "all"));
+        assert!(should_sign_artifact(ArtifactKind::Snap, "all"));
+        assert!(should_sign_artifact(ArtifactKind::MacOsPackage, "all"));
 
         // "none" matches nothing
         assert!(!should_sign_artifact(ArtifactKind::Archive, "none"));
         assert!(!should_sign_artifact(ArtifactKind::Binary, "none"));
         assert!(!should_sign_artifact(ArtifactKind::Checksum, "none"));
         assert!(!should_sign_artifact(ArtifactKind::LinuxPackage, "none"));
+        assert!(!should_sign_artifact(ArtifactKind::Installer, "none"));
+        assert!(!should_sign_artifact(ArtifactKind::DiskImage, "none"));
+        assert!(!should_sign_artifact(ArtifactKind::Sbom, "none"));
+        assert!(!should_sign_artifact(ArtifactKind::Snap, "none"));
+        assert!(!should_sign_artifact(ArtifactKind::MacOsPackage, "none"));
 
         // "archive" only matches Archive
         assert!(should_sign_artifact(ArtifactKind::Archive, "archive"));
@@ -577,6 +870,26 @@ mod tests {
         // "package" only matches LinuxPackage
         assert!(should_sign_artifact(ArtifactKind::LinuxPackage, "package"));
         assert!(!should_sign_artifact(ArtifactKind::Archive, "package"));
+
+        // "installer" only matches Installer
+        assert!(should_sign_artifact(ArtifactKind::Installer, "installer"));
+        assert!(!should_sign_artifact(ArtifactKind::Archive, "installer"));
+
+        // "diskimage" only matches DiskImage
+        assert!(should_sign_artifact(ArtifactKind::DiskImage, "diskimage"));
+        assert!(!should_sign_artifact(ArtifactKind::Archive, "diskimage"));
+
+        // "sbom" only matches Sbom
+        assert!(should_sign_artifact(ArtifactKind::Sbom, "sbom"));
+        assert!(!should_sign_artifact(ArtifactKind::Archive, "sbom"));
+
+        // "snap" only matches Snap
+        assert!(should_sign_artifact(ArtifactKind::Snap, "snap"));
+        assert!(!should_sign_artifact(ArtifactKind::Archive, "snap"));
+
+        // "macos_package" only matches MacOsPackage
+        assert!(should_sign_artifact(ArtifactKind::MacOsPackage, "macos_package"));
+        assert!(!should_sign_artifact(ArtifactKind::Archive, "macos_package"));
 
         // Unknown filter defaults to checksum
         assert!(should_sign_artifact(
@@ -606,6 +919,8 @@ mod tests {
             stdin_file: None,
             env: None,
             certificate: None,
+            output: None,
+            if_condition: None,
         };
 
         let filter = sign_cfg.artifacts.as_deref().unwrap_or("checksum");
@@ -733,6 +1048,8 @@ mod tests {
             stdin_file: None,
             env: None,
             certificate: None,
+            output: None,
+            if_condition: None,
         }];
 
         let mut ctx = TestContextBuilder::new()
@@ -813,6 +1130,8 @@ mod tests {
             stdin_file: None,
             env: None,
             certificate: None,
+            output: None,
+            if_condition: None,
         }];
 
         let mut ctx = TestContextBuilder::new().signs(signs).build();
@@ -852,6 +1171,8 @@ mod tests {
             stdin_file: None,
             env: None,
             certificate: None,
+            output: None,
+            if_condition: None,
         }];
 
         let mut ctx = TestContextBuilder::new()
@@ -892,6 +1213,8 @@ mod tests {
             stdin_file: None,
             env: None,
             certificate: None,
+            output: None,
+            if_condition: None,
         }];
 
         let mut ctx = TestContextBuilder::new()
@@ -950,9 +1273,15 @@ mod tests {
             stdin_file: Some("/nonexistent/stdin_file.txt".to_string()),
             env: None,
             certificate: None,
+            output: None,
+            if_condition: None,
         };
 
-        let result = prepare_stdin(&sign_cfg);
+        let result = prepare_stdin_from(
+            sign_cfg.stdin.as_deref(),
+            sign_cfg.stdin_file.as_deref(),
+            "sign",
+        );
         assert!(
             result.is_err(),
             "missing stdin_file should produce an error"
@@ -1056,6 +1385,8 @@ stdin_file: "/path/to/password"
             stdin_file: None,
             env: Some(env_map),
             certificate: None,
+            output: None,
+            if_condition: None,
         }];
 
         // Create a real artifact file so the command runs
@@ -1105,6 +1436,10 @@ stdin_file: "/path/to/password"
             ids: Some(vec!["prod-image".to_string()]),
             stdin: None,
             stdin_file: None,
+            id: None,
+            env: None,
+            output: None,
+            if_condition: None,
         }];
 
         let mut ctx = TestContextBuilder::new().dry_run(true).build();
@@ -1192,6 +1527,8 @@ stdin_file: "/path/to/password"
             stdin_file: None,
             env: None,
             certificate: Some("{{ .Artifact }}.pem".to_string()),
+            output: None,
+            if_condition: None,
         }];
 
         let mut ctx = TestContextBuilder::new().dry_run(true).signs(signs).build();
@@ -1212,54 +1549,730 @@ stdin_file: "/path/to/password"
     }
 
     #[test]
-    fn test_prepare_docker_stdin_content() {
-        use anodize_core::config::DockerSignConfig;
-
-        let cfg = DockerSignConfig {
-            cmd: Some("cosign".to_string()),
-            args: None,
-            artifacts: None,
-            ids: None,
-            stdin: Some("my-password".to_string()),
-            stdin_file: None,
-        };
-
-        let (_, data) = prepare_docker_stdin(&cfg).unwrap();
+    fn test_prepare_stdin_from_content() {
+        let (_, data) =
+            prepare_stdin_from(Some("my-password"), None, "docker-sign").unwrap();
         assert!(data.is_some());
         assert_eq!(data.unwrap(), b"my-password");
     }
 
     #[test]
-    fn test_prepare_docker_stdin_file_missing() {
-        use anodize_core::config::DockerSignConfig;
-
-        let cfg = DockerSignConfig {
-            cmd: None,
-            args: None,
-            artifacts: None,
-            ids: None,
-            stdin: None,
-            stdin_file: Some("/nonexistent/docker_stdin.txt".to_string()),
-        };
-
-        let result = prepare_docker_stdin(&cfg);
+    fn test_prepare_stdin_from_file_missing() {
+        let result = prepare_stdin_from(
+            None,
+            Some("/nonexistent/docker_stdin.txt"),
+            "docker-sign",
+        );
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_prepare_docker_stdin_inherit() {
+    fn test_prepare_stdin_from_inherit() {
+        let (_, data) = prepare_stdin_from(None, None, "docker-sign").unwrap();
+        assert!(data.is_none());
+    }
+
+    #[test]
+    fn test_sign_stage_registers_signature_artifacts_dry_run() {
+        use anodize_core::artifact::{Artifact, ArtifactKind};
+
+        let signs = vec![SignConfig {
+            id: Some("gpg".to_string()),
+            cmd: Some("gpg".to_string()),
+            args: Some(vec![
+                "--output".to_string(),
+                "{{ .Signature }}".to_string(),
+                "--detach-sig".to_string(),
+                "{{ .Artifact }}".to_string(),
+            ]),
+            artifacts: Some("checksum".to_string()),
+            ids: None,
+            signature: None,
+            stdin: None,
+            stdin_file: None,
+            env: None,
+            certificate: None,
+            output: None,
+            if_condition: None,
+        }];
+
+        let mut ctx = TestContextBuilder::new().dry_run(true).signs(signs).build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Checksum,
+            path: std::path::PathBuf::from("/tmp/checksums.sha256"),
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+        });
+
+        let stage = SignStage;
+        stage.run(&mut ctx).unwrap();
+
+        // The signature artifact should be registered even in dry-run mode.
+        let metadata_artifacts = ctx.artifacts.by_kind(ArtifactKind::Metadata);
+        assert_eq!(
+            metadata_artifacts.len(),
+            1,
+            "should register one signature artifact"
+        );
+        let sig = &metadata_artifacts[0];
+        assert_eq!(sig.metadata.get("type").unwrap(), "Signature");
+        assert_eq!(sig.crate_name, "myapp");
+        assert_eq!(
+            sig.path,
+            std::path::PathBuf::from("/tmp/checksums.sha256.sig")
+        );
+    }
+
+    #[test]
+    fn test_sign_stage_registers_certificate_artifacts_dry_run() {
+        use anodize_core::artifact::{Artifact, ArtifactKind};
+
+        let signs = vec![SignConfig {
+            id: Some("cosign".to_string()),
+            cmd: Some("cosign".to_string()),
+            args: Some(vec![
+                "sign-blob".to_string(),
+                "{{ .Artifact }}".to_string(),
+            ]),
+            artifacts: Some("checksum".to_string()),
+            ids: None,
+            signature: None,
+            stdin: None,
+            stdin_file: None,
+            env: None,
+            certificate: Some("{{ .Artifact }}.pem".to_string()),
+            output: None,
+            if_condition: None,
+        }];
+
+        let mut ctx = TestContextBuilder::new().dry_run(true).signs(signs).build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Checksum,
+            path: std::path::PathBuf::from("/tmp/checksums.sha256"),
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+        });
+
+        let stage = SignStage;
+        stage.run(&mut ctx).unwrap();
+
+        // Should register both a signature and a certificate artifact.
+        let metadata_artifacts = ctx.artifacts.by_kind(ArtifactKind::Metadata);
+        assert_eq!(
+            metadata_artifacts.len(),
+            2,
+            "should register signature + certificate artifacts"
+        );
+
+        let types: Vec<&str> = metadata_artifacts
+            .iter()
+            .map(|a| a.metadata.get("type").unwrap().as_str())
+            .collect();
+        assert!(types.contains(&"Signature"), "should have a Signature artifact");
+        assert!(
+            types.contains(&"Certificate"),
+            "should have a Certificate artifact"
+        );
+    }
+
+    #[test]
+    fn test_docker_sign_id_config_parsing() {
+        let yaml = r#"
+id: "my-docker-signer"
+cmd: "cosign"
+"#;
+        let cfg: anodize_core::config::DockerSignConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.id.as_deref(), Some("my-docker-signer"));
+    }
+
+    #[test]
+    fn test_docker_sign_env_config_parsing() {
+        let yaml = r#"
+cmd: "cosign"
+env:
+  COSIGN_EXPERIMENTAL: "1"
+  REGISTRY_TOKEN: "secret"
+"#;
+        let cfg: anodize_core::config::DockerSignConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let env = cfg.env.unwrap();
+        assert_eq!(env.get("COSIGN_EXPERIMENTAL").unwrap(), "1");
+        assert_eq!(env.get("REGISTRY_TOKEN").unwrap(), "secret");
+    }
+
+    #[test]
+    fn test_docker_sign_env_vars_passed_to_command() {
+        // Verify that custom env vars reach the docker signing command.
+        use anodize_core::artifact::{Artifact, ArtifactKind};
         use anodize_core::config::DockerSignConfig;
 
-        let cfg = DockerSignConfig {
-            cmd: None,
-            args: None,
-            artifacts: None,
+        let tmp = tempfile::TempDir::new().unwrap();
+        let marker_path = tmp.path().join("docker_env_check.txt");
+        let marker_str = marker_path.to_string_lossy().to_string();
+
+        let mut env_map = std::collections::HashMap::new();
+        env_map.insert(
+            "ANODIZE_TEST_DOCKER_ENV".to_string(),
+            "docker_hello".to_string(),
+        );
+
+        let docker_signs = vec![DockerSignConfig {
+            id: Some("test-env".to_string()),
+            cmd: Some("sh".to_string()),
+            args: Some(vec![
+                "-c".to_string(),
+                format!("echo $ANODIZE_TEST_DOCKER_ENV > {}", marker_str),
+            ]),
+            artifacts: Some("all".to_string()),
             ids: None,
             stdin: None,
             stdin_file: None,
-        };
+            env: Some(env_map),
+            output: None,
+            if_condition: None,
+        }];
 
-        let (_, data) = prepare_docker_stdin(&cfg).unwrap();
-        assert!(data.is_none());
+        let mut ctx = TestContextBuilder::new().dry_run(false).build();
+        ctx.config.docker_signs = Some(docker_signs);
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::DockerImage,
+            path: std::path::PathBuf::from("ghcr.io/test/app:latest"),
+            target: None,
+            crate_name: "test".to_string(),
+            metadata: Default::default(),
+        });
+
+        let stage = SignStage;
+        stage.run(&mut ctx).unwrap();
+
+        let env_output = std::fs::read_to_string(&marker_path).unwrap();
+        assert_eq!(
+            env_output.trim(),
+            "docker_hello",
+            "ANODIZE_TEST_DOCKER_ENV should have been passed to the docker signing command"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 7: sign stage parity — output, if, binary_signs, docker vars
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sign_config_output_field_parsing() {
+        let yaml = r#"
+cmd: "gpg"
+output: true
+"#;
+        let cfg: SignConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.output, Some(true));
+    }
+
+    #[test]
+    fn test_sign_config_if_field_parsing() {
+        let yaml = r#"
+cmd: "gpg"
+if: "{{ IsSnapshot }}"
+"#;
+        let cfg: SignConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.if_condition.as_deref(), Some("{{ IsSnapshot }}"));
+    }
+
+    #[test]
+    fn test_sign_config_output_and_if_together() {
+        let yaml = r#"
+cmd: "cosign"
+output: true
+if: "{{ IsSnapshot }}"
+artifacts: all
+"#;
+        let cfg: SignConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.output, Some(true));
+        assert_eq!(cfg.if_condition.as_deref(), Some("{{ IsSnapshot }}"));
+        assert_eq!(cfg.artifacts.as_deref(), Some("all"));
+    }
+
+    #[test]
+    fn test_sign_config_output_defaults_to_none() {
+        let cfg = SignConfig::default();
+        assert!(cfg.output.is_none());
+        assert!(cfg.if_condition.is_none());
+    }
+
+    #[test]
+    fn test_binary_signs_config_parsing() {
+        let yaml = r#"
+project_name: test
+binary_signs:
+  - cmd: gpg
+    artifacts: all
+  - cmd: cosign
+    args:
+      - sign-blob
+crates: []
+"#;
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(config.binary_signs.len(), 2);
+        assert_eq!(config.binary_signs[0].cmd.as_deref(), Some("gpg"));
+        assert_eq!(config.binary_signs[1].cmd.as_deref(), Some("cosign"));
+    }
+
+    #[test]
+    fn test_binary_signs_singular_alias() {
+        let yaml = r#"
+project_name: test
+binary_sign:
+  cmd: gpg
+  artifacts: all
+crates: []
+"#;
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(config.binary_signs.len(), 1);
+        assert_eq!(config.binary_signs[0].cmd.as_deref(), Some("gpg"));
+    }
+
+    #[test]
+    fn test_binary_signs_defaults_to_empty() {
+        let yaml = "project_name: test\ncrates: []";
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(config.binary_signs.is_empty());
+    }
+
+    #[test]
+    fn test_if_condition_false_skips_sign() {
+        use anodize_core::artifact::{Artifact, ArtifactKind};
+
+        // Sign config with if: "false" — should be skipped entirely.
+        // If not skipped, the nonexistent binary would cause an error.
+        let signs = vec![SignConfig {
+            id: Some("skipped".to_string()),
+            cmd: Some("/nonexistent/sign-tool".to_string()),
+            args: Some(vec!["sign".to_string()]),
+            artifacts: Some("checksum".to_string()),
+            ids: None,
+            signature: None,
+            stdin: None,
+            stdin_file: None,
+            env: None,
+            certificate: None,
+            output: None,
+            if_condition: Some("false".to_string()),
+        }];
+
+        let mut ctx = TestContextBuilder::new().dry_run(false).signs(signs).build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Checksum,
+            path: std::path::PathBuf::from("/tmp/checksums.sha256"),
+            target: None,
+            crate_name: "test".to_string(),
+            metadata: Default::default(),
+        });
+
+        let stage = SignStage;
+        assert!(
+            stage.run(&mut ctx).is_ok(),
+            "if condition 'false' should skip the sign config"
+        );
+    }
+
+    #[test]
+    fn test_if_condition_true_proceeds() {
+        use anodize_core::artifact::{Artifact, ArtifactKind};
+
+        // Sign config with if: "true" — should proceed normally.
+        // Uses "echo" which always succeeds.
+        let signs = vec![SignConfig {
+            id: Some("active".to_string()),
+            cmd: Some("echo".to_string()),
+            args: Some(vec!["signing".to_string()]),
+            artifacts: Some("checksum".to_string()),
+            ids: None,
+            signature: None,
+            stdin: None,
+            stdin_file: None,
+            env: None,
+            certificate: None,
+            output: None,
+            if_condition: Some("true".to_string()),
+        }];
+
+        let mut ctx = TestContextBuilder::new().dry_run(true).signs(signs).build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Checksum,
+            path: std::path::PathBuf::from("/tmp/checksums.sha256"),
+            target: None,
+            crate_name: "test".to_string(),
+            metadata: Default::default(),
+        });
+
+        let stage = SignStage;
+        assert!(
+            stage.run(&mut ctx).is_ok(),
+            "if condition 'true' should proceed with sign config"
+        );
+
+        // Verify the signature artifact was registered (proves the config was not skipped)
+        let metadata_artifacts = ctx.artifacts.by_kind(ArtifactKind::Metadata);
+        assert!(
+            !metadata_artifacts.is_empty(),
+            "sign config with if='true' should register signature artifacts"
+        );
+    }
+
+    #[test]
+    fn test_if_condition_empty_skips_sign() {
+        use anodize_core::artifact::{Artifact, ArtifactKind};
+
+        // A template that renders to empty should skip the config.
+        // "{{ IsSnapshot }}" is "false" in non-snapshot mode, but let's test
+        // an explicitly empty result.
+        let signs = vec![SignConfig {
+            id: Some("skipped".to_string()),
+            cmd: Some("/nonexistent/sign-tool".to_string()),
+            args: Some(vec!["sign".to_string()]),
+            artifacts: Some("checksum".to_string()),
+            ids: None,
+            signature: None,
+            stdin: None,
+            stdin_file: None,
+            env: None,
+            certificate: None,
+            output: None,
+            // A template that renders to empty string
+            if_condition: Some("".to_string()),
+        }];
+
+        let mut ctx = TestContextBuilder::new().dry_run(false).signs(signs).build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Checksum,
+            path: std::path::PathBuf::from("/tmp/checksums.sha256"),
+            target: None,
+            crate_name: "test".to_string(),
+            metadata: Default::default(),
+        });
+
+        let stage = SignStage;
+        assert!(
+            stage.run(&mut ctx).is_ok(),
+            "empty if condition should skip the sign config"
+        );
+    }
+
+    #[test]
+    fn test_if_condition_snapshot_template() {
+        use anodize_core::artifact::{Artifact, ArtifactKind};
+
+        // When snapshot mode is active, IsSnapshot = "true".
+        // This sign config with if: "{{ IsSnapshot }}" should only run
+        // when in snapshot mode.
+        let signs = vec![SignConfig {
+            id: Some("snapshot-only".to_string()),
+            cmd: Some("/nonexistent/sign-tool".to_string()),
+            args: Some(vec!["sign".to_string()]),
+            artifacts: Some("checksum".to_string()),
+            ids: None,
+            signature: None,
+            stdin: None,
+            stdin_file: None,
+            env: None,
+            certificate: None,
+            output: None,
+            if_condition: Some("{{ IsSnapshot }}".to_string()),
+        }];
+
+        // Non-snapshot mode: IsSnapshot = "false" → should skip
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(false)
+            .dry_run(false)
+            .signs(signs.clone())
+            .build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Checksum,
+            path: std::path::PathBuf::from("/tmp/checksums.sha256"),
+            target: None,
+            crate_name: "test".to_string(),
+            metadata: Default::default(),
+        });
+
+        let stage = SignStage;
+        assert!(
+            stage.run(&mut ctx).is_ok(),
+            "non-snapshot should skip sign config with if={{ IsSnapshot }}"
+        );
+
+        // Snapshot mode: IsSnapshot = "true" → should proceed (but uses
+        // nonexistent binary, so it will error — prove it tries to run).
+        let mut ctx_snap = TestContextBuilder::new()
+            .snapshot(true)
+            .dry_run(false)
+            .signs(signs)
+            .build();
+
+        ctx_snap.artifacts.add(Artifact {
+            kind: ArtifactKind::Checksum,
+            path: std::path::PathBuf::from("/tmp/checksums.sha256"),
+            target: None,
+            crate_name: "test".to_string(),
+            metadata: Default::default(),
+        });
+
+        let result = stage.run(&mut ctx_snap);
+        assert!(
+            result.is_err(),
+            "snapshot mode should attempt to run the sign command (and fail with nonexistent binary)"
+        );
+    }
+
+    #[test]
+    fn test_binary_signs_only_signs_binaries() {
+        use anodize_core::artifact::{Artifact, ArtifactKind};
+
+        let binary_signs = vec![SignConfig {
+            id: Some("binary-gpg".to_string()),
+            cmd: Some("echo".to_string()),
+            args: Some(vec!["signing-binary".to_string()]),
+            // Even if artifacts says "all", binary_signs should only sign binaries
+            artifacts: Some("all".to_string()),
+            ids: None,
+            signature: None,
+            stdin: None,
+            stdin_file: None,
+            env: None,
+            certificate: None,
+            output: None,
+            if_condition: None,
+        }];
+
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(true)
+            .binary_signs(binary_signs)
+            .build();
+
+        // Add a binary and an archive artifact
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: std::path::PathBuf::from("/tmp/myapp"),
+            target: None,
+            crate_name: "test".to_string(),
+            metadata: Default::default(),
+        });
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from("/tmp/myapp.tar.gz"),
+            target: None,
+            crate_name: "test".to_string(),
+            metadata: Default::default(),
+        });
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Checksum,
+            path: std::path::PathBuf::from("/tmp/checksums.sha256"),
+            target: None,
+            crate_name: "test".to_string(),
+            metadata: Default::default(),
+        });
+
+        let stage = SignStage;
+        stage.run(&mut ctx).unwrap();
+
+        // Only the binary should have generated a signature artifact
+        let metadata_artifacts = ctx.artifacts.by_kind(ArtifactKind::Metadata);
+        assert_eq!(
+            metadata_artifacts.len(),
+            1,
+            "binary_signs should only sign Binary artifacts, not Archive or Checksum"
+        );
+        assert_eq!(
+            metadata_artifacts[0].path,
+            std::path::PathBuf::from("/tmp/myapp.sig")
+        );
+    }
+
+    #[test]
+    fn test_binary_signs_if_condition_works() {
+        use anodize_core::artifact::{Artifact, ArtifactKind};
+
+        // binary_signs with if: "false" should be skipped
+        let binary_signs = vec![SignConfig {
+            id: Some("skipped".to_string()),
+            cmd: Some("/nonexistent/sign-tool".to_string()),
+            args: Some(vec!["sign".to_string()]),
+            artifacts: Some("all".to_string()),
+            ids: None,
+            signature: None,
+            stdin: None,
+            stdin_file: None,
+            env: None,
+            certificate: None,
+            output: None,
+            if_condition: Some("false".to_string()),
+        }];
+
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(false)
+            .binary_signs(binary_signs)
+            .build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: std::path::PathBuf::from("/tmp/myapp"),
+            target: None,
+            crate_name: "test".to_string(),
+            metadata: Default::default(),
+        });
+
+        let stage = SignStage;
+        assert!(
+            stage.run(&mut ctx).is_ok(),
+            "binary_signs with if=false should be skipped"
+        );
+    }
+
+    #[test]
+    fn test_docker_sign_digest_and_artifact_id_template_vars() {
+        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use anodize_core::config::DockerSignConfig;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let marker_path = tmp.path().join("docker_vars.txt");
+        let marker_str = marker_path.to_string_lossy().to_string();
+
+        // Use sh -c to capture template-resolved variables
+        let docker_signs = vec![DockerSignConfig {
+            id: Some("test-vars".to_string()),
+            cmd: Some("sh".to_string()),
+            args: Some(vec![
+                "-c".to_string(),
+                format!(
+                    "echo \"digest={{{{ digest }}}} artifactID={{{{ artifactID }}}}\" > {}",
+                    marker_str
+                ),
+            ]),
+            artifacts: Some("all".to_string()),
+            ids: None,
+            stdin: None,
+            stdin_file: None,
+            env: None,
+            output: None,
+            if_condition: None,
+        }];
+
+        let mut ctx = TestContextBuilder::new().dry_run(false).build();
+        ctx.config.docker_signs = Some(docker_signs);
+
+        // Add a docker image with digest and id metadata
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert(
+            "digest".to_string(),
+            "sha256:abc123def456".to_string(),
+        );
+        metadata.insert("id".to_string(), "my-docker-image".to_string());
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::DockerImage,
+            path: std::path::PathBuf::from("ghcr.io/myorg/app:latest"),
+            target: None,
+            crate_name: "test".to_string(),
+            metadata,
+        });
+
+        let stage = SignStage;
+        stage.run(&mut ctx).unwrap();
+
+        let output = std::fs::read_to_string(&marker_path).unwrap();
+        assert!(
+            output.contains("digest=sha256:abc123def456"),
+            "digest template var should resolve from metadata, got: {}",
+            output.trim()
+        );
+        assert!(
+            output.contains("artifactID=my-docker-image"),
+            "artifactID template var should resolve from metadata, got: {}",
+            output.trim()
+        );
+    }
+
+    #[test]
+    fn test_docker_sign_without_digest_metadata_still_works() {
+        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use anodize_core::config::DockerSignConfig;
+
+        // Docker image without digest/id metadata — should still work
+        let docker_signs = vec![DockerSignConfig {
+            id: Some("test-no-meta".to_string()),
+            cmd: Some("echo".to_string()),
+            args: Some(vec!["sign".to_string(), "{{ .Artifact }}".to_string()]),
+            artifacts: Some("all".to_string()),
+            ids: None,
+            stdin: None,
+            stdin_file: None,
+            env: None,
+            output: None,
+            if_condition: None,
+        }];
+
+        let mut ctx = TestContextBuilder::new().dry_run(true).build();
+        ctx.config.docker_signs = Some(docker_signs);
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::DockerImage,
+            path: std::path::PathBuf::from("ghcr.io/myorg/app:latest"),
+            target: None,
+            crate_name: "test".to_string(),
+            metadata: Default::default(),
+        });
+
+        let stage = SignStage;
+        assert!(
+            stage.run(&mut ctx).is_ok(),
+            "docker sign without digest/id metadata should still work in dry-run"
+        );
+    }
+
+    #[test]
+    fn test_output_capture_with_real_command() {
+        use anodize_core::artifact::{Artifact, ArtifactKind};
+
+        // Use echo to produce stdout; with output: true it should be captured
+        let signs = vec![SignConfig {
+            id: Some("test-output".to_string()),
+            cmd: Some("echo".to_string()),
+            args: Some(vec!["hello-from-sign".to_string()]),
+            artifacts: Some("checksum".to_string()),
+            ids: None,
+            signature: None,
+            stdin: None,
+            stdin_file: None,
+            env: None,
+            certificate: None,
+            output: Some(true),
+            if_condition: None,
+        }];
+
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(false)
+            .signs(signs)
+            .build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Checksum,
+            path: std::path::PathBuf::from("/tmp/checksums.sha256"),
+            target: None,
+            crate_name: "test".to_string(),
+            metadata: Default::default(),
+        });
+
+        let stage = SignStage;
+        // The command succeeds; output capture should not cause errors
+        assert!(
+            stage.run(&mut ctx).is_ok(),
+            "sign with output: true and a real command should succeed"
+        );
     }
 }

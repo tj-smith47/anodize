@@ -34,14 +34,14 @@ const FORMULA_TEMPLATE: &str = r#"class {{ class_name }} < Formula
     sha256 "{{ entry.sha256 }}"
 {% endfor %}{% endif %}  end
 {% endif %}{% for dep in global_deps %}
-  depends_on "{{ dep.name }}"{% if dep.optional %} => :optional{% endif %}
+  depends_on "{{ dep.name }}"{% if dep.version %} => "{{ dep.version }}"{% elif dep.optional %} => :optional{% endif %}
 {% endfor %}{% for dep in macos_deps %}
   on_macos do
-    depends_on "{{ dep.name }}"{% if dep.optional %} => :optional{% endif %}
+    depends_on "{{ dep.name }}"{% if dep.version %} => "{{ dep.version }}"{% elif dep.optional %} => :optional{% endif %}
   end
 {% endfor %}{% for dep in linux_deps %}
   on_linux do
-    depends_on "{{ dep.name }}"{% if dep.optional %} => :optional{% endif %}
+    depends_on "{{ dep.name }}"{% if dep.version %} => "{{ dep.version }}"{% elif dep.optional %} => :optional{% endif %}
   end
 {% endfor %}{% for c in conflicts %}
   conflicts_with "{{ c.name }}"{% if c.because %}, because: "{{ c.because }}"{% endif %}
@@ -266,6 +266,7 @@ pub fn generate_formula_with_opts(
     struct DepEntry {
         name: String,
         optional: bool,
+        version: Option<String>,
     }
 
     let (global_deps, macos_deps, linux_deps) = if let Some(deps) = opts.dependencies {
@@ -276,6 +277,7 @@ pub fn generate_formula_with_opts(
             let entry = DepEntry {
                 name: d.name.clone(),
                 optional: d.dep_type.as_deref() == Some("optional"),
+                version: d.version.clone(),
             };
             match d.os.as_deref() {
                 Some("mac") | Some("macos") => mac.push(entry),
@@ -355,6 +357,33 @@ pub(crate) fn should_skip_upload(skip_upload: Option<&str>, ctx: &Context) -> bo
     }
 }
 
+/// Render a commit message from an optional Tera template string.
+///
+/// The template receives `name` and `version` variables.  When `template` is
+/// `None` the default `"chore: update {{ name }} <kind> to {{ version }}"` is
+/// used.
+pub(crate) fn render_commit_msg(
+    template: Option<&str>,
+    name: &str,
+    version: &str,
+    kind: &str,
+) -> String {
+    let default_tmpl = format!("chore: update {{{{ name }}}} {} to {{{{ version }}}}", kind);
+    let tmpl = template.unwrap_or(&default_tmpl);
+
+    let mut tera = tera::Tera::default();
+    tera.autoescape_on(vec![]);
+    if tera.add_raw_template("msg", tmpl).is_err() {
+        // If the user template is invalid, fall back to default.
+        return format!("chore: update {} {} to {}", name, kind, version);
+    }
+    let mut ctx = tera::Context::new();
+    ctx.insert("name", name);
+    ctx.insert("version", version);
+    tera.render("msg", &ctx)
+        .unwrap_or_else(|_| format!("chore: update {} {} to {}", name, kind, version))
+}
+
 pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Result<()> {
     let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "homebrew")?;
 
@@ -430,8 +459,11 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
         })
         .collect();
 
+    // Use name override if set, otherwise crate name.
+    let formula_name = hb_cfg.name.as_deref().unwrap_or(crate_name);
+
     let formula = generate_formula_with_opts(
-        crate_name,
+        formula_name,
         &version,
         &archives,
         &description,
@@ -458,7 +490,7 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
     std::fs::create_dir_all(&formula_dir)
         .with_context(|| format!("homebrew: create formula dir {}", formula_dir.display()))?;
 
-    let formula_path = formula_dir.join(format!("{}.rb", crate_name));
+    let formula_path = formula_dir.join(format!("{}.rb", formula_name));
     std::fs::write(&formula_path, &formula)
         .with_context(|| format!("homebrew: write formula {}", formula_path.display()))?;
 
@@ -467,13 +499,26 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
         formula_path.display()
     ));
 
+    // Render commit message from template or use default.
+    let commit_msg = render_commit_msg(
+        hb_cfg.commit_msg_template.as_deref(),
+        formula_name,
+        &version,
+        "formula",
+    );
+
     let formula_lossy = formula_path.to_string_lossy();
-    crate::util::commit_and_push(
+    let commit_opts = crate::util::CommitOptions {
+        author_name: hb_cfg.commit_author_name.as_deref(),
+        author_email: hb_cfg.commit_author_email.as_deref(),
+    };
+    crate::util::commit_and_push_with_opts(
         repo_path,
         &[&formula_lossy],
-        &format!("chore: update {} formula to {}", crate_name, version),
+        &commit_msg,
         None,
         "homebrew",
+        &commit_opts,
     )?;
 
     log.status(&format!(
@@ -934,11 +979,13 @@ mod tests {
                 name: "openssl".to_string(),
                 os: None,
                 dep_type: None,
+                version: None,
             },
             HomebrewDependency {
                 name: "libgit2".to_string(),
                 os: None,
                 dep_type: Some("optional".to_string()),
+                version: None,
             },
         ];
         let opts = FormulaOptions {
@@ -968,11 +1015,13 @@ mod tests {
                 name: "macos-dep".to_string(),
                 os: Some("mac".to_string()),
                 dep_type: None,
+                version: None,
             },
             HomebrewDependency {
                 name: "linux-dep".to_string(),
                 os: Some("linux".to_string()),
                 dep_type: None,
+                version: None,
             },
         ];
         let opts = FormulaOptions {
@@ -1069,6 +1118,7 @@ mod tests {
             name: "openssl".to_string(),
             os: None,
             dep_type: None,
+            version: None,
         }];
         let conflicts = vec![HomebrewConflict::Name("old-tool".to_string())];
         let opts = FormulaOptions {
@@ -1215,5 +1265,143 @@ mod tests {
         let log = StageLogger::new("publish", Verbosity::Normal);
         // Should skip because it's a prerelease and skip_upload = "auto"
         assert!(publish_to_homebrew(&ctx, "pre", &log).is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // Formula name override
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_formula_name_override() {
+        // When HomebrewConfig.name is set, the formula should use the override
+        // name for the class, not the crate name.
+        let formula = generate_formula(
+            "my-custom-name",
+            "1.0.0",
+            &[("linux-amd64", "https://example.com/a.tar.gz", "abc")],
+            "desc",
+            "MIT",
+            "bin.install \"my-custom-name\"",
+            "system \"#{bin}/my-custom-name\"",
+        );
+        assert!(
+            formula.contains("class MyCustomName < Formula"),
+            "formula class name should derive from the name override"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Custom commit message template
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_render_commit_msg_default() {
+        let msg = render_commit_msg(None, "mytool", "1.2.3", "formula");
+        assert_eq!(msg, "chore: update mytool formula to 1.2.3");
+    }
+
+    #[test]
+    fn test_render_commit_msg_custom_template() {
+        let msg = render_commit_msg(
+            Some("release: {{ name }} v{{ version }}"),
+            "mytool",
+            "2.0.0",
+            "formula",
+        );
+        assert_eq!(msg, "release: mytool v2.0.0");
+    }
+
+    #[test]
+    fn test_render_commit_msg_invalid_template_fallback() {
+        // An invalid Tera template should fall back to the default format.
+        let msg = render_commit_msg(
+            Some("bad {{ unclosed"),
+            "mytool",
+            "1.0.0",
+            "formula",
+        );
+        assert_eq!(msg, "chore: update mytool formula to 1.0.0");
+    }
+
+    // -----------------------------------------------------------------------
+    // Homebrew dependency with version constraint
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_formula_dependency_with_version() {
+        use anodize_core::config::HomebrewDependency;
+        let deps = vec![
+            HomebrewDependency {
+                name: "openssl@3".to_string(),
+                os: None,
+                dep_type: None,
+                version: Some(">= 3.0".to_string()),
+            },
+            HomebrewDependency {
+                name: "libgit2".to_string(),
+                os: None,
+                dep_type: Some("optional".to_string()),
+                version: None,
+            },
+        ];
+        let opts = FormulaOptions {
+            dependencies: Some(&deps),
+            ..Default::default()
+        };
+        let formula = generate_formula_with_opts(
+            "mytool",
+            "1.0.0",
+            &[],
+            "desc",
+            "MIT",
+            "bin.install \"mytool\"",
+            "system \"#{bin}/mytool\"",
+            &opts,
+        );
+        // Versioned dependency should use => "version" syntax
+        assert!(
+            formula.contains("depends_on \"openssl@3\" => \">= 3.0\""),
+            "versioned dependency should render with => \"version\" syntax, got:\n{}",
+            formula
+        );
+        // Non-versioned optional should still use => :optional
+        assert!(
+            formula.contains("depends_on \"libgit2\" => :optional"),
+            "optional dep without version should still use :optional"
+        );
+    }
+
+    #[test]
+    fn test_formula_dependency_version_takes_precedence_over_optional() {
+        use anodize_core::config::HomebrewDependency;
+        // When both version and dep_type are set, version takes precedence
+        let deps = vec![HomebrewDependency {
+            name: "curl".to_string(),
+            os: None,
+            dep_type: Some("optional".to_string()),
+            version: Some("7.80".to_string()),
+        }];
+        let opts = FormulaOptions {
+            dependencies: Some(&deps),
+            ..Default::default()
+        };
+        let formula = generate_formula_with_opts(
+            "mytool",
+            "1.0.0",
+            &[],
+            "desc",
+            "MIT",
+            "bin.install \"mytool\"",
+            "system \"#{bin}/mytool\"",
+            &opts,
+        );
+        assert!(
+            formula.contains("depends_on \"curl\" => \"7.80\""),
+            "version constraint should take precedence over :optional"
+        );
+        assert!(
+            !formula.contains(":optional"),
+            "when version is set, :optional should not appear"
+        );
     }
 }
