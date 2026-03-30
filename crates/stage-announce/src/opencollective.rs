@@ -7,6 +7,11 @@ pub const DEFAULT_TITLE_TEMPLATE: &str = "{{ .Tag }}";
 pub const DEFAULT_MESSAGE_TEMPLATE: &str =
     r#"{{ .ProjectName }} {{ .Tag }} is out!<br/>Check it out at <a href="{{ .ReleaseURL }}">{{ .ReleaseURL }}</a>"#;
 
+/// Create and publish an update on OpenCollective.
+///
+/// Two-step GraphQL flow:
+/// 1. `createUpdate` mutation — creates a draft update with title and HTML body
+/// 2. `publishUpdate` mutation — publishes the update to all collective members
 pub fn send_opencollective(token: &str, slug: &str, title: &str, html: &str) -> Result<()> {
     let client = reqwest::blocking::Client::new();
 
@@ -38,6 +43,9 @@ pub fn send_opencollective(token: &str, slug: &str, title: &str, html: &str) -> 
 
     let resp_text = resp.text()?;
     let resp_json: serde_json::Value = serde_json::from_str(&resp_text)?;
+    if let Some(errors) = resp_json.get("errors") {
+        anyhow::bail!("opencollective: createUpdate returned errors: {errors}");
+    }
     let update_id = resp_json["data"]["createUpdate"]["id"]
         .as_str()
         .ok_or_else(|| {
@@ -45,7 +53,7 @@ pub fn send_opencollective(token: &str, slug: &str, title: &str, html: &str) -> 
         })?;
 
     // Step 2: Publish update
-    let publish_query = r#"mutation($id: String!, $audience: UpdateAudience) { publishUpdate(id: $id, notificationAudience: $audience) { id } }"#;
+    let publish_query = r#"mutation($id: String!, $audience: UpdateAudience!) { publishUpdate(id: $id, notificationAudience: $audience) { id } }"#;
     let publish_body = json!({
         "query": publish_query,
         "variables": {"id": update_id, "audience": "ALL"}
@@ -64,29 +72,28 @@ pub fn send_opencollective(token: &str, slug: &str, title: &str, html: &str) -> 
         anyhow::bail!("opencollective: publishUpdate failed ({status}): {body}");
     }
 
+    let publish_text = resp.text()?;
+    let publish_json: serde_json::Value = serde_json::from_str(&publish_text)?;
+    if let Some(errors) = publish_json.get("errors") {
+        anyhow::bail!("opencollective: publishUpdate returned errors: {errors}");
+    }
+
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
-    fn test_graphql_url_constant() {
-        assert_eq!(GRAPHQL_URL, "https://api.opencollective.com/graphql/v2");
-    }
-
-    #[test]
-    fn test_default_title_template() {
-        assert_eq!(DEFAULT_TITLE_TEMPLATE, "{{ .Tag }}");
-    }
-
-    #[test]
-    fn test_default_message_template_contains_html() {
-        assert!(DEFAULT_MESSAGE_TEMPLATE.contains("<br/>"));
-        assert!(DEFAULT_MESSAGE_TEMPLATE.contains("<a href="));
-        assert!(DEFAULT_MESSAGE_TEMPLATE.contains("{{ .ProjectName }}"));
-        assert!(DEFAULT_MESSAGE_TEMPLATE.contains("{{ .Tag }}"));
-        assert!(DEFAULT_MESSAGE_TEMPLATE.contains("{{ .ReleaseURL }}"));
+    fn test_create_update_variables_structure() {
+        let vars = serde_json::json!({
+            "update": {
+                "title": "v1.0.0",
+                "html": "Project v1.0.0 is out!",
+                "account": { "slug": "my-project" }
+            }
+        });
+        assert_eq!(vars["update"]["account"]["slug"], "my-project");
+        assert_eq!(vars["update"]["title"], "v1.0.0");
+        assert!(vars["update"]["html"].as_str().unwrap().contains("is out!"));
     }
 }

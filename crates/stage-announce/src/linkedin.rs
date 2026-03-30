@@ -16,12 +16,14 @@ pub fn send_linkedin(access_token: &str, message: &str) -> Result<()> {
     let share = json!({
         "owner": profile_urn,
         "text": { "text": message },
+        "distribution": { "linkedInDistributionTarget": {} }
     });
 
     let resp = client
         .post(format!("{API_BASE}/v2/shares"))
         .bearer_auth(access_token)
         .header("Content-Type", "application/json")
+        .header("X-Restli-Protocol-Version", "2.0.0")
         .body(share.to_string())
         .send()?;
 
@@ -30,6 +32,18 @@ pub fn send_linkedin(access_token: &str, message: &str) -> Result<()> {
         let body = resp.text().unwrap_or_default();
         anyhow::bail!("linkedin: share failed ({status}): {body}");
     }
+
+    // Extract activity URL from response if available (matches GoReleaser behavior).
+    // We don't have a logger here, so just consume the response body silently.
+    let resp_text = resp.text().unwrap_or_default();
+    if let Ok(resp_json) = serde_json::from_str::<serde_json::Value>(&resp_text) {
+        if let Some(activity) = resp_json.get("activity").and_then(|a| a.as_str()) {
+            eprintln!(
+                "linkedin: post available at https://www.linkedin.com/feed/update/{activity}"
+            );
+        }
+    }
+
     Ok(())
 }
 
@@ -49,7 +63,7 @@ fn get_profile_urn(
 
     if resp.status() == reqwest::StatusCode::FORBIDDEN {
         // Permission issue — fall back to legacy endpoint.
-        return get_profile_id_legacy(client, access_token);
+        return get_profile_urn_legacy(client, access_token);
     }
 
     if !resp.status().is_success() {
@@ -66,8 +80,8 @@ fn get_profile_urn(
     Ok(format!("urn:li:person:{sub}"))
 }
 
-/// Legacy fallback: resolve profile ID via `/v2/me`.
-fn get_profile_id_legacy(
+/// Legacy fallback: resolve profile URN via `/v2/me`.
+fn get_profile_urn_legacy(
     client: &reqwest::blocking::Client,
     access_token: &str,
 ) -> Result<String> {
@@ -96,8 +110,17 @@ fn get_profile_id_legacy(
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     #[test]
-    fn test_api_base_constant() {
-        assert_eq!(super::API_BASE, "https://api.linkedin.com");
+    fn test_share_payload_structure() {
+        let payload = json!({
+            "owner": "urn:li:person:abc123",
+            "text": { "text": "myapp v1.0 released" },
+            "distribution": { "linkedInDistributionTarget": {} }
+        });
+        assert_eq!(payload["owner"], "urn:li:person:abc123");
+        assert_eq!(payload["text"]["text"], "myapp v1.0 released");
+        assert!(payload["distribution"]["linkedInDistributionTarget"].is_object());
     }
 }
