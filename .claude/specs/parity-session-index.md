@@ -201,6 +201,13 @@ GoReleaser source: `internal/pipe/release/`, `internal/pipe/publish/`
 - [ ] changelog.use: gitlab backend
 - [ ] changelog.use: gitea backend
 
+### Session G: Developer Experience / Infrastructure
+
+- [ ] JSON Schema generation: `anodize jsonschema` CLI command using schemars-derived schema
+- [ ] Publish JSON Schema to docs site URL
+- [ ] Register with SchemaStore.org for auto-discovery (`.anodize.y{,a}ml` pattern)
+- [ ] Support `# yaml-language-server: $schema=...` inline comment (works automatically once schema is published)
+
 ### Phase Z: Final Parity Audit
 
 **After ALL sessions A-F complete:**
