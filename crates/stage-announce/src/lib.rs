@@ -8,6 +8,7 @@ pub mod bluesky;
 pub mod discord;
 pub mod email;
 mod http;
+pub mod linkedin;
 pub mod mastodon;
 pub mod mattermost;
 pub mod reddit;
@@ -406,6 +407,28 @@ impl Stage for AnnounceStage {
         }
 
         // ----------------------------------------------------------------
+        // LinkedIn
+        // ----------------------------------------------------------------
+        if let Some(cfg) = &announce.linkedin
+            && cfg.enabled.unwrap_or(false)
+        {
+            let message = render_message(ctx, cfg.message_template.as_deref())?;
+            let access_token = std::env::var("LINKEDIN_ACCESS_TOKEN").map_err(|_| {
+                anyhow::anyhow!(
+                    "announce.linkedin: LINKEDIN_ACCESS_TOKEN env var is required"
+                )
+            })?;
+            if access_token.is_empty() {
+                anyhow::bail!(
+                    "announce.linkedin: LINKEDIN_ACCESS_TOKEN env var must not be empty"
+                );
+            }
+            dispatch(ctx, "linkedin", &message, || {
+                linkedin::send_linkedin(&access_token, &message)
+            })?;
+        }
+
+        // ----------------------------------------------------------------
         // Email (SMTP or sendmail/msmtp fallback)
         // ----------------------------------------------------------------
         if let Some(cfg) = &announce.email
@@ -485,9 +508,10 @@ impl Stage for AnnounceStage {
 mod tests {
     use super::*;
     use anodize_core::config::{
-        AnnounceConfig, BlueskyAnnounce, Config, DiscordAnnounce, EmailAnnounce, MastodonAnnounce,
-        MattermostAnnounce, RedditAnnounce, SlackAnnounce, SlackBlock, SlackTextObject,
-        StringOrBool, TeamsAnnounce, TelegramAnnounce, TwitterAnnounce, WebhookConfig,
+        AnnounceConfig, BlueskyAnnounce, Config, DiscordAnnounce, EmailAnnounce, LinkedInAnnounce,
+        MastodonAnnounce, MattermostAnnounce, RedditAnnounce, SlackAnnounce, SlackBlock,
+        SlackTextObject, StringOrBool, TeamsAnnounce, TelegramAnnounce, TwitterAnnounce,
+        WebhookConfig,
     };
     use anodize_core::context::{Context, ContextOptions};
     use serial_test::serial;
@@ -1593,5 +1617,100 @@ blocks:
             "expected 'must not be empty' error, got: {err}"
         );
         unsafe { std::env::remove_var("BLUESKY_APP_PASSWORD") };
+    }
+
+    // ----------------------------------------------------------------
+    // LinkedIn tests
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn test_skips_disabled_linkedin() {
+        let announce = AnnounceConfig {
+            linkedin: Some(LinkedInAnnounce {
+                enabled: Some(false),
+                message_template: None,
+            }),
+            ..Default::default()
+        };
+        let mut ctx = make_ctx(Some(announce));
+        assert!(AnnounceStage.run(&mut ctx).is_ok());
+    }
+
+    #[serial]
+    #[test]
+    fn test_dry_run_linkedin() {
+        unsafe { std::env::set_var("LINKEDIN_ACCESS_TOKEN", "test_token") };
+        let announce = AnnounceConfig {
+            linkedin: Some(LinkedInAnnounce {
+                enabled: Some(true),
+                message_template: Some(
+                    "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
+                        .to_string(),
+                ),
+            }),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.announce = Some(announce);
+        let opts = ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut().set(
+            "ReleaseURL",
+            "https://github.com/org/myapp/releases/tag/v1.0.0",
+        );
+        assert!(AnnounceStage.run(&mut ctx).is_ok());
+        unsafe { std::env::remove_var("LINKEDIN_ACCESS_TOKEN") };
+    }
+
+    #[serial]
+    #[test]
+    fn test_linkedin_missing_env_var_errors() {
+        unsafe { std::env::remove_var("LINKEDIN_ACCESS_TOKEN") };
+        let announce = AnnounceConfig {
+            linkedin: Some(LinkedInAnnounce {
+                enabled: Some(true),
+                message_template: None,
+            }),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.announce = Some(announce);
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut().set(
+            "ReleaseURL",
+            "https://github.com/org/myapp/releases/tag/v1.0.0",
+        );
+        let err = AnnounceStage.run(&mut ctx).unwrap_err();
+        assert!(
+            err.to_string().contains("LINKEDIN_ACCESS_TOKEN"),
+            "expected LINKEDIN_ACCESS_TOKEN error, got: {err}"
+        );
+    }
+
+    #[serial]
+    #[test]
+    fn test_linkedin_empty_env_var_errors() {
+        unsafe { std::env::set_var("LINKEDIN_ACCESS_TOKEN", "") };
+        let announce = AnnounceConfig {
+            linkedin: Some(LinkedInAnnounce {
+                enabled: Some(true),
+                message_template: None,
+            }),
+            ..Default::default()
+        };
+        let mut ctx = make_ctx(Some(announce));
+        let err = AnnounceStage.run(&mut ctx).unwrap_err();
+        assert!(
+            err.to_string().contains("must not be empty"),
+            "expected 'must not be empty' error, got: {err}"
+        );
+        unsafe { std::env::remove_var("LINKEDIN_ACCESS_TOKEN") };
     }
 }
