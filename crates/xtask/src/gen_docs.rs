@@ -147,6 +147,13 @@ fn generate_cli_reference(tera: &Tera) -> Result<String, String> {
         .map_err(|e| format!("failed to render cli.md: {e}"))
 }
 
+// ---------------------------------------------------------------------------
+// Config reference generation — schema-driven
+// ---------------------------------------------------------------------------
+
+use schemars::schema::{InstanceType, Schema, SchemaObject, SingleOrVec};
+use schemars::Map;
+
 #[derive(serde::Serialize)]
 struct ConfigField {
     name: String,
@@ -156,236 +163,296 @@ struct ConfigField {
 }
 
 #[derive(serde::Serialize)]
-struct SectionLink {
-    title: String,
-    path: String,
-    config_path: String,
+struct NestedSection {
+    name: String,
+    anchor: String,
+    description: String,
+    fields: Vec<ConfigField>,
+}
+
+/// Map an `InstanceType` variant to a human-readable string.
+fn format_instance_type(t: &InstanceType) -> String {
+    match t {
+        InstanceType::String => "string".into(),
+        InstanceType::Integer => "integer".into(),
+        InstanceType::Number => "number".into(),
+        InstanceType::Boolean => "bool".into(),
+        InstanceType::Array => "list".into(),
+        InstanceType::Object => "map".into(),
+        InstanceType::Null => "null".into(),
+    }
+}
+
+/// Format a `serde_json::Value` default for markdown (em-dash for absent/null,
+/// backtick-wrapped otherwise).
+fn format_default(val: &Option<serde_json::Value>) -> String {
+    match val {
+        None => "\u{2014}".into(),
+        Some(serde_json::Value::Null) => "\u{2014}".into(),
+        Some(v) => format!("`{v}`"),
+    }
+}
+
+/// Given a schema object that may be a `$ref`, extract the definition name
+/// (i.e. the fragment after `#/definitions/`).
+fn ref_name(reference: &str) -> Option<String> {
+    reference
+        .strip_prefix("#/definitions/")
+        .map(|s| s.to_string())
+}
+
+/// Resolve a schema object to a human-readable type name.
+///
+/// Handles:
+/// - Direct `instance_type`
+/// - `$ref`
+/// - `anyOf` (Option<T> pattern: `[T, null]`)
+/// - `allOf` (#[serde(flatten)] pattern)
+/// - Array with items `$ref`
+fn resolve_type_name(prop: &SchemaObject, defs: &Map<String, Schema>) -> String {
+    // Direct $ref
+    if let Some(ref r) = prop.reference {
+        return ref_name(r).unwrap_or_else(|| r.clone());
+    }
+
+    // anyOf — Option<T> is represented as anyOf: [T, {type: null}]
+    if let Some(ref sub) = prop.subschemas {
+        if let Some(ref any_of) = sub.any_of {
+            // Collect non-null variants
+            let non_null: Vec<&Schema> = any_of
+                .iter()
+                .filter(|s| {
+                    if let Schema::Object(o) = s {
+                        if let Some(SingleOrVec::Single(ref t)) = o.instance_type {
+                            return **t != InstanceType::Null;
+                        }
+                        // Keep if it has a $ref or subschemas (not a bare null)
+                        return o.reference.is_some() || o.subschemas.is_some();
+                    }
+                    true
+                })
+                .collect();
+
+            if non_null.len() == 1 {
+                if let Schema::Object(inner) = non_null[0] {
+                    return resolve_type_name(inner, defs);
+                }
+            }
+            // Multiple non-null variants — join them
+            let names: Vec<String> = non_null
+                .iter()
+                .filter_map(|s| {
+                    if let Schema::Object(o) = s {
+                        Some(resolve_type_name(o, defs))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            if !names.is_empty() {
+                return names.join(" | ");
+            }
+        }
+
+        // allOf — flatten pattern; use first entry's type
+        if let Some(ref all_of) = sub.all_of {
+            if let Some(Schema::Object(first)) = all_of.first() {
+                return resolve_type_name(first, defs);
+            }
+        }
+    }
+
+    // Array with items
+    if let Some(ref arr) = prop.array {
+        if let Some(SingleOrVec::Single(ref item_schema)) = arr.items {
+            if let Schema::Object(ref item_obj) = **item_schema {
+                let inner = resolve_type_name(item_obj, defs);
+                return format!("list of {inner}");
+            }
+        }
+        return "list".into();
+    }
+
+    // Direct instance_type
+    if let Some(ref t) = prop.instance_type {
+        return match t {
+            SingleOrVec::Single(it) => format_instance_type(it),
+            SingleOrVec::Vec(its) => {
+                let non_null: Vec<String> = its
+                    .iter()
+                    .filter(|it| **it != InstanceType::Null)
+                    .map(format_instance_type)
+                    .collect();
+                if non_null.len() == 1 {
+                    non_null.into_iter().next().unwrap()
+                } else {
+                    non_null.join(" | ")
+                }
+            }
+        };
+    }
+
+    "object".into()
+}
+
+/// Given a schema object, if it directly or indirectly references a definition,
+/// return that definition name. Handles $ref, anyOf with $ref, and array items $ref.
+fn resolve_ref_type_name(obj: &SchemaObject) -> Option<String> {
+    // Direct $ref
+    if let Some(ref r) = obj.reference {
+        return ref_name(r);
+    }
+
+    // anyOf — look for non-null $ref variant
+    if let Some(ref sub) = obj.subschemas {
+        if let Some(ref any_of) = sub.any_of {
+            for s in any_of {
+                if let Schema::Object(inner) = s {
+                    if let Some(ref r) = inner.reference {
+                        return ref_name(r);
+                    }
+                }
+            }
+        }
+    }
+
+    // Array with items $ref (e.g. signs, upx)
+    if let Some(ref arr) = obj.array {
+        if let Some(SingleOrVec::Single(ref item_schema)) = arr.items {
+            if let Schema::Object(ref item_obj) = **item_schema {
+                if let Some(ref r) = item_obj.reference {
+                    return ref_name(r);
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Extract `ConfigField` entries from a properties map.
+fn extract_fields(props: &Map<String, Schema>, defs: &Map<String, Schema>) -> Vec<ConfigField> {
+    props
+        .iter()
+        .map(|(name, schema)| {
+            let obj = match schema {
+                Schema::Object(o) => o,
+                Schema::Bool(_) => {
+                    return ConfigField {
+                        name: name.clone(),
+                        field_type: "any".into(),
+                        default: "\u{2014}".into(),
+                        description: String::new(),
+                    };
+                }
+            };
+
+            let description = obj
+                .metadata
+                .as_ref()
+                .and_then(|m| m.description.clone())
+                .unwrap_or_default();
+
+            let default = obj
+                .metadata
+                .as_ref()
+                .and_then(|m| m.default.clone());
+
+            let field_type = resolve_type_name(obj, defs);
+
+            ConfigField {
+                name: name.clone(),
+                field_type,
+                default: format_default(&default),
+                description,
+            }
+        })
+        .collect()
 }
 
 fn generate_config_reference(tera: &Tera) -> Result<String, String> {
-    // Build the config field list from the actual Config struct's fields.
-    // This uses the known field names from anodize_core::Config.
-    // When a field is added to Config, it must be added here too.
-    // The --check flag in CI will catch drift (the generated output changes
-    // when the CLI types change, even though config fields are manual).
-    let top_level_fields = vec![
-        ConfigField {
-            name: "version".into(),
-            field_type: "integer".into(),
-            default: "none".into(),
-            description: "Schema version (currently 1 or 2)".into(),
-        },
-        ConfigField {
-            name: "project_name".into(),
-            field_type: "string".into(),
-            default: "`\"\"`".into(),
-            description: "Project name used in templates".into(),
-        },
-        ConfigField {
-            name: "dist".into(),
-            field_type: "string".into(),
-            default: "`./dist`".into(),
-            description: "Output directory for artifacts".into(),
-        },
-        ConfigField {
-            name: "includes".into(),
-            field_type: "list".into(),
-            default: "none".into(),
-            description: "Config files to merge (deep merge, sequences concatenate)".into(),
-        },
-        ConfigField {
-            name: "env_files".into(),
-            field_type: "list".into(),
-            default: "none".into(),
-            description: "List of .env files to load before template expansion".into(),
-        },
-        ConfigField {
-            name: "env".into(),
-            field_type: "map".into(),
-            default: "none".into(),
-            description: "Environment variables for templates and commands".into(),
-        },
-        ConfigField {
-            name: "report_sizes".into(),
-            field_type: "bool".into(),
-            default: "none".into(),
-            description: "Print artifact sizes after build".into(),
-        },
-        ConfigField {
-            name: "crates".into(),
-            field_type: "list".into(),
-            default: "`[]`".into(),
-            description: "Crate configurations (see below)".into(),
-        },
-        ConfigField {
-            name: "defaults".into(),
-            field_type: "object".into(),
-            default: "none".into(),
-            description: "Default build/archive/checksum settings".into(),
-        },
-        ConfigField {
-            name: "changelog".into(),
-            field_type: "object".into(),
-            default: "none".into(),
-            description: "Changelog generation settings".into(),
-        },
-        ConfigField {
-            name: "signs".into(),
-            field_type: "list".into(),
-            default: "`[]`".into(),
-            description: "Signing configurations".into(),
-        },
-        ConfigField {
-            name: "docker_signs".into(),
-            field_type: "list".into(),
-            default: "none".into(),
-            description: "Docker image signing configs".into(),
-        },
-        ConfigField {
-            name: "upx".into(),
-            field_type: "list".into(),
-            default: "`[]`".into(),
-            description: "UPX binary compression configurations".into(),
-        },
-        ConfigField {
-            name: "snapshot".into(),
-            field_type: "object".into(),
-            default: "none".into(),
-            description: "Snapshot mode settings".into(),
-        },
-        ConfigField {
-            name: "nightly".into(),
-            field_type: "object".into(),
-            default: "none".into(),
-            description: "Nightly build settings".into(),
-        },
-        ConfigField {
-            name: "announce".into(),
-            field_type: "object".into(),
-            default: "none".into(),
-            description: "Announcement channels".into(),
-        },
-        ConfigField {
-            name: "publishers".into(),
-            field_type: "list".into(),
-            default: "none".into(),
-            description: "Custom publisher definitions".into(),
-        },
-        ConfigField {
-            name: "tag".into(),
-            field_type: "object".into(),
-            default: "none".into(),
-            description: "Auto-tagging configuration".into(),
-        },
-        ConfigField {
-            name: "before".into(),
-            field_type: "object".into(),
-            default: "none".into(),
-            description: "Pre-pipeline hooks".into(),
-        },
-        ConfigField {
-            name: "after".into(),
-            field_type: "object".into(),
-            default: "none".into(),
-            description: "Post-pipeline hooks".into(),
-        },
-        ConfigField {
-            name: "workspaces".into(),
-            field_type: "list".into(),
-            default: "none".into(),
-            description: "Monorepo workspace definitions".into(),
-        },
-        ConfigField {
-            name: "source".into(),
-            field_type: "object".into(),
-            default: "none".into(),
-            description: "Source archive generation settings".into(),
-        },
-        ConfigField {
-            name: "sbom".into(),
-            field_type: "object".into(),
-            default: "none".into(),
-            description: "Software Bill of Materials (SBOM) generation settings".into(),
-        },
-    ];
+    let root_schema = schemars::schema_for!(anodize_core::config::Config);
+    let defs = &root_schema.definitions;
+    let root = &root_schema.schema;
 
-    let section_links = vec![
-        SectionLink {
-            title: "Rust Builds".into(),
-            path: "@/docs/builds/rust.md".into(),
-            config_path: "crates[].builds".into(),
-        },
-        SectionLink {
-            title: "Archives".into(),
-            path: "@/docs/packages/archives.md".into(),
-            config_path: "crates[].archives".into(),
-        },
-        SectionLink {
-            title: "Checksums".into(),
-            path: "@/docs/packages/checksums.md".into(),
-            config_path: "defaults.checksum / crates[].checksum".into(),
-        },
-        SectionLink {
-            title: "GitHub Releases".into(),
-            path: "@/docs/publish/github.md".into(),
-            config_path: "crates[].release".into(),
-        },
-        SectionLink {
-            title: "Homebrew".into(),
-            path: "@/docs/publish/homebrew.md".into(),
-            config_path: "crates[].publish.homebrew".into(),
-        },
-        SectionLink {
-            title: "Scoop".into(),
-            path: "@/docs/publish/scoop.md".into(),
-            config_path: "crates[].publish.scoop".into(),
-        },
-        SectionLink {
-            title: "crates.io".into(),
-            path: "@/docs/publish/crates-io.md".into(),
-            config_path: "crates[].publish.crates".into(),
-        },
-        SectionLink {
-            title: "Docker".into(),
-            path: "@/docs/packages/docker.md".into(),
-            config_path: "crates[].docker".into(),
-        },
-        SectionLink {
-            title: "nFPM".into(),
-            path: "@/docs/packages/nfpm.md".into(),
-            config_path: "crates[].nfpm".into(),
-        },
-        SectionLink {
-            title: "Signing".into(),
-            path: "@/docs/sign/binaries-archives.md".into(),
-            config_path: "signs".into(),
-        },
-        SectionLink {
-            title: "Changelog".into(),
-            path: "@/docs/more/changelog.md".into(),
-            config_path: "changelog".into(),
-        },
-        SectionLink {
-            title: "Announce".into(),
-            path: "@/docs/announce/discord.md".into(),
-            config_path: "announce".into(),
-        },
-        SectionLink {
-            title: "Auto-Tagging".into(),
-            path: "@/docs/advanced/auto-tagging.md".into(),
-            config_path: "tag".into(),
-        },
-        SectionLink {
-            title: "Global Hooks".into(),
-            path: "@/docs/general/hooks.md".into(),
-            config_path: "before / after".into(),
-        },
-    ];
+    let root_props = root
+        .object
+        .as_ref()
+        .map(|o| &o.properties)
+        .ok_or("Config schema is not an object schema")?;
+
+    // Build top-level field list
+    let top_level_fields = extract_fields(root_props, defs);
+
+    // Build nested sections: for every top-level field that references a
+    // definition, expand that definition's properties into a section.
+    let mut nested_sections: Vec<NestedSection> = Vec::new();
+
+    for (field_name, schema) in root_props.iter() {
+        let obj = match schema {
+            Schema::Object(o) => o,
+            Schema::Bool(_) => continue,
+        };
+
+        let def_name = match resolve_ref_type_name(obj) {
+            Some(n) => n,
+            None => continue,
+        };
+
+        let def_schema = match defs.get(&def_name) {
+            Some(Schema::Object(s)) => s,
+            _ => continue,
+        };
+
+        let def_props = match def_schema.object.as_ref() {
+            Some(o) if !o.properties.is_empty() => &o.properties,
+            _ => continue,
+        };
+
+        let description = def_schema
+            .metadata
+            .as_ref()
+            .and_then(|m| m.description.clone())
+            .unwrap_or_default();
+
+        let fields = extract_fields(def_props, defs);
+
+        nested_sections.push(NestedSection {
+            name: field_name.clone(),
+            anchor: field_name.replace('_', "-"),
+            description,
+            fields,
+        });
+    }
 
     let mut ctx = Context::new();
     ctx.insert("top_level_fields", &top_level_fields);
-    ctx.insert("section_links", &section_links);
+    ctx.insert("nested_sections", &nested_sections);
 
     tera.render("configuration.md.tera", &ctx)
         .map_err(|e| format!("failed to render configuration.md: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_schema_has_all_config_fields() {
+        let schema = schemars::schema_for!(anodize_core::config::Config);
+        let root = schema.schema;
+        let props = root.object.as_ref().expect("Config should be an object schema");
+        let field_names: Vec<&String> = props.properties.keys().collect();
+
+        for expected in &[
+            "version", "project_name", "dist", "includes", "env_files",
+            "defaults", "before", "after", "crates", "changelog", "signs",
+            "binary_signs", "docker_signs", "upx", "snapshot", "nightly",
+            "announce", "report_sizes", "env", "publishers", "tag",
+            "partial", "workspaces", "source", "sbom", "release",
+        ] {
+            assert!(
+                field_names.contains(&&expected.to_string()),
+                "schema missing top-level field: {expected}"
+            );
+        }
+    }
 }

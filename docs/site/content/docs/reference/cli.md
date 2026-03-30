@@ -16,7 +16,7 @@ Release Rust projects with ease
 | `--config` | `-f` | Path to config file (overrides auto-detection) |
 | `--verbose` | — | Enable verbose output |
 | `--debug` | — | Enable debug output |
-| `--quiet` | — | Suppress non-error output |
+| `--quiet` | `-q` | Suppress non-error output |
 
 
 ## Commands
@@ -44,17 +44,21 @@ Run the full release pipeline
 | `--single-target` | — | — | Build only for the host target triple |
 | `--release-notes` | — | — | Path to a custom release notes file (overrides changelog) |
 | `--workspace` | — | — | Release a specific workspace in a monorepo config |
+| `--draft` | — | — | Set the release as a draft |
+| `--release-header` | — | — | Path to a file containing custom release header text |
+| `--release-footer` | — | — | Path to a file containing custom release footer text |
+| `--split` | — | — | Run only the build stage for split CI fan-out (outputs artifacts JSON to dist/) |
+| `--merge` | — | — | Merge artifacts from split build jobs and resume the pipeline from post-build stages |
 
 
 ### `anodize build`
 
-Build binaries only
+Build binaries only (always runs in snapshot mode)
 
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--crate` | — | — | Build a specific crate (repeatable) |
-| `--snapshot` | — | — | Build without publishing (snapshot mode, default for build) |
 | `--timeout` | — | `30m` | Pipeline timeout duration (e.g., 30m, 1h, 5s) |
 | `--parallelism` | `-p` | `12` | Maximum number of parallel build jobs |
 | `--single-target` | — | — | Build only for the host target triple |
@@ -117,4 +121,43 @@ Auto-tag based on commit message directives
 | `--custom-tag` | — | — | Override bump logic with a specific tag value |
 | `--default-bump` | — | — | Override default bump type (patch/minor/major) |
 | `--crate` | — | — | Tag a specific crate in a workspace |
+
+
+### `anodize continue`
+
+Continue a split release by merging artifacts and running post-build stages
+
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--merge` | — | — | Merge artifacts from split build jobs and run post-build stages |
+| `--dist` | — | — | Custom dist directory (overrides config) |
+| `--dry-run` | — | — | Run full pipeline without side effects |
+| `--skip` | — | — | Skip stages (comma-separated, e.g. docker,announce) |
+| `--token` | — | — | GitHub token (overrides GITHUB_TOKEN env var) |
+
+
+### `anodize publish`
+
+Run only the publish stages (release, publish, blob) from a completed dist/
+
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--dry-run` | — | — | Run full pipeline without side effects |
+| `--token` | — | — | GitHub token (overrides GITHUB_TOKEN env var) |
+| `--dist` | — | — | Custom dist directory (overrides config) |
+
+
+### `anodize announce`
+
+Run only the announce stage from a completed dist/
+
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--dry-run` | — | — | Run full pipeline without side effects |
+| `--dist` | — | — | Custom dist directory (overrides config) |
+| `--token` | — | — | GitHub token (overrides GITHUB_TOKEN env var) |
+| `--skip` | — | — | Skip stages (comma-separated) |
 
