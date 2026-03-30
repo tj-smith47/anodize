@@ -2307,6 +2307,14 @@ pub struct AnnounceConfig {
     pub mattermost: Option<MattermostAnnounce>,
     pub email: Option<EmailAnnounce>,
     pub reddit: Option<RedditAnnounce>,
+    pub twitter: Option<TwitterAnnounce>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct TwitterAnnounce {
+    pub enabled: Option<bool>,
+    pub message_template: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]

@@ -12,6 +12,7 @@ pub mod reddit;
 pub mod slack;
 pub mod teams;
 pub mod telegram;
+pub mod twitter;
 pub mod webhook;
 
 // ---------------------------------------------------------------------------
@@ -306,6 +307,40 @@ impl Stage for AnnounceStage {
         }
 
         // ----------------------------------------------------------------
+        // Twitter/X
+        // ----------------------------------------------------------------
+        if let Some(cfg) = &announce.twitter
+            && cfg.enabled.unwrap_or(false)
+        {
+            let message = render_message(ctx, cfg.message_template.as_deref())?;
+            let consumer_key = std::env::var("TWITTER_CONSUMER_KEY").map_err(|_| {
+                anyhow::anyhow!("announce.twitter: TWITTER_CONSUMER_KEY env var is required")
+            })?;
+            let consumer_secret = std::env::var("TWITTER_CONSUMER_SECRET").map_err(|_| {
+                anyhow::anyhow!("announce.twitter: TWITTER_CONSUMER_SECRET env var is required")
+            })?;
+            let access_token = std::env::var("TWITTER_ACCESS_TOKEN").map_err(|_| {
+                anyhow::anyhow!("announce.twitter: TWITTER_ACCESS_TOKEN env var is required")
+            })?;
+            let access_token_secret =
+                std::env::var("TWITTER_ACCESS_TOKEN_SECRET").map_err(|_| {
+                    anyhow::anyhow!(
+                        "announce.twitter: TWITTER_ACCESS_TOKEN_SECRET env var is required"
+                    )
+                })?;
+
+            dispatch(ctx, "twitter", &message, || {
+                twitter::send_twitter(
+                    &consumer_key,
+                    &consumer_secret,
+                    &access_token,
+                    &access_token_secret,
+                    &message,
+                )
+            })?;
+        }
+
+        // ----------------------------------------------------------------
         // Email (SMTP or sendmail/msmtp fallback)
         // ----------------------------------------------------------------
         if let Some(cfg) = &announce.email
@@ -387,7 +422,7 @@ mod tests {
     use anodize_core::config::{
         AnnounceConfig, Config, DiscordAnnounce, EmailAnnounce, MattermostAnnounce,
         RedditAnnounce, SlackAnnounce, SlackBlock, SlackTextObject, StringOrBool, TeamsAnnounce,
-        TelegramAnnounce, WebhookConfig,
+        TelegramAnnounce, TwitterAnnounce, WebhookConfig,
     };
     use anodize_core::context::{Context, ContextOptions};
 
@@ -1167,5 +1202,84 @@ blocks:
         assert!(AnnounceStage.run(&mut ctx).is_ok());
         unsafe { std::env::remove_var("REDDIT_SECRET") };
         unsafe { std::env::remove_var("REDDIT_PASSWORD") };
+    }
+
+    // ----------------------------------------------------------------
+    // Twitter tests
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn test_skips_disabled_twitter() {
+        let announce = AnnounceConfig {
+            twitter: Some(TwitterAnnounce {
+                enabled: Some(false),
+                message_template: None,
+            }),
+            ..Default::default()
+        };
+        let mut ctx = make_ctx(Some(announce));
+        assert!(AnnounceStage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_dry_run_twitter() {
+        unsafe { std::env::set_var("TWITTER_CONSUMER_KEY", "ck") };
+        unsafe { std::env::set_var("TWITTER_CONSUMER_SECRET", "cs") };
+        unsafe { std::env::set_var("TWITTER_ACCESS_TOKEN", "at") };
+        unsafe { std::env::set_var("TWITTER_ACCESS_TOKEN_SECRET", "ats") };
+        let announce = AnnounceConfig {
+            twitter: Some(TwitterAnnounce {
+                enabled: Some(true),
+                message_template: Some(
+                    "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
+                        .to_string(),
+                ),
+            }),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.announce = Some(announce);
+        let opts = ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut().set(
+            "ReleaseURL",
+            "https://github.com/org/myapp/releases/tag/v1.0.0",
+        );
+        assert!(AnnounceStage.run(&mut ctx).is_ok());
+        unsafe { std::env::remove_var("TWITTER_CONSUMER_KEY") };
+        unsafe { std::env::remove_var("TWITTER_CONSUMER_SECRET") };
+        unsafe { std::env::remove_var("TWITTER_ACCESS_TOKEN") };
+        unsafe { std::env::remove_var("TWITTER_ACCESS_TOKEN_SECRET") };
+    }
+
+    #[test]
+    fn test_twitter_missing_env_var_returns_error() {
+        // Ensure env vars are not set
+        unsafe { std::env::remove_var("TWITTER_CONSUMER_KEY") };
+        unsafe { std::env::remove_var("TWITTER_CONSUMER_SECRET") };
+        unsafe { std::env::remove_var("TWITTER_ACCESS_TOKEN") };
+        unsafe { std::env::remove_var("TWITTER_ACCESS_TOKEN_SECRET") };
+        let announce = AnnounceConfig {
+            twitter: Some(TwitterAnnounce {
+                enabled: Some(true),
+                message_template: None,
+            }),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.announce = Some(announce);
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        let err = AnnounceStage.run(&mut ctx).unwrap_err();
+        assert!(
+            err.to_string().contains("TWITTER_CONSUMER_KEY"),
+            "expected TWITTER_CONSUMER_KEY error, got: {err}"
+        );
     }
 }
