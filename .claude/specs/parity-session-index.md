@@ -211,7 +211,8 @@ GoReleaser source: `internal/pipe/release/`, `internal/pipe/publish/`
 
 ### Post-Release: Developer Experience / Infrastructure
 
-- [ ] JSON Schema generation: `anodize jsonschema` CLI command using schemars-derived schema
+- [x] JSON Schema generation: `anodize jsonschema` CLI command using schemars-derived schema
+- [x] Config reference auto-generated from JSON Schema (xtask gen-docs)
 - [ ] Publish JSON Schema to docs site URL
 - [ ] Register with SchemaStore.org for auto-discovery (`.anodize.y{,a}ml` pattern)
 - [ ] `# yaml-language-server: $schema=...` inline comment works automatically once schema is published

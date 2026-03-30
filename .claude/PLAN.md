@@ -429,7 +429,7 @@ Replicate the full `anothrNick/github-tag-action@1.71.0` feature set as a native
 - All share the same Tera template variable context
 
 ### Task 5M: CLI + Config Additions
-- `jsonschema` command: output JSON Schema for `.anodize.yaml` for IDE autocompletion
+- ~~`jsonschema` command~~: ✅ already implemented (`crates/cli/src/commands/jsonschema.rs`)
 - `.env` file loading: `env_files: [".env", ".release.env"]` top-level config, loaded before template expansion
 - Config schema versioning: `version: 2` field (current schema is implicitly v1, accept both)
 - Build `ignore` list: exclude specific `os/arch` combos (e.g., `ignore: [{os: windows, arch: arm64}]`)
@@ -644,20 +644,20 @@ Spec at `.claude/specs/2026-03-29-cloud-storage-split-merge-v2.md`.
 > - Compare the actual behavior, not the config schema
 > - Test with equivalent config: does anodize produce the same result?
 
-### Close remaining Session 6 gaps
-Items deferred from Session 6 that are now actionable:
-- Structured global hooks (cmd/dir/env/output object form, not just plain string arrays)
-- Release `mode` (keep-existing/append/prepend/replace for existing release notes)
-- Release `ids` (artifact filter for uploads)
-- Archive `id`/`ids` filter fields
-- Archive `formats` (plural — produce multiple formats from one config)
-- nFPM `id`/`ids` filter fields
-- Sign `artifacts` filter missing values (`sbom`, `installer`, `diskimage`)
-- Slack announce enrichment (channel, username, icon_emoji, icon_url, blocks, attachments)
-- Docker retry config (attempts, delay, max_delay)
-- Docker labels/annotations (OCI metadata)
-- Checksum missing algorithms (sha3-*, blake3, crc32, md5)
-- Any new items found in the re-audit below
+### ~~Close remaining Session 6 gaps~~ — COMPLETED
+All 11 deferred items were verified as implemented in prior sessions (2026-03-30 audit):
+- ✅ Structured global hooks (cmd/dir/env/output) — `StructuredHook` struct + `HookEntry` enum
+- ✅ Release `mode` (keep-existing/append/prepend/replace) — `ReleaseConfig.mode`, wired in stage-release
+- ✅ Release `ids` (artifact filter) — `ReleaseConfig.ids`, wired in stage-release
+- ✅ Archive `id`/`ids` filter fields — both on `ArchiveConfig`, wired in stage-archive
+- ✅ Archive `formats` (plural) — `ArchiveConfig.formats: Option<Vec<String>>`
+- ✅ nFPM `id`/`ids` filter fields — both on `NfpmConfig`, wired in stage-nfpm
+- ✅ Sign `artifacts` filter (sbom/installer/diskimage) — 11 filter values including all three
+- ✅ Slack enrichment (channel/username/icon_emoji/icon_url/blocks/attachments) — all 6 fields wired
+- ✅ Docker retry config (attempts/delay/max_delay) — `DockerRetryConfig` with exponential backoff
+- ✅ Docker labels/annotations — `labels: HashMap`, wired as `--label` flags with template rendering
+- ✅ Checksum algorithms (sha3-*/blake3/crc32/md5) — all 14 algorithms with test vectors
+- Only remaining item: hooks `if` conditional — tracked in parity-session-index.md Session C
 
 ### Fresh feature-by-feature re-audit
 - Re-fetch GoReleaser's current source code and documentation (features may have changed since Session 6)
