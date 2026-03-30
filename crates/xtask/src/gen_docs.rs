@@ -151,8 +151,8 @@ fn generate_cli_reference(tera: &Tera) -> Result<String, String> {
 // Config reference generation — schema-driven
 // ---------------------------------------------------------------------------
 
-use schemars::schema::{InstanceType, Schema, SchemaObject, SingleOrVec};
 use schemars::Map;
+use schemars::schema::{InstanceType, Schema, SchemaObject, SingleOrVec};
 
 #[derive(serde::Serialize)]
 struct ConfigField {
@@ -235,9 +235,10 @@ fn resolve_type_name(prop: &SchemaObject) -> String {
                 .collect();
 
             if non_null.len() == 1
-                && let Schema::Object(inner) = non_null[0] {
-                    return resolve_type_name(inner);
-                }
+                && let Schema::Object(inner) = non_null[0]
+            {
+                return resolve_type_name(inner);
+            }
             // Multiple non-null variants — join them
             let names: Vec<String> = non_null
                 .iter()
@@ -256,18 +257,20 @@ fn resolve_type_name(prop: &SchemaObject) -> String {
 
         // allOf — flatten pattern; use first entry's type
         if let Some(ref all_of) = sub.all_of
-            && let Some(Schema::Object(first)) = all_of.first() {
-                return resolve_type_name(first);
-            }
+            && let Some(Schema::Object(first)) = all_of.first()
+        {
+            return resolve_type_name(first);
+        }
     }
 
     // Array with items
     if let Some(ref arr) = prop.array {
         if let Some(SingleOrVec::Single(ref item_schema)) = arr.items
-            && let Schema::Object(ref item_obj) = **item_schema {
-                let inner = resolve_type_name(item_obj);
-                return format!("list of {inner}");
-            }
+            && let Schema::Object(ref item_obj) = **item_schema
+        {
+            let inner = resolve_type_name(item_obj);
+            return format!("list of {inner}");
+        }
         return "list".into();
     }
 
@@ -282,7 +285,10 @@ fn resolve_type_name(prop: &SchemaObject) -> String {
                     .map(format_instance_type)
                     .collect();
                 if non_null.len() == 1 {
-                    non_null.into_iter().next().expect("filtered to exactly one non-null type")
+                    non_null
+                        .into_iter()
+                        .next()
+                        .expect("filtered to exactly one non-null type")
                 } else {
                     non_null.join(" | ")
                 }
@@ -303,22 +309,25 @@ fn resolve_ref_type_name(obj: &SchemaObject) -> Option<String> {
 
     // anyOf — look for non-null $ref variant
     if let Some(ref sub) = obj.subschemas
-        && let Some(ref any_of) = sub.any_of {
-            for s in any_of {
-                if let Schema::Object(inner) = s
-                    && let Some(ref r) = inner.reference {
-                        return ref_name(r);
-                    }
+        && let Some(ref any_of) = sub.any_of
+    {
+        for s in any_of {
+            if let Schema::Object(inner) = s
+                && let Some(ref r) = inner.reference
+            {
+                return ref_name(r);
             }
         }
+    }
 
     // Array with items $ref (e.g. signs, upx)
     if let Some(ref arr) = obj.array
         && let Some(SingleOrVec::Single(ref item_schema)) = arr.items
         && let Schema::Object(ref item_obj) = **item_schema
-        && let Some(ref r) = item_obj.reference {
-            return ref_name(r);
-        }
+        && let Some(ref r) = item_obj.reference
+    {
+        return ref_name(r);
+    }
 
     None
 }
@@ -347,10 +356,7 @@ fn extract_fields(props: &Map<String, Schema>) -> Vec<ConfigField> {
                 .unwrap_or_default()
                 .replace('|', "\\|");
 
-            let default = obj
-                .metadata
-                .as_ref()
-                .and_then(|m| m.default.clone());
+            let default = obj.metadata.as_ref().and_then(|m| m.default.clone());
 
             let field_type = resolve_type_name(obj);
 
@@ -432,15 +438,39 @@ mod tests {
     fn test_schema_has_all_config_fields() {
         let schema = schemars::schema_for!(anodize_core::config::Config);
         let root = schema.schema;
-        let props = root.object.as_ref().expect("Config should be an object schema");
+        let props = root
+            .object
+            .as_ref()
+            .expect("Config should be an object schema");
         let field_names: Vec<&String> = props.properties.keys().collect();
 
         for expected in &[
-            "version", "project_name", "dist", "includes", "env_files",
-            "defaults", "before", "after", "crates", "changelog", "signs",
-            "binary_signs", "docker_signs", "upx", "snapshot", "nightly",
-            "announce", "report_sizes", "env", "publishers", "tag",
-            "partial", "workspaces", "source", "sbom", "release",
+            "version",
+            "project_name",
+            "dist",
+            "includes",
+            "env_files",
+            "defaults",
+            "before",
+            "after",
+            "crates",
+            "changelog",
+            "signs",
+            "binary_signs",
+            "docker_signs",
+            "upx",
+            "snapshot",
+            "nightly",
+            "announce",
+            "report_sizes",
+            "env",
+            "publishers",
+            "tag",
+            "partial",
+            "workspaces",
+            "source",
+            "sbom",
+            "release",
         ] {
             assert!(
                 field_names.contains(&&expected.to_string()),

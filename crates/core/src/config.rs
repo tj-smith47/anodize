@@ -87,7 +87,9 @@ fn signs_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::s
 fn upx_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
     let mut schema = generator.subschema_for::<Vec<UpxConfig>>();
     if let schemars::schema::Schema::Object(ref mut obj) = schema {
-        obj.metadata().description = Some("UPX binary compression configurations. Accepts a single object or array.".to_owned());
+        obj.metadata().description = Some(
+            "UPX binary compression configurations. Accepts a single object or array.".to_owned(),
+        );
     }
     schema
 }
@@ -655,7 +657,10 @@ pub type ArchiveFileInfo = FileInfo;
 /// Parse an octal mode string into a `u32`, handling common YAML-friendly
 /// representations: `"0755"`, `"0o755"`, `"0O755"`, `"755"`, and `"0"`.
 pub fn parse_octal_mode(s: &str) -> Option<u32> {
-    let cleaned = s.strip_prefix("0o").or_else(|| s.strip_prefix("0O")).unwrap_or(s);
+    let cleaned = s
+        .strip_prefix("0o")
+        .or_else(|| s.strip_prefix("0O"))
+        .unwrap_or(s);
     let cleaned = if cleaned.is_empty() { "0" } else { cleaned };
     u32::from_str_radix(cleaned, 8).ok()
 }
@@ -852,9 +857,7 @@ fn make_latest_schema(
 }
 
 /// Schema for skip_push: "auto" or boolean.
-fn skip_push_schema(
-    _generator: &mut schemars::r#gen::SchemaGenerator,
-) -> schemars::schema::Schema {
+fn skip_push_schema(_generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
     use schemars::schema::{InstanceType, Schema, SchemaObject, SingleOrVec, SubschemaValidation};
     Schema::Object(SchemaObject {
         subschemas: Some(Box::new(SubschemaValidation {
@@ -969,11 +972,7 @@ pub enum SkipPushConfig {
     Bool(bool),
 }
 
-impl_auto_or_bool_serde!(
-    SkipPushConfig,
-    SkipPushConfig::Auto,
-    SkipPushConfig::Bool
-);
+impl_auto_or_bool_serde!(SkipPushConfig, SkipPushConfig::Auto, SkipPushConfig::Bool);
 
 // ---------------------------------------------------------------------------
 // Shared publisher config types: RepositoryConfig, CommitAuthorConfig
@@ -1398,7 +1397,10 @@ pub struct ChocolateyConfig {
     pub bug_tracker_url: Option<String>,
     /// Space-separated tags for the Chocolatey gallery.
     /// Accepts either a space-separated string (GoReleaser compat) or an array.
-    #[serde(deserialize_with = "deserialize_space_separated_string_or_vec_opt", default)]
+    #[serde(
+        deserialize_with = "deserialize_space_separated_string_or_vec_opt",
+        default
+    )]
     pub tags: Option<Vec<String>>,
     /// Short summary of the package.
     pub summary: Option<String>,
@@ -3103,9 +3105,7 @@ impl Default for StringOrBool {
 }
 
 /// Custom deserializer for `Option<StringOrBool>`.
-fn deserialize_string_or_bool_opt<'de, D>(
-    deserializer: D,
-) -> Result<Option<StringOrBool>, D::Error>
+fn deserialize_string_or_bool_opt<'de, D>(deserializer: D) -> Result<Option<StringOrBool>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -3146,9 +3146,7 @@ where
 
 /// Custom deserializer for `Option<Vec<String>>` that accepts either a single
 /// string or an array of strings. Used by `BlobConfig.cache_control`.
-fn deserialize_string_or_vec_opt<'de, D>(
-    deserializer: D,
-) -> Result<Option<Vec<String>>, D::Error>
+fn deserialize_string_or_vec_opt<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -3619,7 +3617,10 @@ crates:
         assert_eq!(extra.len(), 2);
         assert_eq!(extra[0], ExtraFileSpec::Glob("dist/*.bin".to_string()));
         match &extra[1] {
-            ExtraFileSpec::Detailed { glob, name_template } => {
+            ExtraFileSpec::Detailed {
+                glob,
+                name_template,
+            } => {
                 assert_eq!(glob, "release/*.deb");
                 assert_eq!(
                     name_template.as_deref(),
@@ -3669,9 +3670,7 @@ crates:
         );
         assert_eq!(
             release.footer,
-            Some(ContentSource::Inline(
-                "---\nPowered by anodize".to_string()
-            ))
+            Some(ContentSource::Inline("---\nPowered by anodize".to_string()))
         );
     }
 
@@ -3794,10 +3793,7 @@ crates:
         let files = release.extra_files.as_ref().unwrap();
         assert_eq!(files.len(), 2);
         assert_eq!(files[0].glob(), "dist/*.sig");
-        assert_eq!(
-            files[0].name_template(),
-            Some("{{ .ArtifactName }}.sig")
-        );
+        assert_eq!(files[0].name_template(), Some("{{ .ArtifactName }}.sig"));
         assert_eq!(files[1].glob(), "docs/*.pdf");
         assert_eq!(files[1].name_template(), None);
     }

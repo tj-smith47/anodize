@@ -13,39 +13,39 @@ Anodize uses `.anodize.yaml` (or `.anodize.toml`) in your project root.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `after` | HooksConfig | — |  |
-| `announce` | AnnounceConfig | — |  |
-| `before` | HooksConfig | — |  |
+| `after` | HooksConfig | — | Hooks run after the release pipeline completes. |
+| `announce` | AnnounceConfig | — | Announcement configuration (Slack, Discord, email, etc.). |
+| `before` | HooksConfig | — | Hooks run before the release pipeline starts. |
 | `binary_signs` | list of SignConfig | `[]` | Binary-specific signing configs (same shape as `signs` but only for binary artifacts). |
-| `changelog` | ChangelogConfig | — |  |
-| `crates` | list of CrateConfig | `[]` |  |
-| `defaults` | Defaults | — |  |
-| `dist` | string | `./dist` |  |
-| `docker_signs` | list of DockerSignConfig | — |  |
-| `env` | map | — |  |
+| `changelog` | ChangelogConfig | — | Changelog generation configuration. |
+| `crates` | list of CrateConfig | `[]` | List of crates in this project. |
+| `defaults` | Defaults | — | Default values applied to all crates unless overridden. |
+| `dist` | string | `./dist` | Output directory for build artifacts (default: ./dist). |
+| `docker_signs` | list of DockerSignConfig | — | Docker image signing configurations. |
+| `env` | map | — | Environment variables available to all template expressions. |
 | `env_files` | list of string | — | List of .env files to load before template expansion. |
-| `includes` | list of string | — |  |
-| `nightly` | NightlyConfig | — |  |
-| `partial` | PartialConfig | — |  |
-| `project_name` | string | — |  |
-| `publishers` | list of PublisherConfig | — |  |
-| `release` | ReleaseConfig | — |  |
-| `report_sizes` | bool | — |  |
-| `sbom` | SbomConfig | — |  |
-| `signs` | list of SignConfig | `[]` |  |
-| `snapshot` | SnapshotConfig | — |  |
-| `source` | SourceConfig | — |  |
-| `tag` | TagConfig | — |  |
-| `upx` | list of UpxConfig | `[]` |  |
+| `includes` | list of string | — | Additional config files to merge into this config (glob patterns supported). |
+| `nightly` | NightlyConfig | — | Nightly release configuration. |
+| `partial` | PartialConfig | — | Partial/split build configuration for fan-out CI pipelines. |
+| `project_name` | string | — | Human-readable project name used in templates and release titles. |
+| `publishers` | list of PublisherConfig | — | Generic artifact publisher configurations. |
+| `release` | ReleaseConfig | — | GitHub release configuration shared by all crates. |
+| `report_sizes` | bool | — | When true, log artifact file sizes after building. |
+| `sbom` | SbomConfig | — | Software bill of materials (SBOM) generation configuration. |
+| `signs` | list of SignConfig | `[]` | Signing configurations for binaries, archives, and checksums. |
+| `snapshot` | SnapshotConfig | — | Snapshot release configuration (local/non-tag builds). |
+| `source` | SourceConfig | — | Source archive configuration. |
+| `tag` | TagConfig | — | Automatic semantic version tagging configuration. |
+| `upx` | list of UpxConfig | `[]` | UPX binary compression configurations. |
 | `version` | integer | — | Schema version. Currently supports 1 (implicit default) and 2. |
-| `workspaces` | list of WorkspaceConfig | — |  |
+| `workspaces` | list of WorkspaceConfig | — | Independent workspace roots in a monorepo. |
 
 ## `after`
 Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` and `post` lists of hook commands that run around the entire pipeline (not individual stages).
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `post` | list of HookEntry | — |  |
-| `pre` | list of HookEntry | — |  |
+| `post` | list of HookEntry | — | Commands to run after the pipeline or stage completes. |
+| `pre` | list of HookEntry | — | Commands to run before the pipeline or stage starts. |
 
 ## `announce`
 | Field | Type | Default | Description |
@@ -70,94 +70,94 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` and `post` lists of hook commands that run around the entire pipeline (not individual stages).
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `post` | list of HookEntry | — |  |
-| `pre` | list of HookEntry | — |  |
+| `post` | list of HookEntry | — | Commands to run after the pipeline or stage completes. |
+| `pre` | list of HookEntry | — | Commands to run before the pipeline or stage starts. |
 
 ## `binary_signs`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `args` | list of string | — |  |
-| `artifacts` | string | — |  |
-| `certificate` | string | — |  |
-| `cmd` | string | — |  |
-| `env` | map | — |  |
-| `id` | string | — |  |
-| `ids` | list of string | — |  |
+| `args` | list of string | — | Arguments passed to the signing command (supports templates with ${artifact} and ${signature}). |
+| `artifacts` | string | — | Artifact types to sign: "all", "archive", "binary", "checksum", "package", "sbom" (default: "none"). |
+| `certificate` | string | — | Certificate file to embed in the signature (Cosign bundle signing). |
+| `cmd` | string | — | Signing command to invoke (default: "cosign" or "gpg"). |
+| `env` | map | — | Environment variables passed to the signing command. |
+| `id` | string | — | Unique identifier for this sign config. |
+| `ids` | list of string | — | Build IDs filter: only sign artifacts from builds whose `id` is in this list. |
 | `if` | string | — | Template-conditional: skip this sign config if rendered result is "false" or empty. |
 | `output` | bool | — | Capture and log stdout/stderr of the signing command. |
-| `signature` | string | — |  |
-| `stdin` | string | — |  |
-| `stdin_file` | string | — |  |
+| `signature` | string | — | Signature output filename template (supports templates). |
+| `stdin` | string | — | Content written to the signing command's stdin. |
+| `stdin_file` | string | — | Path to a file whose content is written to the signing command's stdin. |
 
 ## `changelog`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `abbrev` | integer | — | Hash abbreviation length. Default: 7. Set to -1 to omit the hash entirely. |
 | `disable` | StringOrBool | — | Disable changelog generation. Accepts bool or template string (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional disable). |
-| `filters` | ChangelogFilters | — |  |
-| `footer` | string | — |  |
+| `filters` | ChangelogFilters | — | Commit message filters to include or exclude from the changelog. |
+| `footer` | string | — | Text appended to the changelog (inline string or path). |
 | `format` | string | — | Template for each changelog commit line. Available variables: SHA (full hash), ShortSHA (abbreviated), Message (commit subject), AuthorName, AuthorEmail, Login (per-commit GitHub username, `github` backend only), Logins (comma-separated list of all GitHub usernames in the release, `github` backend only). Default: `"{{ ShortSHA }} {{ Message }}"` |
-| `groups` | list of ChangelogGroup | — |  |
-| `header` | string | — |  |
-| `sort` | string | — |  |
+| `groups` | list of ChangelogGroup | — | Groups for organizing changelog entries by commit message prefix. |
+| `header` | string | — | Text prepended to the changelog (inline string or path). |
+| `sort` | string | — | Sort order for changelog entries: "asc" or "desc" (default: "asc"). |
 | `use` | string | — | Changelog source: `"git"` (default), `"github"`, or `"github-native"`. `"github"` fetches commits via the GitHub API, enriching entries with author login information (available as the `Logins` template variable). `"github-native"` delegates entirely to GitHub's auto-generated notes. |
 
 ## `crates`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `archives` | list of ArchiveConfig | `[]` |  |
-| `binstall` | BinstallConfig | — |  |
-| `blobs` | list of BlobConfig | — |  |
-| `builds` | list of BuildConfig | — |  |
-| `checksum` | ChecksumConfig | — |  |
-| `cross` | CrossStrategy | — |  |
-| `depends_on` | list of string | — |  |
-| `dmgs` | list of DmgConfig | — |  |
-| `docker` | list of DockerConfig | — |  |
-| `docker_manifests` | list of DockerManifestConfig | — |  |
-| `msis` | list of MsiConfig | — |  |
-| `name` | string | — |  |
-| `nfpm` | list of NfpmConfig | — |  |
+| `archives` | list of ArchiveConfig | `[]` | Archive configurations for this crate. Set to false to disable archiving, or provide an array of archive configs. |
+| `binstall` | BinstallConfig | — | cargo-binstall metadata configuration for this crate. |
+| `blobs` | list of BlobConfig | — | Cloud storage (S3/GCS/Azure) upload configurations for this crate. |
+| `builds` | list of BuildConfig | — | Build configurations for this crate. One entry per binary by default. |
+| `checksum` | ChecksumConfig | — | Checksum configuration for this crate. |
+| `cross` | CrossStrategy | — | Cross-compilation strategy for this crate: auto, zigbuild, cross, or cargo. |
+| `depends_on` | list of string | — | Other crates this crate depends on; ensures release ordering. |
+| `dmgs` | list of DmgConfig | — | macOS DMG disk image configurations for this crate. |
+| `docker` | list of DockerConfig | — | Docker image build configurations for this crate. |
+| `docker_manifests` | list of DockerManifestConfig | — | Docker multi-platform manifest configurations for this crate. |
+| `msis` | list of MsiConfig | — | Windows MSI installer configurations for this crate. |
+| `name` | string | — | Crate name as published (must match the Cargo.toml package name). |
+| `nfpm` | list of NfpmConfig | — | Linux package (deb, rpm, apk) configurations for this crate. |
 | `no_unique_dist_dir` | bool | — | When true, all build outputs are placed in a flat `dist/` directory instead of `dist/{target}/`. |
-| `path` | string | — |  |
-| `pkgs` | list of PkgConfig | — |  |
-| `publish` | PublishConfig | — |  |
-| `release` | ReleaseConfig | — |  |
-| `snapcrafts` | list of SnapcraftConfig | — |  |
-| `tag_template` | string | — |  |
-| `universal_binaries` | list of UniversalBinaryConfig | — |  |
-| `version_sync` | VersionSyncConfig | — |  |
+| `path` | string | — | Relative path to the crate directory from the project root. |
+| `pkgs` | list of PkgConfig | — | macOS PKG installer configurations for this crate. |
+| `publish` | PublishConfig | — | Publishing targets (Homebrew, Scoop, AUR, etc.) for this crate. |
+| `release` | ReleaseConfig | — | GitHub release configuration for this crate. |
+| `snapcrafts` | list of SnapcraftConfig | — | Snapcraft package configurations for this crate. |
+| `tag_template` | string | — | Git tag template used to tag and identify releases (supports templates). |
+| `universal_binaries` | list of UniversalBinaryConfig | — | macOS universal binary (fat binary) configurations for this crate. |
+| `version_sync` | VersionSyncConfig | — | Automatic version number synchronization configuration for this crate. |
 
 ## `defaults`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `archives` | DefaultArchiveConfig | — |  |
-| `checksum` | ChecksumConfig | — |  |
-| `cross` | CrossStrategy | — |  |
-| `flags` | string | — |  |
+| `archives` | DefaultArchiveConfig | — | Default archive settings applied to all crates. |
+| `checksum` | ChecksumConfig | — | Default checksum settings applied to all crates. |
+| `cross` | CrossStrategy | — | Default cross-compilation strategy: auto, zigbuild, cross, or cargo. |
+| `flags` | string | — | Default extra flags passed to cargo build. |
 | `ignore` | list of BuildIgnore | — | Exclude specific os/arch combinations from builds. |
 | `overrides` | list of BuildOverride | — | Per-target overrides for env, flags, and features. |
-| `targets` | list of string | — |  |
+| `targets` | list of string | — | Default build targets (e.g., ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"]). |
 
 ## `docker_signs`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `args` | list of string | — |  |
-| `artifacts` | string | — |  |
-| `cmd` | string | — |  |
-| `env` | map | — |  |
-| `id` | string | — |  |
-| `ids` | list of string | — |  |
+| `args` | list of string | — | Arguments passed to the signing command (supports templates). |
+| `artifacts` | string | — | Docker artifact types to sign: "all", "image", or "manifest" (default: "none"). |
+| `cmd` | string | — | Signing command to invoke (default: "cosign"). |
+| `env` | map | — | Environment variables passed to the signing command. |
+| `id` | string | — | Unique identifier for this docker sign config. |
+| `ids` | list of string | — | Docker config IDs filter: only sign images from configs whose `id` is in this list. |
 | `if` | string | — | Template-conditional: skip this docker sign config if rendered result is "false" or empty. |
 | `output` | bool | — | Capture and log stdout/stderr of the docker signing command. |
-| `stdin` | string | — |  |
-| `stdin_file` | string | — |  |
+| `stdin` | string | — | Content written to the signing command's stdin. |
+| `stdin_file` | string | — | Path to a file whose content is written to the signing command's stdin. |
 
 ## `nightly`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `name_template` | string | — | Template for the release name. Default: "{{ .ProjectName }}-nightly" |
-| `tag_name` | string | — | Tag name used for the nightly release. Default: "nightly" |
+| `tag_name` | string | — | Tag name used for the nightly release. Default: "nightly". |
 
 ## `partial`
 | Field | Type | Default | Description |
@@ -167,15 +167,15 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 ## `publishers`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `args` | list of string | — |  |
-| `artifact_types` | list of string | — |  |
+| `args` | list of string | — | Arguments passed to the publish command (supports templates). |
+| `artifact_types` | list of string | — | Artifact type filter: only publish artifacts of these types (e.g., "archive", "binary"). |
 | `checksum` | bool | — | Include checksums in published artifacts. |
-| `cmd` | string | — |  |
+| `cmd` | string | — | Command to invoke for publishing. |
 | `dir` | string | — | Working directory for the publisher command. |
 | `disable` | string | — | Template-conditional disable: if rendered result is `"true"`, skip this publisher. |
-| `env` | map | — |  |
-| `ids` | list of string | — |  |
-| `name` | string | — |  |
+| `env` | map | — | Environment variables passed to the publish command. |
+| `ids` | list of string | — | Build IDs filter: only publish artifacts from builds whose `id` is in this list. |
+| `name` | string | — | Human-readable name for this publisher (used in logs). |
 | `signature` | bool | — | Include signatures in published artifacts. |
 
 ## `release`
@@ -183,100 +183,100 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 |-------|------|---------|-------------|
 | `disable` | StringOrBool | — | Disable the release stage. Accepts bool or template string (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional disable). GoReleaser supports template strings here since v1.15.0. |
 | `discussion_category_name` | string | — | GitHub Discussion category name for the release. |
-| `draft` | bool | — |  |
-| `extra_files` | list of ExtraFileSpec | — |  |
-| `footer` | ContentSource | — |  |
-| `github` | GitHubConfig | — |  |
-| `header` | ContentSource | — |  |
+| `draft` | bool | — | When true, create the release as a draft (unpublished). |
+| `extra_files` | list of ExtraFileSpec | — | Extra files to upload to the release beyond build artifacts. |
+| `footer` | ContentSource | — | Text appended to the release body (inline string, from_file, or from_url). |
+| `github` | GitHubConfig | — | GitHub repository to release to (owner and name). |
+| `header` | ContentSource | — | Text prepended to the release body (inline string, from_file, or from_url). |
 | `ids` | list of string | — | Artifact IDs filter for uploads. |
 | `include_meta` | bool | — | Upload metadata.json and artifacts.json as release assets. |
-| `make_latest` | object | — |  |
+| `make_latest` | object | — | Mark release as latest: true, false, or "auto" (latest non-prerelease). |
 | `mode` | string | — | Release mode: "keep-existing", "append", "prepend", or "replace". |
-| `name_template` | string | — |  |
-| `prerelease` | object | — |  |
-| `replace_existing_artifacts` | bool | — |  |
-| `replace_existing_draft` | bool | — |  |
-| `skip_upload` | bool | — |  |
+| `name_template` | string | — | Release title template (supports templates). |
+| `prerelease` | object | — | Mark release as pre-release: true, false, or "auto" (inferred from tag). |
+| `replace_existing_artifacts` | bool | — | When true, replace existing release artifacts with the same name. |
+| `replace_existing_draft` | bool | — | When true, replace an existing draft release instead of failing. |
+| `skip_upload` | bool | — | When true, skip uploading artifacts to the release. |
 | `target_commitish` | string | — | Target branch or SHA for the release tag. |
 | `use_existing_draft` | bool | — | Reuse an existing draft release instead of creating a new one. |
 
 ## `sbom`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enabled` | bool | — |  |
-| `format` | string | — |  |
+| `enabled` | bool | — | When true, generate an SBOM (software bill of materials) for the release. |
+| `format` | string | — | SBOM format: "cyclonedx" (default) or "spdx". |
 
 ## `signs`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `args` | list of string | — |  |
-| `artifacts` | string | — |  |
-| `certificate` | string | — |  |
-| `cmd` | string | — |  |
-| `env` | map | — |  |
-| `id` | string | — |  |
-| `ids` | list of string | — |  |
+| `args` | list of string | — | Arguments passed to the signing command (supports templates with ${artifact} and ${signature}). |
+| `artifacts` | string | — | Artifact types to sign: "all", "archive", "binary", "checksum", "package", "sbom" (default: "none"). |
+| `certificate` | string | — | Certificate file to embed in the signature (Cosign bundle signing). |
+| `cmd` | string | — | Signing command to invoke (default: "cosign" or "gpg"). |
+| `env` | map | — | Environment variables passed to the signing command. |
+| `id` | string | — | Unique identifier for this sign config. |
+| `ids` | list of string | — | Build IDs filter: only sign artifacts from builds whose `id` is in this list. |
 | `if` | string | — | Template-conditional: skip this sign config if rendered result is "false" or empty. |
 | `output` | bool | — | Capture and log stdout/stderr of the signing command. |
-| `signature` | string | — |  |
-| `stdin` | string | — |  |
-| `stdin_file` | string | — |  |
+| `signature` | string | — | Signature output filename template (supports templates). |
+| `stdin` | string | — | Content written to the signing command's stdin. |
+| `stdin_file` | string | — | Path to a file whose content is written to the signing command's stdin. |
 
 ## `snapshot`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `name_template` | string | — |  |
+| `name_template` | string | — | Version string template for snapshot builds (e.g., "{{ .Commit }}-SNAPSHOT"). |
 
 ## `source`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enabled` | bool | — |  |
-| `files` | list of string | — |  |
-| `format` | string | — |  |
-| `name_template` | string | — |  |
+| `enabled` | bool | — | When true, generate a source code archive for the release. |
+| `files` | list of string | — | Extra files to include in the source archive (glob patterns). |
+| `format` | string | — | Archive format for the source tarball: tar.gz, tar.xz, tar.zst, or zip (default: tar.gz). |
+| `name_template` | string | — | Filename template for the source archive (supports templates). |
 
 ## `tag`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `branch_history` | string | — |  |
-| `custom_tag` | string | — |  |
-| `default_bump` | string | — |  |
-| `force_without_changes` | bool | — |  |
-| `force_without_changes_pre` | bool | — |  |
-| `git_api_tagging` | bool | — |  |
-| `initial_version` | string | — |  |
-| `major_string_token` | string | — |  |
-| `minor_string_token` | string | — |  |
-| `none_string_token` | string | — |  |
-| `patch_string_token` | string | — |  |
-| `prerelease` | bool | — |  |
-| `prerelease_suffix` | string | — |  |
-| `release_branches` | list of string | — |  |
-| `tag_context` | string | — |  |
-| `tag_prefix` | string | — |  |
-| `verbose` | bool | — |  |
+| `branch_history` | string | — | Branch history mode for determining the previous tag: "full" or "last". |
+| `custom_tag` | string | — | Custom version tag to use instead of auto-incrementing. |
+| `default_bump` | string | — | Default version bump type when no conventional commit token is found: "major", "minor", "patch", or "none". |
+| `force_without_changes` | bool | — | When true, create a new tag even if no commits have changed since the last tag. |
+| `force_without_changes_pre` | bool | — | Like force_without_changes but only for pre-release versions. |
+| `git_api_tagging` | bool | — | When true, use the GitHub/GitLab API for tagging instead of git CLI. |
+| `initial_version` | string | — | Version string to use when no previous tag exists (default: "0.1.0"). |
+| `major_string_token` | string | — | Conventional commit token triggering a major bump (default: "major"). |
+| `minor_string_token` | string | — | Conventional commit token triggering a minor bump (default: "minor" or "feat"). |
+| `none_string_token` | string | — | Conventional commit token suppressing a version bump entirely (default: "none"). |
+| `patch_string_token` | string | — | Conventional commit token triggering a patch bump (default: "patch" or "fix"). |
+| `prerelease` | bool | — | When true, apply a pre-release suffix to the generated version. |
+| `prerelease_suffix` | string | — | Suffix appended to pre-release versions (e.g., "beta"). |
+| `release_branches` | list of string | — | Branch name patterns (supports wildcards) that trigger releases (default: ["master", "main"]). |
+| `tag_context` | string | — | Source for determining the previous tag: "repo" (default) or "branch". |
+| `tag_prefix` | string | — | Prefix prepended to version tags (e.g., "v" produces "v1.2.3"). |
+| `verbose` | bool | — | When true, print verbose tag calculation output. |
 
 ## `upx`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `args` | list of string | `[]` |  |
-| `binary` | string | `upx` |  |
-| `enabled` | bool | `true` |  |
-| `id` | string | — |  |
-| `ids` | list of string | — |  |
-| `required` | bool | `false` |  |
-| `targets` | list of string | — |  |
+| `args` | list of string | `[]` | Extra arguments passed to UPX (e.g., ["-9", "--brute"]). |
+| `binary` | string | `upx` | UPX executable path or name (default: "upx"). |
+| `enabled` | bool | `true` | When true, compress binaries with UPX (default: true). |
+| `id` | string | — | Unique identifier for this UPX config. |
+| `ids` | list of string | — | Build IDs filter: only compress binaries from builds whose `id` is in this list. |
+| `required` | bool | `false` | When true, fail the build if UPX is not found. |
+| `targets` | list of string | — | Target triples to compress binaries for (empty means all targets). |
 
 ## `workspaces`
 A workspace represents an independent project root within a monorepo. Each workspace has its own crates, changelog, and release configuration, allowing independently-versioned components that aren't Cargo workspace members.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `after` | HooksConfig | — |  |
-| `before` | HooksConfig | — |  |
+| `after` | HooksConfig | — | Hooks run after this workspace's pipeline completes. |
+| `before` | HooksConfig | — | Hooks run before this workspace's pipeline starts. |
 | `binary_signs` | list of SignConfig | `[]` | Binary-specific signing configs (same shape as `signs` but only for binary artifacts). |
-| `changelog` | ChangelogConfig | — |  |
-| `crates` | list of CrateConfig | `[]` |  |
-| `env` | map | — |  |
-| `name` | string | — |  |
-| `signs` | list of SignConfig | `[]` |  |
+| `changelog` | ChangelogConfig | — | Changelog configuration for this workspace. |
+| `crates` | list of CrateConfig | `[]` | Crates belonging to this workspace. |
+| `env` | map | — | Environment variables scoped to this workspace. |
+| `name` | string | — | Workspace identifier used in logs and template variables. |
+| `signs` | list of SignConfig | `[]` | Signing configurations for binaries, archives, and checksums. |
 
