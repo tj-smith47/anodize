@@ -165,7 +165,6 @@ struct ConfigField {
 #[derive(serde::Serialize)]
 struct NestedSection {
     name: String,
-    anchor: String,
     description: String,
     fields: Vec<ConfigField>,
 }
@@ -189,6 +188,8 @@ fn format_default(val: &Option<serde_json::Value>) -> String {
     match val {
         None => "\u{2014}".into(),
         Some(serde_json::Value::Null) => "\u{2014}".into(),
+        Some(serde_json::Value::String(s)) if s.is_empty() => "\u{2014}".into(),
+        Some(serde_json::Value::String(s)) => format!("`{s}`"),
         Some(v) => format!("`{v}`"),
     }
 }
@@ -209,7 +210,7 @@ fn ref_name(reference: &str) -> Option<String> {
 /// - `anyOf` (Option<T> pattern: `[T, null]`)
 /// - `allOf` (#[serde(flatten)] pattern)
 /// - Array with items `$ref`
-fn resolve_type_name(prop: &SchemaObject, defs: &Map<String, Schema>) -> String {
+fn resolve_type_name(prop: &SchemaObject) -> String {
     // Direct $ref
     if let Some(ref r) = prop.reference {
         return ref_name(r).unwrap_or_else(|| r.clone());
@@ -233,17 +234,16 @@ fn resolve_type_name(prop: &SchemaObject, defs: &Map<String, Schema>) -> String 
                 })
                 .collect();
 
-            if non_null.len() == 1 {
-                if let Schema::Object(inner) = non_null[0] {
-                    return resolve_type_name(inner, defs);
+            if non_null.len() == 1
+                && let Schema::Object(inner) = non_null[0] {
+                    return resolve_type_name(inner);
                 }
-            }
             // Multiple non-null variants — join them
             let names: Vec<String> = non_null
                 .iter()
                 .filter_map(|s| {
                     if let Schema::Object(o) = s {
-                        Some(resolve_type_name(o, defs))
+                        Some(resolve_type_name(o))
                     } else {
                         None
                     }
@@ -255,21 +255,19 @@ fn resolve_type_name(prop: &SchemaObject, defs: &Map<String, Schema>) -> String 
         }
 
         // allOf — flatten pattern; use first entry's type
-        if let Some(ref all_of) = sub.all_of {
-            if let Some(Schema::Object(first)) = all_of.first() {
-                return resolve_type_name(first, defs);
+        if let Some(ref all_of) = sub.all_of
+            && let Some(Schema::Object(first)) = all_of.first() {
+                return resolve_type_name(first);
             }
-        }
     }
 
     // Array with items
     if let Some(ref arr) = prop.array {
-        if let Some(SingleOrVec::Single(ref item_schema)) = arr.items {
-            if let Schema::Object(ref item_obj) = **item_schema {
-                let inner = resolve_type_name(item_obj, defs);
+        if let Some(SingleOrVec::Single(ref item_schema)) = arr.items
+            && let Schema::Object(ref item_obj) = **item_schema {
+                let inner = resolve_type_name(item_obj);
                 return format!("list of {inner}");
             }
-        }
         return "list".into();
     }
 
@@ -284,7 +282,7 @@ fn resolve_type_name(prop: &SchemaObject, defs: &Map<String, Schema>) -> String 
                     .map(format_instance_type)
                     .collect();
                 if non_null.len() == 1 {
-                    non_null.into_iter().next().unwrap()
+                    non_null.into_iter().next().expect("filtered to exactly one non-null type")
                 } else {
                     non_null.join(" | ")
                 }
@@ -304,34 +302,29 @@ fn resolve_ref_type_name(obj: &SchemaObject) -> Option<String> {
     }
 
     // anyOf — look for non-null $ref variant
-    if let Some(ref sub) = obj.subschemas {
-        if let Some(ref any_of) = sub.any_of {
+    if let Some(ref sub) = obj.subschemas
+        && let Some(ref any_of) = sub.any_of {
             for s in any_of {
-                if let Schema::Object(inner) = s {
-                    if let Some(ref r) = inner.reference {
+                if let Schema::Object(inner) = s
+                    && let Some(ref r) = inner.reference {
                         return ref_name(r);
                     }
-                }
             }
         }
-    }
 
     // Array with items $ref (e.g. signs, upx)
-    if let Some(ref arr) = obj.array {
-        if let Some(SingleOrVec::Single(ref item_schema)) = arr.items {
-            if let Schema::Object(ref item_obj) = **item_schema {
-                if let Some(ref r) = item_obj.reference {
-                    return ref_name(r);
-                }
-            }
+    if let Some(ref arr) = obj.array
+        && let Some(SingleOrVec::Single(ref item_schema)) = arr.items
+        && let Schema::Object(ref item_obj) = **item_schema
+        && let Some(ref r) = item_obj.reference {
+            return ref_name(r);
         }
-    }
 
     None
 }
 
 /// Extract `ConfigField` entries from a properties map.
-fn extract_fields(props: &Map<String, Schema>, defs: &Map<String, Schema>) -> Vec<ConfigField> {
+fn extract_fields(props: &Map<String, Schema>) -> Vec<ConfigField> {
     props
         .iter()
         .map(|(name, schema)| {
@@ -351,14 +344,15 @@ fn extract_fields(props: &Map<String, Schema>, defs: &Map<String, Schema>) -> Ve
                 .metadata
                 .as_ref()
                 .and_then(|m| m.description.clone())
-                .unwrap_or_default();
+                .unwrap_or_default()
+                .replace('|', "\\|");
 
             let default = obj
                 .metadata
                 .as_ref()
                 .and_then(|m| m.default.clone());
 
-            let field_type = resolve_type_name(obj, defs);
+            let field_type = resolve_type_name(obj);
 
             ConfigField {
                 name: name.clone(),
@@ -382,7 +376,7 @@ fn generate_config_reference(tera: &Tera) -> Result<String, String> {
         .ok_or("Config schema is not an object schema")?;
 
     // Build top-level field list
-    let top_level_fields = extract_fields(root_props, defs);
+    let top_level_fields = extract_fields(root_props);
 
     // Build nested sections: for every top-level field that references a
     // definition, expand that definition's properties into a section.
@@ -415,11 +409,10 @@ fn generate_config_reference(tera: &Tera) -> Result<String, String> {
             .and_then(|m| m.description.clone())
             .unwrap_or_default();
 
-        let fields = extract_fields(def_props, defs);
+        let fields = extract_fields(def_props);
 
         nested_sections.push(NestedSection {
             name: field_name.clone(),
-            anchor: field_name.replace('_', "-"),
             description,
             fields,
         });
@@ -453,6 +446,27 @@ mod tests {
                 field_names.contains(&&expected.to_string()),
                 "schema missing top-level field: {expected}"
             );
+        }
+    }
+
+    #[test]
+    fn test_all_config_fields_resolve_to_non_empty_type() {
+        use schemars::schema::Schema;
+        let schema = schemars::schema_for!(anodize_core::config::Config);
+        let root = schema.schema;
+        let props = root
+            .object
+            .as_ref()
+            .expect("Config should be an object schema");
+
+        for (name, schema) in &props.properties {
+            if let Schema::Object(obj) = schema {
+                let type_str = super::resolve_type_name(obj);
+                assert!(
+                    !type_str.is_empty(),
+                    "field `{name}` resolved to an empty type string"
+                );
+            }
         }
     }
 }

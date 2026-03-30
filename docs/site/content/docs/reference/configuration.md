@@ -20,14 +20,14 @@ Anodize uses `.anodize.yaml` (or `.anodize.toml`) in your project root.
 | `changelog` | ChangelogConfig | — |  |
 | `crates` | list of CrateConfig | `[]` |  |
 | `defaults` | Defaults | — |  |
-| `dist` | string | `"./dist"` |  |
+| `dist` | string | `./dist` |  |
 | `docker_signs` | list of DockerSignConfig | — |  |
 | `env` | map | — |  |
 | `env_files` | list of string | — | List of .env files to load before template expansion. |
 | `includes` | list of string | — |  |
 | `nightly` | NightlyConfig | — |  |
 | `partial` | PartialConfig | — |  |
-| `project_name` | string | `""` |  |
+| `project_name` | string | — |  |
 | `publishers` | list of PublisherConfig | — |  |
 | `release` | ReleaseConfig | — |  |
 | `report_sizes` | bool | — |  |
@@ -40,21 +40,16 @@ Anodize uses `.anodize.yaml` (or `.anodize.toml`) in your project root.
 | `version` | integer | — | Schema version. Currently supports 1 (implicit default) and 2. |
 | `workspaces` | list of WorkspaceConfig | — |  |
 
-
-
 ## `after`
 
 Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` and `post` lists of hook commands that run around the entire pipeline (not individual stages).
-
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `post` | list of HookEntry | — |  |
 | `pre` | list of HookEntry | — |  |
 
-
 ## `announce`
-
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -74,20 +69,16 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `twitter` | TwitterAnnounce | — | Twitter/X announcement configuration. |
 | `webhook` | WebhookConfig | — | Generic webhook announcement configuration. |
 
-
 ## `before`
 
 Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` and `post` lists of hook commands that run around the entire pipeline (not individual stages).
-
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `post` | list of HookEntry | — |  |
 | `pre` | list of HookEntry | — |  |
 
-
 ## `binary_signs`
-
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -104,9 +95,7 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `stdin` | string | — |  |
 | `stdin_file` | string | — |  |
 
-
 ## `changelog`
-
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -120,9 +109,7 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `sort` | string | — |  |
 | `use` | string | — | Changelog source: `"git"` (default), `"github"`, or `"github-native"`. `"github"` fetches commits via the GitHub API, enriching entries with author login information (available as the `Logins` template variable). `"github-native"` delegates entirely to GitHub's auto-generated notes. |
 
-
 ## `crates`
-
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -137,21 +124,19 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `docker` | list of DockerConfig | — |  |
 | `docker_manifests` | list of DockerManifestConfig | — |  |
 | `msis` | list of MsiConfig | — |  |
-| `name` | string | `""` |  |
+| `name` | string | — |  |
 | `nfpm` | list of NfpmConfig | — |  |
 | `no_unique_dist_dir` | bool | — | When true, all build outputs are placed in a flat `dist/` directory instead of `dist/{target}/`. |
-| `path` | string | `""` |  |
+| `path` | string | — |  |
 | `pkgs` | list of PkgConfig | — |  |
 | `publish` | PublishConfig | — |  |
 | `release` | ReleaseConfig | — |  |
 | `snapcrafts` | list of SnapcraftConfig | — |  |
-| `tag_template` | string | `""` |  |
+| `tag_template` | string | — |  |
 | `universal_binaries` | list of UniversalBinaryConfig | — |  |
 | `version_sync` | VersionSyncConfig | — |  |
 
-
 ## `defaults`
-
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -163,9 +148,7 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `overrides` | list of BuildOverride | — | Per-target overrides for env, flags, and features. |
 | `targets` | list of string | — |  |
 
-
 ## `docker_signs`
-
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -180,33 +163,27 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `stdin` | string | — |  |
 | `stdin_file` | string | — |  |
 
-
 ## `nightly`
-
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `name_template` | string | — | Template for the release name. Default: "{{ .ProjectName }}-nightly" |
 | `tag_name` | string | — | Tag name used for the nightly release. Default: "nightly" |
 
-
 ## `partial`
-
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `by` | string | — | How to split builds: "goos" (by OS, default) or "target" (by full triple). "goos" groups all arch variants for the same OS into one split job. "target" gives each unique target triple its own split job. |
 
-
 ## `publishers`
-
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `args` | list of string | — |  |
 | `artifact_types` | list of string | — |  |
 | `checksum` | bool | — | Include checksums in published artifacts. |
-| `cmd` | string | `""` |  |
+| `cmd` | string | — |  |
 | `dir` | string | — | Working directory for the publisher command. |
 | `disable` | string | — | Template-conditional disable: if rendered result is `"true"`, skip this publisher. |
 | `env` | map | — |  |
@@ -214,9 +191,7 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `name` | string | — |  |
 | `signature` | bool | — | Include signatures in published artifacts. |
 
-
 ## `release`
-
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -239,18 +214,14 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `target_commitish` | string | — | Target branch or SHA for the release tag. |
 | `use_existing_draft` | bool | — | Reuse an existing draft release instead of creating a new one. |
 
-
 ## `sbom`
-
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | bool | — |  |
 | `format` | string | — |  |
 
-
 ## `signs`
-
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -267,17 +238,13 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `stdin` | string | — |  |
 | `stdin_file` | string | — |  |
 
-
 ## `snapshot`
-
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `name_template` | string | — |  |
 
-
 ## `source`
-
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -286,9 +253,7 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `format` | string | — |  |
 | `name_template` | string | — |  |
 
-
 ## `tag`
-
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -310,25 +275,21 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `tag_prefix` | string | — |  |
 | `verbose` | bool | — |  |
 
-
 ## `upx`
-
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `args` | list of string | `[]` |  |
-| `binary` | string | `"upx"` |  |
+| `binary` | string | `upx` |  |
 | `enabled` | bool | `true` |  |
 | `id` | string | — |  |
 | `ids` | list of string | — |  |
 | `required` | bool | `false` |  |
 | `targets` | list of string | — |  |
 
-
 ## `workspaces`
 
 A workspace represents an independent project root within a monorepo. Each workspace has its own crates, changelog, and release configuration, allowing independently-versioned components that aren't Cargo workspace members.
-
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -338,7 +299,6 @@ A workspace represents an independent project root within a monorepo. Each works
 | `changelog` | ChangelogConfig | — |  |
 | `crates` | list of CrateConfig | `[]` |  |
 | `env` | map | — |  |
-| `name` | string | `""` |  |
+| `name` | string | — |  |
 | `signs` | list of SignConfig | `[]` |  |
-
 

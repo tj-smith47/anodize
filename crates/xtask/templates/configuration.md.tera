@@ -15,17 +15,15 @@ Anodize uses `.anodize.yaml` (or `.anodize.toml`) in your project root.
 |-------|------|---------|-------------|
 {% for field in top_level_fields -%}
 | `{{ field.name }}` | {{ field.field_type }} | {{ field.default }} | {{ field.description }} |
-{% endfor %}
-
+{% endfor -%}
 {% for section in nested_sections %}
 ## `{{ section.name }}`
 {% if section.description %}
 {{ section.description }}
 {% endif %}
-
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 {% for field in section.fields -%}
 | `{{ field.name }}` | {{ field.field_type }} | {{ field.default }} | {{ field.description }} |
-{% endfor %}
+{% endfor -%}
 {% endfor %}
