@@ -18,9 +18,9 @@ Anodize uses `.anodize.yaml` (or `.anodize.toml`) in your project root.
 {% endfor -%}
 {% for section in nested_sections %}
 ## `{{ section.name }}`
-{% if section.description %}
+{%- if section.description %}
 {{ section.description }}
-{% endif %}
+{%- endif %}
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 {% for field in section.fields -%}

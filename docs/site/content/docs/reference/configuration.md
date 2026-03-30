@@ -41,16 +41,13 @@ Anodize uses `.anodize.yaml` (or `.anodize.toml`) in your project root.
 | `workspaces` | list of WorkspaceConfig | — |  |
 
 ## `after`
-
 Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` and `post` lists of hook commands that run around the entire pipeline (not individual stages).
-
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `post` | list of HookEntry | — |  |
 | `pre` | list of HookEntry | — |  |
 
 ## `announce`
-
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `bluesky` | BlueskyAnnounce | — | Bluesky announcement configuration. |
@@ -70,16 +67,13 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `webhook` | WebhookConfig | — | Generic webhook announcement configuration. |
 
 ## `before`
-
 Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` and `post` lists of hook commands that run around the entire pipeline (not individual stages).
-
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `post` | list of HookEntry | — |  |
 | `pre` | list of HookEntry | — |  |
 
 ## `binary_signs`
-
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `args` | list of string | — |  |
@@ -96,7 +90,6 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `stdin_file` | string | — |  |
 
 ## `changelog`
-
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `abbrev` | integer | — | Hash abbreviation length. Default: 7. Set to -1 to omit the hash entirely. |
@@ -110,7 +103,6 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `use` | string | — | Changelog source: `"git"` (default), `"github"`, or `"github-native"`. `"github"` fetches commits via the GitHub API, enriching entries with author login information (available as the `Logins` template variable). `"github-native"` delegates entirely to GitHub's auto-generated notes. |
 
 ## `crates`
-
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `archives` | list of ArchiveConfig | `[]` |  |
@@ -137,7 +129,6 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `version_sync` | VersionSyncConfig | — |  |
 
 ## `defaults`
-
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `archives` | DefaultArchiveConfig | — |  |
@@ -149,7 +140,6 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `targets` | list of string | — |  |
 
 ## `docker_signs`
-
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `args` | list of string | — |  |
@@ -164,20 +154,17 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `stdin_file` | string | — |  |
 
 ## `nightly`
-
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `name_template` | string | — | Template for the release name. Default: "{{ .ProjectName }}-nightly" |
 | `tag_name` | string | — | Tag name used for the nightly release. Default: "nightly" |
 
 ## `partial`
-
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `by` | string | — | How to split builds: "goos" (by OS, default) or "target" (by full triple). "goos" groups all arch variants for the same OS into one split job. "target" gives each unique target triple its own split job. |
 
 ## `publishers`
-
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `args` | list of string | — |  |
@@ -192,7 +179,6 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `signature` | bool | — | Include signatures in published artifacts. |
 
 ## `release`
-
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `disable` | StringOrBool | — | Disable the release stage. Accepts bool or template string (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional disable). GoReleaser supports template strings here since v1.15.0. |
@@ -215,14 +201,12 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `use_existing_draft` | bool | — | Reuse an existing draft release instead of creating a new one. |
 
 ## `sbom`
-
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | bool | — |  |
 | `format` | string | — |  |
 
 ## `signs`
-
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `args` | list of string | — |  |
@@ -239,13 +223,11 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `stdin_file` | string | — |  |
 
 ## `snapshot`
-
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `name_template` | string | — |  |
 
 ## `source`
-
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | bool | — |  |
@@ -254,7 +236,6 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `name_template` | string | — |  |
 
 ## `tag`
-
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `branch_history` | string | — |  |
@@ -276,7 +257,6 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `verbose` | bool | — |  |
 
 ## `upx`
-
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `args` | list of string | `[]` |  |
@@ -288,9 +268,7 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `targets` | list of string | — |  |
 
 ## `workspaces`
-
 A workspace represents an independent project root within a monorepo. Each workspace has its own crates, changelog, and release configuration, allowing independently-versioned components that aren't Cargo workspace members.
-
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `after` | HooksConfig | — |  |
