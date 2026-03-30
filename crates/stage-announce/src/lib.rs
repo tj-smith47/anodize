@@ -44,6 +44,21 @@ fn render_message(ctx: &mut Context, tmpl: Option<&str>) -> Result<String> {
     ctx.render_template(tmpl.unwrap_or(DEFAULT_MESSAGE_TEMPLATE))
 }
 
+/// Render template variables inside a `serde_json::Value` by serializing to
+/// string, running through the template engine, then parsing back.
+fn render_json_template(
+    ctx: &Context,
+    val: Option<&serde_json::Value>,
+) -> Result<Option<serde_json::Value>> {
+    match val {
+        Some(v) => {
+            let rendered = ctx.render_template(&v.to_string())?;
+            Ok(Some(serde_json::from_str(&rendered)?))
+        }
+        None => Ok(None),
+    }
+}
+
 /// Log and optionally execute a provider send action, respecting dry-run mode.
 fn dispatch(
     ctx: &Context,
@@ -124,20 +139,8 @@ impl Stage for AnnounceStage {
             let username = render_optional(ctx, cfg.username.as_deref())?;
             let icon_emoji = cfg.icon_emoji.clone();
             let icon_url = cfg.icon_url.clone();
-            let blocks = match &cfg.blocks {
-                Some(val) => {
-                    let rendered = ctx.render_template(&val.to_string())?;
-                    Some(serde_json::from_str::<serde_json::Value>(&rendered)?)
-                }
-                None => None,
-            };
-            let attachments = match &cfg.attachments {
-                Some(val) => {
-                    let rendered = ctx.render_template(&val.to_string())?;
-                    Some(serde_json::from_str::<serde_json::Value>(&rendered)?)
-                }
-                None => None,
-            };
+            let blocks = render_json_template(ctx, cfg.blocks.as_ref())?;
+            let attachments = render_json_template(ctx, cfg.attachments.as_ref())?;
             dispatch(ctx, "slack", &message, || {
                 let opts = slack::SlackOptions {
                     channel: channel.as_deref(),
@@ -471,6 +474,24 @@ mod tests {
         let mut ctx = Context::new(config, opts);
         ctx.template_vars_mut().set("Tag", "v2.0.0");
         assert!(AnnounceStage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_slack_blocks_template_vars_are_expanded() {
+        let blocks_json = serde_json::json!([{
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "{{ .ProjectName }} {{ .Tag }} is out!"
+            }
+        }]);
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Tag", "v2.0.0");
+        // Use the same render_json_template helper
+        let rendered = render_json_template(&ctx, Some(&blocks_json)).unwrap().unwrap();
+        assert_eq!(rendered[0]["text"]["text"], "myapp v2.0.0 is out!");
     }
 
     #[test]
