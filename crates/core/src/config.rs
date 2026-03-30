@@ -2388,11 +2388,23 @@ pub struct MattermostAnnounce {
 #[serde(default)]
 pub struct EmailAnnounce {
     pub enabled: Option<bool>,
+    /// SMTP server hostname. When set, uses SMTP transport.
+    /// When absent, falls back to sendmail/msmtp.
+    pub host: Option<String>,
+    /// SMTP server port (default: 587 for STARTTLS)
+    pub port: Option<u16>,
+    /// SMTP username (can also be set via SMTP_USERNAME env var)
+    pub username: Option<String>,
+    /// Sender email address
     pub from: Option<String>,
+    /// Recipient email addresses
     #[serde(default)]
     pub to: Vec<String>,
     pub subject_template: Option<String>,
+    /// Body template (called body_template in GoReleaser, message_template here for consistency)
     pub message_template: Option<String>,
+    /// Skip TLS certificate verification (default: false)
+    pub insecure_skip_verify: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]

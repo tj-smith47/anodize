@@ -3,6 +3,10 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use std::process::Command;
 
+use lettre::message::header::ContentType;
+use lettre::transport::smtp::authentication::Credentials;
+use lettre::{Message, SmtpTransport, Transport};
+
 // ---------------------------------------------------------------------------
 // Email parameters
 // ---------------------------------------------------------------------------
@@ -15,8 +19,66 @@ pub struct EmailParams<'a> {
     pub body: &'a str,
 }
 
+/// SMTP connection parameters.
+pub struct SmtpParams<'a> {
+    pub host: &'a str,
+    pub port: u16,
+    pub username: &'a str,
+    pub password: &'a str,
+    pub insecure_skip_verify: bool,
+}
+
 // ---------------------------------------------------------------------------
-// Message builder (RFC 2822)
+// SMTP transport (via lettre)
+// ---------------------------------------------------------------------------
+
+/// Send an email via SMTP using the lettre crate.
+pub fn send_smtp(params: &EmailParams<'_>, smtp: &SmtpParams<'_>) -> Result<()> {
+    let from = sanitize_header(params.from)
+        .parse()
+        .context("invalid 'from' address")?;
+    let mut builder = Message::builder().from(from);
+    for addr in params.to {
+        let to = sanitize_header(addr)
+            .parse()
+            .context(format!("invalid 'to' address: {addr}"))?;
+        builder = builder.to(to);
+    }
+    let email = builder
+        .subject(sanitize_header(params.subject))
+        .header(ContentType::TEXT_PLAIN)
+        .body(params.body.to_string())
+        .context("failed to build email message")?;
+
+    let creds = Credentials::new(smtp.username.to_string(), smtp.password.to_string());
+    let port = if smtp.port == 0 { 587 } else { smtp.port };
+
+    let mut transport = SmtpTransport::starttls_relay(smtp.host)
+        .context(format!(
+            "failed to create SMTP transport for {}",
+            smtp.host
+        ))?
+        .port(port)
+        .credentials(creds);
+
+    if smtp.insecure_skip_verify {
+        use lettre::transport::smtp::client::{Tls, TlsParameters};
+        let tls = TlsParameters::builder(smtp.host.to_string())
+            .dangerous_accept_invalid_certs(true)
+            .build()
+            .context("failed to build TLS parameters")?;
+        transport = transport.tls(Tls::Required(tls));
+    }
+
+    transport
+        .build()
+        .send(&email)
+        .context("failed to send email via SMTP")?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Sendmail transport (RFC 2822 message piped to sendmail/msmtp)
 // ---------------------------------------------------------------------------
 
 /// Tera template for an RFC 2822 email message.
@@ -66,15 +128,11 @@ pub(crate) fn build_rfc2822_message(params: &EmailParams<'_>) -> Result<String> 
     template::render(RFC2822_TEMPLATE, &vars).context("failed to render RFC 2822 email template")
 }
 
-// ---------------------------------------------------------------------------
-// Send
-// ---------------------------------------------------------------------------
-
 /// Send an email by piping an RFC 2822 message to `sendmail` or `msmtp`.
 ///
 /// Tries `sendmail -t` first; falls back to `msmtp -t` if sendmail is not
 /// found. Both commands read recipients from the message headers via `-t`.
-pub fn send_email(params: &EmailParams<'_>) -> Result<()> {
+pub fn send_sendmail(params: &EmailParams<'_>) -> Result<()> {
     let message = build_rfc2822_message(params)?;
 
     // Try sendmail first, then msmtp
@@ -187,5 +245,31 @@ mod tests {
             "header injection: Bcc appeared as a separate header line"
         );
         assert!(msg.contains("Subject: legit"));
+    }
+
+    #[test]
+    fn test_smtp_params_default_port() {
+        let params = SmtpParams {
+            host: "smtp.example.com",
+            port: 0,
+            username: "user",
+            password: "pass",
+            insecure_skip_verify: false,
+        };
+        let effective_port = if params.port == 0 { 587 } else { params.port };
+        assert_eq!(effective_port, 587);
+    }
+
+    #[test]
+    fn test_smtp_params_custom_port() {
+        let params = SmtpParams {
+            host: "smtp.example.com",
+            port: 465,
+            username: "user",
+            password: "pass",
+            insecure_skip_verify: false,
+        };
+        let effective_port = if params.port == 0 { 587 } else { params.port };
+        assert_eq!(effective_port, 465);
     }
 }

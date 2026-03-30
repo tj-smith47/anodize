@@ -272,7 +272,7 @@ impl Stage for AnnounceStage {
         }
 
         // ----------------------------------------------------------------
-        // Email (via sendmail/msmtp)
+        // Email (SMTP or sendmail/msmtp fallback)
         // ----------------------------------------------------------------
         if let Some(cfg) = &announce.email
             && cfg.enabled.unwrap_or(false)
@@ -297,15 +297,45 @@ impl Stage for AnnounceStage {
             )?;
             let body = render_message(ctx, cfg.message_template.as_deref())?;
 
+            let email_params = email::EmailParams {
+                from: &from,
+                to: &cfg.to,
+                subject: &subject,
+                body: &body,
+            };
             let log_line = format!("to {}: {}", cfg.to.join(", "), subject);
-            dispatch(ctx, "email", &log_line, || {
-                email::send_email(&email::EmailParams {
-                    from: &from,
-                    to: &cfg.to,
-                    subject: &subject,
-                    body: &body,
-                })
-            })?;
+
+            if let Some(host) = &cfg.host {
+                // SMTP transport
+                let smtp_username = cfg
+                    .username
+                    .clone()
+                    .or_else(|| std::env::var("SMTP_USERNAME").ok())
+                    .unwrap_or_default();
+                let smtp_password = std::env::var("SMTP_PASSWORD").map_err(|_| {
+                    anyhow::anyhow!(
+                        "announce.email: SMTP_PASSWORD env var is required for SMTP transport"
+                    )
+                })?;
+                let port = cfg.port.unwrap_or(0);
+                let insecure = cfg.insecure_skip_verify.unwrap_or(false);
+
+                let smtp_params = email::SmtpParams {
+                    host,
+                    port,
+                    username: &smtp_username,
+                    password: &smtp_password,
+                    insecure_skip_verify: insecure,
+                };
+                dispatch(ctx, "email (smtp)", &log_line, || {
+                    email::send_smtp(&email_params, &smtp_params)
+                })?;
+            } else {
+                // Sendmail fallback
+                dispatch(ctx, "email", &log_line, || {
+                    email::send_sendmail(&email_params)
+                })?;
+            }
         }
 
         Ok(())
@@ -792,6 +822,7 @@ mod tests {
                 to: vec!["dev@example.com".to_string()],
                 subject_template: Some("{{ .ProjectName }} {{ .Tag }} released".to_string()),
                 message_template: Some("New release!".to_string()),
+                ..Default::default()
             }),
             ..Default::default()
         };

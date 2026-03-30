@@ -84,3 +84,4 @@ sha3 = "0.10"
 blake3 = "1"
 crc32fast = "1"
 md-5 = "0.10"
+lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "smtp-transport", "rustls-tls"] }
