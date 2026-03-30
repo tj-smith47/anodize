@@ -731,9 +731,13 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         repo_path,
         nix_cfg.repository.as_ref(),
         &repo_owner,
+        &repo_name,
         branch.unwrap_or("main"),
-        &commit_msg,
-        &format!("Update Nix package for {} to {}", name, version),
+        &format!("Update {} to {}", name, version),
+        &format!(
+            "## Package\n- **Name**: {}\n- **Version**: {}\n\nAutomatically submitted by anodize.",
+            name, version
+        ),
         "nix",
         log,
     );
