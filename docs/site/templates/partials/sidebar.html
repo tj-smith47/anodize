@@ -30,6 +30,10 @@
     <a href="{{ get_url(path='@/docs/packages/nfpm.md') }}" class="sidebar-link{% if current_path == '/docs/packages/nfpm/' %} active{% endif %}">nFPM</a>
     <a href="{{ get_url(path='@/docs/packages/docker.md') }}" class="sidebar-link{% if current_path == '/docs/packages/docker/' %} active{% endif %}">Docker</a>
     <a href="{{ get_url(path='@/docs/packages/source-sbom.md') }}" class="sidebar-link{% if current_path == '/docs/packages/source-sbom/' %} active{% endif %}">Source &amp; SBOM</a>
+    <a href="{{ get_url(path='@/docs/packages/snapcraft.md') }}" class="sidebar-link{% if current_path == '/docs/packages/snapcraft/' %} active{% endif %}">Snapcraft</a>
+    <a href="{{ get_url(path='@/docs/packages/dmg.md') }}" class="sidebar-link{% if current_path == '/docs/packages/dmg/' %} active{% endif %}">DMG</a>
+    <a href="{{ get_url(path='@/docs/packages/msi.md') }}" class="sidebar-link{% if current_path == '/docs/packages/msi/' %} active{% endif %}">MSI</a>
+    <a href="{{ get_url(path='@/docs/packages/pkg.md') }}" class="sidebar-link{% if current_path == '/docs/packages/pkg/' %} active{% endif %}">macOS PKG</a>
   </div>
 
   <div class="sidebar-section">
@@ -51,16 +55,25 @@
     <a href="{{ get_url(path='@/docs/publish/snapshots.md') }}" class="sidebar-link{% if current_path == '/docs/publish/snapshots/' %} active{% endif %}">Snapshots</a>
     <a href="{{ get_url(path='@/docs/publish/nightlies.md') }}" class="sidebar-link{% if current_path == '/docs/publish/nightlies/' %} active{% endif %}">Nightlies</a>
     <a href="{{ get_url(path='@/docs/publish/custom-publishers.md') }}" class="sidebar-link{% if current_path == '/docs/publish/custom-publishers/' %} active{% endif %}">Custom Publishers</a>
+    <a href="{{ get_url(path='@/docs/publish/nix.md') }}" class="sidebar-link{% if current_path == '/docs/publish/nix/' %} active{% endif %}">Nix</a>
+    <a href="{{ get_url(path='@/docs/publish/blob-storage.md') }}" class="sidebar-link{% if current_path == '/docs/publish/blob-storage/' %} active{% endif %}">Blob Storage</a>
   </div>
 
   <div class="sidebar-section">
     <div class="sidebar-section-title">Announce</div>
+    <a href="{{ get_url(path='@/docs/announce/bluesky.md') }}" class="sidebar-link{% if current_path == '/docs/announce/bluesky/' %} active{% endif %}">Bluesky</a>
     <a href="{{ get_url(path='@/docs/announce/discord.md') }}" class="sidebar-link{% if current_path == '/docs/announce/discord/' %} active{% endif %}">Discord</a>
+    <a href="{{ get_url(path='@/docs/announce/discourse.md') }}" class="sidebar-link{% if current_path == '/docs/announce/discourse/' %} active{% endif %}">Discourse</a>
     <a href="{{ get_url(path='@/docs/announce/email.md') }}" class="sidebar-link{% if current_path == '/docs/announce/email/' %} active{% endif %}">Email</a>
+    <a href="{{ get_url(path='@/docs/announce/linkedin.md') }}" class="sidebar-link{% if current_path == '/docs/announce/linkedin/' %} active{% endif %}">LinkedIn</a>
+    <a href="{{ get_url(path='@/docs/announce/mastodon.md') }}" class="sidebar-link{% if current_path == '/docs/announce/mastodon/' %} active{% endif %}">Mastodon</a>
     <a href="{{ get_url(path='@/docs/announce/mattermost.md') }}" class="sidebar-link{% if current_path == '/docs/announce/mattermost/' %} active{% endif %}">Mattermost</a>
+    <a href="{{ get_url(path='@/docs/announce/opencollective.md') }}" class="sidebar-link{% if current_path == '/docs/announce/opencollective/' %} active{% endif %}">OpenCollective</a>
+    <a href="{{ get_url(path='@/docs/announce/reddit.md') }}" class="sidebar-link{% if current_path == '/docs/announce/reddit/' %} active{% endif %}">Reddit</a>
     <a href="{{ get_url(path='@/docs/announce/slack.md') }}" class="sidebar-link{% if current_path == '/docs/announce/slack/' %} active{% endif %}">Slack</a>
     <a href="{{ get_url(path='@/docs/announce/teams.md') }}" class="sidebar-link{% if current_path == '/docs/announce/teams/' %} active{% endif %}">Teams</a>
     <a href="{{ get_url(path='@/docs/announce/telegram.md') }}" class="sidebar-link{% if current_path == '/docs/announce/telegram/' %} active{% endif %}">Telegram</a>
+    <a href="{{ get_url(path='@/docs/announce/twitter.md') }}" class="sidebar-link{% if current_path == '/docs/announce/twitter/' %} active{% endif %}">Twitter/X</a>
     <a href="{{ get_url(path='@/docs/announce/webhooks.md') }}" class="sidebar-link{% if current_path == '/docs/announce/webhooks/' %} active{% endif %}">Webhooks</a>
   </div>
 
@@ -69,6 +82,7 @@
     <a href="{{ get_url(path='@/docs/more/changelog.md') }}" class="sidebar-link{% if current_path == '/docs/more/changelog/' %} active{% endif %}">Changelog</a>
     <a href="{{ get_url(path='@/docs/ci/github-actions.md') }}" class="sidebar-link{% if current_path == '/docs/ci/github-actions/' %} active{% endif %}">GitHub Actions</a>
     <a href="{{ get_url(path='@/docs/ci/gitlab-ci.md') }}" class="sidebar-link{% if current_path == '/docs/ci/gitlab-ci/' %} active{% endif %}">GitLab CI</a>
+    <a href="{{ get_url(path='@/docs/ci/split-merge-ci.md') }}" class="sidebar-link{% if current_path == '/docs/ci/split-merge-ci/' %} active{% endif %}">Split &amp; Merge CI</a>
   </div>
 
   <div class="sidebar-section">
@@ -78,6 +92,7 @@
     <a href="{{ get_url(path='@/docs/advanced/config-includes.md') }}" class="sidebar-link{% if current_path == '/docs/advanced/config-includes/' %} active{% endif %}">Config Includes</a>
     <a href="{{ get_url(path='@/docs/advanced/nightly-builds.md') }}" class="sidebar-link{% if current_path == '/docs/advanced/nightly-builds/' %} active{% endif %}">Nightly Builds</a>
     <a href="{{ get_url(path='@/docs/advanced/reproducible-builds.md') }}" class="sidebar-link{% if current_path == '/docs/advanced/reproducible-builds/' %} active{% endif %}">Reproducible Builds</a>
+    <a href="{{ get_url(path='@/docs/advanced/split-merge.md') }}" class="sidebar-link{% if current_path == '/docs/advanced/split-merge/' %} active{% endif %}">Split &amp; Merge</a>
     <a href="{{ get_url(path='@/docs/advanced/troubleshooting.md') }}" class="sidebar-link{% if current_path == '/docs/advanced/troubleshooting/' %} active{% endif %}">Troubleshooting</a>
   </div>
 
