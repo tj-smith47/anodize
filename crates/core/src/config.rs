@@ -2377,6 +2377,8 @@ pub struct MattermostAnnounce {
     /// Optional attachment color (hex string, e.g. "#36a64f")
     pub color: Option<String>,
     pub message_template: Option<String>,
+    /// Optional title template for the Mattermost attachment
+    pub title_template: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]

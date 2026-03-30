@@ -229,6 +229,7 @@ impl Stage for AnnounceStage {
             let icon_url = render_optional(ctx, cfg.icon_url.as_deref())?;
             let icon_emoji = render_optional(ctx, cfg.icon_emoji.as_deref())?;
             let color = cfg.color.clone();
+            let title = render_optional(ctx, cfg.title_template.as_deref())?;
 
             let opts = mattermost::MattermostOptions {
                 channel: channel.as_deref(),
@@ -236,6 +237,7 @@ impl Stage for AnnounceStage {
                 icon_url: icon_url.as_deref(),
                 icon_emoji: icon_emoji.as_deref(),
                 color: color.as_deref(),
+                title: title.as_deref(),
             };
             dispatch(ctx, "mattermost", &message, || {
                 mattermost::send_mattermost(&url, &message, &opts)
@@ -644,6 +646,7 @@ mod tests {
                 icon_emoji: None,
                 color: None,
                 message_template: Some("{{ .ProjectName }} {{ .Tag }} released!".to_string()),
+                title_template: None,
             }),
             ..Default::default()
         };

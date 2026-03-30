@@ -14,6 +14,7 @@ pub struct MattermostOptions<'a> {
     pub icon_url: Option<&'a str>,
     pub icon_emoji: Option<&'a str>,
     pub color: Option<&'a str>,
+    pub title: Option<&'a str>,
 }
 
 // ---------------------------------------------------------------------------
@@ -35,12 +36,18 @@ pub(crate) fn mattermost_payload(message: &str, opts: &MattermostOptions<'_>) ->
         payload["icon_emoji"] = json!(emoji);
     }
 
-    // Mattermost supports message attachments with an optional color bar.
-    if let Some(color) = opts.color {
-        payload["attachments"] = json!([{
-            "color": color,
+    // Mattermost supports message attachments with optional color bar and title.
+    if opts.color.is_some() || opts.title.is_some() {
+        let mut attachment = json!({
             "text": message,
-        }]);
+        });
+        if let Some(title) = opts.title {
+            attachment["title"] = json!(title);
+        }
+        if let Some(color) = opts.color {
+            attachment["color"] = json!(color);
+        }
+        payload["attachments"] = json!([attachment]);
     }
 
     payload.to_string()
@@ -76,6 +83,7 @@ mod tests {
             icon_url: None,
             icon_emoji: None,
             color: None,
+            title: None,
         };
         let payload = mattermost_payload("myapp v1.0.0 released!", &opts);
         let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
@@ -95,6 +103,7 @@ mod tests {
             icon_url: Some("https://example.com/icon.png"),
             icon_emoji: Some(":rocket:"),
             color: Some("#36a64f"),
+            title: None,
         };
         let payload = mattermost_payload("myapp v1.0.0 released!", &opts);
         let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
@@ -115,6 +124,7 @@ mod tests {
             icon_url: None,
             icon_emoji: None,
             color: None,
+            title: None,
         };
         let payload = mattermost_payload("released!", &opts);
         let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
@@ -130,6 +140,7 @@ mod tests {
             icon_url: None,
             icon_emoji: Some(":tada:"),
             color: None,
+            title: None,
         };
         let payload = mattermost_payload("shipped!", &opts);
         let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
@@ -144,6 +155,7 @@ mod tests {
             icon_url: None,
             icon_emoji: None,
             color: Some("#FF0000"),
+            title: None,
         };
         let payload = mattermost_payload("alert!", &opts);
         let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
@@ -151,5 +163,40 @@ mod tests {
         assert_eq!(attachments.len(), 1);
         assert_eq!(attachments[0]["color"], "#FF0000");
         assert_eq!(attachments[0]["text"], "alert!");
+    }
+
+    #[test]
+    fn test_mattermost_payload_with_title() {
+        let opts = MattermostOptions {
+            channel: None,
+            username: None,
+            icon_url: None,
+            icon_emoji: None,
+            color: None,
+            title: Some("myapp v2.0 is out!"),
+        };
+        let payload = mattermost_payload("Check the release notes.", &opts);
+        let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        let attachments = json["attachments"].as_array().unwrap();
+        assert_eq!(attachments[0]["title"], "myapp v2.0 is out!");
+        assert_eq!(attachments[0]["text"], "Check the release notes.");
+    }
+
+    #[test]
+    fn test_mattermost_payload_with_title_and_color() {
+        let opts = MattermostOptions {
+            channel: None,
+            username: None,
+            icon_url: None,
+            icon_emoji: None,
+            color: Some("#36a64f"),
+            title: Some("Release v3.0"),
+        };
+        let payload = mattermost_payload("New features!", &opts);
+        let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        let attachments = json["attachments"].as_array().unwrap();
+        assert_eq!(attachments[0]["title"], "Release v3.0");
+        assert_eq!(attachments[0]["color"], "#36a64f");
+        assert_eq!(attachments[0]["text"], "New features!");
     }
 }
