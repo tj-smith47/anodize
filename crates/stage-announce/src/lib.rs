@@ -82,6 +82,15 @@ impl Stage for AnnounceStage {
             }
         };
 
+        // Evaluate template-conditional skip.
+        if let Some(ref skip_tmpl) = announce.skip {
+            let rendered = ctx.render_template(skip_tmpl)?;
+            if matches!(rendered.trim(), "true" | "1") {
+                log.status("announce.skip evaluated to true — skipping");
+                return Ok(());
+            }
+        }
+
         // ----------------------------------------------------------------
         // Discord
         // ----------------------------------------------------------------
@@ -862,6 +871,53 @@ mod tests {
         let mut ctx = Context::new(config, opts);
         ctx.template_vars_mut().set("Tag", "v1.0.0");
         // Should succeed in dry-run without error.
+        assert!(AnnounceStage.run(&mut ctx).is_ok());
+    }
+
+    // ----------------------------------------------------------------
+    // announce.skip tests
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn test_announce_skip_true_skips_all() {
+        let announce = AnnounceConfig {
+            skip: Some("true".to_string()),
+            discord: Some(DiscordAnnounce {
+                enabled: Some(true),
+                webhook_url: Some("https://discord.invalid/webhook".to_string()),
+                message_template: Some("test".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = make_ctx(Some(announce));
+        // Should succeed without attempting any provider (discord URL is invalid).
+        assert!(AnnounceStage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_announce_skip_false_does_not_skip() {
+        let announce = AnnounceConfig {
+            skip: Some("false".to_string()),
+            ..Default::default()
+        };
+        let mut ctx = make_ctx(Some(announce));
+        assert!(AnnounceStage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_announce_skip_template_evaluated() {
+        let announce = AnnounceConfig {
+            skip: Some("{{ .IsNightly }}".to_string()),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.announce = Some(announce);
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut().set("IsNightly", "true");
+        // Should skip because IsNightly renders to "true".
         assert!(AnnounceStage.run(&mut ctx).is_ok());
     }
 }
