@@ -7,6 +7,7 @@ use anyhow::Result;
 pub mod discord;
 pub mod email;
 mod http;
+pub mod mastodon;
 pub mod mattermost;
 pub mod reddit;
 pub mod slack;
@@ -341,6 +342,22 @@ impl Stage for AnnounceStage {
         }
 
         // ----------------------------------------------------------------
+        // Mastodon
+        // ----------------------------------------------------------------
+        if let Some(cfg) = &announce.mastodon
+            && cfg.enabled.unwrap_or(false)
+        {
+            let server = require_rendered(ctx, cfg.server.as_deref(), "mastodon", "server")?;
+            let message = render_message(ctx, cfg.message_template.as_deref())?;
+            let access_token = std::env::var("MASTODON_ACCESS_TOKEN").map_err(|_| {
+                anyhow::anyhow!("announce.mastodon: MASTODON_ACCESS_TOKEN env var is required")
+            })?;
+            dispatch(ctx, "mastodon", &message, || {
+                mastodon::send_mastodon(&server, &access_token, &message)
+            })?;
+        }
+
+        // ----------------------------------------------------------------
         // Email (SMTP or sendmail/msmtp fallback)
         // ----------------------------------------------------------------
         if let Some(cfg) = &announce.email
@@ -420,11 +437,12 @@ impl Stage for AnnounceStage {
 mod tests {
     use super::*;
     use anodize_core::config::{
-        AnnounceConfig, Config, DiscordAnnounce, EmailAnnounce, MattermostAnnounce,
-        RedditAnnounce, SlackAnnounce, SlackBlock, SlackTextObject, StringOrBool, TeamsAnnounce,
-        TelegramAnnounce, TwitterAnnounce, WebhookConfig,
+        AnnounceConfig, Config, DiscordAnnounce, EmailAnnounce, MastodonAnnounce,
+        MattermostAnnounce, RedditAnnounce, SlackAnnounce, SlackBlock, SlackTextObject,
+        StringOrBool, TeamsAnnounce, TelegramAnnounce, TwitterAnnounce, WebhookConfig,
     };
     use anodize_core::context::{Context, ContextOptions};
+    use serial_test::serial;
 
     fn make_ctx(announce: Option<AnnounceConfig>) -> Context {
         let mut config = Config::default();
@@ -1174,6 +1192,7 @@ blocks:
     }
 
     #[test]
+    #[serial]
     fn test_dry_run_reddit() {
         unsafe { std::env::set_var("REDDIT_SECRET", "testsecret") };
         unsafe { std::env::set_var("REDDIT_PASSWORD", "testpass") };
@@ -1222,6 +1241,7 @@ blocks:
     }
 
     #[test]
+    #[serial]
     fn test_dry_run_twitter() {
         unsafe { std::env::set_var("TWITTER_CONSUMER_KEY", "ck") };
         unsafe { std::env::set_var("TWITTER_CONSUMER_SECRET", "cs") };
@@ -1258,6 +1278,7 @@ blocks:
     }
 
     #[test]
+    #[serial]
     fn test_twitter_missing_env_var_returns_error() {
         // Ensure env vars are not set
         unsafe { std::env::remove_var("TWITTER_CONSUMER_KEY") };
@@ -1280,6 +1301,105 @@ blocks:
         assert!(
             err.to_string().contains("TWITTER_CONSUMER_KEY"),
             "expected TWITTER_CONSUMER_KEY error, got: {err}"
+        );
+    }
+
+    // ----------------------------------------------------------------
+    // Mastodon tests
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn test_skips_disabled_mastodon() {
+        let announce = AnnounceConfig {
+            mastodon: Some(MastodonAnnounce {
+                enabled: Some(false),
+                server: Some("https://mastodon.social".to_string()),
+                message_template: None,
+            }),
+            ..Default::default()
+        };
+        let mut ctx = make_ctx(Some(announce));
+        assert!(AnnounceStage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    #[serial]
+    fn test_dry_run_mastodon() {
+        unsafe { std::env::set_var("MASTODON_ACCESS_TOKEN", "test-token") };
+        let announce = AnnounceConfig {
+            mastodon: Some(MastodonAnnounce {
+                enabled: Some(true),
+                server: Some("https://mastodon.social".to_string()),
+                message_template: Some(
+                    "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
+                        .to_string(),
+                ),
+            }),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.announce = Some(announce);
+        let opts = ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut().set(
+            "ReleaseURL",
+            "https://github.com/org/myapp/releases/tag/v1.0.0",
+        );
+        assert!(AnnounceStage.run(&mut ctx).is_ok());
+        unsafe { std::env::remove_var("MASTODON_ACCESS_TOKEN") };
+    }
+
+    #[test]
+    #[serial]
+    fn test_mastodon_missing_server_returns_error() {
+        unsafe { std::env::set_var("MASTODON_ACCESS_TOKEN", "test-token") };
+        let announce = AnnounceConfig {
+            mastodon: Some(MastodonAnnounce {
+                enabled: Some(true),
+                server: None,
+                message_template: None,
+            }),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.announce = Some(announce);
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        let err = AnnounceStage.run(&mut ctx).unwrap_err();
+        assert!(
+            err.to_string().contains("missing server"),
+            "expected 'missing server' error, got: {err}"
+        );
+        unsafe { std::env::remove_var("MASTODON_ACCESS_TOKEN") };
+    }
+
+    #[test]
+    #[serial]
+    fn test_mastodon_missing_env_var_returns_error() {
+        unsafe { std::env::remove_var("MASTODON_ACCESS_TOKEN") };
+        let announce = AnnounceConfig {
+            mastodon: Some(MastodonAnnounce {
+                enabled: Some(true),
+                server: Some("https://mastodon.social".to_string()),
+                message_template: None,
+            }),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.announce = Some(announce);
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        let err = AnnounceStage.run(&mut ctx).unwrap_err();
+        assert!(
+            err.to_string().contains("MASTODON_ACCESS_TOKEN"),
+            "expected MASTODON_ACCESS_TOKEN error, got: {err}"
         );
     }
 }

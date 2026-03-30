@@ -2308,12 +2308,22 @@ pub struct AnnounceConfig {
     pub email: Option<EmailAnnounce>,
     pub reddit: Option<RedditAnnounce>,
     pub twitter: Option<TwitterAnnounce>,
+    pub mastodon: Option<MastodonAnnounce>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct TwitterAnnounce {
     pub enabled: Option<bool>,
+    pub message_template: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct MastodonAnnounce {
+    pub enabled: Option<bool>,
+    /// Mastodon instance URL (e.g. "https://mastodon.social")
+    pub server: Option<String>,
     pub message_template: Option<String>,
 }
 
