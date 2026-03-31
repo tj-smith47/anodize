@@ -3152,7 +3152,7 @@ pub struct NightlyConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct MetadataConfig {
-    /// Global modification timestamp for metadata output files (metadata.json).
+    /// Global modification timestamp for metadata output files (metadata.json and artifacts.json).
     /// Template string (e.g. "{{ .CommitTimestamp }}") or unix timestamp.
     /// When set, rendered late in the pipeline and applied as file mtime.
     pub mod_timestamp: Option<String>,

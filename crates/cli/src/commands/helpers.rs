@@ -320,6 +320,8 @@ pub fn load_artifacts_from_dist(ctx: &mut Context, dist: &Path) -> Result<()> {
     #[derive(serde::Deserialize)]
     struct MetadataArtifact {
         kind: String,
+        #[serde(default)]
+        name: Option<String>,
         path: String,
         target: Option<String>,
         crate_name: String,
@@ -335,7 +337,7 @@ pub fn load_artifacts_from_dist(ctx: &mut Context, dist: &Path) -> Result<()> {
             .ok_or_else(|| anyhow::anyhow!("unknown artifact kind: {}", a.kind))?;
         ctx.artifacts.add(Artifact {
             kind,
-            name: String::new(),
+            name: a.name.unwrap_or_default(),
             path: std::path::PathBuf::from(&a.path),
             target: a.target,
             crate_name: a.crate_name,

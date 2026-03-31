@@ -362,47 +362,45 @@ fn run_post_pipeline(
 
         // Write metadata.json with project metadata (GoReleaser parity).
         let metadata_path = dist.join("metadata.json");
-        {
-            let goos = anodize_core::context::map_os_to_goos(std::env::consts::OS);
-            let goarch = anodize_core::context::map_arch_to_goarch(std::env::consts::ARCH);
+        let goos = anodize_core::context::map_os_to_goos(std::env::consts::OS);
+        let goarch = anodize_core::context::map_arch_to_goarch(std::env::consts::ARCH);
 
-            let tag = ctx
-                .template_vars()
-                .get("Tag")
-                .cloned()
-                .unwrap_or_default();
-            let previous_tag = ctx
-                .template_vars()
-                .get("PreviousTag")
-                .cloned()
-                .unwrap_or_default();
-            let version = ctx.version();
-            let commit = ctx
-                .template_vars()
-                .get("FullCommit")
-                .cloned()
-                .unwrap_or_default();
-            let date = Utc::now().to_rfc3339();
+        let tag = ctx
+            .template_vars()
+            .get("Tag")
+            .cloned()
+            .unwrap_or_default();
+        let previous_tag = ctx
+            .template_vars()
+            .get("PreviousTag")
+            .cloned()
+            .unwrap_or_default();
+        let version = ctx.version();
+        let commit = ctx
+            .template_vars()
+            .get("FullCommit")
+            .cloned()
+            .unwrap_or_default();
+        let date = ctx.template_vars().get("Date").cloned().unwrap_or_default();
 
-            let project_metadata = serde_json::json!({
-                "project_name": config.project_name,
-                "tag": tag,
-                "previous_tag": previous_tag,
-                "version": version,
-                "commit": commit,
-                "date": date,
-                "runtime": {
-                    "goos": goos,
-                    "goarch": goarch,
-                }
-            });
+        let project_metadata = serde_json::json!({
+            "project_name": config.project_name,
+            "tag": tag,
+            "previous_tag": previous_tag,
+            "version": version,
+            "commit": commit,
+            "date": date,
+            "runtime": {
+                "goos": goos,
+                "goarch": goarch,
+            }
+        });
 
-            let json_str = serde_json::to_string_pretty(&project_metadata)
-                .context("failed to serialize project metadata JSON")?;
-            std::fs::write(&metadata_path, &json_str)
-                .with_context(|| format!("failed to write {}", metadata_path.display()))?;
-            log.status(&format!("wrote {}", metadata_path.display()));
-        }
+        let json_str = serde_json::to_string_pretty(&project_metadata)
+            .context("failed to serialize project metadata JSON")?;
+        std::fs::write(&metadata_path, &json_str)
+            .with_context(|| format!("failed to write {}", metadata_path.display()))?;
+        log.status(&format!("wrote {}", metadata_path.display()));
 
         // Register metadata.json as an artifact.
         ctx.artifacts.add(anodize_core::artifact::Artifact {
@@ -417,17 +415,15 @@ fn run_post_pipeline(
 
         // Write artifacts.json with the artifact list.
         let artifacts_path = dist.join("artifacts.json");
-        {
-            let artifacts_json = ctx
-                .artifacts
-                .to_artifacts_json()
-                .context("failed to serialize artifact list")?;
-            let json_str = serde_json::to_string_pretty(&artifacts_json)
-                .context("failed to serialize artifacts JSON")?;
-            std::fs::write(&artifacts_path, &json_str)
-                .with_context(|| format!("failed to write {}", artifacts_path.display()))?;
-            log.status(&format!("wrote {}", artifacts_path.display()));
-        }
+        let artifacts_json = ctx
+            .artifacts
+            .to_artifacts_json()
+            .context("failed to serialize artifact list")?;
+        let json_str = serde_json::to_string_pretty(&artifacts_json)
+            .context("failed to serialize artifacts JSON")?;
+        std::fs::write(&artifacts_path, &json_str)
+            .with_context(|| format!("failed to write {}", artifacts_path.display()))?;
+        log.status(&format!("wrote {}", artifacts_path.display()));
 
         // Apply mod_timestamp to both metadata.json and artifacts.json if configured.
         if let Some(ref meta) = config.metadata
