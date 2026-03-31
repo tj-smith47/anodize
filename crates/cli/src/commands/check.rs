@@ -323,7 +323,7 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
     if let Some(ref source) = config.source
         && let Some(ref fmt) = source.format
     {
-        let valid_source_formats = ["tar.gz", "zip"];
+        let valid_source_formats = ["tar.gz", "tgz", "tar", "zip"];
         if !valid_source_formats.contains(&fmt.as_str()) {
             errors.push(format!(
                 "source: unrecognized format '{}' (valid: {})",
@@ -1059,7 +1059,7 @@ mod tests {
     #[test]
     fn test_valid_source_formats_pass() {
         use anodize_core::config::SourceConfig;
-        for fmt in &["tar.gz", "zip"] {
+        for fmt in &["tar.gz", "tgz", "tar", "zip"] {
             let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
             config.source = Some(SourceConfig {
                 enabled: Some(true),

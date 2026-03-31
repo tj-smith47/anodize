@@ -89,6 +89,13 @@ fn create_source_archive(
         std::fs::create_dir_all(&prefixed_dir).context("source: create extra files staging dir")?;
 
         for entry in extra_files {
+            if entry.strip_parent.unwrap_or(false) {
+                eprintln!("warning: source: strip_parent is not yet supported for source archive extra files");
+            }
+            if entry.info.is_some() {
+                eprintln!("warning: source: file info (owner/group/mode/mtime) is not yet supported for source archive extra files");
+            }
+
             let src = Path::new(&entry.src);
             let dest_name = if let Some(ref dst) = entry.dst {
                 std::ffi::OsString::from(dst)
@@ -364,6 +371,11 @@ pub fn generate_spdx(
 /// timestamp, process ID, and a monotonic counter. The counter ensures that
 /// consecutive calls within the same nanosecond produce different values.
 /// **Not cryptographically random** — suitable only for document namespaces.
+///
+/// Note: `DefaultHasher` output is not stable across Rust versions, so the
+/// same inputs may produce different UUIDs when compiled with different Rust
+/// toolchains. This is acceptable here because these identifiers are only
+/// used for SPDX document namespace uniqueness, not for reproducibility.
 fn uuid_v4_simple() -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -573,7 +585,7 @@ impl SourceStage {
         });
 
         // Filter artifacts from the registry based on artifacts type
-        let matching_artifacts: Vec<(PathBuf, HashMap<String, String>)> = match artifacts_type {
+        let matching_artifacts: Vec<(PathBuf, HashMap<String, String>, Option<String>)> = match artifacts_type {
             "any" => vec![], // "any" calls once with no specific artifact
             _ => {
                 let kind = match artifacts_type {
@@ -592,7 +604,7 @@ impl SourceStage {
                     }
                 };
 
-                let matched: Vec<(PathBuf, HashMap<String, String>)> = ctx
+                let matched: Vec<(PathBuf, HashMap<String, String>, Option<String>)> = ctx
                     .artifacts
                     .all()
                     .iter()
@@ -609,7 +621,7 @@ impl SourceStage {
                             true
                         }
                     })
-                    .map(|a| (a.path.clone(), a.metadata.clone()))
+                    .map(|a| (a.path.clone(), a.metadata.clone(), a.target.clone()))
                     .collect();
 
                 if matched.is_empty() {
@@ -631,7 +643,7 @@ impl SourceStage {
                     id, cmd
                 ));
             } else {
-                for (path, _) in &matching_artifacts {
+                for (path, _, _) in &matching_artifacts {
                     log.status(&format!(
                         "(dry-run) sbom[{}]: would run '{}' on {}",
                         id,
@@ -644,13 +656,13 @@ impl SourceStage {
         }
 
         // For "any" type, run the command once with no specific artifact
-        let artifact_list: Vec<(PathBuf, HashMap<String, String>)> = if artifacts_type == "any" {
-            vec![(PathBuf::new(), HashMap::new())]
+        let artifact_list: Vec<(PathBuf, HashMap<String, String>, Option<String>)> = if artifacts_type == "any" {
+            vec![(PathBuf::new(), HashMap::new(), None)]
         } else {
             matching_artifacts
         };
 
-        for (artifact_path, _artifact_meta) in &artifact_list {
+        for (artifact_path, artifact_meta, artifact_target) in &artifact_list {
             let artifact_rel = if artifact_path.as_os_str().is_empty() {
                 String::new()
             } else {
@@ -660,6 +672,24 @@ impl SourceStage {
                     .display()
                     .to_string()
             };
+
+            // Set per-artifact template vars for document template rendering
+            let artifact_name = artifact_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("artifact");
+            ctx.template_vars_mut().set("ArtifactName", artifact_name);
+
+            // If artifact has target info, set Os/Arch
+            if let Some(target) = artifact_target {
+                let (os, arch) = anodize_core::target::map_target(target);
+                ctx.template_vars_mut().set("Os", &os);
+                ctx.template_vars_mut().set("Arch", &arch);
+            } else if let Some(target) = artifact_meta.get("target") {
+                let (os, arch) = anodize_core::target::map_target(target);
+                ctx.template_vars_mut().set("Os", &os);
+                ctx.template_vars_mut().set("Arch", &arch);
+            }
 
             // Render document paths
             let mut rendered_docs: Vec<String> = Vec::new();
@@ -672,27 +702,32 @@ impl SourceStage {
             let first_doc = rendered_docs.first().cloned().unwrap_or_default();
 
             // Render args — replace $artifact, $document, $document0, $document1, etc.
-            let rendered_args: Vec<String> = args
-                .iter()
-                .map(|arg| {
-                    let mut s = arg.replace("$artifact", &artifact_rel);
-                    s = s.replace("$document", &first_doc);
-                    for (i, doc) in rendered_docs.iter().enumerate() {
-                        s = s.replace(&format!("$document{}", i), doc);
-                    }
-                    // Render template vars in args
-                    ctx.render_template(&s).unwrap_or(s)
-                })
-                .collect();
+            let artifact_id = artifact_meta.get("id").map(|s| s.as_str()).unwrap_or("");
+            let mut rendered_args: Vec<String> = Vec::with_capacity(args.len());
+            for arg in &args {
+                let mut s = arg.replace("$artifact", &artifact_rel);
+                s = s.replace("$artifactID", artifact_id);
+                // Replace numbered $documentN FIRST (before bare $document)
+                for (i, doc) in rendered_docs.iter().enumerate() {
+                    s = s.replace(&format!("$document{}", i), doc);
+                }
+                // Then replace bare $document (won't match already-replaced $documentN)
+                s = s.replace("$document", &first_doc);
+                // Render template vars in args
+                let rendered_arg = ctx.render_template(&s)
+                    .with_context(|| format!("sbom[{}]: failed to render arg template '{}'", id, s))?;
+                rendered_args.push(rendered_arg);
+            }
 
             // Render env vars
-            let rendered_env: Vec<(String, String)> = env_vars
-                .iter()
-                .filter_map(|e| {
-                    let rendered = ctx.render_template(e).unwrap_or_else(|_| e.clone());
-                    rendered.split_once('=').map(|(k, v)| (k.to_string(), v.to_string()))
-                })
-                .collect();
+            let mut rendered_env: Vec<(String, String)> = Vec::with_capacity(env_vars.len());
+            for e in &env_vars {
+                let rendered = ctx.render_template(e)
+                    .with_context(|| format!("sbom[{}]: failed to render env template '{}'", id, e))?;
+                if let Some((k, v)) = rendered.split_once('=') {
+                    rendered_env.push((k.to_string(), v.to_string()));
+                }
+            }
 
             log.status(&format!(
                 "sbom[{}]: running {} {}",
