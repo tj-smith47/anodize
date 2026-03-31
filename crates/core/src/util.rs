@@ -349,4 +349,108 @@ mod tests {
         let t = parse_mod_timestamp("0").unwrap();
         assert_eq!(t, SystemTime::UNIX_EPOCH);
     }
+
+    // -----------------------------------------------------------------------
+    // set_file_mtime tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_set_file_mtime_sets_both_atime_and_mtime() {
+        let dir = std::env::temp_dir().join("anodize_test_set_file_mtime");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let file_path = dir.join("test.txt");
+        std::fs::write(&file_path, "hello").unwrap();
+
+        // Set mtime to a known epoch: 2024-01-01T00:00:00Z = 1704067200
+        let target = SystemTime::UNIX_EPOCH + Duration::from_secs(1704067200);
+        set_file_mtime(&file_path, target).unwrap();
+
+        let meta = std::fs::metadata(&file_path).unwrap();
+        let actual_mtime = meta.modified().unwrap();
+
+        // Allow 1-second tolerance for filesystem granularity
+        let diff = if actual_mtime > target {
+            actual_mtime.duration_since(target).unwrap()
+        } else {
+            target.duration_since(actual_mtime).unwrap()
+        };
+        assert!(
+            diff.as_secs() <= 1,
+            "mtime should be within 1s of target, diff={:?}",
+            diff
+        );
+
+        // Also verify atime was set (on Linux, accessed() is available)
+        let actual_atime = meta.accessed().unwrap();
+        let diff_a = if actual_atime > target {
+            actual_atime.duration_since(target).unwrap()
+        } else {
+            target.duration_since(actual_atime).unwrap()
+        };
+        assert!(
+            diff_a.as_secs() <= 1,
+            "atime should be within 1s of target, diff={:?}",
+            diff_a
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_set_file_mtime_nonexistent_file() {
+        let result = set_file_mtime(Path::new("/nonexistent/file.txt"), SystemTime::UNIX_EPOCH);
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // apply_mod_timestamp tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_apply_mod_timestamp_sets_mtime_on_regular_files() {
+        let dir = std::env::temp_dir().join("anodize_test_apply_mod_timestamp");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Create two regular files and a subdirectory (should be skipped)
+        std::fs::write(dir.join("a.txt"), "aaa").unwrap();
+        std::fs::write(dir.join("b.txt"), "bbb").unwrap();
+        std::fs::create_dir(dir.join("subdir")).unwrap();
+
+        let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Quiet);
+        apply_mod_timestamp(&dir, "1704067200", &log).unwrap();
+
+        let target = SystemTime::UNIX_EPOCH + Duration::from_secs(1704067200);
+        for name in &["a.txt", "b.txt"] {
+            let meta = std::fs::metadata(dir.join(name)).unwrap();
+            let mtime = meta.modified().unwrap();
+            let diff = if mtime > target {
+                mtime.duration_since(target).unwrap()
+            } else {
+                target.duration_since(mtime).unwrap()
+            };
+            assert!(
+                diff.as_secs() <= 1,
+                "{name}: mtime should be within 1s of target, diff={:?}",
+                diff
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_apply_mod_timestamp_invalid_timestamp_errors() {
+        let dir = std::env::temp_dir().join("anodize_test_apply_mod_timestamp_invalid");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Quiet);
+        let result = apply_mod_timestamp(&dir, "not-valid", &log);
+        assert!(result.is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

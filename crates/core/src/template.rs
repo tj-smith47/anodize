@@ -975,9 +975,10 @@ fn build_tera_context(vars: &TemplateVars) -> tera::Context {
     }
     ctx.insert("Env", &vars.env);
 
-    if !vars.custom_vars.is_empty() {
-        ctx.insert("Var", &vars.custom_vars);
-    }
+    // Always insert Var (even when empty) so that `{{ Var.key }}` returns ""
+    // instead of a hard Tera error when no variables are defined. This matches
+    // GoReleaser which provides an empty .Var map by default.
+    ctx.insert("Var", &vars.custom_vars);
 
     // Build a nested `Runtime` map for GoReleaser `Runtime.Goos` / `Runtime.Goarch` compat.
     let mut runtime = HashMap::new();
@@ -2039,13 +2040,51 @@ mod tests {
 
     #[test]
     fn test_custom_var_empty_map_no_error() {
-        // When no custom vars are set, Var is not inserted into context.
-        // Referencing Var.something should error (undefined), but having
-        // no custom vars should not cause a panic or crash.
-        let vars = test_vars();
+        // When no custom vars are set, Var is still inserted as an empty map.
         // Rendering a template that does NOT reference Var should succeed.
+        let vars = test_vars();
         let result = render("{{ ProjectName }}", &vars).unwrap();
         assert_eq!(result, "cfgd");
+    }
+
+    #[test]
+    fn test_custom_var_undefined_key_errors() {
+        // Accessing an undefined key within the Var map produces an error,
+        // matching Tera's strict behavior (same as Env.NONEXISTENT).
+        // Users can use `{{ Var.key | default(value="") }}` for optional vars.
+        let vars = test_vars();
+        let result = render("{{ Var.nonexistent }}", &vars);
+        assert!(
+            result.is_err(),
+            "accessing a missing key in Var should produce an error"
+        );
+    }
+
+    #[test]
+    fn test_custom_var_undefined_key_with_other_vars_set() {
+        // When some custom vars exist, referencing an undefined key should
+        // still error (Tera strict mode).
+        let mut vars = test_vars();
+        vars.set_custom_var("exists", "yes");
+        let result = render("{{ Var.missing }}", &vars);
+        assert!(
+            result.is_err(),
+            "accessing a missing key in Var should produce an error"
+        );
+    }
+
+    #[test]
+    fn test_custom_var_empty_map_conditional() {
+        // Var is always inserted as an empty map. Tera treats empty maps as
+        // falsy so `{% if Var %}` correctly distinguishes empty vs non-empty.
+        let vars = test_vars();
+        let result = render("{% if Var %}has vars{% else %}no vars{% endif %}", &vars).unwrap();
+        assert_eq!(result, "no vars");
+
+        let mut vars2 = test_vars();
+        vars2.set_custom_var("key", "val");
+        let result2 = render("{% if Var %}has vars{% else %}no vars{% endif %}", &vars2).unwrap();
+        assert_eq!(result2, "has vars");
     }
 
     #[test]

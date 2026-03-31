@@ -195,7 +195,8 @@ impl ArtifactRegistry {
 }
 
 /// Artifact kinds that should be included in size reporting.
-/// Matches GoReleaser's reportsizes filter: releasable types + binaries + snaps.
+/// Matches GoReleaser's reportsizes filter: releasable types + binaries + snaps,
+/// plus Library (maps to GoReleaser CArchive/CShared) and Wasm (anodize distributable).
 pub fn size_reportable_kinds() -> &'static [ArtifactKind] {
     &[
         ArtifactKind::Archive,

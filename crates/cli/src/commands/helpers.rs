@@ -327,6 +327,8 @@ pub fn load_artifacts_from_dist(ctx: &mut Context, dist: &Path) -> Result<()> {
         crate_name: String,
         #[serde(default)]
         metadata: HashMap<String, String>,
+        #[serde(default)]
+        size: Option<u64>,
     }
 
     let artifacts: Vec<MetadataArtifact> = serde_json::from_str(&content)
@@ -342,7 +344,7 @@ pub fn load_artifacts_from_dist(ctx: &mut Context, dist: &Path) -> Result<()> {
             target: a.target,
             crate_name: a.crate_name,
             metadata: a.metadata,
-            size: None,
+            size: a.size,
         });
     }
 
@@ -483,5 +485,167 @@ mod tests {
             config.changelog.as_ref().unwrap().sort.as_deref(),
             Some("asc")
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // load_artifacts_from_dist tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_load_artifacts_from_dist_valid() {
+        use anodize_core::artifact::ArtifactKind;
+        use anodize_core::context::{Context, ContextOptions};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let artifacts_json = serde_json::json!([
+            {
+                "kind": "binary",
+                "name": "myapp",
+                "path": "dist/myapp",
+                "target": "x86_64-unknown-linux-gnu",
+                "crate_name": "myapp",
+                "metadata": {},
+                "size": 4096
+            },
+            {
+                "kind": "archive",
+                "name": "myapp.tar.gz",
+                "path": "dist/myapp.tar.gz",
+                "target": null,
+                "crate_name": "myapp",
+                "metadata": {"format": "tar.gz"}
+            }
+        ]);
+        std::fs::write(
+            dir.path().join("artifacts.json"),
+            serde_json::to_string_pretty(&artifacts_json).unwrap(),
+        )
+        .unwrap();
+
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        load_artifacts_from_dist(&mut ctx, dir.path()).unwrap();
+
+        let all = ctx.artifacts.all();
+        assert_eq!(all.len(), 2);
+
+        assert_eq!(all[0].kind, ArtifactKind::Binary);
+        assert_eq!(all[0].name, "myapp");
+        assert_eq!(all[0].size, Some(4096), "size should be preserved from JSON");
+
+        assert_eq!(all[1].kind, ArtifactKind::Archive);
+        assert_eq!(all[1].name, "myapp.tar.gz");
+        assert_eq!(all[1].metadata.get("format").map(|s| s.as_str()), Some("tar.gz"));
+        assert_eq!(all[1].size, None, "size should be None when absent from JSON");
+    }
+
+    #[test]
+    fn test_load_artifacts_from_dist_missing_file() {
+        use anodize_core::context::{Context, ContextOptions};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        let result = load_artifacts_from_dist(&mut ctx, dir.path());
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("no artifacts.json found"),
+            "error should mention missing file: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_load_artifacts_from_dist_invalid_json() {
+        use anodize_core::context::{Context, ContextOptions};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("artifacts.json"), "not valid json").unwrap();
+
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        let result = load_artifacts_from_dist(&mut ctx, dir.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_load_artifacts_from_dist_unknown_kind() {
+        use anodize_core::context::{Context, ContextOptions};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let artifacts_json = serde_json::json!([
+            {
+                "kind": "unknown_kind",
+                "name": "thing",
+                "path": "dist/thing",
+                "target": null,
+                "crate_name": "myapp",
+                "metadata": {}
+            }
+        ]);
+        std::fs::write(
+            dir.path().join("artifacts.json"),
+            serde_json::to_string_pretty(&artifacts_json).unwrap(),
+        )
+        .unwrap();
+
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        let result = load_artifacts_from_dist(&mut ctx, dir.path());
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("unknown artifact kind"),
+            "error should mention unknown kind: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_load_artifacts_from_dist_roundtrip() {
+        use anodize_core::artifact::{Artifact, ArtifactKind, ArtifactRegistry};
+        use anodize_core::context::{Context, ContextOptions};
+
+        // Build an artifact registry, serialize, write, then load back
+        let mut registry = ArtifactRegistry::new();
+        registry.add(Artifact {
+            kind: ArtifactKind::Checksum,
+            name: String::new(),
+            path: std::path::PathBuf::from("dist/checksums.txt"),
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: Some(256),
+        });
+        registry.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: std::path::PathBuf::from("dist/myapp"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        let json_val = registry.to_artifacts_json().unwrap();
+        let json_str = serde_json::to_string_pretty(&json_val).unwrap();
+
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("artifacts.json"), &json_str).unwrap();
+
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        load_artifacts_from_dist(&mut ctx, dir.path()).unwrap();
+
+        let loaded = ctx.artifacts.all();
+        assert_eq!(loaded.len(), 2);
+
+        assert_eq!(loaded[0].kind, ArtifactKind::Checksum);
+        assert_eq!(loaded[0].name, "checksums.txt");
+        assert_eq!(loaded[0].size, Some(256));
+
+        assert_eq!(loaded[1].kind, ArtifactKind::Binary);
+        assert_eq!(loaded[1].name, "myapp");
+        assert_eq!(loaded[1].target.as_deref(), Some("aarch64-apple-darwin"));
+        assert_eq!(loaded[1].size, None);
     }
 }
