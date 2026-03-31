@@ -112,38 +112,42 @@ GoReleaser source: `internal/pipe/announce/`, `internal/pipe/discord/`, `interna
 GoReleaser source: `internal/pipe/custompublishers/`, `cmd/`
 
 **Custom publishers** (from parity-matrix s12)
-- [ ] meta
-- [ ] extra_files
-- [ ] output (capture stdout)
-- [ ] if (per-artifact filter)
-- [ ] templated_extra_files
-- [ ] Parallel per-artifact execution
+- [x] meta
+- [x] extra_files
+- [x] Parallel per-artifact execution
+- N/A: output (capture stdout) — Publisher struct has no Output field (config.go:1238-1249), zero matches in custompublishers pipe
+- N/A: if (per-artifact filter) — Publisher struct has Disable only, no If field
+- N/A: templated_extra_files — zero matches in config package; Publisher uses ExtraFiles []ExtraFile only
 
 **CLI flags** (from parity-matrix s15, fresh-gap B38)
-- [ ] --fail-fast
-- [ ] --release-notes-tmpl
-- [ ] --output / -o (build)
-- [ ] man command
-- [ ] --prepare (publish later)
-- [ ] --check --soft
-- [ ] continue --merge, publish --merge, announce --merge commands (verify split/merge wiring)
+- [x] --fail-fast
+- [x] --release-notes-tmpl
+- [x] --output / -o (build)
+- [x] man command
+- N/A: --prepare (publish later) — zero matches in GoReleaser cmd/ directory
+- N/A: --check --soft — zero matches for "soft" in cmd/check.go
+- N/A: continue --merge, publish --merge, announce --merge — GoReleaser has no continue/publish/announce subcommands; anodize already has them
 
 **Global hooks** (from parity-matrix s17)
-- [ ] if conditional on hooks
+- N/A: if conditional on hooks — Before struct is Hooks []string, no conditional field (config.go:1187-1189)
 
-### Session D: New Stages + Subsystems
-<!-- NOTE: This session is too large for a single conversation. Split into D1 (NSIS, App Bundles, SBOM rewrite, Source archive improvements) and D2 (Flatpak, Notarization, DMG, MSI, PKG) before starting. Update this plan to reflect the split. -->
-GoReleaser source: `internal/pipe/flatpak/`, `internal/pipe/notary/`, `internal/pipe/sourcearchive/`, `internal/pipe/sbom/`, `internal/pipe/dmg/`, `internal/pipe/msi/`, `internal/pipe/nsis/`, `internal/pipe/pkg/`, `internal/pipe/appbundle/`
+### Session D1: New Stages + SBOM/Source Rewrite (Done)
+GoReleaser source: `internal/pipe/nsis/`, `internal/pipe/appbundle/`, `internal/pipe/sbom/`, `internal/pipe/sourcearchive/`
+
+- [x] NSIS installer stage (new crate): id, name (template), script (template), ids, extra_files (ExtraFileSpec), disable (StringOrBool), replace, mod_timestamp
+- [x] macOS App Bundles (new crate): id, name (template), ids, icon (.icns), bundle (template, reverse-DNS), extra_files (ArchiveFileSpec), mod_timestamp, disable (StringOrBool), replace
+- [x] SBOM rewrite: cmd/args/env/artifacts/ids/documents/disable subprocess model + built-in CycloneDX/SPDX fallback
+- [x] Source archive improvements: prefix_template, object-form files (SourceFileEntry with src/dst/strip_parent/info)
+- [x] Cross-cutting: DMG/PKG extra_files unified to ExtraFileSpec
+
+### Session D2: Remaining New Stages
+GoReleaser source: `internal/pipe/flatpak/`, `internal/pipe/notary/`, `internal/pipe/dmg/`, `internal/pipe/msi/`, `internal/pipe/pkg/`
 
 - [ ] Flatpak stage (new crate): app_id, runtime, runtime_version, sdk, command, finish_args, name_template, disable
-- [ ] NSIS installer stage (new crate): id, name (template), script (template), ids, extra_files, disable (template), replace, mod_timestamp
-- [ ] macOS App Bundles (new crate): id, name (template), ids, icon (.icns), bundle (reverse-DNS), extra_files, mod_timestamp
 - [ ] macOS Notarization (new crate): sign.certificate/password/entitlements, notarize.issuer_id/key_id/key/wait/timeout; native variant: sign.keychain/identity/options, notarize.profile_name
-- [ ] DMG stage (macOS disk images, Pro)
-- [ ] MSI stage (Windows installer with Wix, Pro)
-- [ ] PKG stage (macOS packages, Pro, v2.14+)
-- [ ] SBOM rewrite (current config too minimal — needs cmd/args/env/artifacts/ids/documents/disable)
-- [ ] Source archive improvements (prefix_template, object-form files, templated_files)
+- [ ] DMG stage improvements (Pro features: use appbundle, signing integration)
+- [ ] MSI stage improvements (Pro features beyond current Wix support)
+- [ ] PKG stage improvements (Pro features, v2.14+)
 
 ### Session E: Cross-Cutting Concerns
 <!-- NOTE: This session is too large for a single conversation. Split into E1 (Config infrastructure + Pervasive patterns) and E2 (Template additions + Stage-specific extras) before starting. Update this plan to reflect the split. -->
