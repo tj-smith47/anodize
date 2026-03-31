@@ -601,6 +601,29 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
             Ok(Value::Array(parts))
         },
     );
+    // Filter form: {{ Field | split(sep=".") }}
+    tera.register_filter("split", |value: &Value, args: &HashMap<String, Value>| {
+        let s = tera::try_get_value!("split", "value", String, value);
+        let sep = args
+            .get("sep")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| tera::Error::msg("split filter requires `sep` argument"))?;
+        let parts: Vec<Value> = s.split(sep).map(|p| Value::String(p.to_string())).collect();
+        Ok(Value::Array(parts))
+    });
+
+    // Filter form: {{ Field | contains(substr="needle") }}
+    tera.register_filter(
+        "contains",
+        |value: &Value, args: &HashMap<String, Value>| {
+            let s = tera::try_get_value!("contains", "value", String, value);
+            let substr = args
+                .get("substr")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tera::Error::msg("contains filter requires `substr` argument"))?;
+            Ok(Value::Bool(s.contains(substr)))
+        },
+    );
 
     // --- trim function (GoReleaser strings.TrimSpace parity) ---
     // Function form: trim(s="  hello  ") → "hello"
@@ -882,10 +905,21 @@ impl Default for TemplateVars {
 /// Also handles chained access like `{{ .Env.VAR }}` → `{{ Env.VAR }}`.
 /// Works inside both `{{ }}` and `{% %}` blocks, and handles multiple
 /// dot-variables in a single block (e.g., `{{ .Field1 ~ .Field2 }}`).
+///
+/// Also converts Go-style positional function syntax to Tera named-arg syntax:
+/// - `{{ replace .Version "v" "" }}` → `{{ replace(s=Version, old="v", new="") }}`
+/// - `{{ .Version | replace "v" "" }}` → `{{ Version | replace(from="v", to="") }}`
+/// - `{{ split .Version "." }}` → `{{ split(s=Version, sep=".") }}`
+/// - `{{ contains .Version "rc" }}` → `{{ contains(s=Version, substr="rc") }}`
 fn preprocess(template: &str) -> String {
-    // For each `{{ ... }}` or `{% ... %}` block, replace all Go-style
-    // `.VarName` references with `VarName`. We skip over quoted strings
-    // so that dots inside string literals (e.g., file paths) are preserved.
+    // Pass 1: strip Go-style leading dots.
+    let dot_stripped = preprocess_strip_dots(template);
+    // Pass 2: convert positional function syntax to named-arg syntax.
+    preprocess_positional_syntax(&dot_stripped)
+}
+
+/// Pass 1: Strip Go-style leading dots from variable references.
+fn preprocess_strip_dots(template: &str) -> String {
     GO_BLOCK_RE
         .replace_all(template, |caps: &regex::Captures| {
             let block = &caps[0];
@@ -943,6 +977,424 @@ fn preprocess(template: &str) -> String {
             result
         })
         .to_string()
+}
+
+/// Pass 2: Convert Go-style positional function calls to Tera named-arg syntax.
+///
+/// Handles two forms for `replace`, `split`, and `contains`:
+///
+/// **Standalone (function) form:**
+/// - `{{ replace Version "v" "" }}` → `{{ replace(s=Version, old="v", new="") }}`
+/// - `{{ split Version "." }}` → `{{ split(s=Version, sep=".") }}`
+/// - `{{ contains Version "rc" }}` → `{{ contains(s=Version, substr="rc") }}`
+///
+/// **Piped (filter) form:**
+/// - `{{ Version | replace "v" "" }}` → `{{ Version | replace(from="v", to="") }}`
+/// - `{{ Version | split "." }}` → `{{ Version | split(sep=".") }}`
+/// - `{{ Version | contains "rc" }}` → `{{ Version | contains(substr="rc") }}`
+///
+/// Already-named-arg syntax (contains `(`) is passed through unchanged.
+fn preprocess_positional_syntax(template: &str) -> String {
+    GO_BLOCK_RE
+        .replace_all(template, |caps: &regex::Captures| {
+            let block = &caps[0];
+
+            // Extract the open/close delimiters and inner content, accounting
+            // for Tera's whitespace-control variants (`{{-`, `-}}`, `{%-`, `-%}`).
+            let (open, inner, close) = extract_block_parts(block);
+
+            if block.starts_with("{%") {
+                // For control blocks like `{% if contains Version "rc" %}`,
+                // we need to rewrite the expression portion after the keyword.
+                if let Some(rewritten) = try_rewrite_control_block(inner) {
+                    return format!("{}{}{}", open, rewritten, close);
+                }
+                return block.to_string();
+            }
+
+            // Tokenize the inner content of `{{ }}` blocks.
+            let tokens = tokenize_block(inner);
+            if tokens.is_empty() {
+                return block.to_string();
+            }
+
+            // Try standalone form: `funcname arg1 arg2 [arg3]`
+            if let Some(rewritten) = try_rewrite_standalone(&tokens) {
+                return format!("{}{}{}", open, rewritten, close);
+            }
+
+            // Try piped form: `expr | funcname arg1 [arg2]`
+            if let Some(rewritten) = try_rewrite_piped(&tokens) {
+                return format!("{}{}{}", open, rewritten, close);
+            }
+
+            // No positional syntax detected; return unchanged.
+            block.to_string()
+        })
+        .to_string()
+}
+
+/// Extract the open delimiter, inner content, and close delimiter from a template block.
+/// Handles Tera whitespace-control variants: `{{-`, `-}}`, `{%-`, `-%}`.
+fn extract_block_parts(block: &str) -> (&str, &str, &str) {
+    let open_len = if block.starts_with("{{-") || block.starts_with("{%-") {
+        3
+    } else {
+        2
+    };
+    let close_len = if block.ends_with("-}}") || block.ends_with("-%}") {
+        3
+    } else {
+        2
+    };
+    let open = &block[..open_len];
+    let close = &block[block.len() - close_len..];
+    let inner = &block[open_len..block.len() - close_len];
+    (open, inner, close)
+}
+
+/// Try to rewrite positional function calls inside `{% %}` control blocks.
+///
+/// Handles patterns like:
+/// - `{% if contains Version "rc" %}` → `{% if contains(s=Version, substr="rc") %}`
+/// - `{% if replace Tag "v" "" %}` → `{% if replace(s=Tag, old="v", new="") %}`
+/// - ` if Version | replace "v" "" ` → ` if Version | replace(from="v", to="") `
+///
+/// The approach: identify the block keyword (`if`, `elif`, `else if`, etc.),
+/// then attempt positional rewriting on the expression that follows it.
+fn try_rewrite_control_block(inner: &str) -> Option<String> {
+    let tokens = tokenize_block(inner);
+    let sig = significant_tokens(&tokens);
+
+    if sig.is_empty() {
+        return None;
+    }
+
+    // Identify the control keyword and find where the expression starts.
+    // Keywords: `if`, `elif`, `else if`, `set ... =`, etc.
+    // We care about `if` and `elif` (which contain expressions that might use
+    // positional function syntax).
+    let keyword = match sig.first() {
+        Some(Token::Ident(k)) => k.as_str(),
+        _ => return None,
+    };
+
+    // Only handle `if` and `elif` — these take expressions.
+    // `for`, `endfor`, `endif`, `else`, `set`, etc. don't use positional funcs.
+    if keyword != "if" && keyword != "elif" {
+        return None;
+    }
+
+    // Find the index of the keyword token in the full (with-whitespace) token list.
+    let keyword_end_idx = tokens
+        .iter()
+        .position(|t| matches!(t, Token::Ident(k) if k == keyword))
+        .map(|i| i + 1)?;
+
+    // The expression portion is everything after the keyword.
+    let expr_tokens: Vec<Token> = tokens[keyword_end_idx..].to_vec();
+
+    // Try standalone rewrite on the expression.
+    if let Some(rewritten) = try_rewrite_standalone(&expr_tokens) {
+        let prefix: String = tokens[..keyword_end_idx]
+            .iter()
+            .map(|t| token_to_str(t))
+            .collect();
+        return Some(format!("{}{}", prefix, rewritten));
+    }
+
+    // Try piped rewrite on the expression.
+    if let Some(rewritten) = try_rewrite_piped(&expr_tokens) {
+        let prefix: String = tokens[..keyword_end_idx]
+            .iter()
+            .map(|t| token_to_str(t))
+            .collect();
+        return Some(format!("{}{}", prefix, rewritten));
+    }
+
+    None
+}
+
+/// A token from inside a `{{ }}` block.
+#[derive(Debug, Clone, PartialEq)]
+enum Token {
+    /// A bare identifier or dotted path (e.g., `Version`, `Env.VAR`).
+    Ident(String),
+    /// A quoted string literal including its quotes (e.g., `"v"`).
+    Quoted(String),
+    /// The pipe operator `|`.
+    Pipe,
+    /// Whitespace (preserved for reconstruction).
+    Space(String),
+    /// Anything else (parentheses, operators, etc.).
+    Other(String),
+}
+
+/// Tokenize the inner content of a `{{ }}` block.
+/// Splits into identifiers, quoted strings, pipes, spaces, and other chars.
+fn tokenize_block(inner: &str) -> Vec<Token> {
+    let mut tokens = Vec::new();
+    let bytes = inner.as_bytes();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        // Whitespace
+        if bytes[i].is_ascii_whitespace() {
+            let start = i;
+            while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+                i += 1;
+            }
+            tokens.push(Token::Space(inner[start..i].to_string()));
+            continue;
+        }
+
+        // Quoted string
+        if bytes[i] == b'"' || bytes[i] == b'\'' {
+            let quote = bytes[i];
+            let start = i;
+            i += 1;
+            while i < bytes.len() && bytes[i] != quote {
+                if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            if i < bytes.len() {
+                i += 1; // closing quote
+            }
+            tokens.push(Token::Quoted(inner[start..i].to_string()));
+            continue;
+        }
+
+        // Pipe
+        if bytes[i] == b'|' {
+            tokens.push(Token::Pipe);
+            i += 1;
+            continue;
+        }
+
+        // Identifier or dotted path (e.g., `Env.VAR`, `Version`)
+        if bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' {
+            let start = i;
+            while i < bytes.len()
+                && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'.')
+            {
+                i += 1;
+            }
+            tokens.push(Token::Ident(inner[start..i].to_string()));
+            continue;
+        }
+
+        // Everything else (parentheses, operators, etc.)
+        tokens.push(Token::Other((bytes[i] as char).to_string()));
+        i += 1;
+    }
+
+    tokens
+}
+
+/// Collect non-whitespace tokens from a slice.
+fn significant_tokens(tokens: &[Token]) -> Vec<&Token> {
+    tokens
+        .iter()
+        .filter(|t| !matches!(t, Token::Space(_)))
+        .collect()
+}
+
+/// Try to rewrite standalone positional form:
+/// `replace <arg> <quoted> <quoted>` → `replace(s=<arg>, old=<quoted>, new=<quoted>)`
+/// `split <arg> <quoted>` → `split(s=<arg>, sep=<quoted>)`
+/// `contains <arg> <quoted>` → `contains(s=<arg>, substr=<quoted>)`
+///
+/// Returns `None` if the pattern doesn't match.
+fn try_rewrite_standalone(tokens: &[Token]) -> Option<String> {
+    let sig = significant_tokens(tokens);
+
+    // If there are parentheses anywhere, this is already named-arg syntax.
+    if sig.iter().any(|t| matches!(t, Token::Other(s) if s == "(")) {
+        return None;
+    }
+
+    // If there's a pipe, this isn't standalone form.
+    if sig.iter().any(|t| matches!(t, Token::Pipe)) {
+        return None;
+    }
+
+    let func_name = match sig.first() {
+        Some(Token::Ident(name)) => name.as_str(),
+        _ => return None,
+    };
+
+    // Preserve leading/trailing whitespace from the original block.
+    let leading_ws = tokens
+        .first()
+        .and_then(|t| match t {
+            Token::Space(s) => Some(s.as_str()),
+            _ => None,
+        })
+        .unwrap_or("");
+    let trailing_ws = tokens
+        .last()
+        .and_then(|t| match t {
+            Token::Space(s) => Some(s.as_str()),
+            _ => None,
+        })
+        .unwrap_or("");
+
+    match func_name {
+        "replace" => {
+            // replace <arg1> <arg2> <arg3>
+            if sig.len() != 4 {
+                return None;
+            }
+            let s_arg = format_arg_value(&sig[1])?;
+            let old_arg = format_arg_value(&sig[2])?;
+            let new_arg = format_arg_value(&sig[3])?;
+            Some(format!(
+                "{}replace(s={}, old={}, new={}){}",
+                leading_ws, s_arg, old_arg, new_arg, trailing_ws
+            ))
+        }
+        "split" => {
+            // split <arg1> <arg2>
+            if sig.len() != 3 {
+                return None;
+            }
+            let s_arg = format_arg_value(&sig[1])?;
+            let sep_arg = format_arg_value(&sig[2])?;
+            Some(format!(
+                "{}split(s={}, sep={}){}",
+                leading_ws, s_arg, sep_arg, trailing_ws
+            ))
+        }
+        "contains" => {
+            // contains <arg1> <arg2>
+            if sig.len() != 3 {
+                return None;
+            }
+            let s_arg = format_arg_value(&sig[1])?;
+            let substr_arg = format_arg_value(&sig[2])?;
+            Some(format!(
+                "{}contains(s={}, substr={}){}",
+                leading_ws, s_arg, substr_arg, trailing_ws
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// Try to rewrite piped positional form:
+/// `<expr> | replace <quoted> <quoted>` → `<expr> | replace(from=<quoted>, to=<quoted>)`
+/// `<expr> | split <quoted>` → `<expr> | split(sep=<quoted>)`
+/// `<expr> | contains <quoted>` → `<expr> | contains(substr=<quoted>)`
+///
+/// Returns `None` if the pattern doesn't match.
+fn try_rewrite_piped(tokens: &[Token]) -> Option<String> {
+    // If there are parentheses anywhere, this is already named-arg syntax.
+    if tokens
+        .iter()
+        .any(|t| matches!(t, Token::Other(s) if s == "("))
+    {
+        return None;
+    }
+
+    // Find the LAST pipe in the token stream. This handles chained filters like
+    // `Version | trimprefix(prefix="v") | replace "." "-"` — we only rewrite
+    // the final segment after the last pipe.
+    let last_pipe_idx = tokens
+        .iter()
+        .rposition(|t| matches!(t, Token::Pipe))?;
+
+    // Everything before the pipe (the expression being piped).
+    let before_pipe = &tokens[..last_pipe_idx];
+    // Everything after the pipe.
+    let after_pipe = &tokens[last_pipe_idx + 1..];
+
+    let sig_after = significant_tokens(after_pipe);
+    if sig_after.is_empty() {
+        return None;
+    }
+
+    let func_name = match sig_after.first() {
+        Some(Token::Ident(name)) => name.as_str(),
+        _ => return None,
+    };
+
+    // Reconstruct the before-pipe portion as a string.
+    let before_str: String = before_pipe.iter().map(|t| token_to_str(t)).collect();
+    // Preserve trailing whitespace from the original block.
+    let trailing_ws = tokens
+        .last()
+        .and_then(|t| match t {
+            Token::Space(s) => Some(s.as_str()),
+            _ => None,
+        })
+        .unwrap_or("");
+
+    match func_name {
+        "replace" => {
+            // | replace <quoted1> <quoted2>
+            if sig_after.len() != 3 {
+                return None;
+            }
+            let from_arg = format_arg_value(&sig_after[1])?;
+            let to_arg = format_arg_value(&sig_after[2])?;
+            Some(format!(
+                "{} | replace(from={}, to={}){}",
+                before_str.trim_end(),
+                from_arg,
+                to_arg,
+                trailing_ws
+            ))
+        }
+        "split" => {
+            // | split <quoted>
+            if sig_after.len() != 2 {
+                return None;
+            }
+            let sep_arg = format_arg_value(&sig_after[1])?;
+            Some(format!(
+                "{} | split(sep={}){}",
+                before_str.trim_end(),
+                sep_arg,
+                trailing_ws
+            ))
+        }
+        "contains" => {
+            // | contains <quoted>
+            if sig_after.len() != 2 {
+                return None;
+            }
+            let substr_arg = format_arg_value(&sig_after[1])?;
+            Some(format!(
+                "{} | contains(substr={}){}",
+                before_str.trim_end(),
+                substr_arg,
+                trailing_ws
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// Format a token as a Tera argument value.
+/// - Quoted strings are used as-is (they already have quotes).
+/// - Identifiers are used bare (they reference template variables).
+fn format_arg_value(token: &Token) -> Option<String> {
+    match token {
+        Token::Quoted(s) => Some(s.clone()),
+        Token::Ident(s) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+/// Convert a token back to its string representation.
+fn token_to_str(token: &Token) -> String {
+    match token {
+        Token::Ident(s) | Token::Quoted(s) | Token::Space(s) | Token::Other(s) => s.clone(),
+        Token::Pipe => "|".to_string(),
+    }
 }
 
 /// Known numeric template fields that should be inserted as integers into the
@@ -2096,5 +2548,339 @@ mod tests {
         vars.set_custom_var("version_string", "cfgd v1.2.3");
         let result = render("{{ .Var.version_string }}", &vars).unwrap();
         assert_eq!(result, "cfgd v1.2.3");
+    }
+
+    // ---- Go-style positional syntax tests (Task 2) ----
+
+    #[test]
+    fn test_positional_replace_standalone() {
+        // {{ replace .Version "v" "" }} should strip "v" from empty tag
+        let mut vars = test_vars();
+        vars.set("Version", "v1.2.3");
+        let result = render("{{ replace .Version \"v\" \"\" }}", &vars).unwrap();
+        assert_eq!(result, "1.2.3");
+    }
+
+    #[test]
+    fn test_positional_replace_standalone_no_dot() {
+        // Tera-style: {{ replace Version "v" "" }}
+        let mut vars = test_vars();
+        vars.set("Version", "v1.2.3");
+        let result = render("{{ replace Version \"v\" \"\" }}", &vars).unwrap();
+        assert_eq!(result, "1.2.3");
+    }
+
+    #[test]
+    fn test_positional_replace_piped() {
+        // {{ .Version | replace "v" "" }} should strip "v" prefix
+        let mut vars = test_vars();
+        vars.set("Version", "v1.2.3");
+        let result = render("{{ .Version | replace \"v\" \"\" }}", &vars).unwrap();
+        assert_eq!(result, "1.2.3");
+    }
+
+    #[test]
+    fn test_positional_replace_piped_no_dot() {
+        // Tera-style: {{ Version | replace "v" "" }}
+        let mut vars = test_vars();
+        vars.set("Version", "v1.2.3");
+        let result = render("{{ Version | replace \"v\" \"\" }}", &vars).unwrap();
+        assert_eq!(result, "1.2.3");
+    }
+
+    #[test]
+    fn test_positional_split_standalone() {
+        // {{ split .Version "." }} should split on dots
+        let vars = test_vars();
+        let result = render("{{ split .Version \".\" }}", &vars).unwrap();
+        // Tera renders arrays as JSON, e.g. ["1", "2", "3"]
+        assert!(result.contains("1"));
+        assert!(result.contains("2"));
+        assert!(result.contains("3"));
+    }
+
+    #[test]
+    fn test_positional_split_piped() {
+        // {{ .Version | split "." }} should split on dots
+        let vars = test_vars();
+        let result = render("{{ .Version | split \".\" }}", &vars).unwrap();
+        assert!(result.contains("1"));
+        assert!(result.contains("2"));
+        assert!(result.contains("3"));
+    }
+
+    #[test]
+    fn test_positional_contains_standalone_true() {
+        // {{ contains .Version "2" }} should return true
+        let vars = test_vars();
+        let result = render(
+            "{% if contains .Version \"2\" %}yes{% else %}no{% endif %}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "yes");
+    }
+
+    #[test]
+    fn test_positional_contains_standalone_false() {
+        let vars = test_vars();
+        let result = render(
+            "{% if contains .Version \"rc\" %}yes{% else %}no{% endif %}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "no");
+    }
+
+    #[test]
+    fn test_positional_contains_piped() {
+        // {{ .Tag | contains "v" }} piped form
+        let vars = test_vars();
+        let result = render(
+            "{% if Tag | contains(substr=\"v\") %}yes{% else %}no{% endif %}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "yes");
+    }
+
+    #[test]
+    fn test_positional_replace_with_env_var() {
+        // Using dotted path: {{ replace .Env.GITHUB_TOKEN "tok" "XXX" }}
+        let vars = test_vars();
+        let result =
+            render("{{ replace .Env.GITHUB_TOKEN \"tok\" \"XXX\" }}", &vars).unwrap();
+        assert_eq!(result, "XXX123");
+    }
+
+    #[test]
+    fn test_positional_replace_empty_replacement() {
+        // Common GoReleaser pattern: strip "v" prefix
+        let vars = test_vars();
+        let result = render("{{ replace .Tag \"v\" \"\" }}", &vars).unwrap();
+        assert_eq!(result, "1.2.3");
+    }
+
+    #[test]
+    fn test_named_arg_syntax_passthrough() {
+        // Already using named args — should NOT be rewritten
+        let vars = test_vars();
+        let result =
+            render("{{ replace(s=Tag, old=\"v\", new=\"\") }}", &vars).unwrap();
+        assert_eq!(result, "1.2.3");
+    }
+
+    #[test]
+    fn test_named_arg_filter_passthrough() {
+        // Already using named filter args — should NOT be rewritten
+        let vars = test_vars();
+        let result =
+            render("{{ Tag | replace(from=\"v\", to=\"\") }}", &vars).unwrap();
+        assert_eq!(result, "1.2.3");
+    }
+
+    #[test]
+    fn test_positional_mixed_with_literal_text() {
+        // Positional syntax mixed with literal text around it
+        let vars = test_vars();
+        let result = render(
+            "app-{{ replace .Tag \"v\" \"\" }}-{{ .Os }}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "app-1.2.3-linux");
+    }
+
+    #[test]
+    fn test_positional_replace_both_quoted_args() {
+        // All args quoted — replace("v1.2.3", "v", "")
+        let vars = test_vars();
+        let result = render("{{ replace \"v1.2.3\" \"v\" \"\" }}", &vars).unwrap();
+        assert_eq!(result, "1.2.3");
+    }
+
+    #[test]
+    fn test_positional_split_literal_string() {
+        // split with a literal string instead of a variable
+        let vars = test_vars();
+        let result = render("{{ split \"a.b.c\" \".\" }}", &vars).unwrap();
+        assert!(result.contains("a"));
+        assert!(result.contains("b"));
+        assert!(result.contains("c"));
+    }
+
+    #[test]
+    fn test_positional_contains_literal_string() {
+        let vars = test_vars();
+        let result = render(
+            "{% if contains \"hello world\" \"world\" %}yes{% else %}no{% endif %}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "yes");
+    }
+
+    #[test]
+    fn test_preprocess_positional_replace() {
+        // Unit test for the preprocessor output
+        let input = "{{ replace Version \"v\" \"\" }}";
+        let result = preprocess(input);
+        assert_eq!(result, "{{ replace(s=Version, old=\"v\", new=\"\") }}");
+    }
+
+    #[test]
+    fn test_preprocess_positional_replace_piped() {
+        let input = "{{ Version | replace \"v\" \"\" }}";
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            "{{ Version | replace(from=\"v\", to=\"\") }}"
+        );
+    }
+
+    #[test]
+    fn test_preprocess_positional_split() {
+        let input = "{{ split Version \".\" }}";
+        let result = preprocess(input);
+        assert_eq!(result, "{{ split(s=Version, sep=\".\") }}");
+    }
+
+    #[test]
+    fn test_preprocess_positional_contains() {
+        let input = "{{ contains Version \"rc\" }}";
+        let result = preprocess(input);
+        assert_eq!(result, "{{ contains(s=Version, substr=\"rc\") }}");
+    }
+
+    #[test]
+    fn test_preprocess_positional_piped_split() {
+        let input = "{{ Version | split \".\" }}";
+        let result = preprocess(input);
+        assert_eq!(result, "{{ Version | split(sep=\".\") }}");
+    }
+
+    #[test]
+    fn test_preprocess_positional_piped_contains() {
+        let input = "{{ Version | contains \"rc\" }}";
+        let result = preprocess(input);
+        assert_eq!(result, "{{ Version | contains(substr=\"rc\") }}");
+    }
+
+    #[test]
+    fn test_preprocess_named_args_unchanged() {
+        // Already-named-arg syntax should pass through unmodified
+        let input = "{{ replace(s=Version, old=\"v\", new=\"\") }}";
+        let result = preprocess(input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_preprocess_named_filter_unchanged() {
+        let input = "{{ Version | replace(from=\"v\", to=\"\") }}";
+        let result = preprocess(input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_preprocess_control_block_rewritten() {
+        // {% if contains Version "rc" %} should be rewritten to named-arg form
+        let input = "{% if contains Version \"rc\" %}yes{% endif %}";
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            "{% if contains(s=Version, substr=\"rc\") %}yes{% endif %}"
+        );
+    }
+
+    #[test]
+    fn test_preprocess_control_block_non_positional_unchanged() {
+        // {% if Version %} should not be touched (no positional func)
+        let input = "{% if Version %}yes{% endif %}";
+        let result = preprocess(input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_positional_replace_with_dot_var() {
+        // Dot-stripping + positional rewrite combined:
+        // {{ replace .Tag "v" "" }} → dot-strip → {{ replace Tag "v" "" }} → positional → {{ replace(s=Tag, old="v", new="") }}
+        let input = "{{ replace .Tag \"v\" \"\" }}";
+        let result = preprocess(input);
+        assert_eq!(result, "{{ replace(s=Tag, old=\"v\", new=\"\") }}");
+    }
+
+    #[test]
+    fn test_positional_piped_with_dot_var() {
+        // {{ .Tag | replace "v" "" }} → dot-strip → {{ Tag | replace "v" "" }} → positional
+        let input = "{{ .Tag | replace \"v\" \"\" }}";
+        let result = preprocess(input);
+        assert_eq!(result, "{{ Tag | replace(from=\"v\", to=\"\") }}");
+    }
+
+    #[test]
+    fn test_positional_no_spaces_compact() {
+        // Compact form: {{replace .Tag "v" ""}}
+        let input = "{{replace .Tag \"v\" \"\"}}";
+        let result = preprocess(input);
+        assert_eq!(result, "{{replace(s=Tag, old=\"v\", new=\"\")}}");
+    }
+
+    #[test]
+    fn test_unrelated_expression_unchanged() {
+        // A simple variable reference should not be affected
+        let input = "{{ Version }}";
+        let result = preprocess(input);
+        assert_eq!(result, "{{ Version }}");
+    }
+
+    #[test]
+    fn test_unrelated_filter_unchanged() {
+        // A normal filter chain should not be affected
+        let input = "{{ Version | upper }}";
+        let result = preprocess(input);
+        assert_eq!(result, "{{ Version | upper }}");
+    }
+
+    #[test]
+    fn test_positional_replace_whitespace_control() {
+        // Tera whitespace control: {{- and -}}
+        let input = "{{- replace Version \"v\" \"\" -}}";
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            "{{- replace(s=Version, old=\"v\", new=\"\") -}}"
+        );
+    }
+
+    #[test]
+    fn test_positional_replace_whitespace_control_left_only() {
+        let input = "{{- replace Version \"v\" \"\" }}";
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            "{{- replace(s=Version, old=\"v\", new=\"\") }}"
+        );
+    }
+
+    #[test]
+    fn test_split_filter_end_to_end() {
+        // Test the split filter registration works end-to-end
+        let vars = test_vars();
+        let result = render("{{ Version | split(sep=\".\") }}", &vars).unwrap();
+        assert!(result.contains("1"));
+        assert!(result.contains("2"));
+        assert!(result.contains("3"));
+    }
+
+    #[test]
+    fn test_contains_filter_end_to_end() {
+        // Test the contains filter registration works end-to-end
+        let vars = test_vars();
+        let result = render(
+            "{% if Tag | contains(substr=\"v\") %}yes{% else %}no{% endif %}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "yes");
     }
 }
