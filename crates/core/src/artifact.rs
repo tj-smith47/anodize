@@ -211,6 +211,8 @@ pub fn size_reportable_kinds() -> &'static [ArtifactKind] {
         ArtifactKind::DiskImage,
         ArtifactKind::Installer,
         ArtifactKind::MacOsPackage,
+        ArtifactKind::Library,
+        ArtifactKind::Wasm,
     ]
 }
 
@@ -517,6 +519,9 @@ mod tests {
         // Binary + Snap (GoReleaser extras)
         assert!(kinds.contains(&ArtifactKind::Binary));
         assert!(kinds.contains(&ArtifactKind::Snap));
+        // Library (maps to GoReleaser CArchive/CShared) + Wasm (anodize distributable)
+        assert!(kinds.contains(&ArtifactKind::Library));
+        assert!(kinds.contains(&ArtifactKind::Wasm));
     }
 
     #[test]
@@ -525,8 +530,6 @@ mod tests {
         assert!(!kinds.contains(&ArtifactKind::DockerImage));
         assert!(!kinds.contains(&ArtifactKind::DockerManifest));
         assert!(!kinds.contains(&ArtifactKind::Metadata));
-        assert!(!kinds.contains(&ArtifactKind::Library));
-        assert!(!kinds.contains(&ArtifactKind::Wasm));
     }
 
     #[test]
