@@ -2274,8 +2274,8 @@ pub struct DmgConfig {
     pub ids: Option<Vec<String>>,
     /// Output DMG filename (supports templates).
     pub name: Option<String>,
-    /// Additional files to include in the DMG.
-    pub extra_files: Option<Vec<String>>,
+    /// Additional files to include in the DMG (glob or {glob, name_template}).
+    pub extra_files: Option<Vec<ExtraFileSpec>>,
     /// Remove source archives from artifacts, keeping only DMG.
     pub replace: Option<bool>,
     /// Output timestamp for reproducible builds.
@@ -2328,8 +2328,8 @@ pub struct PkgConfig {
     pub install_location: Option<String>,
     /// Path to scripts directory containing preinstall/postinstall scripts.
     pub scripts: Option<String>,
-    /// Additional files to include in the package.
-    pub extra_files: Option<Vec<String>>,
+    /// Additional files to include in the package (glob or {glob, name_template}).
+    pub extra_files: Option<Vec<ExtraFileSpec>>,
     /// Remove source archives from artifacts, keeping only PKG.
     pub replace: Option<bool>,
     /// Output timestamp for reproducible builds.

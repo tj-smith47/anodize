@@ -210,6 +210,7 @@ impl Stage for PkgStage {
 
                         new_artifacts.push(Artifact {
                             kind: ArtifactKind::MacOsPackage,
+                            name: String::new(),
                             path: pkg_path,
                             target: target.clone(),
                             crate_name: krate.name.clone(),
@@ -260,14 +261,28 @@ impl Stage for PkgStage {
 
                     // Copy extra files into the staging directory
                     if let Some(extra_files) = &pkg_cfg.extra_files {
-                        for extra in extra_files {
-                            let src = PathBuf::from(extra);
-                            let dst_name =
-                                src.file_name().and_then(|n| n.to_str()).unwrap_or("extra");
-                            let dst = staging_dir.join(dst_name);
-                            fs::copy(&src, &dst).with_context(|| {
-                                format!("pkg: copy extra file {} to staging dir", src.display())
-                            })?;
+                        for spec in extra_files {
+                            let glob_pattern = spec.glob();
+                            for entry in glob::glob(glob_pattern).with_context(|| {
+                                format!("pkg: invalid extra_files glob '{}'", glob_pattern)
+                            })? {
+                                let src = entry.with_context(|| {
+                                    format!("pkg: error reading glob match for '{}'", glob_pattern)
+                                })?;
+                                let dst_name = spec
+                                    .name_template()
+                                    .map(|s| s.to_string())
+                                    .or_else(|| {
+                                        src.file_name()
+                                            .and_then(|n| n.to_str())
+                                            .map(|s| s.to_string())
+                                    })
+                                    .unwrap_or_else(|| "extra".to_string());
+                                let dst = staging_dir.join(&dst_name);
+                                fs::copy(&src, &dst).with_context(|| {
+                                    format!("pkg: copy extra file {} to staging dir", src.display())
+                                })?;
+                            }
                         }
                     }
 
@@ -305,6 +320,7 @@ impl Stage for PkgStage {
 
                     new_artifacts.push(Artifact {
                         kind: ArtifactKind::MacOsPackage,
+                        name: String::new(),
                         path: pkg_path,
                         target: target.clone(),
                         crate_name: krate.name.clone(),
@@ -355,7 +371,7 @@ impl Stage for PkgStage {
 mod tests {
     use super::*;
     use anodize_core::artifact::{Artifact, ArtifactKind};
-    use anodize_core::config::{Config, CrateConfig, PkgConfig};
+    use anodize_core::config::{Config, CrateConfig, ExtraFileSpec, PkgConfig};
     use anodize_core::context::{Context, ContextOptions};
     use tempfile::TempDir;
 
@@ -489,6 +505,7 @@ mod tests {
         // Add a darwin binary so the stage would otherwise process it
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("/build/myapp"),
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
@@ -536,6 +553,7 @@ mod tests {
         // Register darwin binary artifacts
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("/build/myapp"),
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
@@ -543,6 +561,7 @@ mod tests {
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("/build/myapp-x86"),
             target: Some("x86_64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
@@ -603,6 +622,7 @@ mod tests {
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("/build/myapp"),
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
@@ -654,6 +674,7 @@ mod tests {
         // Add a darwin binary
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("/build/myapp"),
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
@@ -663,6 +684,7 @@ mod tests {
         // Add darwin archive artifacts that should be removed
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: PathBuf::from("/dist/myapp_darwin_arm64.tar.gz"),
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
@@ -672,6 +694,7 @@ mod tests {
         // Add a linux archive that should NOT be removed
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: PathBuf::from("/dist/myapp_linux_amd64.tar.gz"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -728,6 +751,7 @@ mod tests {
         // Add a darwin binary so the stage attempts to process the config
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("/build/myapp"),
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
@@ -811,7 +835,10 @@ crates:
         );
         assert_eq!(p.install_location.as_deref(), Some("/opt/test/bin"));
         assert_eq!(p.scripts.as_deref(), Some("./scripts/pkg"));
-        assert_eq!(p.extra_files.as_ref().unwrap(), &["README.md", "LICENSE"]);
+        let extras = p.extra_files.as_ref().unwrap();
+        assert_eq!(extras.len(), 2);
+        assert_eq!(extras[0].glob(), "README.md");
+        assert_eq!(extras[1].glob(), "LICENSE");
         assert_eq!(p.replace, Some(true));
         assert_eq!(p.mod_timestamp.as_deref(), Some("2024-01-01T00:00:00Z"));
         assert_eq!(p.disable, Some(false));
@@ -850,6 +877,7 @@ crates:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("/build/myapp"),
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
@@ -900,7 +928,7 @@ crates:
 
         let pkg_cfg = PkgConfig {
             identifier: Some("com.example.myapp".to_string()),
-            extra_files: Some(vec![extra_path.to_string_lossy().into_owned()]),
+            extra_files: Some(vec![ExtraFileSpec::Glob(extra_path.to_string_lossy().into_owned())]),
             ..Default::default()
         };
 
@@ -927,6 +955,7 @@ crates:
         // Add a darwin binary artifact
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: binary_path,
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
@@ -977,6 +1006,7 @@ crates:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("/build/myapp"),
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
@@ -1029,6 +1059,7 @@ crates:
         // Register two darwin binaries with different metadata ids
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("/build/myapp-arm64"),
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
@@ -1036,6 +1067,7 @@ crates:
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("/build/myapp-amd64"),
             target: Some("x86_64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),

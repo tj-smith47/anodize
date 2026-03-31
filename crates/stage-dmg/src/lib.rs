@@ -248,6 +248,7 @@ impl Stage for DmgStage {
 
                         new_artifacts.push(Artifact {
                             kind: ArtifactKind::DiskImage,
+                            name: String::new(),
                             path: dmg_path,
                             target: target.clone(),
                             crate_name: krate.name.clone(),
@@ -304,14 +305,28 @@ impl Stage for DmgStage {
 
                     // Copy extra files into staging dir
                     if let Some(extra_files) = &dmg_cfg.extra_files {
-                        for extra in extra_files {
-                            let src = PathBuf::from(extra);
-                            let dst_name =
-                                src.file_name().and_then(|n| n.to_str()).unwrap_or("extra");
-                            let dst = staging_dir.join(dst_name);
-                            fs::copy(&src, &dst).with_context(|| {
-                                format!("copy extra file {} to staging dir", src.display())
-                            })?;
+                        for spec in extra_files {
+                            let glob_pattern = spec.glob();
+                            for entry in glob::glob(glob_pattern).with_context(|| {
+                                format!("dmg: invalid extra_files glob '{}'", glob_pattern)
+                            })? {
+                                let src = entry.with_context(|| {
+                                    format!("dmg: error reading glob match for '{}'", glob_pattern)
+                                })?;
+                                let dst_name = spec
+                                    .name_template()
+                                    .map(|s| s.to_string())
+                                    .or_else(|| {
+                                        src.file_name()
+                                            .and_then(|n| n.to_str())
+                                            .map(|s| s.to_string())
+                                    })
+                                    .unwrap_or_else(|| "extra".to_string());
+                                let dst = staging_dir.join(&dst_name);
+                                fs::copy(&src, &dst).with_context(|| {
+                                    format!("copy extra file {} to staging dir", src.display())
+                                })?;
+                            }
                         }
                     }
 
@@ -343,6 +358,7 @@ impl Stage for DmgStage {
 
                     new_artifacts.push(Artifact {
                         kind: ArtifactKind::DiskImage,
+                        name: String::new(),
                         path: dmg_path,
                         target: target.clone(),
                         crate_name: krate.name.clone(),
@@ -515,6 +531,7 @@ mod tests {
         // Add a darwin binary so the stage has something to potentially process
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("dist/myapp"),
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
@@ -563,6 +580,7 @@ mod tests {
         // Register darwin binary artifacts
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("dist/myapp"),
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
@@ -570,6 +588,7 @@ mod tests {
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("dist/myapp_x86"),
             target: Some("x86_64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
@@ -631,6 +650,7 @@ mod tests {
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("dist/myapp"),
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
@@ -687,6 +707,7 @@ mod tests {
         // Register a darwin binary
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("dist/myapp"),
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
@@ -696,6 +717,7 @@ mod tests {
         // Register an archive artifact for the same crate+target
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: PathBuf::from("dist/myapp_1.0.0_darwin_arm64.tar.gz"),
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
@@ -705,6 +727,7 @@ mod tests {
         // Also register a Linux archive that should NOT be removed
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
+            name: String::new(),
             path: PathBuf::from("dist/myapp_1.0.0_linux_amd64.tar.gz"),
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
@@ -787,10 +810,10 @@ crates:
             dmg.name.as_deref(),
             Some("myapp-{{ Version }}-{{ Os }}-{{ Arch }}.dmg")
         );
-        assert_eq!(
-            dmg.extra_files.as_ref().unwrap(),
-            &vec!["README.md".to_string(), "LICENSE".to_string()]
-        );
+        let extras = dmg.extra_files.as_ref().unwrap();
+        assert_eq!(extras.len(), 2);
+        assert_eq!(extras[0].glob(), "README.md");
+        assert_eq!(extras[1].glob(), "LICENSE");
         assert_eq!(dmg.replace, Some(true));
         assert_eq!(dmg.mod_timestamp.as_deref(), Some("{{ .CommitTimestamp }}"));
         assert_eq!(dmg.disable, Some(false));
@@ -834,6 +857,7 @@ crates:
         // Add a darwin binary so we actually attempt to render the template
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("dist/myapp"),
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
@@ -868,7 +892,7 @@ crates:
         fs::write(&extra_path, b"readme content").unwrap();
 
         let dmg_cfg = DmgConfig {
-            extra_files: Some(vec![extra_path.to_string_lossy().into_owned()]),
+            extra_files: Some(vec![anodize_core::config::ExtraFileSpec::Glob(extra_path.to_string_lossy().into_owned())]),
             ..Default::default()
         };
 
@@ -897,6 +921,7 @@ crates:
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: binary_path,
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
@@ -969,6 +994,7 @@ crates:
         // One darwin binary
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("dist/myapp"),
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
@@ -1045,6 +1071,7 @@ crates:
         // Register two darwin binaries with different metadata ids
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("dist/myapp-arm64"),
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
@@ -1052,6 +1079,7 @@ crates:
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
+            name: String::new(),
             path: PathBuf::from("dist/myapp-amd64"),
             target: Some("x86_64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
