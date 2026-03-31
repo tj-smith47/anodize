@@ -527,11 +527,11 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         .ok_or_else(|| anyhow::anyhow!("nix: no nix config for '{}'", crate_name))?;
 
     // Check skip_upload before doing any work.
-    if crate::homebrew::should_skip_upload(nix_cfg.skip_upload.as_deref(), ctx) {
+    if crate::homebrew::should_skip_upload(nix_cfg.skip_upload.as_ref(), ctx) {
         log.status(&format!(
             "nix: skipping upload for '{}' (skip_upload={})",
             crate_name,
-            nix_cfg.skip_upload.as_deref().unwrap_or("")
+            nix_cfg.skip_upload.as_ref().map(|v| v.as_str()).unwrap_or("")
         ));
         return Ok(());
     }

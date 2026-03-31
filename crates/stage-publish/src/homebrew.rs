@@ -1,3 +1,4 @@
+use anodize_core::config::StringOrBool;
 use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
 use anodize_core::template::{self, TemplateVars};
@@ -348,11 +349,11 @@ pub fn publish_cask(ctx: &Context, crate_name: &str, log: &StageLogger) -> Resul
         .ok_or_else(|| anyhow::anyhow!("homebrew cask: no cask config for '{}'", crate_name))?;
 
     // Check skip_upload before doing any work.
-    if should_skip_upload(hb_cfg.skip_upload.as_deref(), ctx) {
+    if should_skip_upload(hb_cfg.skip_upload.as_ref(), ctx) {
         log.status(&format!(
             "homebrew cask: skipping upload for '{}' (skip_upload={})",
             crate_name,
-            hb_cfg.skip_upload.as_deref().unwrap_or("")
+            hb_cfg.skip_upload.as_ref().map(|v| v.as_str()).unwrap_or("")
         ));
         return Ok(());
     }
@@ -816,16 +817,21 @@ pub fn generate_formula_with_opts(
 /// The value is first rendered through the template engine so that
 /// expressions like `{{ .Env.SKIP }}` resolve before comparison.
 ///
-/// - `"true"` always skips.
+/// - `"true"` (or bool `true`) always skips.
 /// - `"auto"` skips when the current version is a prerelease (the `Prerelease`
 ///   template variable is non-empty).
 /// - Anything else (including `None`) does not skip.
-pub(crate) fn should_skip_upload(skip_upload: Option<&str>, ctx: &Context) -> bool {
-    let rendered =
-        skip_upload.map(|raw| ctx.render_template(raw).unwrap_or_else(|_| raw.to_string()));
-    match rendered.as_deref() {
-        Some("true") => true,
-        Some("auto") => {
+pub(crate) fn should_skip_upload(skip_upload: Option<&StringOrBool>, ctx: &Context) -> bool {
+    let raw = match skip_upload {
+        Some(v) => v.as_str(),
+        None => return false,
+    };
+    let rendered = ctx
+        .render_template(raw)
+        .unwrap_or_else(|_| raw.to_string());
+    match rendered.trim() {
+        "true" => true,
+        "auto" => {
             let pre = ctx
                 .template_vars()
                 .get("Prerelease")
@@ -833,8 +839,8 @@ pub(crate) fn should_skip_upload(skip_upload: Option<&str>, ctx: &Context) -> bo
                 .unwrap_or_default();
             !pre.is_empty()
         }
-        Some("false") | None => false,
-        Some(other) => {
+        "false" | "" => false,
+        other => {
             eprintln!(
                 "  ⚠ unrecognized skip_upload value {:?} (expected \"true\", \"false\", or \"auto\"); treating as false",
                 other
@@ -883,11 +889,11 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
         .ok_or_else(|| anyhow::anyhow!("homebrew: no homebrew config for '{}'", crate_name))?;
 
     // Check skip_upload before doing any work.
-    if should_skip_upload(hb_cfg.skip_upload.as_deref(), ctx) {
+    if should_skip_upload(hb_cfg.skip_upload.as_ref(), ctx) {
         log.status(&format!(
             "homebrew: skipping upload for '{}' (skip_upload={})",
             crate_name,
-            hb_cfg.skip_upload.as_deref().unwrap_or("")
+            hb_cfg.skip_upload.as_ref().map(|v| v.as_str()).unwrap_or("")
         ));
         return Ok(());
     }
@@ -1940,11 +1946,21 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_should_skip_upload_true() {
+    fn test_should_skip_upload_true_string() {
         use anodize_core::config::Config;
         use anodize_core::context::{Context, ContextOptions};
         let ctx = Context::new(Config::default(), ContextOptions::default());
-        assert!(should_skip_upload(Some("true"), &ctx));
+        let val = StringOrBool::String("true".to_string());
+        assert!(should_skip_upload(Some(&val), &ctx));
+    }
+
+    #[test]
+    fn test_should_skip_upload_true_bool() {
+        use anodize_core::config::Config;
+        use anodize_core::context::{Context, ContextOptions};
+        let ctx = Context::new(Config::default(), ContextOptions::default());
+        let val = StringOrBool::Bool(true);
+        assert!(should_skip_upload(Some(&val), &ctx));
     }
 
     #[test]
@@ -1956,11 +1972,21 @@ mod tests {
     }
 
     #[test]
-    fn test_should_skip_upload_explicit_false() {
+    fn test_should_skip_upload_explicit_false_string() {
         use anodize_core::config::Config;
         use anodize_core::context::{Context, ContextOptions};
         let ctx = Context::new(Config::default(), ContextOptions::default());
-        assert!(!should_skip_upload(Some("false"), &ctx));
+        let val = StringOrBool::String("false".to_string());
+        assert!(!should_skip_upload(Some(&val), &ctx));
+    }
+
+    #[test]
+    fn test_should_skip_upload_explicit_false_bool() {
+        use anodize_core::config::Config;
+        use anodize_core::context::{Context, ContextOptions};
+        let ctx = Context::new(Config::default(), ContextOptions::default());
+        let val = StringOrBool::Bool(false);
+        assert!(!should_skip_upload(Some(&val), &ctx));
     }
 
     #[test]
@@ -1969,7 +1995,8 @@ mod tests {
         use anodize_core::context::{Context, ContextOptions};
         let mut ctx = Context::new(Config::default(), ContextOptions::default());
         ctx.template_vars_mut().set("Prerelease", "rc.1");
-        assert!(should_skip_upload(Some("auto"), &ctx));
+        let val = StringOrBool::String("auto".to_string());
+        assert!(should_skip_upload(Some(&val), &ctx));
     }
 
     #[test]
@@ -1978,7 +2005,8 @@ mod tests {
         use anodize_core::context::{Context, ContextOptions};
         let mut ctx = Context::new(Config::default(), ContextOptions::default());
         ctx.template_vars_mut().set("Prerelease", "");
-        assert!(!should_skip_upload(Some("auto"), &ctx));
+        let val = StringOrBool::String("auto".to_string());
+        assert!(!should_skip_upload(Some(&val), &ctx));
     }
 
     #[test]
@@ -1986,8 +2014,9 @@ mod tests {
         use anodize_core::config::Config;
         use anodize_core::context::{Context, ContextOptions};
         let ctx = Context::new(Config::default(), ContextOptions::default());
+        let val = StringOrBool::String("auto".to_string());
         // Prerelease var not set at all
-        assert!(!should_skip_upload(Some("auto"), &ctx));
+        assert!(!should_skip_upload(Some(&val), &ctx));
     }
 
     #[test]
@@ -1997,8 +2026,9 @@ mod tests {
         // Set an env variable that resolves to "true" via template.
         let mut ctx = Context::new(Config::default(), ContextOptions::default());
         ctx.template_vars_mut().set_env("SKIP", "true");
+        let val = StringOrBool::String("{{ .Env.SKIP }}".to_string());
         // The template {{ .Env.SKIP }} should render to "true" and cause skip.
-        assert!(should_skip_upload(Some("{{ .Env.SKIP }}"), &ctx));
+        assert!(should_skip_upload(Some(&val), &ctx));
     }
 
     #[test]
@@ -2007,7 +2037,8 @@ mod tests {
         use anodize_core::context::{Context, ContextOptions};
         let mut ctx = Context::new(Config::default(), ContextOptions::default());
         ctx.template_vars_mut().set_env("SKIP", "false");
-        assert!(!should_skip_upload(Some("{{ .Env.SKIP }}"), &ctx));
+        let val = StringOrBool::String("{{ .Env.SKIP }}".to_string());
+        assert!(!should_skip_upload(Some(&val), &ctx));
     }
 
     #[test]
@@ -2027,7 +2058,7 @@ mod tests {
                             owner: "myorg".to_string(),
                             name: "homebrew-tap".to_string(),
                         }),
-                        skip_upload: Some("true".to_string()),
+                        skip_upload: Some(StringOrBool::String("true".to_string())),
                         ..Default::default()
                     }),
                     ..Default::default()
@@ -2060,7 +2091,7 @@ mod tests {
                             owner: "myorg".to_string(),
                             name: "homebrew-tap".to_string(),
                         }),
-                        skip_upload: Some("auto".to_string()),
+                        skip_upload: Some(StringOrBool::String("auto".to_string())),
                         ..Default::default()
                     }),
                     ..Default::default()

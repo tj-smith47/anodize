@@ -434,11 +434,11 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
         .ok_or_else(|| anyhow::anyhow!("winget: no winget config for '{}'", crate_name))?;
 
     // Check skip_upload before doing any work.
-    if crate::homebrew::should_skip_upload(winget_cfg.skip_upload.as_deref(), ctx) {
+    if crate::homebrew::should_skip_upload(winget_cfg.skip_upload.as_ref(), ctx) {
         log.status(&format!(
             "winget: skipping upload for '{}' (skip_upload={})",
             crate_name,
-            winget_cfg.skip_upload.as_deref().unwrap_or("")
+            winget_cfg.skip_upload.as_ref().map(|v| v.as_str()).unwrap_or("")
         ));
         return Ok(());
     }

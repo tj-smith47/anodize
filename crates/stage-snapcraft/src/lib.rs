@@ -377,12 +377,14 @@ impl Stage for SnapcraftStage {
 
             for snap_cfg in snap_configs {
                 // Skip disabled configs
-                if snap_cfg.disable.unwrap_or(false) {
-                    log.status(&format!(
-                        "skipping disabled snapcraft config for crate {}",
-                        krate.name
-                    ));
-                    continue;
+                if let Some(ref d) = snap_cfg.disable {
+                    if d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
+                        log.status(&format!(
+                            "skipping disabled snapcraft config for crate {}",
+                            krate.name
+                        ));
+                        continue;
+                    }
                 }
 
                 // Validate confinement value
@@ -702,8 +704,10 @@ impl Stage for SnapcraftPublishStage {
                     continue;
                 }
                 // Skip disabled configs
-                if snap_cfg.disable.unwrap_or(false) {
-                    continue;
+                if let Some(ref d) = snap_cfg.disable {
+                    if d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
+                        continue;
+                    }
                 }
 
                 // Find snap artifacts for this crate (optionally filtered by id)
@@ -782,7 +786,7 @@ impl Stage for SnapcraftPublishStage {
 mod tests {
     use super::*;
     use anodize_core::config::{
-        Config, CrateConfig, SnapcraftApp, SnapcraftConfig, SnapcraftLayout,
+        Config, CrateConfig, SnapcraftApp, SnapcraftConfig, SnapcraftLayout, StringOrBool,
     };
     use anodize_core::context::{Context, ContextOptions};
     use tempfile::TempDir;
@@ -1054,7 +1058,7 @@ mod tests {
 
         let snap_cfg = SnapcraftConfig {
             name: Some("mysnap".to_string()),
-            disable: Some(true),
+            disable: Some(StringOrBool::Bool(true)),
             ..Default::default()
         };
 
@@ -1583,7 +1587,7 @@ crates:
             snap.name_template.as_deref(),
             Some("mysnap_{{ Version }}_{{ Arch }}")
         );
-        assert_eq!(snap.disable, Some(false));
+        assert_eq!(snap.disable, Some(StringOrBool::Bool(false)));
         assert_eq!(snap.replace, Some(true));
         assert_eq!(snap.mod_timestamp.as_deref(), Some("1704067200"));
     }
@@ -2076,7 +2080,7 @@ crates:
         let snap_cfg = SnapcraftConfig {
             name: Some("mysnap".to_string()),
             publish: Some(true),
-            disable: Some(true),
+            disable: Some(StringOrBool::Bool(true)),
             ..Default::default()
         };
 

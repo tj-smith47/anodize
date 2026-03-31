@@ -1342,8 +1342,9 @@ pub struct HomebrewConfig {
     /// Post-install user-facing notes shown by `brew info`.
     pub caveats: Option<String>,
     /// Skip publishing the formula.  `"true"` always skips; `"auto"` skips
-    /// for prerelease versions.
-    pub skip_upload: Option<String>,
+    /// for prerelease versions. Accepts bool or template string.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub skip_upload: Option<StringOrBool>,
     /// Custom commit message template.  Rendered via Tera with `name` and
     /// `version` variables.  Defaults to `"chore: update {{ name }} formula to {{ version }}"`.
     pub commit_msg_template: Option<String>,
@@ -1473,8 +1474,9 @@ pub struct ScoopConfig {
     /// Start menu shortcuts as `[executable, label]` pairs.
     pub shortcuts: Option<Vec<Vec<String>>>,
     /// Skip publishing the manifest.  `"true"` always skips; `"auto"` skips
-    /// for prerelease versions.
-    pub skip_upload: Option<String>,
+    /// for prerelease versions. Accepts bool or template string.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub skip_upload: Option<StringOrBool>,
     /// Custom commit message template.
     pub commit_msg_template: Option<String>,
     /// Git commit author name (legacy; prefer `commit_author`).
@@ -1634,7 +1636,9 @@ pub struct WingetConfig {
     /// Build IDs filter: only include artifacts whose `id` is in this list.
     pub ids: Option<Vec<String>>,
     /// Skip publishing. `"true"` always skips; `"auto"` skips for prereleases.
-    pub skip_upload: Option<String>,
+    /// Accepts bool or template string.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub skip_upload: Option<StringOrBool>,
     /// Custom commit message template.
     pub commit_msg_template: Option<String>,
     /// Manifest file path (auto-generated if empty from publisher/name/version).
@@ -1703,7 +1707,9 @@ pub struct AurConfig {
     /// SPDX license identifier (e.g., "MIT", "Apache-2.0").
     pub license: Option<String>,
     /// Skip publishing. `"true"` always skips; `"auto"` skips for prereleases.
-    pub skip_upload: Option<String>,
+    /// Accepts bool or template string.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub skip_upload: Option<StringOrBool>,
     /// Custom URL template for download URLs (overrides release URL).
     pub url_template: Option<String>,
     /// PKGBUILD maintainer entries (e.g., "Name <email@example.com>").
@@ -1733,8 +1739,10 @@ pub struct AurConfig {
     pub private_key: Option<String>,
     /// Subdirectory in the git repo for committed files.
     pub directory: Option<String>,
-    /// Disable this AUR config. Accepts bool or template string.
-    pub disable: Option<String>,
+    /// Disable this AUR config. Accepts bool or template string
+    /// (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional disable).
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub disable: Option<StringOrBool>,
     /// Content for a .install file (post-install/pre-remove scripts).
     pub install: Option<String>,
     /// Legacy project URL field.
@@ -1773,7 +1781,9 @@ pub struct KrewConfig {
     /// Post-install message shown to the user.
     pub caveats: Option<String>,
     /// Skip publishing. `"true"` always skips; `"auto"` skips for prereleases.
-    pub skip_upload: Option<String>,
+    /// Accepts bool or template string.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub skip_upload: Option<StringOrBool>,
     /// Legacy upstream repo for PR target. Use `repository.pull_request.base` instead.
     pub upstream_repo: Option<KrewManifestsRepoConfig>,
 }
@@ -1808,7 +1818,9 @@ pub struct NixConfig {
     /// Custom URL template for download URLs (overrides release URL).
     pub url_template: Option<String>,
     /// Skip publishing. `"true"` always skips; `"auto"` skips for prereleases.
-    pub skip_upload: Option<String>,
+    /// Accepts bool or template string.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub skip_upload: Option<StringOrBool>,
     /// Custom install commands (replaces auto-generated binary install).
     pub install: Option<String>,
     /// Additional install commands appended after the main install.
@@ -2259,8 +2271,10 @@ pub struct SnapcraftConfig {
     pub extra_files: Option<Vec<String>>,
     /// Template for the output snap filename.
     pub name_template: Option<String>,
-    /// Disable this snapcraft config.
-    pub disable: Option<bool>,
+    /// Disable this snapcraft config. Accepts bool or template string
+    /// (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional disable).
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub disable: Option<StringOrBool>,
     /// Remove source archives from artifacts, keeping only snap.
     pub replace: Option<bool>,
     /// Output timestamp for reproducible builds.
@@ -3510,7 +3524,9 @@ pub struct PublisherConfig {
     /// Working directory for the publisher command.
     pub dir: Option<String>,
     /// Template-conditional disable: if rendered result is `"true"`, skip this publisher.
-    pub disable: Option<String>,
+    /// Accepts bool or template string (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"`).
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub disable: Option<StringOrBool>,
     /// Include checksums in published artifacts.
     pub checksum: Option<bool>,
     /// Include signatures in published artifacts.
@@ -6400,7 +6416,10 @@ crates:
             .as_ref()
             .unwrap();
         assert_eq!(hb.homepage.as_deref(), Some("https://example.com"));
-        assert_eq!(hb.skip_upload.as_deref(), Some("auto"));
+        assert_eq!(
+            hb.skip_upload,
+            Some(StringOrBool::String("auto".to_string()))
+        );
         assert_eq!(
             hb.caveats.as_deref(),
             Some("Run `tool init` after installing.")
@@ -6495,7 +6514,10 @@ crates:
             .as_ref()
             .unwrap();
         assert_eq!(sc.homepage.as_deref(), Some("https://example.com"));
-        assert_eq!(sc.skip_upload.as_deref(), Some("true"));
+        assert_eq!(
+            sc.skip_upload,
+            Some(StringOrBool::String("true".to_string()))
+        );
 
         let persist = sc.persist.as_ref().unwrap();
         assert_eq!(persist, &["data", "config.ini"]);
@@ -6790,5 +6812,376 @@ crates:
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(config.variables.is_none());
+    }
+
+    // ---- SnapcraftConfig disable StringOrBool tests ----
+
+    #[test]
+    fn test_snapcraft_disable_bool_true() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    snapcrafts:
+      - disable: true
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let snap = &config.crates[0].snapcrafts.as_ref().unwrap()[0];
+        assert_eq!(snap.disable, Some(StringOrBool::Bool(true)));
+    }
+
+    #[test]
+    fn test_snapcraft_disable_bool_false() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    snapcrafts:
+      - disable: false
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let snap = &config.crates[0].snapcrafts.as_ref().unwrap()[0];
+        assert_eq!(snap.disable, Some(StringOrBool::Bool(false)));
+    }
+
+    #[test]
+    fn test_snapcraft_disable_template_string() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    snapcrafts:
+      - disable: "{{ if .IsSnapshot }}true{{ end }}"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let snap = &config.crates[0].snapcrafts.as_ref().unwrap()[0];
+        match &snap.disable {
+            Some(StringOrBool::String(s)) => {
+                assert!(s.contains("IsSnapshot"));
+            }
+            other => panic!("expected StringOrBool::String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_snapcraft_disable_omitted() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    snapcrafts:
+      - name: mysnap
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let snap = &config.crates[0].snapcrafts.as_ref().unwrap()[0];
+        assert!(snap.disable.is_none());
+    }
+
+    // ---- AurConfig disable StringOrBool tests ----
+
+    #[test]
+    fn test_aur_disable_bool_true() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      aur:
+        disable: true
+        git_url: "ssh://aur@aur.archlinux.org/a.git"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let aur = config.crates[0]
+            .publish
+            .as_ref()
+            .unwrap()
+            .aur
+            .as_ref()
+            .unwrap();
+        assert_eq!(aur.disable, Some(StringOrBool::Bool(true)));
+    }
+
+    #[test]
+    fn test_aur_disable_template_string() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      aur:
+        disable: "{{ if .IsSnapshot }}true{{ end }}"
+        git_url: "ssh://aur@aur.archlinux.org/a.git"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let aur = config.crates[0]
+            .publish
+            .as_ref()
+            .unwrap()
+            .aur
+            .as_ref()
+            .unwrap();
+        match &aur.disable {
+            Some(StringOrBool::String(s)) => {
+                assert!(s.contains("IsSnapshot"));
+            }
+            other => panic!("expected StringOrBool::String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_aur_disable_omitted() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      aur:
+        git_url: "ssh://aur@aur.archlinux.org/a.git"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let aur = config.crates[0]
+            .publish
+            .as_ref()
+            .unwrap()
+            .aur
+            .as_ref()
+            .unwrap();
+        assert!(aur.disable.is_none());
+    }
+
+    // ---- PublisherConfig disable StringOrBool tests ----
+
+    #[test]
+    fn test_publisher_disable_bool_true() {
+        let yaml = r#"
+project_name: test
+publishers:
+  - cmd: "echo hello"
+    disable: true
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let pub_cfg = &config.publishers.as_ref().unwrap()[0];
+        assert_eq!(pub_cfg.disable, Some(StringOrBool::Bool(true)));
+    }
+
+    #[test]
+    fn test_publisher_disable_template_string() {
+        let yaml = r#"
+project_name: test
+publishers:
+  - cmd: "echo hello"
+    disable: "{{ if .IsSnapshot }}true{{ end }}"
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let pub_cfg = &config.publishers.as_ref().unwrap()[0];
+        match &pub_cfg.disable {
+            Some(StringOrBool::String(s)) => {
+                assert!(s.contains("IsSnapshot"));
+            }
+            other => panic!("expected StringOrBool::String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_publisher_disable_omitted() {
+        let yaml = r#"
+project_name: test
+publishers:
+  - cmd: "echo hello"
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let pub_cfg = &config.publishers.as_ref().unwrap()[0];
+        assert!(pub_cfg.disable.is_none());
+    }
+
+    // ---- skip_upload StringOrBool tests for publisher configs ----
+
+    #[test]
+    fn test_homebrew_skip_upload_bool_true() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      homebrew:
+        skip_upload: true
+        tap:
+          owner: org
+          name: homebrew-tap
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let hb = config.crates[0]
+            .publish
+            .as_ref()
+            .unwrap()
+            .homebrew
+            .as_ref()
+            .unwrap();
+        assert_eq!(hb.skip_upload, Some(StringOrBool::Bool(true)));
+    }
+
+    #[test]
+    fn test_scoop_skip_upload_bool_true() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      scoop:
+        skip_upload: true
+        bucket:
+          owner: org
+          name: scoop-bucket
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let sc = config.crates[0]
+            .publish
+            .as_ref()
+            .unwrap()
+            .scoop
+            .as_ref()
+            .unwrap();
+        assert_eq!(sc.skip_upload, Some(StringOrBool::Bool(true)));
+    }
+
+    #[test]
+    fn test_aur_skip_upload_bool_true() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      aur:
+        skip_upload: true
+        git_url: "ssh://aur@aur.archlinux.org/a.git"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let aur = config.crates[0]
+            .publish
+            .as_ref()
+            .unwrap()
+            .aur
+            .as_ref()
+            .unwrap();
+        assert_eq!(aur.skip_upload, Some(StringOrBool::Bool(true)));
+    }
+
+    #[test]
+    fn test_winget_skip_upload_bool_true() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      winget:
+        skip_upload: true
+        manifests_repo:
+          owner: org
+          name: winget-pkgs
+        package_identifier: "Org.App"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let wg = config.crates[0]
+            .publish
+            .as_ref()
+            .unwrap()
+            .winget
+            .as_ref()
+            .unwrap();
+        assert_eq!(wg.skip_upload, Some(StringOrBool::Bool(true)));
+    }
+
+    #[test]
+    fn test_krew_skip_upload_auto_string() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      krew:
+        skip_upload: "auto"
+        manifests_repo:
+          owner: org
+          name: krew-index
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let krew = config.crates[0]
+            .publish
+            .as_ref()
+            .unwrap()
+            .krew
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            krew.skip_upload,
+            Some(StringOrBool::String("auto".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_nix_skip_upload_template() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      nix:
+        skip_upload: "{{ .Env.SKIP }}"
+        repository:
+          owner: org
+          name: nixpkgs
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let nix = config.crates[0]
+            .publish
+            .as_ref()
+            .unwrap()
+            .nix
+            .as_ref()
+            .unwrap();
+        match &nix.skip_upload {
+            Some(StringOrBool::String(s)) => {
+                assert!(s.contains(".Env.SKIP"));
+            }
+            other => panic!("expected StringOrBool::String, got {:?}", other),
+        }
     }
 }

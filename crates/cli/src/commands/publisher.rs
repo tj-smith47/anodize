@@ -27,11 +27,8 @@ pub fn run_publishers(
         let label = publisher.name.as_deref().unwrap_or(&default_label);
 
         // Check template-conditional disable
-        if let Some(ref disable_tmpl) = publisher.disable {
-            let rendered = template::render(disable_tmpl, base_vars).with_context(|| {
-                format!("failed to render publisher disable template for {}", label)
-            })?;
-            if rendered.trim() == "true" {
+        if let Some(ref d) = publisher.disable {
+            if d.is_disabled(|tmpl| template::render(tmpl, base_vars)) {
                 log.verbose(&format!(
                     "[publisher] skipping {} -- disabled by template",
                     label
@@ -312,6 +309,7 @@ fn format_command_line(cmd: &str, args: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anodize_core::config::StringOrBool;
     use std::collections::HashMap;
     use std::path::PathBuf;
 
@@ -700,7 +698,10 @@ crates:
         let publishers = config.publishers.as_ref().unwrap();
         assert_eq!(publishers.len(), 1);
         assert_eq!(publishers[0].dir.as_deref(), Some("/opt/deploy"));
-        assert_eq!(publishers[0].disable.as_deref(), Some("{{ IsSnapshot }}"));
+        assert_eq!(
+            publishers[0].disable,
+            Some(StringOrBool::String("{{ IsSnapshot }}".to_string()))
+        );
     }
 
     #[test]
@@ -741,7 +742,7 @@ crates:
             artifact_types: None,
             env: None,
             dir: None,
-            disable: Some("true".to_string()),
+            disable: Some(StringOrBool::String("true".to_string())),
             checksum: None,
             signature: None,
             meta: None,
@@ -775,7 +776,7 @@ crates:
             artifact_types: None,
             env: None,
             dir: None,
-            disable: Some("{{ IsSnapshot }}".to_string()),
+            disable: Some(StringOrBool::String("{{ IsSnapshot }}".to_string())),
             checksum: None,
             signature: None,
             meta: None,

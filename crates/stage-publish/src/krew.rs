@@ -198,11 +198,11 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
         .ok_or_else(|| anyhow::anyhow!("krew: no krew config for '{}'", crate_name))?;
 
     // Check skip_upload before doing any work.
-    if crate::homebrew::should_skip_upload(krew_cfg.skip_upload.as_deref(), ctx) {
+    if crate::homebrew::should_skip_upload(krew_cfg.skip_upload.as_ref(), ctx) {
         log.status(&format!(
             "krew: skipping upload for '{}' (skip_upload={})",
             crate_name,
-            krew_cfg.skip_upload.as_deref().unwrap_or("")
+            krew_cfg.skip_upload.as_ref().map(|v| v.as_str()).unwrap_or("")
         ));
         return Ok(());
     }

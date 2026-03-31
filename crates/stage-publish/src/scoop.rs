@@ -225,11 +225,11 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         .ok_or_else(|| anyhow::anyhow!("scoop: no scoop config for '{}'", crate_name))?;
 
     // Check skip_upload before doing any work.
-    if crate::homebrew::should_skip_upload(scoop_cfg.skip_upload.as_deref(), ctx) {
+    if crate::homebrew::should_skip_upload(scoop_cfg.skip_upload.as_ref(), ctx) {
         log.status(&format!(
             "scoop: skipping upload for '{}' (skip_upload={})",
             crate_name,
-            scoop_cfg.skip_upload.as_deref().unwrap_or("")
+            scoop_cfg.skip_upload.as_ref().map(|v| v.as_str()).unwrap_or("")
         ));
         return Ok(());
     }
@@ -1206,7 +1206,7 @@ mod tests {
                             owner: "myorg".to_string(),
                             name: "scoop-bucket".to_string(),
                         }),
-                        skip_upload: Some("true".to_string()),
+                        skip_upload: Some(anodize_core::config::StringOrBool::String("true".to_string())),
                         ..Default::default()
                     }),
                     ..Default::default()
@@ -1238,7 +1238,7 @@ mod tests {
                             owner: "myorg".to_string(),
                             name: "scoop-bucket".to_string(),
                         }),
-                        skip_upload: Some("auto".to_string()),
+                        skip_upload: Some(anodize_core::config::StringOrBool::String("auto".to_string())),
                         ..Default::default()
                     }),
                     ..Default::default()
