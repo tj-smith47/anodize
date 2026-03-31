@@ -2385,8 +2385,11 @@ pub struct AppBundleConfig {
     pub extra_files: Option<Vec<ArchiveFileSpec>>,
     /// Output timestamp for reproducible builds.
     pub mod_timestamp: Option<String>,
-    /// Disable this app bundle config.
-    pub disable: Option<bool>,
+    /// Remove source archives from artifacts, keeping only the app bundle.
+    pub replace: Option<bool>,
+    /// Disable this app bundle config. Accepts bool or template string.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub disable: Option<StringOrBool>,
 }
 
 // ---------------------------------------------------------------------------

@@ -271,11 +271,17 @@ impl Stage for NsisStage {
                                 Ok(entries) => {
                                     for entry in entries.flatten() {
                                         if entry.is_file() {
-                                            let dst_name = entry
-                                                .file_name()
-                                                .and_then(|n| n.to_str())
-                                                .unwrap_or("extra");
-                                            let dst = staging_dir.join(dst_name);
+                                            let dst_name = spec
+                                                .name_template()
+                                                .map(|s| s.to_string())
+                                                .or_else(|| {
+                                                    entry
+                                                        .file_name()
+                                                        .and_then(|n| n.to_str())
+                                                        .map(|s| s.to_string())
+                                                })
+                                                .unwrap_or_else(|| "extra".to_string());
+                                            let dst = staging_dir.join(&dst_name);
                                             fs::copy(&entry, &dst).with_context(|| {
                                                 format!(
                                                     "copy extra file {} to staging dir",
@@ -331,9 +337,11 @@ impl Stage for NsisStage {
                         )
                     })?;
 
-                    // Apply mod_timestamp if set (to staging dir contents)
-                    if let Some(ts) = &nsis_cfg.mod_timestamp {
-                        anodize_core::util::apply_mod_timestamp(staging_dir, ts, &log)?;
+                    // Apply mod_timestamp if set (template-rendered, to staging dir contents)
+                    if let Some(ref ts_tmpl) = nsis_cfg.mod_timestamp {
+                        let ts = ctx.render_template(ts_tmpl)
+                            .with_context(|| "nsis: render mod_timestamp template")?;
+                        anodize_core::util::apply_mod_timestamp(staging_dir, &ts, &log)?;
                     }
 
                     // Build makensis command
@@ -353,11 +361,13 @@ impl Stage for NsisStage {
                         })?;
                     log.check_output(output, "nsis")?;
 
-                    // Apply mod_timestamp to the output .exe if set
-                    if let Some(ts) = &nsis_cfg.mod_timestamp
+                    // Apply mod_timestamp to the output .exe if set (template-rendered)
+                    if let Some(ref ts_tmpl) = nsis_cfg.mod_timestamp
                         && exe_path.exists()
                     {
-                        let mtime = anodize_core::util::parse_mod_timestamp(ts)?;
+                        let ts = ctx.render_template(ts_tmpl)
+                            .with_context(|| "nsis: render mod_timestamp template for output")?;
+                        let mtime = anodize_core::util::parse_mod_timestamp(&ts)?;
                         anodize_core::util::set_file_mtime(&exe_path, mtime)?;
                         log.status(&format!(
                             "applied mod_timestamp={ts} to {}",

@@ -240,6 +240,7 @@ impl Stage for AppBundleStage {
             .unwrap_or_else(|| "0.0.0".to_string());
 
         let mut new_artifacts: Vec<Artifact> = Vec::new();
+        let mut archives_to_remove: Vec<PathBuf> = Vec::new();
 
         for krate in &crates {
             let bundle_configs = krate.app_bundles.as_ref().unwrap();
@@ -259,8 +260,10 @@ impl Stage for AppBundleStage {
                 .collect();
 
             for bundle_cfg in bundle_configs {
-                // Skip disabled configs
-                if bundle_cfg.disable.unwrap_or(false) {
+                // Skip disabled configs (supports bool or template string)
+                if let Some(ref d) = bundle_cfg.disable
+                    && d.is_disabled(|s| ctx.render_template(s))
+                {
                     log.status(&format!(
                         "skipping disabled appbundle config for crate {}",
                         krate.name
@@ -391,6 +394,17 @@ impl Stage for AppBundleStage {
                             },
                         });
 
+                        // If replace is set, mark archives for this crate+target for removal
+                        if bundle_cfg.replace.unwrap_or(false) {
+                            archives_to_remove.extend(
+                                anodize_core::util::collect_replace_archives(
+                                    &ctx.artifacts,
+                                    &krate.name,
+                                    target.as_deref(),
+                                ),
+                            );
+                        }
+
                         continue;
                     }
 
@@ -491,8 +505,24 @@ impl Stage for AppBundleStage {
                             m
                         },
                     });
+
+                    // If replace is set, mark archives for this crate+target for removal
+                    if bundle_cfg.replace.unwrap_or(false) {
+                        archives_to_remove.extend(
+                            anodize_core::util::collect_replace_archives(
+                                &ctx.artifacts,
+                                &krate.name,
+                                target.as_deref(),
+                            ),
+                        );
+                    }
                 }
             }
+        }
+
+        // Remove replaced archives
+        if !archives_to_remove.is_empty() {
+            ctx.artifacts.remove_by_paths(&archives_to_remove);
         }
 
         // Register new app bundle artifacts
@@ -1374,7 +1404,7 @@ crates:
         let disabled_cfg = AppBundleConfig {
             id: Some("disabled".to_string()),
             name: Some("{{ ProjectName }}-disabled-{{ Arch }}.app".to_string()),
-            disable: Some(true),
+            disable: Some(anodize_core::config::StringOrBool::Bool(true)),
             ..Default::default()
         };
 
@@ -1450,7 +1480,7 @@ crates:
         let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let bundles = config.crates[0].app_bundles.as_ref().unwrap();
         assert_eq!(bundles.len(), 1);
-        assert_eq!(bundles[0].disable, Some(true));
+        assert_eq!(bundles[0].disable, Some(anodize_core::config::StringOrBool::Bool(true)));
     }
 
     #[test]

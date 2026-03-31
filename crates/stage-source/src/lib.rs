@@ -29,6 +29,7 @@ fn create_source_archive(
     extra_files: &[SourceFileEntry],
     repo_root: &Path,
     commit: &str,
+    log: &anodize_core::log::StageLogger,
 ) -> Result<PathBuf> {
     let (git_format, extension) = match format {
         "tar.gz" | "tgz" => ("tar.gz", "tar.gz"),
@@ -90,10 +91,10 @@ fn create_source_archive(
 
         for entry in extra_files {
             if entry.strip_parent.unwrap_or(false) {
-                eprintln!("warning: source: strip_parent is not yet supported for source archive extra files");
+                log.warn("strip_parent is not yet supported for source archive extra files");
             }
             if entry.info.is_some() {
-                eprintln!("warning: source: file info (owner/group/mode/mtime) is not yet supported for source archive extra files");
+                log.warn("file info (owner/group/mode/mtime) is not yet supported for source archive extra files");
             }
 
             let src = Path::new(&entry.src);
@@ -510,7 +511,7 @@ impl SourceStage {
             .map(|info| info.commit.as_str())
             .unwrap_or("HEAD");
         let output_path =
-            create_source_archive(dist, &format, &name, &prefix, &extra_files, &repo_root, commit)?;
+            create_source_archive(dist, &format, &name, &prefix, &extra_files, &repo_root, commit, &log)?;
 
         let mut metadata = HashMap::new();
         metadata.insert("format".to_string(), format);
@@ -701,12 +702,14 @@ impl SourceStage {
 
             let first_doc = rendered_docs.first().cloned().unwrap_or_default();
 
-            // Render args — replace $artifact, $document, $document0, $document1, etc.
+            // Render args — replace $artifactID, $artifact, $document0, $document1, etc.
+            // IMPORTANT: Replace longer prefixes first ($artifactID before $artifact,
+            // $documentN before $document) to avoid partial-match corruption.
             let artifact_id = artifact_meta.get("id").map(|s| s.as_str()).unwrap_or("");
             let mut rendered_args: Vec<String> = Vec::with_capacity(args.len());
             for arg in &args {
-                let mut s = arg.replace("$artifact", &artifact_rel);
-                s = s.replace("$artifactID", artifact_id);
+                let mut s = arg.replace("$artifactID", artifact_id);
+                s = s.replace("$artifact", &artifact_rel);
                 // Replace numbered $documentN FIRST (before bare $document)
                 for (i, doc) in rendered_docs.iter().enumerate() {
                     s = s.replace(&format!("$document{}", i), doc);
