@@ -2380,6 +2380,7 @@ draft: true
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("id".to_string(), "linux-amd64".to_string())]),
+            size: None,
         });
 
         // Archive with non-matching id
@@ -2390,6 +2391,7 @@ draft: true
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("id".to_string(), "darwin-arm64".to_string())]),
+            size: None,
         });
 
         let stage = ReleaseStage;
@@ -2426,6 +2428,7 @@ draft: true
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("id".to_string(), "linux-amd64".to_string())]),
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
@@ -2434,6 +2437,7 @@ draft: true
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("id".to_string(), "darwin-arm64".to_string())]),
+            size: None,
         });
 
         let stage = ReleaseStage;
@@ -2458,6 +2462,7 @@ draft: true
                 target: None,
                 crate_name: "app".to_string(),
                 metadata: HashMap::from([("id".to_string(), "linux-amd64".to_string())]),
+                size: None,
             },
             Artifact {
                 kind: ArtifactKind::Archive,
@@ -2466,6 +2471,7 @@ draft: true
                 target: None,
                 crate_name: "app".to_string(),
                 metadata: HashMap::from([("id".to_string(), "darwin-arm64".to_string())]),
+                size: None,
             },
             Artifact {
                 kind: ArtifactKind::Archive,
@@ -2474,6 +2480,7 @@ draft: true
                 target: None,
                 crate_name: "app".to_string(),
                 metadata: HashMap::from([("id".to_string(), "windows-amd64".to_string())]),
+                size: None,
             },
             Artifact {
                 kind: ArtifactKind::Checksum,
@@ -2482,6 +2489,7 @@ draft: true
                 target: None,
                 crate_name: "app".to_string(),
                 metadata: HashMap::new(), // no id metadata
+                size: None,
             },
         ];
 
@@ -2520,6 +2528,7 @@ draft: true
             target: None,
             crate_name: "app".to_string(),
             metadata: HashMap::new(),
+            size: None,
         };
 
         let matches = matches!(artifact_no_id.metadata.get("id"), Some(id) if ids.contains(id));
@@ -2582,6 +2591,7 @@ draft: true
             target: None,
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("id".to_string(), "linux-amd64".to_string())]),
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
@@ -2590,6 +2600,7 @@ draft: true
             target: None,
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("id".to_string(), "darwin-arm64".to_string())]),
+            size: None,
         });
 
         let stage = ReleaseStage;
@@ -2638,6 +2649,7 @@ draft: true
                 target: None,
                 crate_name: "myapp".to_string(),
                 metadata: Default::default(),
+                size: None,
             });
         }
 
@@ -2652,6 +2664,7 @@ draft: true
                 "type".to_string(),
                 "Signature".to_string(),
             )]),
+            size: None,
         });
 
         // Add non-uploadable kinds (should NOT be uploaded).
@@ -2662,6 +2675,7 @@ draft: true
             target: None,
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::DockerImage,
@@ -2670,6 +2684,7 @@ draft: true
             target: None,
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Library,
@@ -2678,6 +2693,7 @@ draft: true
             target: None,
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Wasm,
@@ -2686,6 +2702,7 @@ draft: true
             target: None,
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
         // Plain Metadata (not Signature/Certificate) should NOT be uploaded.
         ctx.artifacts.add(Artifact {
@@ -2695,6 +2712,7 @@ draft: true
             target: None,
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = ReleaseStage;

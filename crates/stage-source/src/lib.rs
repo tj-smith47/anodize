@@ -523,6 +523,7 @@ impl SourceStage {
             target: None,
             crate_name: project_name.clone(),
             metadata,
+            size: None,
         });
 
         Ok(())
@@ -769,6 +770,7 @@ impl SourceStage {
                         target: None,
                         crate_name: project_name.clone(),
                         metadata,
+                        size: None,
                     });
                 }
             }
@@ -863,6 +865,7 @@ impl SourceStage {
             target: None,
             crate_name: project_name.to_string(),
             metadata,
+            size: None,
         });
 
         Ok(())

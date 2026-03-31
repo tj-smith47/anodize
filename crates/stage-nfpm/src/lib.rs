@@ -867,6 +867,7 @@ impl Stage for NfpmStage {
                                 target: target.clone(),
                                 crate_name: krate.name.clone(),
                                 metadata: pkg_metadata,
+                                size: None,
                             });
                             continue;
                         }
@@ -909,6 +910,7 @@ impl Stage for NfpmStage {
                             target: target.clone(),
                             crate_name: krate.name.clone(),
                             metadata: pkg_metadata,
+                            size: None,
                         });
                     }
                 }
@@ -1782,6 +1784,7 @@ crates:
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("id".to_string(), "build-server".to_string())]),
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
@@ -1790,6 +1793,7 @@ crates:
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("id".to_string(), "build-cli".to_string())]),
+            size: None,
         });
 
         NfpmStage.run(&mut ctx).unwrap();
@@ -1841,6 +1845,7 @@ crates:
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("id".to_string(), "build-default".to_string())]),
+            size: None,
         });
 
         NfpmStage.run(&mut ctx).unwrap();
@@ -1893,6 +1898,7 @@ crates:
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("id".to_string(), "build-server".to_string())]),
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
@@ -1901,6 +1907,7 @@ crates:
             target: Some("aarch64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("id".to_string(), "build-cli".to_string())]),
+            size: None,
         });
 
         NfpmStage.run(&mut ctx).unwrap();
@@ -2045,6 +2052,7 @@ crates:
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("id".to_string(), "build-server".to_string())]),
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
@@ -2053,6 +2061,7 @@ crates:
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("id".to_string(), "build-cli".to_string())]),
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
@@ -2061,6 +2070,7 @@ crates:
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("id".to_string(), "build-worker".to_string())]),
+            size: None,
         });
 
         NfpmStage.run(&mut ctx).unwrap();
@@ -3205,6 +3215,7 @@ crates:
             target: Some("aarch64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::new(),
+            size: None,
         });
 
         NfpmStage.run(&mut ctx).unwrap();
@@ -3260,6 +3271,7 @@ crates:
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::new(),
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
@@ -3268,6 +3280,7 @@ crates:
             target: Some("aarch64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::new(),
+            size: None,
         });
 
         NfpmStage.run(&mut ctx).unwrap();
@@ -3338,6 +3351,7 @@ crates:
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::new(),
+            size: None,
         });
 
         NfpmStage.run(&mut ctx).unwrap();

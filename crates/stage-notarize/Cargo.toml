@@ -1,0 +1,15 @@
+[package]
+name = "anodize-stage-notarize"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "macOS code signing and notarization stage for anodize release automation"
+
+[dependencies]
+anodize-core.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+serde_yaml_ng.workspace = true

@@ -617,6 +617,7 @@ crates: []
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "test".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = UpxStage;
@@ -639,6 +640,7 @@ crates: []
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "test".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = UpxStage;
@@ -662,6 +664,7 @@ crates: []
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "test".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = UpxStage;
@@ -696,6 +699,7 @@ crates: []
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "test".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = UpxStage;
@@ -725,6 +729,7 @@ crates: []
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "test".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = UpxStage;
@@ -754,6 +759,7 @@ crates: []
                 m.insert("id".to_string(), "myapp".to_string());
                 m
             },
+            size: None,
         });
 
         // Non-matching artifact
@@ -768,6 +774,7 @@ crates: []
                 m.insert("id".to_string(), "other".to_string());
                 m
             },
+            size: None,
         });
 
         let stage = UpxStage;
@@ -792,6 +799,7 @@ crates: []
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "test".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         // Non-matching target
@@ -802,6 +810,7 @@ crates: []
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "test".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = UpxStage;
@@ -836,6 +845,7 @@ crates: []
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "test".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         ctx.artifacts.add(Artifact {
@@ -845,6 +855,7 @@ crates: []
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "test".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = UpxStage;

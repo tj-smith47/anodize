@@ -859,6 +859,7 @@ mod tests {
                 target: Some(target.to_string()),
                 crate_name: crate_name.to_string(),
                 metadata: meta,
+                size: None,
             });
         }
         ctx
@@ -1085,6 +1086,7 @@ mod tests {
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "mytool".to_string(),
             metadata: meta,
+            size: None,
         });
 
         let all = find_all_platform_artifacts(&ctx, "mytool");

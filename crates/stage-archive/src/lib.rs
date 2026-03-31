@@ -1240,6 +1240,7 @@ impl Stage for ArchiveStage {
                             target: Some(target.clone()),
                             crate_name: crate_name.clone(),
                             metadata,
+                            size: None,
                         });
                     }
                 }
@@ -1657,6 +1658,7 @@ crates:
                 m.insert("binary".to_string(), "myapp".to_string());
                 m
             },
+            size: None,
         });
 
         let stage = ArchiveStage;
@@ -1698,6 +1700,7 @@ crates:
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = ArchiveStage;
@@ -1763,6 +1766,7 @@ crates:
                 m.insert("binary".to_string(), "myapp".to_string());
                 m
             },
+            size: None,
         });
 
         let stage = ArchiveStage;
@@ -1827,6 +1831,7 @@ crates:
                 m.insert("binary".to_string(), "myapp".to_string());
                 m
             },
+            size: None,
         });
 
         let stage = ArchiveStage;
@@ -1892,6 +1897,7 @@ crates:
                 m.insert("binary".to_string(), "myapp".to_string());
                 m
             },
+            size: None,
         });
 
         let stage = ArchiveStage;
@@ -2311,6 +2317,7 @@ crates:
                 m.insert("binary".to_string(), "myapp".to_string());
                 m
             },
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
@@ -2323,6 +2330,7 @@ crates:
                 m.insert("binary".to_string(), "myhelper".to_string());
                 m
             },
+            size: None,
         });
 
         let stage = ArchiveStage;
@@ -2397,6 +2405,7 @@ crates:
                 m.insert("binary".to_string(), "myapp".to_string());
                 m
             },
+            size: None,
         });
 
         let stage = ArchiveStage;
@@ -2461,6 +2470,7 @@ crates:
                 m.insert("binary".to_string(), "myapp".to_string());
                 m
             },
+            size: None,
         });
 
         let stage = ArchiveStage;
@@ -2532,6 +2542,7 @@ crates:
                 m.insert("binary".to_string(), "myapp".to_string());
                 m
             },
+            size: None,
         });
 
         let stage = ArchiveStage;
@@ -2596,6 +2607,7 @@ crates:
                 m.insert("binary".to_string(), "myapp".to_string());
                 m
             },
+            size: None,
         });
 
         ArchiveStage.run(&mut ctx).unwrap();
@@ -2664,6 +2676,7 @@ crates:
                 m.insert("binary".to_string(), "myapp".to_string());
                 m
             },
+            size: None,
         });
 
         ArchiveStage.run(&mut ctx).unwrap();
@@ -2725,6 +2738,7 @@ crates:
                 m.insert("binary".to_string(), "myapp".to_string());
                 m
             },
+            size: None,
         });
 
         let result = ArchiveStage.run(&mut ctx);
@@ -2829,6 +2843,7 @@ crates:
                 m.insert("binary".to_string(), "mybin".to_string());
                 m
             },
+            size: None,
         });
 
         let result = ArchiveStage.run(&mut ctx);
@@ -3007,6 +3022,7 @@ crates:
                 ("binary".to_string(), "myapp".to_string()),
                 ("id".to_string(), "linux-build".to_string()),
             ]),
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
@@ -3018,6 +3034,7 @@ crates:
                 ("binary".to_string(), "myapp".to_string()),
                 ("id".to_string(), "windows-build".to_string()),
             ]),
+            size: None,
         });
 
         let stage = ArchiveStage;
@@ -3073,6 +3090,7 @@ crates:
                 ("binary".to_string(), "myapp".to_string()),
                 ("id".to_string(), "some-other-id".to_string()),
             ]),
+            size: None,
         });
 
         let stage = ArchiveStage;
@@ -3126,6 +3144,7 @@ crates:
                 ("binary".to_string(), "myapp".to_string()),
                 ("id".to_string(), "linux-build".to_string()),
             ]),
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
@@ -3137,6 +3156,7 @@ crates:
                 ("binary".to_string(), "myapp".to_string()),
                 ("id".to_string(), "windows-build".to_string()),
             ]),
+            size: None,
         });
 
         let stage = ArchiveStage;
@@ -3189,6 +3209,7 @@ crates:
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("binary".to_string(), "myapp".to_string())]),
+            size: None,
         });
 
         let stage = ArchiveStage;
@@ -3238,6 +3259,7 @@ crates:
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("binary".to_string(), "myapp".to_string())]),
+            size: None,
         });
 
         let stage = ArchiveStage;
@@ -3290,6 +3312,7 @@ crates:
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("binary".to_string(), "myapp".to_string())]),
+            size: None,
         });
 
         let stage = ArchiveStage;
@@ -3369,6 +3392,7 @@ crates:
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("binary".to_string(), "myapp".to_string())]),
+            size: None,
         });
 
         let stage = ArchiveStage;
@@ -3425,6 +3449,7 @@ crates:
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("binary".to_string(), "myapp".to_string())]),
+            size: None,
         });
 
         let stage = ArchiveStage;
@@ -3475,6 +3500,7 @@ crates:
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("binary".to_string(), "myapp".to_string())]),
+            size: None,
         });
 
         let stage = ArchiveStage;
@@ -3559,6 +3585,7 @@ crates:
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("binary".to_string(), "myapp".to_string())]),
+            size: None,
         });
 
         ArchiveStage.run(&mut ctx).unwrap();
@@ -3607,6 +3634,7 @@ crates:
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("binary".to_string(), "myapp".to_string())]),
+            size: None,
         });
 
         ArchiveStage.run(&mut ctx).unwrap();
@@ -3655,6 +3683,7 @@ crates:
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("binary".to_string(), "myapp".to_string())]),
+            size: None,
         });
 
         ArchiveStage.run(&mut ctx).unwrap();
@@ -3706,6 +3735,7 @@ crates:
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("binary".to_string(), "myapp".to_string())]),
+            size: None,
         });
 
         ArchiveStage.run(&mut ctx).unwrap();
@@ -3754,6 +3784,7 @@ crates:
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("binary".to_string(), "myapp".to_string())]),
+            size: None,
         });
 
         let result = ArchiveStage.run(&mut ctx);
@@ -4013,6 +4044,7 @@ crates:
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("binary".to_string(), "myapp".to_string())]),
+            size: None,
         });
 
         ArchiveStage.run(&mut ctx).unwrap();
@@ -4179,6 +4211,7 @@ crates:
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("binary".to_string(), "myapp".to_string())]),
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
@@ -4187,6 +4220,7 @@ crates:
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("binary".to_string(), "myapp".to_string())]),
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
@@ -4195,6 +4229,7 @@ crates:
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("binary".to_string(), "helper".to_string())]),
+            size: None,
         });
 
         // Should error when binary counts differ (matching GoReleaser behavior)
@@ -4252,6 +4287,7 @@ crates:
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("binary".to_string(), "myapp".to_string())]),
+            size: None,
         });
 
         ArchiveStage.run(&mut ctx).unwrap();

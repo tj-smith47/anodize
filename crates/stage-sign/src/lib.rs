@@ -540,6 +540,7 @@ fn process_sign_configs(
                 target: None,
                 crate_name: artifact_crate_name.clone(),
                 metadata: sig_metadata,
+                size: None,
             }];
 
             if let Some(ref cert_path_str) = certificate_str {
@@ -563,6 +564,7 @@ fn process_sign_configs(
                     target: None,
                     crate_name: artifact_crate_name.clone(),
                     metadata: cert_metadata,
+                    size: None,
                 });
             }
 
@@ -1109,6 +1111,7 @@ mod tests {
             target: None,
             crate_name: "test".to_string(),
             metadata: Default::default(),
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Checksum,
@@ -1117,6 +1120,7 @@ mod tests {
             target: None,
             crate_name: "test".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = SignStage;
@@ -1220,6 +1224,7 @@ mod tests {
                 m.insert("id".to_string(), "linux-release".to_string());
                 m
             },
+            size: None,
         };
 
         let non_matching_artifact = Artifact {
@@ -1233,6 +1238,7 @@ mod tests {
                 m.insert("id".to_string(), "darwin-release".to_string());
                 m
             },
+            size: None,
         };
 
         let no_id_artifact = Artifact {
@@ -1242,6 +1248,7 @@ mod tests {
             target: None,
             crate_name: "test".to_string(),
             metadata: Default::default(),
+            size: None,
         };
 
         let wrong_kind_artifact = Artifact {
@@ -1255,6 +1262,7 @@ mod tests {
                 m.insert("id".to_string(), "linux-release".to_string());
                 m
             },
+            size: None,
         };
 
         // Replicate the stage's filtering logic:
@@ -1351,6 +1359,7 @@ mod tests {
             target: None,
             crate_name: "test".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = SignStage;
@@ -1377,6 +1386,7 @@ mod tests {
             target: None,
             crate_name: "test".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let result_no_dry = stage.run(&mut ctx_no_dry);
@@ -1432,6 +1442,7 @@ mod tests {
             target: None,
             crate_name: "test".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = SignStage;
@@ -1477,6 +1488,7 @@ mod tests {
             target: None,
             crate_name: "test".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = SignStage;
@@ -1520,6 +1532,7 @@ mod tests {
             target: None,
             crate_name: "test".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = SignStage;
@@ -1697,6 +1710,7 @@ stdin_file: "/path/to/password"
             target: None,
             crate_name: "test".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = SignStage;
@@ -1752,6 +1766,7 @@ stdin_file: "/path/to/password"
                 m.insert("id".to_string(), "prod-image".to_string());
                 m
             },
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::DockerImage,
@@ -1764,6 +1779,7 @@ stdin_file: "/path/to/password"
                 m.insert("id".to_string(), "dev-image".to_string());
                 m
             },
+            size: None,
         });
 
         let stage = SignStage;
@@ -1837,6 +1853,7 @@ stdin_file: "/path/to/password"
             target: None,
             crate_name: "test".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = SignStage;
@@ -1898,6 +1915,7 @@ stdin_file: "/path/to/password"
             target: None,
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = SignStage;
@@ -1943,6 +1961,7 @@ stdin_file: "/path/to/password"
             target: None,
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = SignStage;
@@ -2031,6 +2050,7 @@ env:
             target: None,
             crate_name: "test".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = SignStage;
@@ -2161,6 +2181,7 @@ crates: []
             target: None,
             crate_name: "test".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = SignStage;
@@ -2200,6 +2221,7 @@ crates: []
             target: None,
             crate_name: "test".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = SignStage;
@@ -2251,6 +2273,7 @@ crates: []
             target: None,
             crate_name: "test".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = SignStage;
@@ -2296,6 +2319,7 @@ crates: []
             target: None,
             crate_name: "test".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = SignStage;
@@ -2319,6 +2343,7 @@ crates: []
             target: None,
             crate_name: "test".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let result = stage.run(&mut ctx_snap);
@@ -2361,6 +2386,7 @@ crates: []
             target: None,
             crate_name: "test".to_string(),
             metadata: Default::default(),
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
@@ -2369,6 +2395,7 @@ crates: []
             target: None,
             crate_name: "test".to_string(),
             metadata: Default::default(),
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Checksum,
@@ -2377,6 +2404,7 @@ crates: []
             target: None,
             crate_name: "test".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = SignStage;
@@ -2423,6 +2451,7 @@ crates: []
             target: None,
             crate_name: "test".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = SignStage;
@@ -2478,6 +2507,7 @@ crates: []
             target: None,
             crate_name: "test".to_string(),
             metadata,
+            size: None,
         });
 
         let stage = SignStage;
@@ -2527,6 +2557,7 @@ crates: []
             target: None,
             crate_name: "test".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = SignStage;
@@ -2568,6 +2599,7 @@ crates: []
             target: None,
             crate_name: "test".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = SignStage;

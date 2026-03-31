@@ -88,6 +88,7 @@ pub fn run_publishers(
                         target: None,
                         crate_name: String::new(),
                         metadata: std::collections::HashMap::new(),
+                        size: None,
                     });
                 }
             }
@@ -326,6 +327,7 @@ mod tests {
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata,
+            size: None,
         }
     }
 

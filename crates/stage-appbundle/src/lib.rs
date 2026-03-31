@@ -392,6 +392,7 @@ impl Stage for AppBundleStage {
                                 }
                                 m
                             },
+                            size: None,
                         });
 
                         // If replace is set, mark archives for this crate+target for removal
@@ -504,6 +505,7 @@ impl Stage for AppBundleStage {
                             }
                             m
                         },
+                        size: None,
                     });
 
                     // If replace is set, mark archives for this crate+target for removal
@@ -693,6 +695,7 @@ mod tests {
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
@@ -701,6 +704,7 @@ mod tests {
             target: Some("x86_64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = AppBundleStage;
@@ -762,6 +766,7 @@ mod tests {
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
@@ -770,6 +775,7 @@ mod tests {
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = AppBundleStage;
@@ -824,6 +830,7 @@ mod tests {
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = AppBundleStage;
@@ -879,6 +886,7 @@ mod tests {
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = AppBundleStage;
@@ -938,6 +946,7 @@ mod tests {
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("id".to_string(), "build-darwin-arm64".to_string())]),
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
@@ -946,6 +955,7 @@ mod tests {
             target: Some("x86_64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("id".to_string(), "build-darwin-amd64".to_string())]),
+            size: None,
         });
 
         let stage = AppBundleStage;
@@ -1002,6 +1012,7 @@ mod tests {
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "coolapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = AppBundleStage;
@@ -1058,6 +1069,7 @@ mod tests {
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = AppBundleStage;
@@ -1147,6 +1159,7 @@ mod tests {
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = AppBundleStage;
@@ -1211,6 +1224,7 @@ mod tests {
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = AppBundleStage;
@@ -1350,6 +1364,7 @@ crates:
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = AppBundleStage;
@@ -1437,6 +1452,7 @@ crates:
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = AppBundleStage;
@@ -1542,6 +1558,7 @@ crates:
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = AppBundleStage;
@@ -1607,6 +1624,7 @@ crates:
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = AppBundleStage;

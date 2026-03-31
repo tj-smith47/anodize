@@ -340,6 +340,7 @@ pub fn load_artifacts_from_dist(ctx: &mut Context, dist: &Path) -> Result<()> {
             target: a.target,
             crate_name: a.crate_name,
             metadata: a.metadata,
+            size: None,
         });
     }
 

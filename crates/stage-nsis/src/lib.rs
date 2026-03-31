@@ -231,6 +231,7 @@ impl Stage for NsisStage {
                                 }
                                 m
                             },
+                            size: None,
                         });
 
                         // If replace is set, mark archives for this crate+target for removal
@@ -389,6 +390,7 @@ impl Stage for NsisStage {
                             }
                             m
                         },
+                        size: None,
                     });
 
                     // If replace is set, mark archives for this crate+target for removal
@@ -582,6 +584,7 @@ mod tests {
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = NsisStage;
@@ -633,6 +636,7 @@ mod tests {
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = NsisStage;
@@ -681,6 +685,7 @@ mod tests {
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
@@ -689,6 +694,7 @@ mod tests {
             target: Some("aarch64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = NsisStage;
@@ -754,6 +760,7 @@ mod tests {
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = NsisStage;
@@ -811,6 +818,7 @@ mod tests {
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         // Register an archive artifact for the same crate+target
@@ -821,6 +829,7 @@ mod tests {
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("format".to_string(), "zip".to_string())]),
+            size: None,
         });
 
         // Also register a Linux archive that should NOT be removed
@@ -831,6 +840,7 @@ mod tests {
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("format".to_string(), "tar.gz".to_string())]),
+            size: None,
         });
 
         let stage = NsisStage;
@@ -886,6 +896,7 @@ mod tests {
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
@@ -894,6 +905,7 @@ mod tests {
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = NsisStage;
@@ -1024,6 +1036,7 @@ crates:
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = NsisStage;
@@ -1071,6 +1084,7 @@ crates:
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("id".to_string(), "build_amd64".to_string())]),
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
@@ -1079,6 +1093,7 @@ crates:
             target: Some("aarch64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("id".to_string(), "build_arm64".to_string())]),
+            size: None,
         });
 
         let stage = NsisStage;
@@ -1133,6 +1148,7 @@ crates:
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = NsisStage;

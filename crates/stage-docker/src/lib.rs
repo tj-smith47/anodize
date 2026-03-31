@@ -909,6 +909,7 @@ impl Stage for DockerStage {
                             target: None,
                             crate_name: krate.name.clone(),
                             metadata: meta,
+                            size: None,
                         });
                     }
                 } else {
@@ -1014,6 +1015,7 @@ impl Stage for DockerStage {
                         target: None,
                         crate_name: job.crate_name.clone(),
                         metadata: meta,
+                        size: None,
                     });
                 }
             }
@@ -1324,6 +1326,7 @@ impl Stage for DockerStage {
                         target: None,
                         crate_name: krate.name.clone(),
                         metadata: meta,
+                        size: None,
                     });
                 }
             }
@@ -1522,6 +1525,7 @@ mod tests {
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: meta_amd64,
+            size: None,
         });
 
         let mut meta_arm64 = HashMap::new();
@@ -1533,6 +1537,7 @@ mod tests {
             target: Some("aarch64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: meta_arm64,
+            size: None,
         });
 
         let stage = DockerStage;
@@ -2040,6 +2045,7 @@ dockerfile: Dockerfile
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: meta_amd64,
+            size: None,
         });
 
         let mut meta_arm64 = HashMap::new();
@@ -2051,6 +2057,7 @@ dockerfile: Dockerfile
             target: Some("aarch64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: meta_arm64,
+            size: None,
         });
 
         // Run the stage — it will fail at docker buildx, but staging will be done

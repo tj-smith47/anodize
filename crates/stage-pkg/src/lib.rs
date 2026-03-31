@@ -107,8 +107,10 @@ impl Stage for PkgStage {
                 .collect();
 
             for pkg_cfg in pkg_configs {
-                // Skip disabled configs
-                if pkg_cfg.disable.unwrap_or(false) {
+                // Skip disabled configs (supports bool or template string)
+                if let Some(ref d) = pkg_cfg.disable
+                    && d.is_disabled(|s| ctx.render_template(s))
+                {
                     log.status(&format!(
                         "skipping disabled pkg config for crate {}",
                         krate.name
@@ -116,8 +118,36 @@ impl Stage for PkgStage {
                     continue;
                 }
 
+                // Validate `use` field
+                let use_mode = pkg_cfg.use_.as_deref().unwrap_or("binary");
+                if use_mode != "binary" && use_mode != "appbundle" {
+                    anyhow::bail!(
+                        "pkg: invalid `use` value '{}' for crate '{}'; expected 'binary' or 'appbundle'",
+                        use_mode,
+                        krate.name
+                    );
+                }
+
+                // Collect source artifacts depending on `use` mode
+                let source_artifacts: Vec<_> = if use_mode == "appbundle" {
+                    // Collect Installer artifacts with format=appbundle for this crate
+                    ctx.artifacts
+                        .by_kind_and_crate(ArtifactKind::Installer, &krate.name)
+                        .into_iter()
+                        .filter(|a| {
+                            a.metadata
+                                .get("format")
+                                .map(|f| f == "appbundle")
+                                .unwrap_or(false)
+                        })
+                        .cloned()
+                        .collect()
+                } else {
+                    darwin_binaries.clone()
+                };
+
                 // Filter by build IDs if specified
-                let mut filtered = darwin_binaries.clone();
+                let mut filtered = source_artifacts.clone();
                 if let Some(ref filter_ids) = pkg_cfg.ids
                     && !filter_ids.is_empty()
                 {
@@ -133,18 +163,26 @@ impl Stage for PkgStage {
                     });
                 }
 
-                // Warn and skip if no darwin binaries found (like MSI stage)
-                if filtered.is_empty() && darwin_binaries.is_empty() {
-                    log.warn(&format!(
-                        "no macOS binary artifacts found for crate '{}'; \
-                         skipping PKG generation (expected binaries targeting darwin/apple)",
-                        krate.name
-                    ));
+                // Warn and skip if no source artifacts found
+                if filtered.is_empty() && source_artifacts.is_empty() {
+                    if use_mode == "appbundle" {
+                        log.warn(&format!(
+                            "no appbundle artifacts found for crate '{}'; \
+                             skipping PKG generation (expected Installer artifacts with format=appbundle)",
+                            krate.name
+                        ));
+                    } else {
+                        log.warn(&format!(
+                            "no macOS binary artifacts found for crate '{}'; \
+                             skipping PKG generation (expected binaries targeting darwin/apple)",
+                            krate.name
+                        ));
+                    }
                     continue;
                 }
                 if filtered.is_empty() {
                     log.warn(&format!(
-                        "ids filter {:?} matched no binaries for crate '{}'; skipping",
+                        "ids filter {:?} matched no artifacts for crate '{}'; skipping",
                         pkg_cfg.ids, krate.name
                     ));
                     continue;
@@ -224,6 +262,7 @@ impl Stage for PkgStage {
                                 }
                                 m
                             },
+                            size: None,
                         });
 
                         // Track archives to remove if replace is true
@@ -332,6 +371,7 @@ impl Stage for PkgStage {
                             }
                             m
                         },
+                        size: None,
                     });
 
                     // Track archives to remove if replace is true
@@ -371,7 +411,7 @@ impl Stage for PkgStage {
 mod tests {
     use super::*;
     use anodize_core::artifact::{Artifact, ArtifactKind};
-    use anodize_core::config::{Config, CrateConfig, ExtraFileSpec, PkgConfig};
+    use anodize_core::config::{Config, CrateConfig, ExtraFileSpec, PkgConfig, StringOrBool};
     use anodize_core::context::{Context, ContextOptions};
     use tempfile::TempDir;
 
@@ -478,7 +518,7 @@ mod tests {
 
         let pkg_cfg = PkgConfig {
             identifier: Some("com.example.myapp".to_string()),
-            disable: Some(true),
+            disable: Some(StringOrBool::Bool(true)),
             ..Default::default()
         };
 
@@ -510,6 +550,7 @@ mod tests {
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::new(),
+            size: None,
         });
 
         let stage = PkgStage;
@@ -558,6 +599,7 @@ mod tests {
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::new(),
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
@@ -566,6 +608,7 @@ mod tests {
             target: Some("x86_64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::new(),
+            size: None,
         });
 
         let stage = PkgStage;
@@ -627,6 +670,7 @@ mod tests {
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::new(),
+            size: None,
         });
 
         PkgStage.run(&mut ctx).unwrap();
@@ -679,6 +723,7 @@ mod tests {
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::new(),
+            size: None,
         });
 
         // Add darwin archive artifacts that should be removed
@@ -689,6 +734,7 @@ mod tests {
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::new(),
+            size: None,
         });
 
         // Add a linux archive that should NOT be removed
@@ -699,6 +745,7 @@ mod tests {
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::new(),
+            size: None,
         });
 
         PkgStage.run(&mut ctx).unwrap();
@@ -756,6 +803,7 @@ mod tests {
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::new(),
+            size: None,
         });
 
         let result = PkgStage.run(&mut ctx);
@@ -841,7 +889,7 @@ crates:
         assert_eq!(extras[1].glob(), "LICENSE");
         assert_eq!(p.replace, Some(true));
         assert_eq!(p.mod_timestamp.as_deref(), Some("2024-01-01T00:00:00Z"));
-        assert_eq!(p.disable, Some(false));
+        assert_eq!(p.disable, Some(StringOrBool::Bool(false)));
     }
 
     #[test]
@@ -882,6 +930,7 @@ crates:
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::new(),
+            size: None,
         });
 
         PkgStage.run(&mut ctx).unwrap();
@@ -960,6 +1009,7 @@ crates:
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::new(),
+            size: None,
         });
 
         let result = PkgStage.run(&mut ctx);
@@ -1011,6 +1061,7 @@ crates:
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::new(),
+            size: None,
         });
 
         let result = PkgStage.run(&mut ctx);
@@ -1064,6 +1115,7 @@ crates:
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("id".to_string(), "build-darwin-arm64".to_string())]),
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
@@ -1072,6 +1124,7 @@ crates:
             target: Some("x86_64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("id".to_string(), "build-darwin-amd64".to_string())]),
+            size: None,
         });
 
         let stage = PkgStage;
@@ -1090,5 +1143,443 @@ crates:
             Some("aarch64-apple-darwin"),
             "the PKG should be for the arm64 target"
         );
+    }
+
+    // -- `use` field tests --
+
+    #[test]
+    fn test_use_appbundle_selects_installer_artifacts() {
+        let tmp = TempDir::new().unwrap();
+
+        let pkg_cfg = PkgConfig {
+            identifier: Some("com.example.myapp".to_string()),
+            use_: Some("appbundle".to_string()),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            pkgs: Some(vec![pkg_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        // Register an appbundle artifact (Installer with format=appbundle)
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Installer,
+            name: String::new(),
+            path: PathBuf::from("dist/MyApp.app"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("format".to_string(), "appbundle".to_string())]),
+            size: None,
+        });
+
+        // Also register a darwin binary that should NOT be selected
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        let stage = PkgStage;
+        stage.run(&mut ctx).unwrap();
+
+        // Should produce one PKG from the appbundle, not from the binary
+        let pkgs = ctx.artifacts.by_kind(ArtifactKind::MacOsPackage);
+        assert_eq!(pkgs.len(), 1, "should produce one PKG from the appbundle");
+    }
+
+    #[test]
+    fn test_use_binary_selects_darwin_binaries() {
+        let tmp = TempDir::new().unwrap();
+
+        // Explicit `use: binary` should behave same as omitted (default)
+        let pkg_cfg = PkgConfig {
+            identifier: Some("com.example.myapp".to_string()),
+            use_: Some("binary".to_string()),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            pkgs: Some(vec![pkg_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        // Register a darwin binary
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        // Also register an appbundle that should NOT be selected
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Installer,
+            name: String::new(),
+            path: PathBuf::from("dist/MyApp.app"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("format".to_string(), "appbundle".to_string())]),
+            size: None,
+        });
+
+        let stage = PkgStage;
+        stage.run(&mut ctx).unwrap();
+
+        // Should produce one PKG from the binary, not from the appbundle
+        let pkgs = ctx.artifacts.by_kind(ArtifactKind::MacOsPackage);
+        assert_eq!(pkgs.len(), 1, "should produce one PKG from the binary");
+    }
+
+    #[test]
+    fn test_use_default_selects_darwin_binaries() {
+        let tmp = TempDir::new().unwrap();
+
+        // No `use_` set — should default to "binary" mode
+        let pkg_cfg = PkgConfig {
+            identifier: Some("com.example.myapp".to_string()),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            pkgs: Some(vec![pkg_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        PkgStage.run(&mut ctx).unwrap();
+
+        let pkgs = ctx.artifacts.by_kind(ArtifactKind::MacOsPackage);
+        assert_eq!(pkgs.len(), 1, "default use mode should select darwin binaries");
+    }
+
+    #[test]
+    fn test_invalid_use_value_errors() {
+        let tmp = TempDir::new().unwrap();
+
+        let pkg_cfg = PkgConfig {
+            identifier: Some("com.example.myapp".to_string()),
+            use_: Some("invalid_mode".to_string()),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            pkgs: Some(vec![pkg_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        // Add a binary so the stage tries to process the config
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        let result = PkgStage.run(&mut ctx);
+        assert!(result.is_err(), "invalid use value should produce an error");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("invalid `use` value"),
+            "error should mention invalid use value, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_use_appbundle_skips_when_no_appbundles() {
+        let tmp = TempDir::new().unwrap();
+
+        let pkg_cfg = PkgConfig {
+            identifier: Some("com.example.myapp".to_string()),
+            use_: Some("appbundle".to_string()),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            pkgs: Some(vec![pkg_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        // Only register a binary — no appbundles
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        PkgStage.run(&mut ctx).unwrap();
+
+        // No PKGs should be produced because there are no appbundle artifacts
+        let pkgs = ctx.artifacts.by_kind(ArtifactKind::MacOsPackage);
+        assert_eq!(
+            pkgs.len(),
+            0,
+            "should produce no PKGs when use=appbundle but no appbundles exist"
+        );
+    }
+
+    // -- StringOrBool disable tests --
+
+    #[test]
+    fn test_disable_string_or_bool_true_string() {
+        let tmp = TempDir::new().unwrap();
+
+        let pkg_cfg = PkgConfig {
+            identifier: Some("com.example.myapp".to_string()),
+            disable: Some(StringOrBool::String("true".to_string())),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            pkgs: Some(vec![pkg_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("/build/myapp"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        PkgStage.run(&mut ctx).unwrap();
+
+        // disable: "true" should skip the config
+        assert!(ctx.artifacts.by_kind(ArtifactKind::MacOsPackage).is_empty());
+    }
+
+    #[test]
+    fn test_disable_string_or_bool_false_string() {
+        let tmp = TempDir::new().unwrap();
+
+        let pkg_cfg = PkgConfig {
+            identifier: Some("com.example.myapp".to_string()),
+            disable: Some(StringOrBool::String("false".to_string())),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            pkgs: Some(vec![pkg_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("/build/myapp"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        PkgStage.run(&mut ctx).unwrap();
+
+        // disable: "false" should NOT skip the config
+        assert_eq!(ctx.artifacts.by_kind(ArtifactKind::MacOsPackage).len(), 1);
+    }
+
+    #[test]
+    fn test_disable_string_or_bool_template() {
+        let tmp = TempDir::new().unwrap();
+
+        // Template that evaluates to "true" when IsSnapshot is set
+        let pkg_cfg = PkgConfig {
+            identifier: Some("com.example.myapp".to_string()),
+            disable: Some(StringOrBool::String(
+                "{% if IsSnapshot %}true{% else %}false{% endif %}".to_string(),
+            )),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            pkgs: Some(vec![pkg_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("IsSnapshot", "true");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("/build/myapp"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        PkgStage.run(&mut ctx).unwrap();
+
+        // Template should evaluate to "true", so the config is disabled
+        assert!(
+            ctx.artifacts.by_kind(ArtifactKind::MacOsPackage).is_empty(),
+            "template disable should skip the config when evaluated to true"
+        );
+    }
+
+    #[test]
+    fn test_config_parse_pkg_with_use_and_string_disable() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+    pkgs:
+      - identifier: com.example.test
+        use: appbundle
+        disable: "{{ if IsSnapshot }}true{{ else }}false{{ endif }}"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let pkgs = config.crates[0].pkgs.as_ref().unwrap();
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs[0].use_.as_deref(), Some("appbundle"));
+        assert!(matches!(pkgs[0].disable, Some(StringOrBool::String(_))));
     }
 }

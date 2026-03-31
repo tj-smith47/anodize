@@ -93,6 +93,9 @@ pub struct Artifact {
     pub target: Option<String>,
     pub crate_name: String,
     pub metadata: HashMap<String, String>,
+    /// File size in bytes, populated by report_sizes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
 }
 
 impl Artifact {
@@ -176,6 +179,10 @@ impl ArtifactRegistry {
         &self.artifacts
     }
 
+    pub fn all_mut(&mut self) -> &mut [Artifact] {
+        &mut self.artifacts
+    }
+
     /// Remove all artifacts whose path matches one of the given paths.
     pub fn remove_by_paths(&mut self, paths: &[std::path::PathBuf]) {
         self.artifacts.retain(|a| !paths.contains(&a.path));
@@ -185,6 +192,26 @@ impl ArtifactRegistry {
     pub fn to_artifacts_json(&self) -> anyhow::Result<serde_json::Value> {
         Ok(serde_json::to_value(&self.artifacts)?)
     }
+}
+
+/// Artifact kinds that should be included in size reporting.
+/// Matches GoReleaser's reportsizes filter: releasable types + binaries + snaps.
+pub fn size_reportable_kinds() -> &'static [ArtifactKind] {
+    &[
+        ArtifactKind::Archive,
+        ArtifactKind::Binary,
+        ArtifactKind::SourceArchive,
+        ArtifactKind::LinuxPackage,
+        ArtifactKind::Flatpak,
+        ArtifactKind::Sbom,
+        ArtifactKind::Checksum,
+        ArtifactKind::Signature,
+        ArtifactKind::Certificate,
+        ArtifactKind::Snap,
+        ArtifactKind::DiskImage,
+        ArtifactKind::Installer,
+        ArtifactKind::MacOsPackage,
+    ]
 }
 
 /// Artifact kinds that are uploadable to releases/blob storage.
@@ -229,15 +256,23 @@ pub fn format_size(bytes: u64) -> String {
     }
 }
 
-/// Print a formatted size table for all artifacts in the registry.
-/// Only includes artifacts whose files exist on disk.
-pub fn print_size_report(registry: &ArtifactRegistry, log: &crate::log::StageLogger) {
+/// Populate artifact sizes and print a formatted size table.
+///
+/// Filters artifacts to [`size_reportable_kinds`] (matching GoReleaser's
+/// `reportsizes` pipe), stores the file size in each artifact's `size` field,
+/// and prints a human-readable table.
+pub fn print_size_report(registry: &mut ArtifactRegistry, log: &crate::log::StageLogger) {
+    let reportable = size_reportable_kinds();
     let mut entries: Vec<(String, u64)> = Vec::new();
     let mut total: u64 = 0;
 
-    for artifact in registry.all() {
+    for artifact in registry.all_mut() {
+        if !reportable.contains(&artifact.kind) {
+            continue;
+        }
         if let Ok(meta) = std::fs::metadata(&artifact.path) {
             let size = meta.len();
+            artifact.size = Some(size);
             let name = artifact
                 .path
                 .file_name()
@@ -287,6 +322,7 @@ mod tests {
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "cfgd".to_string(),
             metadata: Default::default(),
+            size: None,
         });
         registry.add(Artifact {
             kind: ArtifactKind::Archive,
@@ -295,6 +331,7 @@ mod tests {
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "cfgd".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let binaries = registry.by_kind(ArtifactKind::Binary);
@@ -330,6 +367,7 @@ mod tests {
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: meta,
+            size: None,
         });
         registry.add(Artifact {
             kind: ArtifactKind::Checksum,
@@ -338,6 +376,7 @@ mod tests {
             target: None,
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let json = registry.to_artifacts_json().unwrap();
@@ -368,6 +407,7 @@ mod tests {
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let json = registry.to_artifacts_json().unwrap();
@@ -437,6 +477,7 @@ mod tests {
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "mylib".to_string(),
             metadata: Default::default(),
+            size: None,
         });
         registry.add(Artifact {
             kind: ArtifactKind::Wasm,
@@ -445,6 +486,7 @@ mod tests {
             target: Some("wasm32-unknown-unknown".to_string()),
             crate_name: "mylib".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         assert_eq!(registry.by_kind(ArtifactKind::Library).len(), 1);
@@ -455,5 +497,159 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn test_size_reportable_kinds_includes_releasable_and_binaries() {
+        let kinds = size_reportable_kinds();
+        // Releasable types
+        assert!(kinds.contains(&ArtifactKind::Archive));
+        assert!(kinds.contains(&ArtifactKind::SourceArchive));
+        assert!(kinds.contains(&ArtifactKind::LinuxPackage));
+        assert!(kinds.contains(&ArtifactKind::Flatpak));
+        assert!(kinds.contains(&ArtifactKind::Sbom));
+        assert!(kinds.contains(&ArtifactKind::Checksum));
+        assert!(kinds.contains(&ArtifactKind::Signature));
+        assert!(kinds.contains(&ArtifactKind::Certificate));
+        assert!(kinds.contains(&ArtifactKind::DiskImage));
+        assert!(kinds.contains(&ArtifactKind::Installer));
+        assert!(kinds.contains(&ArtifactKind::MacOsPackage));
+        // Binary + Snap (GoReleaser extras)
+        assert!(kinds.contains(&ArtifactKind::Binary));
+        assert!(kinds.contains(&ArtifactKind::Snap));
+    }
+
+    #[test]
+    fn test_size_reportable_kinds_excludes_non_releasable() {
+        let kinds = size_reportable_kinds();
+        assert!(!kinds.contains(&ArtifactKind::DockerImage));
+        assert!(!kinds.contains(&ArtifactKind::DockerManifest));
+        assert!(!kinds.contains(&ArtifactKind::Metadata));
+        assert!(!kinds.contains(&ArtifactKind::Library));
+        assert!(!kinds.contains(&ArtifactKind::Wasm));
+    }
+
+    #[test]
+    fn test_print_size_report_filters_and_stores_size() {
+        use std::io::Write;
+
+        let dir = std::env::temp_dir().join("anodize_test_size_report");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Create real files with known sizes
+        let archive_path = dir.join("app.tar.gz");
+        let mut f = std::fs::File::create(&archive_path).unwrap();
+        f.write_all(&[0u8; 2048]).unwrap();
+
+        let binary_path = dir.join("app");
+        let mut f = std::fs::File::create(&binary_path).unwrap();
+        f.write_all(&[0u8; 4096]).unwrap();
+
+        let docker_path = dir.join("docker-image");
+        let mut f = std::fs::File::create(&docker_path).unwrap();
+        f.write_all(&[0u8; 8192]).unwrap();
+
+        let mut registry = ArtifactRegistry::new();
+        registry.add(Artifact {
+            kind: ArtifactKind::Archive,
+            name: String::new(),
+            path: archive_path.clone(),
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+        registry.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: binary_path.clone(),
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+        // DockerImage should be excluded from size reporting
+        registry.add(Artifact {
+            kind: ArtifactKind::DockerImage,
+            name: String::new(),
+            path: docker_path.clone(),
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Normal);
+        print_size_report(&mut registry, &log);
+
+        // Archive and Binary should have size populated
+        let archive = &registry.all()[0];
+        assert_eq!(archive.kind, ArtifactKind::Archive);
+        assert_eq!(archive.size, Some(2048));
+
+        let binary = &registry.all()[1];
+        assert_eq!(binary.kind, ArtifactKind::Binary);
+        assert_eq!(binary.size, Some(4096));
+
+        // DockerImage should NOT have size populated
+        let docker = &registry.all()[2];
+        assert_eq!(docker.kind, ArtifactKind::DockerImage);
+        assert_eq!(docker.size, None);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_size_field_defaults_to_none() {
+        let registry = ArtifactRegistry::new();
+        // Artifact's size is None when freshly constructed
+        let mut reg = ArtifactRegistry::new();
+        reg.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("/nonexistent/binary"),
+            target: None,
+            crate_name: "test".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+        assert_eq!(reg.all()[0].size, None);
+        drop(registry);
+    }
+
+    #[test]
+    fn test_size_field_not_serialized_when_none() {
+        let mut registry = ArtifactRegistry::new();
+        registry.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp"),
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+        let json = registry.to_artifacts_json().unwrap();
+        let first = &json.as_array().unwrap()[0];
+        // size should not appear in JSON when None
+        assert!(first.get("size").is_none());
+    }
+
+    #[test]
+    fn test_size_field_serialized_when_some() {
+        let mut registry = ArtifactRegistry::new();
+        registry.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp"),
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: Some(12345),
+        });
+        let json = registry.to_artifacts_json().unwrap();
+        let first = &json.as_array().unwrap()[0];
+        assert_eq!(first["size"], 12345);
     }
 }

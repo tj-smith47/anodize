@@ -143,25 +143,11 @@ impl Stage for DmgStage {
         let mut archives_to_remove: Vec<PathBuf> = Vec::new();
 
         for krate in &crates {
-            let dmg_configs = krate.dmgs.as_ref().unwrap();
-
-            // Collect macOS binary artifacts for this crate
-            let darwin_binaries: Vec<_> = ctx
-                .artifacts
-                .by_kind_and_crate(ArtifactKind::Binary, &krate.name)
-                .into_iter()
-                .filter(|b| {
-                    b.target
-                        .as_deref()
-                        .map(anodize_core::target::is_darwin)
-                        .unwrap_or(false)
-                })
-                .cloned()
-                .collect();
-
-            for dmg_cfg in dmg_configs {
-                // Skip disabled configs
-                if dmg_cfg.disable.unwrap_or(false) {
+            for dmg_cfg in krate.dmgs.as_ref().unwrap() {
+                // Skip disabled configs (supports bool or template string)
+                if let Some(ref d) = dmg_cfg.disable
+                    && d.is_disabled(|s| ctx.render_template(s))
+                {
                     log.status(&format!(
                         "skipping disabled dmg config for crate {}",
                         krate.name
@@ -169,8 +155,47 @@ impl Stage for DmgStage {
                     continue;
                 }
 
+                // Validate `use` field
+                let use_mode = dmg_cfg.use_.as_deref().unwrap_or("binary");
+                if use_mode != "binary" && use_mode != "appbundle" {
+                    anyhow::bail!(
+                        "dmg: invalid `use` value '{}' for crate '{}'; expected 'binary' or 'appbundle'",
+                        use_mode,
+                        krate.name
+                    );
+                }
+
+                // Collect source artifacts depending on `use` mode
+                let source_artifacts: Vec<Artifact> = if use_mode == "appbundle" {
+                    // Collect Installer artifacts with format=appbundle for this crate
+                    ctx.artifacts
+                        .by_kind_and_crate(ArtifactKind::Installer, &krate.name)
+                        .into_iter()
+                        .filter(|a| {
+                            a.metadata
+                                .get("format")
+                                .map(|f| f == "appbundle")
+                                .unwrap_or(false)
+                        })
+                        .cloned()
+                        .collect()
+                } else {
+                    // Collect darwin Binary artifacts for this crate
+                    ctx.artifacts
+                        .by_kind_and_crate(ArtifactKind::Binary, &krate.name)
+                        .into_iter()
+                        .filter(|b| {
+                            b.target
+                                .as_deref()
+                                .map(anodize_core::target::is_darwin)
+                                .unwrap_or(false)
+                        })
+                        .cloned()
+                        .collect()
+                };
+
                 // Filter by build IDs if specified
-                let mut filtered = darwin_binaries.clone();
+                let mut filtered = source_artifacts.clone();
                 if let Some(ref filter_ids) = dmg_cfg.ids
                     && !filter_ids.is_empty()
                 {
@@ -186,18 +211,26 @@ impl Stage for DmgStage {
                     });
                 }
 
-                // Warn and skip if no darwin binaries found (like MSI stage)
-                if filtered.is_empty() && darwin_binaries.is_empty() {
-                    log.warn(&format!(
-                        "no macOS binary artifacts found for crate '{}'; \
-                         skipping DMG generation (expected binaries targeting darwin/apple)",
-                        krate.name
-                    ));
+                // Warn and skip if no source artifacts found
+                if filtered.is_empty() && source_artifacts.is_empty() {
+                    if use_mode == "appbundle" {
+                        log.warn(&format!(
+                            "no appbundle artifacts found for crate '{}'; \
+                             skipping DMG generation (expected Installer artifacts with format=appbundle)",
+                            krate.name
+                        ));
+                    } else {
+                        log.warn(&format!(
+                            "no macOS binary artifacts found for crate '{}'; \
+                             skipping DMG generation (expected binaries targeting darwin/apple)",
+                            krate.name
+                        ));
+                    }
                     continue;
                 }
                 if filtered.is_empty() {
                     log.warn(&format!(
-                        "ids filter {:?} matched no binaries for crate '{}'; skipping",
+                        "ids filter {:?} matched no artifacts for crate '{}'; skipping",
                         dmg_cfg.ids, krate.name
                     ));
                     continue;
@@ -260,6 +293,7 @@ impl Stage for DmgStage {
                                 }
                                 m
                             },
+                            size: None,
                         });
 
                         // If replace is set, mark archives for this crate+target for removal
@@ -369,6 +403,7 @@ impl Stage for DmgStage {
                             }
                             m
                         },
+                        size: None,
                     });
 
                     // If replace is set, mark archives for this crate+target for removal
@@ -499,11 +534,11 @@ mod tests {
 
     #[test]
     fn test_stage_skips_when_disabled() {
-        use anodize_core::config::{Config, CrateConfig, DmgConfig};
+        use anodize_core::config::{Config, CrateConfig, DmgConfig, StringOrBool};
         use anodize_core::context::{Context, ContextOptions};
 
         let dmg_cfg = DmgConfig {
-            disable: Some(true),
+            disable: Some(StringOrBool::Bool(true)),
             ..Default::default()
         };
 
@@ -536,6 +571,7 @@ mod tests {
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = DmgStage;
@@ -585,6 +621,7 @@ mod tests {
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
@@ -593,6 +630,7 @@ mod tests {
             target: Some("x86_64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = DmgStage;
@@ -655,6 +693,7 @@ mod tests {
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = DmgStage;
@@ -712,6 +751,7 @@ mod tests {
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         // Register an archive artifact for the same crate+target
@@ -722,6 +762,7 @@ mod tests {
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("format".to_string(), "tar.gz".to_string())]),
+            size: None,
         });
 
         // Also register a Linux archive that should NOT be removed
@@ -732,6 +773,7 @@ mod tests {
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("format".to_string(), "tar.gz".to_string())]),
+            size: None,
         });
 
         let stage = DmgStage;
@@ -816,7 +858,7 @@ crates:
         assert_eq!(extras[1].glob(), "LICENSE");
         assert_eq!(dmg.replace, Some(true));
         assert_eq!(dmg.mod_timestamp.as_deref(), Some("{{ .CommitTimestamp }}"));
-        assert_eq!(dmg.disable, Some(false));
+        assert_eq!(dmg.disable, Some(anodize_core::config::StringOrBool::Bool(false)));
     }
 
     #[test]
@@ -862,6 +904,7 @@ crates:
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = DmgStage;
@@ -926,6 +969,7 @@ crates:
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = DmgStage;
@@ -999,6 +1043,7 @@ crates:
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = DmgStage;
@@ -1076,6 +1121,7 @@ crates:
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("id".to_string(), "build-darwin-arm64".to_string())]),
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
@@ -1084,6 +1130,7 @@ crates:
             target: Some("x86_64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("id".to_string(), "build-darwin-amd64".to_string())]),
+            size: None,
         });
 
         let stage = DmgStage;
@@ -1101,6 +1148,500 @@ crates:
             dmgs[0].target.as_deref(),
             Some("aarch64-apple-darwin"),
             "the DMG should be for the arm64 target"
+        );
+    }
+
+    #[test]
+    fn test_use_appbundle_selects_installer_artifacts() {
+        use anodize_core::config::{Config, CrateConfig, DmgConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        let dmg_cfg = DmgConfig {
+            use_: Some("appbundle".to_string()),
+            ..Default::default()
+        };
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            dmgs: Some(vec![dmg_cfg]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        // Register an appbundle artifact (Installer with format=appbundle)
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Installer,
+            name: String::new(),
+            path: PathBuf::from("dist/MyApp.app"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("format".to_string(), "appbundle".to_string())]),
+            size: None,
+        });
+
+        // Also register a darwin binary that should NOT be selected
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        let stage = DmgStage;
+        stage.run(&mut ctx).unwrap();
+
+        // Should produce one DMG from the appbundle, not from the binary
+        let dmgs = ctx.artifacts.by_kind(ArtifactKind::DiskImage);
+        assert_eq!(dmgs.len(), 1, "should produce one DMG from the appbundle");
+        assert_eq!(dmgs[0].metadata.get("format").unwrap(), "dmg");
+    }
+
+    #[test]
+    fn test_use_binary_selects_darwin_binaries() {
+        use anodize_core::config::{Config, CrateConfig, DmgConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        // Explicit `use: binary` should behave same as omitted (default)
+        let dmg_cfg = DmgConfig {
+            use_: Some("binary".to_string()),
+            ..Default::default()
+        };
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            dmgs: Some(vec![dmg_cfg]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        // Register a darwin binary
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        // Also register an appbundle that should NOT be selected
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Installer,
+            name: String::new(),
+            path: PathBuf::from("dist/MyApp.app"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("format".to_string(), "appbundle".to_string())]),
+            size: None,
+        });
+
+        let stage = DmgStage;
+        stage.run(&mut ctx).unwrap();
+
+        // Should produce one DMG from the binary, not from the appbundle
+        let dmgs = ctx.artifacts.by_kind(ArtifactKind::DiskImage);
+        assert_eq!(dmgs.len(), 1, "should produce one DMG from the binary");
+        assert_eq!(dmgs[0].metadata.get("format").unwrap(), "dmg");
+    }
+
+    #[test]
+    fn test_use_default_selects_darwin_binaries() {
+        use anodize_core::config::{Config, CrateConfig, DmgConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        // Omitted `use` field should default to binary mode
+        let dmg_cfg = DmgConfig::default();
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            dmgs: Some(vec![dmg_cfg]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        let stage = DmgStage;
+        stage.run(&mut ctx).unwrap();
+
+        let dmgs = ctx.artifacts.by_kind(ArtifactKind::DiskImage);
+        assert_eq!(
+            dmgs.len(),
+            1,
+            "default (omitted) use should select darwin binaries"
+        );
+    }
+
+    #[test]
+    fn test_invalid_use_value_errors() {
+        use anodize_core::config::{Config, CrateConfig, DmgConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        let dmg_cfg = DmgConfig {
+            use_: Some("invalid_mode".to_string()),
+            ..Default::default()
+        };
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            dmgs: Some(vec![dmg_cfg]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        // Add a darwin binary so the stage actually runs
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        let stage = DmgStage;
+        let result = stage.run(&mut ctx);
+        assert!(result.is_err(), "expected error for invalid use value");
+        let err_msg = format!("{:#}", result.unwrap_err());
+        assert!(
+            err_msg.contains("invalid_mode") && err_msg.contains("binary"),
+            "error should mention the invalid value and expected options, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_disable_string_or_bool_true() {
+        use anodize_core::config::{Config, CrateConfig, DmgConfig, StringOrBool};
+        use anodize_core::context::{Context, ContextOptions};
+
+        // Test with StringOrBool::String("true")
+        let dmg_cfg = DmgConfig {
+            disable: Some(StringOrBool::String("true".to_string())),
+            ..Default::default()
+        };
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            dmgs: Some(vec![dmg_cfg]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        let stage = DmgStage;
+        stage.run(&mut ctx).unwrap();
+
+        let dmgs = ctx.artifacts.by_kind(ArtifactKind::DiskImage);
+        assert!(dmgs.is_empty(), "string 'true' should disable the config");
+    }
+
+    #[test]
+    fn test_disable_string_or_bool_false() {
+        use anodize_core::config::{Config, CrateConfig, DmgConfig, StringOrBool};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        // Test with StringOrBool::String("false") — should NOT be disabled
+        let dmg_cfg = DmgConfig {
+            disable: Some(StringOrBool::String("false".to_string())),
+            ..Default::default()
+        };
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            dmgs: Some(vec![dmg_cfg]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        let stage = DmgStage;
+        stage.run(&mut ctx).unwrap();
+
+        let dmgs = ctx.artifacts.by_kind(ArtifactKind::DiskImage);
+        assert_eq!(
+            dmgs.len(),
+            1,
+            "string 'false' should not disable the config"
+        );
+    }
+
+    #[test]
+    fn test_disable_template_string() {
+        use anodize_core::config::{Config, CrateConfig, DmgConfig, StringOrBool};
+        use anodize_core::context::{Context, ContextOptions};
+
+        // Template that evaluates to "true" when IsSnapshot is truthy
+        let dmg_cfg = DmgConfig {
+            disable: Some(StringOrBool::String(
+                "{% if IsSnapshot %}true{% endif %}".to_string(),
+            )),
+            ..Default::default()
+        };
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            dmgs: Some(vec![dmg_cfg]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("IsSnapshot", "true");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        let stage = DmgStage;
+        stage.run(&mut ctx).unwrap();
+
+        let dmgs = ctx.artifacts.by_kind(ArtifactKind::DiskImage);
+        assert!(
+            dmgs.is_empty(),
+            "template should evaluate to true and disable the config"
+        );
+    }
+
+    #[test]
+    fn test_config_parse_dmg_with_use() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+    dmgs:
+      - name: "{{ ProjectName }}_{{ Version }}_{{ Arch }}.dmg"
+        use: appbundle
+"#;
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let dmgs = config.crates[0].dmgs.as_ref().unwrap();
+        assert_eq!(dmgs.len(), 1);
+        assert_eq!(dmgs[0].use_.as_deref(), Some("appbundle"));
+    }
+
+    #[test]
+    fn test_config_parse_dmg_disable_string() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+    dmgs:
+      - disable: "{% if IsSnapshot %}true{% endif %}"
+"#;
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let dmgs = config.crates[0].dmgs.as_ref().unwrap();
+        assert_eq!(
+            dmgs[0].disable,
+            Some(anodize_core::config::StringOrBool::String(
+                "{% if IsSnapshot %}true{% endif %}".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn test_use_appbundle_skips_when_no_appbundles() {
+        use anodize_core::config::{Config, CrateConfig, DmgConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        let dmg_cfg = DmgConfig {
+            use_: Some("appbundle".to_string()),
+            ..Default::default()
+        };
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            dmgs: Some(vec![dmg_cfg]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        // Only register a binary — no appbundles
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        let stage = DmgStage;
+        stage.run(&mut ctx).unwrap();
+
+        // No DMGs should be produced because there are no appbundle artifacts
+        let dmgs = ctx.artifacts.by_kind(ArtifactKind::DiskImage);
+        assert!(
+            dmgs.is_empty(),
+            "should produce no DMGs when use=appbundle but no appbundles exist"
         );
     }
 }

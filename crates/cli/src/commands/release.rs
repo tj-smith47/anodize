@@ -353,7 +353,7 @@ fn run_post_pipeline(
     if !dry_run {
         // Print artifact size table if configured
         if config.report_sizes.unwrap_or(false) {
-            artifact::print_size_report(&ctx.artifacts, log);
+            artifact::print_size_report(&mut ctx.artifacts, log);
         }
 
         let dist = &config.dist;
@@ -412,6 +412,7 @@ fn run_post_pipeline(
             target: None,
             crate_name: config.project_name.clone(),
             metadata: Default::default(),
+            size: None,
         });
 
         // Write artifacts.json with the artifact list.
@@ -947,6 +948,7 @@ pub fn run_merge(
                 target: sa.target.clone(),
                 crate_name: sa.crate_name.clone(),
                 metadata,
+                size: None,
             });
             total_loaded += 1;
         }
@@ -1013,6 +1015,7 @@ fn run_merge_legacy(
                 target: sa.target.clone(),
                 crate_name: sa.crate_name.clone(),
                 metadata: sa.metadata.clone(),
+                size: None,
             });
             total_loaded += 1;
         }

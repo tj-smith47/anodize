@@ -516,6 +516,7 @@ impl Stage for SnapcraftStage {
                             target: target.clone(),
                             crate_name: krate.name.clone(),
                             metadata: artifact_metadata,
+                            size: None,
                         });
 
                         // If replace is set, mark archives for this crate+target for removal
@@ -622,6 +623,7 @@ impl Stage for SnapcraftStage {
                         target: target.clone(),
                         crate_name: krate.name.clone(),
                         metadata: artifact_metadata,
+                        size: None,
                     });
 
                     // If replace is set, mark archives for this crate+target for removal
@@ -1124,6 +1126,7 @@ mod tests {
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::new(),
+            size: None,
         });
 
         let stage = SnapcraftStage;
@@ -1181,6 +1184,7 @@ mod tests {
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::new(),
+            size: None,
         });
 
         let stage = SnapcraftStage;
@@ -1237,6 +1241,7 @@ mod tests {
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("id".to_string(), "build-linux-amd64".to_string())]),
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
@@ -1245,6 +1250,7 @@ mod tests {
             target: Some("aarch64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("id".to_string(), "build-linux-arm".to_string())]),
+            size: None,
         });
 
         let stage = SnapcraftStage;
@@ -1299,6 +1305,7 @@ mod tests {
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("name".to_string(), "myapp".to_string())]),
+            size: None,
         });
         // Register a binary that doesn't match
         ctx.artifacts.add(Artifact {
@@ -1308,6 +1315,7 @@ mod tests {
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("name".to_string(), "other".to_string())]),
+            size: None,
         });
 
         let stage = SnapcraftStage;
@@ -1361,6 +1369,7 @@ mod tests {
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("id".to_string(), "build1".to_string())]),
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
@@ -1369,6 +1378,7 @@ mod tests {
             target: Some("aarch64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("id".to_string(), "build2".to_string())]),
+            size: None,
         });
 
         let stage = SnapcraftStage;
@@ -1439,6 +1449,7 @@ mod tests {
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::new(),
+            size: None,
         });
 
         let stage = SnapcraftStage;
@@ -1618,6 +1629,7 @@ crates:
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::new(),
+            size: None,
         });
 
         let stage = SnapcraftStage;
@@ -1676,6 +1688,7 @@ crates:
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::new(),
+            size: None,
         });
 
         let stage = SnapcraftStage;
@@ -1742,6 +1755,7 @@ crates:
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::new(),
+            size: None,
         });
 
         // Add a darwin binary — should be excluded
@@ -1752,6 +1766,7 @@ crates:
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::new(),
+            size: None,
         });
 
         let stage = SnapcraftStage;
@@ -1807,6 +1822,7 @@ crates:
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         // Register an archive artifact for the same crate+target
@@ -1817,6 +1833,7 @@ crates:
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("format".to_string(), "tar.gz".to_string())]),
+            size: None,
         });
 
         // Also register a darwin archive that should NOT be removed
@@ -1827,6 +1844,7 @@ crates:
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("format".to_string(), "tar.gz".to_string())]),
+            size: None,
         });
 
         let stage = SnapcraftStage;
@@ -1885,6 +1903,7 @@ crates:
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::new(),
+            size: None,
         });
 
         let stage = SnapcraftStage;
@@ -1993,6 +2012,7 @@ crates:
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::new(),
+            size: None,
         });
 
         let stage = SnapcraftPublishStage;
@@ -2041,6 +2061,7 @@ crates:
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::new(),
+            size: None,
         });
 
         let stage = SnapcraftPublishStage;
@@ -2088,6 +2109,7 @@ crates:
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::new(),
+            size: None,
         });
 
         let stage = SnapcraftPublishStage;

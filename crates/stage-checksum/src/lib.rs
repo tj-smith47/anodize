@@ -347,6 +347,7 @@ impl Stage for ChecksumStage {
                         target: None,
                         crate_name: crate_name.clone(),
                         metadata,
+                        size: None,
                     });
                 }
             }
@@ -463,6 +464,7 @@ impl Stage for ChecksumStage {
                                 artifact.path.to_string_lossy().into_owned(),
                             ),
                         ]),
+                        size: None,
                     });
                 }
             }
@@ -526,6 +528,7 @@ impl Stage for ChecksumStage {
                         ("algorithm".to_string(), algorithm.clone()),
                         ("combined".to_string(), "true".to_string()),
                     ]),
+                    size: None,
                 });
             } else {
                 log.status(&format!(
@@ -837,6 +840,7 @@ ids:
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = ChecksumStage;
@@ -896,6 +900,7 @@ ids:
             target: None,
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = ChecksumStage;
@@ -947,6 +952,7 @@ ids:
             target: None,
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = ChecksumStage;
@@ -1033,6 +1039,7 @@ ids:
             target: None,
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = ChecksumStage;
@@ -1078,6 +1085,7 @@ ids:
             target: None,
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = ChecksumStage;
@@ -1133,6 +1141,7 @@ ids:
             target: None,
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = ChecksumStage;
@@ -1194,6 +1203,7 @@ ids:
                 m.insert("id".to_string(), "linux-amd64".to_string());
                 m
             },
+            size: None,
         });
 
         // Archive with non-matching id
@@ -1208,6 +1218,7 @@ ids:
                 m.insert("id".to_string(), "darwin-arm64".to_string());
                 m
             },
+            size: None,
         });
 
         let stage = ChecksumStage;
@@ -1268,6 +1279,7 @@ ids:
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "app".to_string(),
             metadata: Default::default(),
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
@@ -1276,6 +1288,7 @@ ids:
             target: Some("aarch64-apple-darwin".to_string()),
             crate_name: "app".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = ChecksumStage;
@@ -1360,6 +1373,7 @@ ids:
             target: None,
             crate_name: "fox".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = ChecksumStage;
@@ -1422,6 +1436,7 @@ ids:
             target: None,
             crate_name: "pkg".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = ChecksumStage;
@@ -1476,6 +1491,7 @@ ids:
             target: None,
             crate_name: "checksum-test".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = ChecksumStage;
@@ -1556,6 +1572,7 @@ ids:
             target: None,
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         ChecksumStage.run(&mut ctx).unwrap();
@@ -1615,6 +1632,7 @@ ids:
             target: None,
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let result = ChecksumStage.run(&mut ctx);
@@ -1671,6 +1689,7 @@ ids:
             target: None,
             crate_name: "app".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         ChecksumStage.run(&mut ctx).unwrap();
@@ -1735,6 +1754,7 @@ ids:
                 m.insert("id".to_string(), "linux".to_string());
                 m
             },
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
@@ -1747,6 +1767,7 @@ ids:
                 m.insert("id".to_string(), "darwin".to_string());
                 m
             },
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
@@ -1759,6 +1780,7 @@ ids:
                 m.insert("id".to_string(), "windows".to_string());
                 m
             },
+            size: None,
         });
 
         ChecksumStage.run(&mut ctx).unwrap();
@@ -1922,6 +1944,7 @@ algorithm: "sha256"
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = ChecksumStage;
@@ -1983,6 +2006,7 @@ algorithm: "sha256"
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = ChecksumStage;
@@ -2042,6 +2066,7 @@ algorithm: "sha256"
             target: None,
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = ChecksumStage;
@@ -2096,6 +2121,7 @@ algorithm: "sha256"
             target: None,
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = ChecksumStage;
@@ -2142,6 +2168,7 @@ algorithm: "sha256"
             target: Some("x86_64-unknown-linux-gnu".to_string()),
             crate_name: "coolapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         ChecksumStage.run(&mut ctx).unwrap();
@@ -2281,6 +2308,7 @@ extra_files:
             target: None,
             crate_name: "app".to_string(),
             metadata: Default::default(),
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
@@ -2289,6 +2317,7 @@ extra_files:
             target: None,
             crate_name: "app".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         ChecksumStage.run(&mut ctx).unwrap();
@@ -2350,6 +2379,7 @@ extra_files:
             target: None,
             crate_name: "app".to_string(),
             metadata: Default::default(),
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
@@ -2358,6 +2388,7 @@ extra_files:
             target: None,
             crate_name: "app".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         ChecksumStage.run(&mut ctx).unwrap();
@@ -2420,6 +2451,7 @@ extra_files:
             target: None,
             crate_name: "app".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         ChecksumStage.run(&mut ctx).unwrap();
@@ -2486,6 +2518,7 @@ extra_files:
             target: None,
             crate_name: "app".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         ChecksumStage.run(&mut ctx).unwrap();
@@ -2548,6 +2581,7 @@ extra_files:
             target: None,
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         ChecksumStage.run(&mut ctx).unwrap();

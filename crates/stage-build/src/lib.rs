@@ -404,6 +404,7 @@ fn build_universal_binary(
             ("binary".to_string(), binary_name),
             ("universal".to_string(), "true".to_string()),
         ]),
+        size: None,
     });
 
     // When `replace` is true, remove the source arm64/x86_64 artifacts from
@@ -1343,6 +1344,7 @@ impl Stage for BuildStage {
                 target: Some(target.to_string()),
                 crate_name: crate_name.to_string(),
                 metadata: meta,
+                size: None,
             });
             Ok(())
         };
@@ -2266,6 +2268,7 @@ crate_type = ["dylib"]
             target: Some(target.to_string()),
             crate_name: crate_name.to_string(),
             metadata: meta,
+            size: None,
         });
     }
 

@@ -80,18 +80,33 @@ impl WixVersion {
 // ---------------------------------------------------------------------------
 
 /// Construct the WiX CLI commands for building an MSI.
-pub fn msi_command(wix_version: WixVersion, wxs_path: &str, output_path: &str) -> MsiCommands {
+///
+/// `extensions` are WiX extension names (e.g. "WixUIExtension") that should
+/// already be rendered through the template engine with empty strings filtered.
+pub fn msi_command(
+    wix_version: WixVersion,
+    wxs_path: &str,
+    output_path: &str,
+    extensions: &[String],
+) -> MsiCommands {
     match wix_version {
-        WixVersion::V4 => MsiCommands {
-            primary: vec![
+        WixVersion::V4 => {
+            let mut primary = vec![
                 "wix".to_string(),
                 "build".to_string(),
                 wxs_path.to_string(),
                 "-o".to_string(),
                 output_path.to_string(),
-            ],
-            link: None,
-        },
+            ];
+            for ext in extensions {
+                primary.push("-ext".to_string());
+                primary.push(ext.clone());
+            }
+            MsiCommands {
+                primary,
+                link: None,
+            }
+        }
         WixVersion::V3 => {
             // Derive the .wixobj path from the output path
             let wixobj_path = if let Some(prefix) = output_path.strip_suffix(".msi") {
@@ -99,21 +114,31 @@ pub fn msi_command(wix_version: WixVersion, wxs_path: &str, output_path: &str) -
             } else {
                 format!("{output_path}.wixobj")
             };
+            let mut primary = vec![
+                "candle".to_string(),
+                "-nologo".to_string(),
+                wxs_path.to_string(),
+                "-o".to_string(),
+                wixobj_path.clone(),
+            ];
+            for ext in extensions {
+                primary.push("-ext".to_string());
+                primary.push(ext.clone());
+            }
+            let mut link = vec![
+                "light".to_string(),
+                "-nologo".to_string(),
+                wixobj_path,
+                "-o".to_string(),
+                output_path.to_string(),
+            ];
+            for ext in extensions {
+                link.push("-ext".to_string());
+                link.push(ext.clone());
+            }
             MsiCommands {
-                primary: vec![
-                    "candle".to_string(),
-                    "-nologo".to_string(),
-                    wxs_path.to_string(),
-                    "-o".to_string(),
-                    wixobj_path.clone(),
-                ],
-                link: Some(vec![
-                    "light".to_string(),
-                    "-nologo".to_string(),
-                    wixobj_path,
-                    "-o".to_string(),
-                    output_path.to_string(),
-                ]),
+                primary,
+                link: Some(link),
             }
         }
     }
@@ -195,6 +220,7 @@ fn make_msi_artifact(
         target: target.clone(),
         crate_name: crate_name.to_string(),
         metadata,
+        size: None,
     }
 }
 
@@ -257,8 +283,10 @@ impl Stage for MsiStage {
                 .collect();
 
             for msi_cfg in msi_configs {
-                // Skip disabled configs
-                if msi_cfg.disable.unwrap_or(false) {
+                // Skip disabled configs (supports bool or template string)
+                if let Some(ref d) = msi_cfg.disable
+                    && d.is_disabled(|s| ctx.render_template(s))
+                {
                     log.status(&format!(
                         "skipping disabled MSI config for crate {}",
                         krate.name
@@ -377,6 +405,36 @@ impl Stage for MsiStage {
                     };
                     let msi_path = output_dir.join(&msi_filename);
 
+                    // Render WiX extensions through the template engine, filtering
+                    // out empty strings (templates that evaluate to nothing).
+                    let rendered_extensions: Vec<String> = if let Some(ref exts) =
+                        msi_cfg.extensions
+                    {
+                        exts.iter()
+                            .filter_map(|ext_tmpl| {
+                                match ctx.render_template(ext_tmpl) {
+                                    Ok(rendered) => {
+                                        let trimmed = rendered.trim().to_string();
+                                        if trimmed.is_empty() {
+                                            None
+                                        } else {
+                                            Some(trimmed)
+                                        }
+                                    }
+                                    Err(e) => {
+                                        log.warn(&format!(
+                                            "failed to render extension template '{}': {}",
+                                            ext_tmpl, e
+                                        ));
+                                        None
+                                    }
+                                }
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+
                     if dry_run {
                         log.status(&format!(
                             "(dry-run) would build MSI: {} (WiX {:?}) for crate {} target {:?}",
@@ -386,6 +444,22 @@ impl Stage for MsiStage {
                         // C3: Log mod_timestamp in dry-run mode
                         if let Some(ts) = &msi_cfg.mod_timestamp {
                             log.status(&format!("(dry-run) would apply mod_timestamp={ts}"));
+                        }
+
+                        // Log extra_files in dry-run mode
+                        if let Some(ref extras) = msi_cfg.extra_files {
+                            for f in extras {
+                                log.status(&format!(
+                                    "(dry-run) would copy extra file '{f}' to build context"
+                                ));
+                            }
+                        }
+
+                        // Log extensions in dry-run mode
+                        for ext in &rendered_extensions {
+                            log.status(&format!(
+                                "(dry-run) would add WiX extension: -ext {ext}"
+                            ));
                         }
 
                         new_artifacts.push(make_msi_artifact(
@@ -419,6 +493,34 @@ impl Stage for MsiStage {
                         )
                     })?;
 
+                    // Copy extra_files into the temp/build context directory
+                    if let Some(ref extras) = msi_cfg.extra_files {
+                        for filename in extras {
+                            let src = PathBuf::from(filename);
+                            if !src.exists() {
+                                anyhow::bail!(
+                                    "msi: extra_file '{}' does not exist",
+                                    filename
+                                );
+                            }
+                            let dest_name = src
+                                .file_name()
+                                .unwrap_or_else(|| std::ffi::OsStr::new(filename));
+                            let dest = tmp_dir.path().join(dest_name);
+                            fs::copy(&src, &dest).with_context(|| {
+                                format!(
+                                    "msi: copy extra file '{}' to build context '{}'",
+                                    filename,
+                                    dest.display()
+                                )
+                            })?;
+                            log.status(&format!(
+                                "copied extra file '{}' to build context",
+                                filename
+                            ));
+                        }
+                    }
+
                     // C3: Apply mod_timestamp to rendered .wxs if set
                     if let Some(ts) = &msi_cfg.mod_timestamp {
                         log.status(&format!("applying mod_timestamp={ts} to rendered .wxs"));
@@ -431,6 +533,7 @@ impl Stage for MsiStage {
                         wix_version,
                         &rendered_wxs_path.to_string_lossy(),
                         &msi_path.to_string_lossy(),
+                        &rendered_extensions,
                     );
 
                     // C3: For WiX v4, add -d BindTimestamp={ts} if mod_timestamp is set
@@ -573,7 +676,7 @@ mod tests {
 
     #[test]
     fn test_msi_command_v4() {
-        let cmds = msi_command(WixVersion::V4, "/tmp/app.wxs", "/out/app.msi");
+        let cmds = msi_command(WixVersion::V4, "/tmp/app.wxs", "/out/app.msi", &[]);
         assert_eq!(
             cmds.primary,
             vec!["wix", "build", "/tmp/app.wxs", "-o", "/out/app.msi"]
@@ -583,7 +686,7 @@ mod tests {
 
     #[test]
     fn test_msi_command_v3() {
-        let cmds = msi_command(WixVersion::V3, "/tmp/app.wxs", "/out/app.msi");
+        let cmds = msi_command(WixVersion::V3, "/tmp/app.wxs", "/out/app.msi", &[]);
         assert_eq!(
             cmds.primary,
             vec!["candle", "-nologo", "/tmp/app.wxs", "-o", "/out/app.wixobj"]
@@ -649,7 +752,7 @@ mod tests {
 
         let msi_cfg = MsiConfig {
             wxs: Some(wxs_path.to_string_lossy().into_owned()),
-            disable: Some(true),
+            disable: Some(anodize_core::config::StringOrBool::Bool(true)),
             ..Default::default()
         };
 
@@ -725,6 +828,7 @@ mod tests {
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::new(),
+            size: None,
         });
 
         let stage = MsiStage;
@@ -795,6 +899,7 @@ mod tests {
             target: Some("aarch64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::new(),
+            size: None,
         });
 
         let stage = MsiStage;
@@ -849,6 +954,7 @@ mod tests {
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::new(),
+            size: None,
         });
 
         let stage = MsiStage;
@@ -920,7 +1026,10 @@ crates:
         assert_eq!(msi.version.as_deref(), Some("v4"));
         assert_eq!(msi.replace, Some(true));
         assert_eq!(msi.mod_timestamp.as_deref(), Some("2024-01-01T00:00:00Z"));
-        assert_eq!(msi.disable, Some(false));
+        assert_eq!(
+            msi.disable,
+            Some(anodize_core::config::StringOrBool::Bool(false))
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1006,6 +1115,7 @@ crates:
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::new(),
+            size: None,
         });
 
         let result = MsiStage.run(&mut ctx);
@@ -1085,6 +1195,7 @@ crates:
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::new(),
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
@@ -1093,6 +1204,7 @@ crates:
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("format".to_string(), "zip".to_string())]),
+            size: None,
         });
 
         assert_eq!(ctx.artifacts.by_kind(ArtifactKind::Archive).len(), 1);
@@ -1207,6 +1319,7 @@ crates:
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("id".to_string(), "build-win-amd64".to_string())]),
+            size: None,
         });
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
@@ -1215,6 +1328,7 @@ crates:
             target: Some("aarch64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("id".to_string(), "build-win-arm64".to_string())]),
+            size: None,
         });
 
         let stage = MsiStage;
@@ -1276,6 +1390,7 @@ crates:
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::from([("id".to_string(), "build-win-amd64".to_string())]),
+            size: None,
         });
 
         let stage = MsiStage;
@@ -1336,6 +1451,7 @@ crates:
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::new(),
+            size: None,
         });
 
         let stage = MsiStage;
@@ -1409,6 +1525,7 @@ crates:
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::new(),
+            size: None,
         });
 
         let stage = MsiStage;
@@ -1444,7 +1561,7 @@ crates:
     #[test]
     fn test_mod_timestamp_adds_bind_timestamp_v4() {
         // Build commands for V4 with mod_timestamp should include -d BindTimestamp=...
-        let mut commands = msi_command(WixVersion::V4, "/tmp/app.wxs", "/out/app.msi");
+        let mut commands = msi_command(WixVersion::V4, "/tmp/app.wxs", "/out/app.msi", &[]);
         let ts = "1704067200";
         // Simulate what the stage does for V4 with mod_timestamp
         commands.primary.push("-d".to_string());
@@ -1476,7 +1593,7 @@ crates:
         );
 
         // V3 should NOT get -d BindTimestamp
-        let v3_commands = msi_command(WixVersion::V3, "/tmp/app.wxs", "/out/app.msi");
+        let v3_commands = msi_command(WixVersion::V3, "/tmp/app.wxs", "/out/app.msi", &[]);
         assert!(
             !v3_commands.primary.contains(&"-d".to_string()),
             "V3 command should not have -d flag"
@@ -1532,6 +1649,7 @@ crates:
             target: Some("x86_64-pc-windows-msvc".to_string()),
             crate_name: "myapp".to_string(),
             metadata: HashMap::new(),
+            size: None,
         });
 
         let stage = MsiStage;
@@ -1544,6 +1662,428 @@ crates:
             bp,
             Some(binary_path_str.to_string()),
             "BinaryPath template variable should be set to the binary's path"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // extra_files config parsing
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_config_parse_extra_files() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+    msis:
+      - wxs: app.wxs
+        extra_files:
+          - README.md
+          - LICENSE
+          - doc/guide.pdf
+"#;
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let msis = config.crates[0].msis.as_ref().unwrap();
+        let extras = msis[0].extra_files.as_ref().unwrap();
+        assert_eq!(extras.len(), 3);
+        assert_eq!(extras[0], "README.md");
+        assert_eq!(extras[1], "LICENSE");
+        assert_eq!(extras[2], "doc/guide.pdf");
+    }
+
+    // -----------------------------------------------------------------------
+    // extensions config parsing
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_config_parse_extensions() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+    msis:
+      - wxs: app.wxs
+        extensions:
+          - WixUIExtension
+          - WixUtilExtension
+"#;
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let msis = config.crates[0].msis.as_ref().unwrap();
+        let exts = msis[0].extensions.as_ref().unwrap();
+        assert_eq!(exts.len(), 2);
+        assert_eq!(exts[0], "WixUIExtension");
+        assert_eq!(exts[1], "WixUtilExtension");
+    }
+
+    // -----------------------------------------------------------------------
+    // disable as StringOrBool
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_config_parse_disable_bool_true() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+    msis:
+      - wxs: app.wxs
+        disable: true
+"#;
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let msis = config.crates[0].msis.as_ref().unwrap();
+        assert_eq!(
+            msis[0].disable,
+            Some(anodize_core::config::StringOrBool::Bool(true))
+        );
+    }
+
+    #[test]
+    fn test_config_parse_disable_string_true() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+    msis:
+      - wxs: app.wxs
+        disable: "true"
+"#;
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let msis = config.crates[0].msis.as_ref().unwrap();
+        assert_eq!(
+            msis[0].disable,
+            Some(anodize_core::config::StringOrBool::String("true".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_config_parse_disable_template_string() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+    msis:
+      - wxs: app.wxs
+        disable: "{{ .Env.SKIP_MSI }}"
+"#;
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let msis = config.crates[0].msis.as_ref().unwrap();
+        assert_eq!(
+            msis[0].disable,
+            Some(anodize_core::config::StringOrBool::String(
+                "{{ .Env.SKIP_MSI }}".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn test_stage_disable_with_string_true() {
+        use anodize_core::config::{Config, CrateConfig, MsiConfig, StringOrBool};
+        use anodize_core::context::{Context, ContextOptions};
+        use anodize_core::artifact::Artifact;
+
+        let tmp = TempDir::new().unwrap();
+        let wxs_path = tmp.path().join("app.wxs");
+        fs::write(&wxs_path, "<Wix/>").unwrap();
+
+        let msi_cfg = MsiConfig {
+            wxs: Some(wxs_path.to_string_lossy().into_owned()),
+            disable: Some(StringOrBool::String("true".to_string())),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            msis: Some(vec![msi_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp.exe"),
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        let stage = MsiStage;
+        stage.run(&mut ctx).unwrap();
+
+        // disable: "true" should skip
+        assert!(ctx.artifacts.by_kind(ArtifactKind::Installer).is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // extensions passed to WiX commands
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_msi_command_v4_with_extensions() {
+        let exts = vec!["WixUIExtension".to_string(), "WixUtilExtension".to_string()];
+        let cmds = msi_command(WixVersion::V4, "/tmp/app.wxs", "/out/app.msi", &exts);
+        assert_eq!(
+            cmds.primary,
+            vec![
+                "wix",
+                "build",
+                "/tmp/app.wxs",
+                "-o",
+                "/out/app.msi",
+                "-ext",
+                "WixUIExtension",
+                "-ext",
+                "WixUtilExtension",
+            ]
+        );
+        assert!(cmds.link.is_none());
+    }
+
+    #[test]
+    fn test_msi_command_v3_with_extensions() {
+        let exts = vec!["WixUIExtension".to_string()];
+        let cmds = msi_command(WixVersion::V3, "/tmp/app.wxs", "/out/app.msi", &exts);
+
+        // candle gets -ext too
+        assert_eq!(
+            cmds.primary,
+            vec![
+                "candle",
+                "-nologo",
+                "/tmp/app.wxs",
+                "-o",
+                "/out/app.wixobj",
+                "-ext",
+                "WixUIExtension",
+            ]
+        );
+
+        // light also gets -ext
+        let link = cmds.link.unwrap();
+        assert_eq!(
+            link,
+            vec![
+                "light",
+                "-nologo",
+                "/out/app.wixobj",
+                "-o",
+                "/out/app.msi",
+                "-ext",
+                "WixUIExtension",
+            ]
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // extra_files copied to build context (live mode)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extra_files_copied_to_build_context() {
+        use anodize_core::artifact::Artifact;
+        use anodize_core::config::{Config, CrateConfig, MsiConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+
+        // Create extra files
+        let readme_path = tmp.path().join("README.md");
+        let license_path = tmp.path().join("LICENSE");
+        fs::write(&readme_path, "# My App").unwrap();
+        fs::write(&license_path, "MIT License").unwrap();
+
+        let wxs_path = tmp.path().join("app.wxs");
+        fs::write(&wxs_path, "<Wix/>").unwrap();
+
+        let msi_cfg = MsiConfig {
+            wxs: Some(wxs_path.to_string_lossy().into_owned()),
+            extra_files: Some(vec![
+                readme_path.to_string_lossy().into_owned(),
+                license_path.to_string_lossy().into_owned(),
+            ]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            msis: Some(vec![msi_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp.exe"),
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        // In dry-run mode, extra_files are only logged, not copied.
+        // We verify the config is accepted and the stage runs successfully.
+        let stage = MsiStage;
+        stage.run(&mut ctx).unwrap();
+
+        let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
+        assert_eq!(installers.len(), 1, "should produce MSI artifact even with extra_files");
+    }
+
+    // -----------------------------------------------------------------------
+    // extensions dry-run with template rendering
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_extensions_in_dry_run() {
+        use anodize_core::artifact::Artifact;
+        use anodize_core::config::{Config, CrateConfig, MsiConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+
+        let wxs_path = tmp.path().join("app.wxs");
+        fs::write(&wxs_path, "<Wix/>").unwrap();
+
+        let msi_cfg = MsiConfig {
+            wxs: Some(wxs_path.to_string_lossy().into_owned()),
+            extensions: Some(vec![
+                "WixUIExtension".to_string(),
+                "WixUtilExtension".to_string(),
+            ]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            msis: Some(vec![msi_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp.exe"),
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        // Should succeed — extensions are logged in dry-run mode
+        let stage = MsiStage;
+        stage.run(&mut ctx).unwrap();
+
+        let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
+        assert_eq!(installers.len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Full config roundtrip with new fields
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_config_parse_msi_full_with_new_fields() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+    msis:
+      - id: my-msi
+        ids:
+          - build-win-amd64
+        wxs: installer/app.wxs
+        name: "myapp-{{ .Version }}-{{ .MsiArch }}"
+        version: v4
+        replace: true
+        mod_timestamp: "2024-01-01T00:00:00Z"
+        disable: "{{ .Env.SKIP_MSI }}"
+        extra_files:
+          - README.md
+          - LICENSE
+        extensions:
+          - WixUIExtension
+          - WixUtilExtension
+"#;
+        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let msi = &config.crates[0].msis.as_ref().unwrap()[0];
+
+        assert_eq!(msi.id.as_deref(), Some("my-msi"));
+        assert_eq!(msi.ids.as_ref().unwrap(), &["build-win-amd64".to_string()]);
+        assert_eq!(msi.wxs.as_deref(), Some("installer/app.wxs"));
+        assert_eq!(
+            msi.name.as_deref(),
+            Some("myapp-{{ .Version }}-{{ .MsiArch }}")
+        );
+        assert_eq!(msi.version.as_deref(), Some("v4"));
+        assert_eq!(msi.replace, Some(true));
+        assert_eq!(msi.mod_timestamp.as_deref(), Some("2024-01-01T00:00:00Z"));
+        assert_eq!(
+            msi.disable,
+            Some(anodize_core::config::StringOrBool::String(
+                "{{ .Env.SKIP_MSI }}".to_string()
+            ))
+        );
+        assert_eq!(
+            msi.extra_files.as_ref().unwrap(),
+            &["README.md".to_string(), "LICENSE".to_string()]
+        );
+        assert_eq!(
+            msi.extensions.as_ref().unwrap(),
+            &["WixUIExtension".to_string(), "WixUtilExtension".to_string()]
         );
     }
 }

@@ -1283,6 +1283,7 @@ partial:
             target: None,
             crate_name: "mycrate".to_string(),
             metadata: Default::default(),
+            size: None,
         });
         ctx.artifacts.add(anodize_core::artifact::Artifact {
             kind: ArtifactKind::Archive,
@@ -1291,6 +1292,7 @@ partial:
             target: None,
             crate_name: "othercrate".to_string(),
             metadata: Default::default(),
+            size: None,
         });
         let config = BlobConfig::default();
         let arts = collect_artifacts(&ctx, &config, "mycrate");
@@ -1308,6 +1310,7 @@ partial:
             target: None,
             crate_name: "mycrate".to_string(),
             metadata: Default::default(),
+            size: None,
         });
         let config = BlobConfig {
             extra_files_only: Some(true),
@@ -1329,6 +1332,7 @@ partial:
             target: None,
             crate_name: "mycrate".to_string(),
             metadata: meta,
+            size: None,
         });
         ctx.artifacts.add(anodize_core::artifact::Artifact {
             kind: ArtifactKind::Archive,
@@ -1337,6 +1341,7 @@ partial:
             target: None,
             crate_name: "mycrate".to_string(),
             metadata: Default::default(),
+            size: None,
         });
         let config = BlobConfig {
             ids: Some(vec!["linux-build".to_string()]),
@@ -1356,6 +1361,7 @@ partial:
             target: None,
             crate_name: "mycrate".to_string(),
             metadata: Default::default(),
+            size: None,
         });
         // Without include_meta
         let config = BlobConfig::default();
@@ -1544,6 +1550,7 @@ partial:
             target: None,
             crate_name: "mycrate".to_string(),
             metadata: Default::default(),
+            size: None,
         });
 
         let stage = BlobStage;
