@@ -49,7 +49,11 @@ pub fn generate_info_plist(
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleInfoDictionaryVersion</key>
-    <string>6.0</string>{icon_entry}
+    <string>6.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>LSMinimumSystemVersion</key>
+    <string>10.13</string>{icon_entry}
 </dict>
 </plist>
 "#
@@ -115,7 +119,14 @@ fn copy_extra_files(
                     }
                 }
             }
-            ArchiveFileSpec::Detailed { src, dst, .. } => {
+            ArchiveFileSpec::Detailed { src, dst, strip_parent, .. } => {
+                if strip_parent == &Some(true) {
+                    log.warn(&format!(
+                        "strip_parent is not supported for app bundle extra files (src: '{}')",
+                        src
+                    ));
+                }
+
                 let dest_base = if let Some(dst_path) = dst {
                     app_dir.join(dst_path)
                 } else {
@@ -531,6 +542,10 @@ mod tests {
         assert!(plist.contains("<string>APPL</string>"));
         assert!(plist.contains("<key>CFBundleInfoDictionaryVersion</key>"));
         assert!(plist.contains("<string>6.0</string>"));
+        assert!(plist.contains("<key>NSHighResolutionCapable</key>"));
+        assert!(plist.contains("<true/>"));
+        assert!(plist.contains("<key>LSMinimumSystemVersion</key>"));
+        assert!(plist.contains("<string>10.13</string>"));
         assert!(plist.contains("<key>CFBundleIconFile</key>"));
         assert!(plist.contains("<string>app.icns</string>"));
     }
@@ -1444,6 +1459,149 @@ crates:
         assert!(
             DEFAULT_NAME_TEMPLATE.contains("Arch"),
             "default name template should include Arch to prevent overwrites: {DEFAULT_NAME_TEMPLATE}"
+        );
+    }
+
+    #[test]
+    fn test_stage_live_with_extra_files() {
+        use anodize_core::config::{AppBundleConfig, Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        // Create a fake binary and an extra file on disk
+        let binary_path = tmp.path().join("myapp");
+        fs::write(&binary_path, b"fake-binary").unwrap();
+        let extra_file = tmp.path().join("README.txt");
+        fs::write(&extra_file, b"extra-file-content").unwrap();
+
+        let bundle_cfg = AppBundleConfig {
+            bundle: Some("com.test.myapp".to_string()),
+            extra_files: Some(vec![ArchiveFileSpec::Glob(
+                extra_file.to_string_lossy().into_owned(),
+            )]),
+            ..Default::default()
+        };
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            app_bundles: Some(vec![bundle_cfg]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: false,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: binary_path,
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+        });
+
+        let stage = AppBundleStage;
+        stage.run(&mut ctx).unwrap();
+
+        let app_dir = tmp.path().join("dist/macos/myapp_arm64.app");
+        assert!(app_dir.exists(), "app bundle directory should exist");
+
+        // Verify extra file ends up in Contents/Resources/
+        let extra_dst = app_dir.join("Contents/Resources/README.txt");
+        assert!(
+            extra_dst.exists(),
+            "extra file should be in Contents/Resources/"
+        );
+        let content = fs::read_to_string(&extra_dst).unwrap();
+        assert_eq!(content, "extra-file-content");
+    }
+
+    #[test]
+    fn test_stage_live_mod_timestamp() {
+        use anodize_core::config::{AppBundleConfig, Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+        use std::time::{Duration, SystemTime};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        // Create a fake binary on disk
+        let binary_path = tmp.path().join("myapp");
+        fs::write(&binary_path, b"fake-binary").unwrap();
+
+        let bundle_cfg = AppBundleConfig {
+            bundle: Some("com.test.myapp".to_string()),
+            mod_timestamp: Some("2024-01-01T00:00:00Z".to_string()),
+            ..Default::default()
+        };
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            app_bundles: Some(vec![bundle_cfg]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: false,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: binary_path,
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+        });
+
+        let stage = AppBundleStage;
+        stage.run(&mut ctx).unwrap();
+
+        let app_dir = tmp.path().join("dist/macos/myapp_arm64.app");
+        assert!(app_dir.exists(), "app bundle directory should exist");
+
+        // 2024-01-01T00:00:00Z = epoch 1704067200
+        let expected_mtime = SystemTime::UNIX_EPOCH + Duration::from_secs(1704067200);
+
+        // Verify mtime of the binary in Contents/MacOS/
+        let binary_meta = fs::metadata(app_dir.join("Contents/MacOS/myapp")).unwrap();
+        let binary_mtime = binary_meta.modified().unwrap();
+        assert_eq!(
+            binary_mtime, expected_mtime,
+            "binary mtime should match mod_timestamp"
+        );
+
+        // Verify mtime of Info.plist
+        let plist_meta = fs::metadata(app_dir.join("Contents/Info.plist")).unwrap();
+        let plist_mtime = plist_meta.modified().unwrap();
+        assert_eq!(
+            plist_mtime, expected_mtime,
+            "Info.plist mtime should match mod_timestamp"
         );
     }
 }
