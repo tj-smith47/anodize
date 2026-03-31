@@ -68,8 +68,10 @@ pub struct Config {
     pub workspaces: Option<Vec<WorkspaceConfig>>,
     /// Source archive configuration.
     pub source: Option<SourceConfig>,
-    /// Software bill of materials (SBOM) generation configuration.
-    pub sbom: Option<SbomConfig>,
+    /// Software bill of materials (SBOM) generation configurations.
+    #[serde(default, alias = "sbom", deserialize_with = "deserialize_sboms")]
+    #[schemars(schema_with = "sboms_schema")]
+    pub sboms: Vec<SbomConfig>,
     /// GitHub release configuration shared by all crates.
     pub release: Option<ReleaseConfig>,
 }
@@ -89,6 +91,17 @@ fn upx_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::sch
     if let schemars::schema::Schema::Object(ref mut obj) = schema {
         obj.metadata().description = Some(
             "UPX binary compression configurations. Accepts a single object or array.".to_owned(),
+        );
+    }
+    schema
+}
+
+/// Helper schema function for the sboms field (accepts object or array).
+fn sboms_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+    let mut schema = generator.subschema_for::<Vec<SbomConfig>>();
+    if let schemars::schema::Schema::Object(ref mut obj) = schema {
+        obj.metadata().description = Some(
+            "SBOM generation configurations. Accepts a single object or array.".to_owned(),
         );
     }
     schema
@@ -125,7 +138,7 @@ impl Default for Config {
             partial: None,
             workspaces: None,
             source: None,
-            sbom: None,
+            sboms: Vec::new(),
             release: None,
         }
     }
@@ -313,6 +326,10 @@ pub struct CrateConfig {
     pub msis: Option<Vec<MsiConfig>>,
     /// macOS PKG installer configurations for this crate.
     pub pkgs: Option<Vec<PkgConfig>>,
+    /// NSIS installer configurations for this crate.
+    pub nsis: Option<Vec<NsisConfig>>,
+    /// macOS app bundle configurations for this crate.
+    pub app_bundles: Option<Vec<AppBundleConfig>>,
     /// Cloud storage (S3/GCS/Azure) upload configurations for this crate.
     pub blobs: Option<Vec<BlobConfig>>,
     /// cargo-binstall metadata configuration for this crate.
@@ -355,6 +372,8 @@ impl Default for CrateConfig {
             dmgs: None,
             msis: None,
             pkgs: None,
+            nsis: None,
+            app_bundles: None,
             blobs: None,
             binstall: None,
             version_sync: None,
@@ -377,6 +396,10 @@ pub struct UniversalBinaryConfig {
     pub replace: Option<bool>,
     /// Build IDs filter: only combine artifacts from builds whose `id` is in this list.
     pub ids: Option<Vec<String>>,
+    /// Pre/post hooks around universal binary creation.
+    pub hooks: Option<BuildHooksConfig>,
+    /// Override the modification timestamp for reproducible universal binaries.
+    pub mod_timestamp: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -417,6 +440,9 @@ pub struct BuildConfig {
     /// Override the cross-compilation tool binary path (e.g., a custom `cross` wrapper).
     /// When set, this binary is used instead of cargo/cross/zigbuild.
     pub cross_tool: Option<String>,
+    /// Override the modification timestamp of built binaries for reproducible builds.
+    /// Template string (e.g. `"{{ .CommitTimestamp }}"`) or unix timestamp.
+    pub mod_timestamp: Option<String>,
 }
 
 /// Pre/post hook configuration shared across multiple stages. Despite the
@@ -559,6 +585,44 @@ where
 }
 
 // ---------------------------------------------------------------------------
+// WrapInDirectory – accepts bool (true = default dir name) or string
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum WrapInDirectory {
+    Bool(bool),
+    Name(String),
+}
+
+impl<'de> serde::Deserialize<'de> for WrapInDirectory {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = serde_yaml_ng::Value::deserialize(deserializer)?;
+        match value {
+            serde_yaml_ng::Value::Bool(b) => Ok(WrapInDirectory::Bool(b)),
+            serde_yaml_ng::Value::String(s) => Ok(WrapInDirectory::Name(s)),
+            _ => Err(serde::de::Error::custom("expected bool or string")),
+        }
+    }
+}
+
+impl WrapInDirectory {
+    /// Resolve the directory name to wrap archive contents in.
+    ///
+    /// When `true`, uses `default_name` (typically the archive stem).
+    /// When `false` or an empty string, returns `None` (no wrapping).
+    /// Otherwise returns the custom name.
+    pub fn directory_name(&self, default_name: &str) -> Option<String> {
+        match self {
+            WrapInDirectory::Bool(true) => Some(default_name.to_string()),
+            WrapInDirectory::Bool(false) => None,
+            WrapInDirectory::Name(s) if s.is_empty() => None,
+            WrapInDirectory::Name(s) => Some(s.clone()),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ArchiveConfig
 // ---------------------------------------------------------------------------
 
@@ -579,8 +643,10 @@ pub struct ArchiveConfig {
     pub files: Option<Vec<ArchiveFileSpec>>,
     /// Binary names to include (defaults to all binaries from matched builds).
     pub binaries: Option<Vec<String>>,
-    /// When set, wrap archive contents in a top-level directory with this name (supports templates).
-    pub wrap_in_directory: Option<String>,
+    /// When set, wrap archive contents in a top-level directory.
+    /// Accepts `true` (use archive stem as directory name), `false` (no wrapping),
+    /// or a string template for a custom directory name.
+    pub wrap_in_directory: Option<WrapInDirectory>,
     /// Build IDs filter: only include artifacts from builds whose `id` is in this list.
     pub ids: Option<Vec<String>>,
     /// When true, create archive with no binaries (metadata-only).
@@ -598,6 +664,8 @@ pub struct ArchiveConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct FormatOverride {
     /// Operating system this override applies to (e.g., "windows", "darwin", "linux").
+    /// GoReleaser uses `goos` as the YAML key; both `os` and `goos` are accepted.
+    #[serde(alias = "goos")]
     pub os: String,
     /// Archive format override for this OS: tar.gz, tar.xz, tar.zst, zip, or binary.
     pub format: Option<String>,
@@ -623,6 +691,8 @@ pub enum ArchiveFileSpec {
         src: String,
         dst: Option<String>,
         info: Option<ArchiveFileInfo>,
+        /// When true, strip the parent directory from the file path in the archive.
+        strip_parent: Option<bool>,
     },
 }
 
@@ -783,8 +853,10 @@ pub struct ReleaseConfig {
     pub footer: Option<ContentSource>,
     /// Extra files to upload to the release beyond build artifacts.
     pub extra_files: Option<Vec<ExtraFileSpec>>,
-    /// When true, skip uploading artifacts to the release.
-    pub skip_upload: Option<bool>,
+    /// Skip uploading artifacts: true, false, or "auto" (skip for snapshots).
+    /// Accepts bool or template string (GoReleaser uses string type).
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub skip_upload: Option<StringOrBool>,
     /// When true, replace an existing draft release instead of failing.
     pub replace_existing_draft: Option<bool>,
     /// When true, replace existing release artifacts with the same name.
@@ -952,18 +1024,62 @@ impl_auto_or_bool_serde!(
     PrereleaseConfig::Bool
 );
 
-/// `make_latest` can be the string `"auto"` or a boolean.
+/// `make_latest` can be the string `"auto"`, a boolean, or a template string.
+/// GoReleaser renders this field through its template engine at publish time,
+/// so we accept arbitrary strings (e.g. `"{{ if .IsSnapshot }}false{{ else }}true{{ end }}"`)
+/// and defer resolution to the release stage.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MakeLatestConfig {
     Auto,
     Bool(bool),
+    /// An arbitrary template string to be rendered at publish time.
+    String(String),
 }
 
-impl_auto_or_bool_serde!(
-    MakeLatestConfig,
-    MakeLatestConfig::Auto,
-    MakeLatestConfig::Bool
-);
+impl Serialize for MakeLatestConfig {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        match self {
+            MakeLatestConfig::Auto => serializer.serialize_str("auto"),
+            MakeLatestConfig::Bool(b) => serializer.serialize_bool(*b),
+            MakeLatestConfig::String(s) => serializer.serialize_str(s),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for MakeLatestConfig {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        struct Visitor;
+        impl serde::de::Visitor<'_> for Visitor {
+            type Value = MakeLatestConfig;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "\"auto\", a boolean, or a template string")
+            }
+            fn visit_bool<E: serde::de::Error>(
+                self,
+                v: bool,
+            ) -> std::result::Result<MakeLatestConfig, E> {
+                Ok(MakeLatestConfig::Bool(v))
+            }
+            fn visit_str<E: serde::de::Error>(
+                self,
+                v: &str,
+            ) -> std::result::Result<MakeLatestConfig, E> {
+                match v {
+                    "auto" => Ok(MakeLatestConfig::Auto),
+                    "true" => Ok(MakeLatestConfig::Bool(true)),
+                    "false" => Ok(MakeLatestConfig::Bool(false)),
+                    other => Ok(MakeLatestConfig::String(other.to_string())),
+                }
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
+}
 
 /// `skip_push` can be the string `"auto"` (skip for prereleases) or a boolean.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1753,6 +1869,8 @@ pub struct DockerManifestConfig {
     /// Docker backend for manifest commands: "docker" (default) or "podman".
     #[serde(rename = "use")]
     pub use_backend: Option<String>,
+    /// Retry configuration for manifest push (handles transient registry errors).
+    pub retry: Option<DockerRetryConfig>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1862,6 +1980,11 @@ pub struct NfpmContent {
     pub content_type: Option<String>,
     /// File ownership and permission metadata.
     pub file_info: Option<NfpmFileInfo>,
+    /// Per-packager filter: only include this content entry for the specified packager
+    /// (e.g. "deb", "rpm", "apk").
+    pub packager: Option<String>,
+    /// When true, expand template variables in the `src` and `dst` paths.
+    pub expand: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1883,6 +2006,20 @@ pub struct NfpmRpmConfig {
     pub prefixes: Option<Vec<String>>,
     /// RPM signing configuration.
     pub signature: Option<NfpmSignatureConfig>,
+    /// RPM-specific lifecycle scripts (pretrans/posttrans).
+    pub scripts: Option<NfpmRpmScripts>,
+    /// RPM BuildHost tag value.
+    pub build_host: Option<String>,
+}
+
+/// RPM-specific transaction scripts that run outside the normal install/remove lifecycle.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct NfpmRpmScripts {
+    /// Script to run before the RPM transaction begins.
+    pub pretrans: Option<String>,
+    /// Script to run after the RPM transaction completes.
+    pub posttrans: Option<String>,
 }
 
 impl NfpmRpmConfig {
@@ -1895,6 +2032,8 @@ impl NfpmRpmConfig {
             && self.packager.is_none()
             && self.prefixes.is_none()
             && self.signature.is_none()
+            && self.scripts.is_none()
+            && self.build_host.is_none()
     }
 }
 
@@ -1915,6 +2054,20 @@ pub struct NfpmDebConfig {
     pub signature: Option<NfpmSignatureConfig>,
     /// Additional control fields (e.g. Bugs, Built-Using).
     pub fields: Option<HashMap<String, String>>,
+    /// Deb-specific maintainer scripts (rules, templates, config).
+    pub scripts: Option<NfpmDebScripts>,
+}
+
+/// Deb-specific maintainer scripts for package configuration and rules.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct NfpmDebScripts {
+    /// Path to debian/rules file.
+    pub rules: Option<String>,
+    /// Path to debian/templates file (debconf templates).
+    pub templates: Option<String>,
+    /// Path to debian/config script (debconf configuration).
+    pub config: Option<String>,
 }
 
 impl NfpmDebConfig {
@@ -1928,6 +2081,7 @@ impl NfpmDebConfig {
             && self.lintian_overrides.is_none()
             && self.signature.is_none()
             && self.fields.is_none()
+            && self.scripts.is_none()
     }
 }
 
@@ -1953,13 +2107,25 @@ pub struct NfpmDebTriggers {
 pub struct NfpmApkConfig {
     /// APK signing configuration.
     pub signature: Option<NfpmSignatureConfig>,
+    /// APK-specific lifecycle scripts (preupgrade/postupgrade).
+    pub scripts: Option<NfpmApkScripts>,
+}
+
+/// APK-specific upgrade lifecycle scripts.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct NfpmApkScripts {
+    /// Script to run before upgrading an existing package.
+    pub preupgrade: Option<String>,
+    /// Script to run after upgrading an existing package.
+    pub postupgrade: Option<String>,
 }
 
 impl NfpmApkConfig {
     /// Returns `true` when every field is `None` — the YAML section would be
     /// empty and should be omitted.
     pub fn is_empty(&self) -> bool {
-        self.signature.is_none()
+        self.signature.is_none() && self.scripts.is_none()
     }
 }
 
@@ -2000,6 +2166,11 @@ pub struct NfpmSignatureConfig {
     pub key_id: Option<String>,
     /// Passphrase for the signing key.
     pub key_passphrase: Option<String>,
+    /// Public key name for APK signatures (defaults to `<maintainer email>.rsa.pub`).
+    pub key_name: Option<String>,
+    /// Signature type for deb packages: "origin", "maint", or "archive" (default: "origin").
+    #[serde(rename = "type")]
+    pub type_: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2081,8 +2252,13 @@ pub struct SnapcraftApp {
 pub struct SnapcraftLayout {
     /// Bind-mount a directory to the snap's layout.
     pub bind: Option<String>,
+    /// Bind-mount a single file to the snap's layout.
+    pub bind_file: Option<String>,
     /// Symlink a path to a location in the snap.
     pub symlink: Option<String>,
+    /// Layout entry type.
+    #[serde(rename = "type")]
+    pub type_: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2163,6 +2339,54 @@ pub struct PkgConfig {
 }
 
 // ---------------------------------------------------------------------------
+// NsisConfig (Windows NSIS installer)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct NsisConfig {
+    /// Unique identifier for this NSIS config.
+    pub id: Option<String>,
+    /// Build IDs to include. Empty means all builds.
+    pub ids: Option<Vec<String>>,
+    /// Output installer filename (supports templates).
+    pub name: Option<String>,
+    /// Path to the NSIS script template (.nsi). Goes through template engine.
+    pub script: Option<String>,
+    /// Additional files to include alongside the installer.
+    pub extra_files: Option<Vec<String>>,
+    /// Template string; when it evaluates to "true", skip this config.
+    pub disable: Option<String>,
+    /// Remove source archives from artifacts, keeping only the installer.
+    pub replace: Option<bool>,
+    /// Output timestamp for reproducible builds.
+    pub mod_timestamp: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// AppBundleConfig (macOS .app bundle)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct AppBundleConfig {
+    /// Unique identifier for this app bundle config.
+    pub id: Option<String>,
+    /// Build IDs to include. Empty means all builds.
+    pub ids: Option<Vec<String>>,
+    /// Output .app bundle name (supports templates).
+    pub name: Option<String>,
+    /// Path to .icns icon file for the app bundle (supports templates).
+    pub icon: Option<String>,
+    /// Bundle identifier in reverse-DNS notation (e.g. com.example.myapp). Required.
+    pub bundle: Option<String>,
+    /// Additional files to include in the bundle.
+    pub extra_files: Option<Vec<String>>,
+    /// Output timestamp for reproducible builds.
+    pub mod_timestamp: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
 // BlobConfig (S3/GCS/Azure cloud storage)
 // ---------------------------------------------------------------------------
 
@@ -2211,6 +2435,9 @@ pub struct BlobConfig {
     pub extra_files: Option<Vec<ExtraFile>>,
     /// Upload only extra files (skip artifacts).
     pub extra_files_only: Option<bool>,
+    /// Maximum number of parallel uploads for this blob config.
+    /// Overrides the global `--parallelism` setting when set.
+    pub parallelism: Option<usize>,
 }
 
 /// An extra file to upload, with optional name override.
@@ -2258,17 +2485,51 @@ pub struct BinstallConfig {
 // SourceConfig
 // ---------------------------------------------------------------------------
 
+/// An individual file entry for the source archive, supporting src/dst mapping
+/// and file metadata overrides.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct SourceFileEntry {
+    /// Source file path or glob pattern.
+    pub src: String,
+    /// Destination path within the archive prefix directory.
+    pub dst: Option<String>,
+    /// Strip the parent directory from the source path.
+    pub strip_parent: Option<bool>,
+    /// File metadata overrides.
+    pub info: Option<SourceFileInfo>,
+}
+
+/// File metadata overrides for source archive entries.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct SourceFileInfo {
+    /// File owner.
+    pub owner: Option<String>,
+    /// File group.
+    pub group: Option<String>,
+    /// File permissions mode (octal).
+    pub mode: Option<u32>,
+    /// Modification time in RFC3339 format (supports templates).
+    pub mtime: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct SourceConfig {
     /// When true, generate a source code archive for the release.
     pub enabled: Option<bool>,
-    /// Archive format for the source tarball: tar.gz, tar.xz, tar.zst, or zip (default: tar.gz).
+    /// Archive format for the source tarball: tar.gz, tgz, tar, or zip (default: tar.gz).
     pub format: Option<String>,
     /// Filename template for the source archive (supports templates).
     pub name_template: Option<String>,
-    /// Extra files to include in the source archive (glob patterns).
-    pub files: Option<Vec<String>>,
+    /// Prefix prepended to all paths inside the archive (supports templates).
+    /// Defaults to name_template value. Use this to set a different prefix than the archive name.
+    pub prefix_template: Option<String>,
+    /// Extra files to include in the source archive. Accepts strings (glob patterns) or objects with src/dst/info.
+    #[serde(default, deserialize_with = "deserialize_source_files")]
+    #[schemars(schema_with = "source_files_schema")]
+    pub files: Vec<SourceFileEntry>,
 }
 
 impl SourceConfig {
@@ -2283,6 +2544,87 @@ impl SourceConfig {
     }
 }
 
+/// Helper schema function for the source files field (accepts strings, objects, or mixed arrays).
+fn source_files_schema(
+    generator: &mut schemars::r#gen::SchemaGenerator,
+) -> schemars::schema::Schema {
+    let mut schema = generator.subschema_for::<Vec<SourceFileEntry>>();
+    if let schemars::schema::Schema::Object(ref mut obj) = schema {
+        obj.metadata().description = Some(
+            "Extra files for the source archive. Accepts strings (glob patterns), objects with src/dst/info, or a mixed array.".to_owned(),
+        );
+    }
+    schema
+}
+
+/// Custom deserializer for the source `files` field.
+/// Accepts:
+///   - null/missing → empty vec (via serde default)
+///   - a single string → vec of one SourceFileEntry with that src
+///   - a single object → vec of one SourceFileEntry
+///   - an array of mixed strings/objects → vec of SourceFileEntry
+fn deserialize_source_files<'de, D>(deserializer: D) -> Result<Vec<SourceFileEntry>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::{self, SeqAccess, Visitor};
+
+    struct SourceFilesVisitor;
+
+    impl<'de> Visitor<'de> for SourceFilesVisitor {
+        type Value = Vec<SourceFileEntry>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(
+                "a string, a source file entry object, or an array of strings/objects",
+            )
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            Ok(vec![SourceFileEntry {
+                src: v.to_string(),
+                ..Default::default()
+            }])
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut entries = Vec::new();
+            while let Some(value) = seq.next_element::<serde_yaml_ng::Value>()? {
+                match value {
+                    serde_yaml_ng::Value::String(s) => {
+                        entries.push(SourceFileEntry {
+                            src: s,
+                            ..Default::default()
+                        });
+                    }
+                    other => {
+                        let entry = SourceFileEntry::deserialize(other)
+                            .map_err(de::Error::custom)?;
+                        entries.push(entry);
+                    }
+                }
+            }
+            Ok(entries)
+        }
+
+        fn visit_map<M: de::MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
+            let entry =
+                SourceFileEntry::deserialize(de::value::MapAccessDeserializer::new(map))?;
+            Ok(vec![entry])
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+    }
+
+    deserializer.deserialize_any(SourceFilesVisitor)
+}
+
 // ---------------------------------------------------------------------------
 // SbomConfig
 // ---------------------------------------------------------------------------
@@ -2290,22 +2632,67 @@ impl SourceConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct SbomConfig {
-    /// When true, generate an SBOM (software bill of materials) for the release.
-    pub enabled: Option<bool>,
-    /// SBOM format: "cyclonedx" (default) or "spdx".
-    pub format: Option<String>,
+    /// Unique identifier for this SBOM config (default: "default").
+    pub id: Option<String>,
+    /// Command to run for SBOM generation (default: "syft").
+    pub cmd: Option<String>,
+    /// Environment variables to pass to the command (KEY=VALUE format).
+    pub env: Option<Vec<String>>,
+    /// Command-line arguments (supports templates and $artifact, $document vars).
+    pub args: Option<Vec<String>>,
+    /// Output document path templates (supports templates).
+    pub documents: Option<Vec<String>>,
+    /// Which artifacts to catalog: "source", "archive", "binary", "package", "any" (default: "archive").
+    pub artifacts: Option<String>,
+    /// Filter by artifact IDs (ignored if artifacts="source").
+    pub ids: Option<Vec<String>>,
+    /// Template string; when it evaluates to "true", skip this config.
+    pub disable: Option<String>,
 }
 
-impl SbomConfig {
-    /// Whether SBOM generation is enabled (default: false).
-    pub fn is_enabled(&self) -> bool {
-        self.enabled.unwrap_or(false)
+/// Custom deserializer for the `sboms` / `sbom` field.
+/// Accepts:
+///   - null/missing → empty vec (via serde default)
+///   - a single object → vec of one SbomConfig
+///   - an array → vec of SbomConfig
+fn deserialize_sboms<'de, D>(deserializer: D) -> Result<Vec<SbomConfig>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::{self, Visitor};
+
+    struct SbomsVisitor;
+
+    impl<'de> Visitor<'de> for SbomsVisitor {
+        type Value = Vec<SbomConfig>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("an SBOM config object or an array of SBOM config objects")
+        }
+
+        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut configs = Vec::new();
+            while let Some(item) = seq.next_element::<SbomConfig>()? {
+                configs.push(item);
+            }
+            Ok(configs)
+        }
+
+        fn visit_map<M: de::MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
+            let config = SbomConfig::deserialize(de::value::MapAccessDeserializer::new(map))?;
+            Ok(vec![config])
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
     }
 
-    /// SBOM format to use (default: "cyclonedx"). Also supports "spdx".
-    pub fn sbom_format(&self) -> &str {
-        self.format.as_deref().unwrap_or("cyclonedx")
-    }
+    deserializer.deserialize_any(SbomsVisitor)
 }
 
 // ---------------------------------------------------------------------------
@@ -2425,6 +2812,10 @@ pub struct DockerSignConfig {
     pub cmd: Option<String>,
     /// Arguments passed to the signing command (supports templates).
     pub args: Option<Vec<String>>,
+    /// Signature output filename template (supports templates).
+    pub signature: Option<String>,
+    /// Certificate file to embed in the signature (Cosign bundle signing).
+    pub certificate: Option<String>,
     /// Docker config IDs filter: only sign images from configs whose `id` is in this list.
     pub ids: Option<Vec<String>>,
     /// Content written to the signing command's stdin.
@@ -2461,6 +2852,12 @@ pub struct UpxConfig {
     pub required: bool,
     /// Target triples to compress binaries for (empty means all targets).
     pub targets: Option<Vec<String>>,
+    /// UPX compression level string (e.g., "1"-"9", "best"). Maps to `--compress` flag.
+    pub compress: Option<String>,
+    /// Use LZMA compression (--lzma flag).
+    pub lzma: Option<bool>,
+    /// Use brute-force compression (--brute flag). Very slow but produces smallest output.
+    pub brute: Option<bool>,
 }
 
 impl Default for UpxConfig {
@@ -2473,6 +2870,9 @@ impl Default for UpxConfig {
             args: Vec::new(),
             required: false,
             targets: None,
+            compress: None,
+            lzma: None,
+            brute: None,
         }
     }
 }
@@ -2529,6 +2929,9 @@ where
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SnapshotConfig {
     /// Version string template for snapshot builds (e.g., "{{ .Commit }}-SNAPSHOT").
+    /// Primary field is `version_template` (GoReleaser convention); `name_template` is the
+    /// deprecated alias kept for backwards compatibility.
+    #[serde(alias = "name_template", rename = "version_template")]
     pub name_template: String,
 }
 
@@ -2902,6 +3305,10 @@ pub struct PublisherConfig {
     pub checksum: Option<bool>,
     /// Include signatures in published artifacts.
     pub signature: Option<bool>,
+    /// Include metadata artifacts in published artifacts.
+    pub meta: Option<bool>,
+    /// Extra files to include in publishing (glob patterns with optional name override).
+    pub extra_files: Option<Vec<ExtraFile>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2915,6 +3322,9 @@ pub struct PublisherConfig {
 #[serde(default)]
 pub struct HooksConfig {
     /// Commands to run before the pipeline or stage starts.
+    /// GoReleaser uses `hooks` as the field name under `before:`. We accept
+    /// both `pre` and `hooks` for migration compatibility.
+    #[serde(alias = "hooks")]
     pub pre: Option<Vec<HookEntry>>,
     /// Commands to run after the pipeline or stage completes.
     pub post: Option<Vec<HookEntry>>,
@@ -3470,7 +3880,7 @@ crates:
     }
 
     #[test]
-    fn test_make_latest_invalid_string() {
+    fn test_make_latest_template_string() {
         let yaml = r#"
 project_name: test
 crates:
@@ -3478,10 +3888,50 @@ crates:
     path: "."
     tag_template: "v{{ .Version }}"
     release:
-      make_latest: "bogus"
+      make_latest: "{{ if .IsSnapshot }}false{{ else }}true{{ end }}"
 "#;
-        let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
-        assert!(result.is_err());
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let release = config.crates[0].release.as_ref().unwrap();
+        assert_eq!(
+            release.make_latest,
+            Some(MakeLatestConfig::String(
+                "{{ if .IsSnapshot }}false{{ else }}true{{ end }}".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn test_make_latest_string_true() {
+        // The string "true" should deserialize to Bool(true) for consistency.
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    release:
+      make_latest: "true"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let release = config.crates[0].release.as_ref().unwrap();
+        assert_eq!(release.make_latest, Some(MakeLatestConfig::Bool(true)));
+    }
+
+    #[test]
+    fn test_make_latest_string_false() {
+        // The string "false" should deserialize to Bool(false) for consistency.
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    release:
+      make_latest: "false"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let release = config.crates[0].release.as_ref().unwrap();
+        assert_eq!(release.make_latest, Some(MakeLatestConfig::Bool(false)));
     }
 
     // ---- ChangelogConfig header/footer/disable tests ----
@@ -3646,6 +4096,10 @@ crates:
         let bool_false = MakeLatestConfig::Bool(false);
         let json = serde_json::to_string(&bool_false).unwrap();
         assert_eq!(json, "false");
+
+        let tmpl = MakeLatestConfig::String("{{ if .IsSnapshot }}false{{ else }}true{{ end }}".to_string());
+        let json = serde_json::to_string(&tmpl).unwrap();
+        assert_eq!(json, "\"{{ if .IsSnapshot }}false{{ else }}true{{ end }}\"");
     }
 
     // ---- ReleaseConfig header/footer tests ----
@@ -3851,7 +4305,7 @@ crates:
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let release = config.crates[0].release.as_ref().unwrap();
-        assert_eq!(release.skip_upload, Some(true));
+        assert_eq!(release.skip_upload, Some(StringOrBool::Bool(true)));
     }
 
     #[test]
@@ -3867,7 +4321,26 @@ crates:
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let release = config.crates[0].release.as_ref().unwrap();
-        assert_eq!(release.skip_upload, Some(false));
+        assert_eq!(release.skip_upload, Some(StringOrBool::Bool(false)));
+    }
+
+    #[test]
+    fn test_release_skip_upload_auto() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    release:
+      skip_upload: "auto"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let release = config.crates[0].release.as_ref().unwrap();
+        assert_eq!(
+            release.skip_upload,
+            Some(StringOrBool::String("auto".to_string()))
+        );
     }
 
     // ---- ReleaseConfig replace_existing_draft / replace_existing_artifacts tests ----
@@ -3944,7 +4417,7 @@ crates:
             release.extra_files.as_ref().unwrap(),
             &[ExtraFileSpec::Glob("dist/extra.zip".to_string())]
         );
-        assert_eq!(release.skip_upload, Some(false));
+        assert_eq!(release.skip_upload, Some(StringOrBool::Bool(false)));
         assert_eq!(release.replace_existing_draft, Some(true));
         assert_eq!(release.replace_existing_artifacts, Some(false));
         assert_eq!(release.make_latest, Some(MakeLatestConfig::Auto));
