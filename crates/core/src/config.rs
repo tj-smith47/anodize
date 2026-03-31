@@ -1569,8 +1569,12 @@ pub struct ChocolateyConfig {
     pub api_key: Option<String>,
     /// Push source URL (default: "https://push.chocolatey.org/").
     pub source_repo: Option<String>,
-    /// Skip publishing. When true, only generates the package.
-    pub skip_publish: Option<bool>,
+    /// Skip pushing to the Chocolatey community repository. Accepts bool or template string.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub skip_publish: Option<StringOrBool>,
+    /// Disable this chocolatey config. Accepts bool or template string.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub disable: Option<StringOrBool>,
     /// Artifact selection: "archive" (default), "msi", or "nsis".
     #[serde(rename = "use")]
     pub use_artifact: Option<String>,
@@ -3717,8 +3721,9 @@ pub struct WorkspaceConfig {
 // ---------------------------------------------------------------------------
 
 /// A value that can be either a bool or a template string.
-/// Used by `BlobConfig.disable` to support both `disable: true` and
-/// `disable: "{{ if IsSnapshot }}true{{ endif }}"`.
+/// Used by `disable`, `skip_upload`, and similar fields across multiple config
+/// structs to support both `disable: true` and template conditionals like
+/// `disable: "{{ if .IsSnapshot }}true{{ endif }}"`.
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 #[serde(untagged)]
 pub enum StringOrBool {
@@ -7182,6 +7187,45 @@ crates:
                 assert!(s.contains(".Env.SKIP"));
             }
             other => panic!("expected StringOrBool::String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_skip_upload_string_or_bool() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: test
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      homebrew:
+        name: test
+        skip_upload: "{{ if .IsSnapshot }}true{{ endif }}"
+        tap:
+          owner: org
+          name: homebrew-tap
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let hb = config.crates[0]
+            .publish
+            .as_ref()
+            .unwrap()
+            .homebrew
+            .as_ref()
+            .unwrap();
+        match &hb.skip_upload {
+            Some(StringOrBool::String(s)) => {
+                assert!(
+                    s.contains(".IsSnapshot"),
+                    "expected template with .IsSnapshot, got: {}",
+                    s
+                );
+            }
+            other => panic!(
+                "expected StringOrBool::String with template, got {:?}",
+                other
+            ),
         }
     }
 }

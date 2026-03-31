@@ -259,6 +259,14 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("chocolatey: no chocolatey config for '{}'", crate_name))?;
 
+    // Check disable (template-aware)
+    if let Some(ref d) = choco_cfg.disable {
+        if d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
+            log.status(&format!("chocolatey: disabled for '{}'", crate_name));
+            return Ok(());
+        }
+    }
+
     let project_repo = choco_cfg.project_repo.as_ref().ok_or_else(|| {
         anyhow::anyhow!("chocolatey: no project_repo config for '{}'", crate_name)
     })?;
@@ -433,10 +441,10 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
         .or_else(|| std::env::var("CHOCOLATEY_API_KEY").ok())
         .unwrap_or_default();
 
-    // Check skip_publish
-    if choco_cfg.skip_publish.unwrap_or(false) {
+    // Check skip_publish (template-aware, supports "auto" for prerelease)
+    if crate::homebrew::should_skip_upload(choco_cfg.skip_publish.as_ref(), ctx) {
         log.status(&format!(
-            "chocolatey: skipping push for '{}' (skip_publish=true)",
+            "chocolatey: skipping push for '{}' (skip_publish)",
             crate_name
         ));
         return Ok(());
