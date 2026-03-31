@@ -90,6 +90,7 @@ pub fn resolve_git_context(
             let latest_tag = match git::find_latest_tag_matching(
                 &crate_cfg.tag_template,
                 config.git.as_ref(),
+                Some(ctx.template_vars()),
             ) {
                 Ok(found) => found,
                 Err(e) => {
@@ -154,7 +155,27 @@ pub fn resolve_git_context(
                     ));
                     git_info.previous_tag = Some(prev_override);
                 } else {
-                    git_info.previous_tag = git::find_previous_tag(&tag).ok().flatten();
+                    // Pre-render ignore_tags through the template engine before
+                    // passing to find_previous_tag, matching GoReleaser behavior.
+                    let rendered_ignore: Vec<String> = config
+                        .git
+                        .as_ref()
+                        .and_then(|gc| gc.ignore_tags.as_ref())
+                        .map(|tags| {
+                            tags.iter()
+                                .map(|t| {
+                                    ctx.render_template(t).unwrap_or_else(|_| t.clone())
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    git_info.previous_tag = git::find_previous_tag(
+                        &tag,
+                        config.git.as_ref(),
+                        &rendered_ignore,
+                    )
+                    .ok()
+                    .flatten();
                 }
                 ctx.git_info = Some(git_info);
                 ctx.populate_git_vars();

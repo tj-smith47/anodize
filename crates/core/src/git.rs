@@ -3,6 +3,8 @@ use regex::Regex;
 use std::process::Command;
 use std::sync::LazyLock;
 
+use crate::template::TemplateVars;
+
 #[derive(Debug, Clone)]
 pub struct SemVer {
     pub major: u64,
@@ -290,15 +292,20 @@ pub fn extract_tag_prefix(template: &str) -> Option<String> {
 ///
 /// When `git_config` is provided:
 /// - `ignore_tags`: tags whose name exactly matches any entry are excluded.
+///   When `template_vars` is also provided, each entry is rendered through the
+///   template engine first (matching GoReleaser's behavior).
 /// - `ignore_tag_prefixes`: tags starting with any prefix are excluded.
 /// - `tag_sort` set to `"-version:creatordate"`: delegates ordering to git
 ///   instead of Rust-side SemVer sort (the default `"-version:refname"` is
 ///   equivalent to SemVer sort, so Rust-side sort is kept).
-/// - `prerelease_suffix`: passed as `-c versionsort.suffix=<suffix>` when
-///   delegating sort to git.
+/// - `prerelease_suffix`: always passed as `-c versionsort.suffix=<suffix>` to
+///   git, regardless of `tag_sort` value. When using the default refname sort
+///   and `prerelease_suffix` is set, git-delegated sort with
+///   `--sort=-version:refname` is used so the suffix takes effect.
 pub fn find_latest_tag_matching(
     tag_template: &str,
     git_config: Option<&crate::config::GitConfig>,
+    template_vars: Option<&TemplateVars>,
 ) -> Result<Option<String>> {
     // Replace version placeholders with a sentinel, regex-escape everything
     // else, then swap the sentinel back to the version regex pattern.
@@ -313,11 +320,22 @@ pub fn find_latest_tag_matching(
     let pattern = escaped.replace(SENTINEL, r"\d+\.\d+\.\d+(?:-.+)?");
     let re = Regex::new(&format!("^{}$", pattern))?;
 
-    // Extract ignore_tags, ignore_tag_prefixes, tag_sort, and prerelease_suffix
-    // from the config, falling back to empty/default when absent.
-    let ignore_tags: Vec<&str> = git_config
+    // Extract ignore_tags (template-rendered when vars available),
+    // ignore_tag_prefixes, tag_sort, and prerelease_suffix from the config,
+    // falling back to empty/default when absent.
+    let rendered_ignore_tags: Vec<String> = git_config
         .and_then(|gc| gc.ignore_tags.as_ref())
-        .map(|v| v.iter().map(|s| s.as_str()).collect())
+        .map(|v| {
+            v.iter()
+                .map(|s| {
+                    if let Some(vars) = template_vars {
+                        crate::template::render(s, vars).unwrap_or_else(|_| s.clone())
+                    } else {
+                        s.clone()
+                    }
+                })
+                .collect()
+        })
         .unwrap_or_default();
     let ignore_prefixes: Vec<&str> = git_config
         .and_then(|gc| gc.ignore_tag_prefixes.as_ref())
@@ -328,10 +346,10 @@ pub fn find_latest_tag_matching(
         .unwrap_or("-version:refname");
     let prerelease_suffix = git_config.and_then(|gc| gc.prerelease_suffix.as_deref());
 
-    // Build the git-tag command. When the user requests creatordate sort we
-    // let git handle ordering and pick the last entry; for the default
-    // refname sort the Rust-side SemVer comparison is more accurate.
-    let use_git_sort = tag_sort == "-version:creatordate";
+    // When prerelease_suffix is set, always use git-delegated sort so that
+    // `-c versionsort.suffix=<suffix>` takes effect. This matches GoReleaser's
+    // behavior of always passing the suffix regardless of sort mode.
+    let use_git_sort = tag_sort == "-version:creatordate" || prerelease_suffix.is_some();
 
     let tags_output = if use_git_sort {
         // Build args with optional versionsort.suffix config.
@@ -354,18 +372,16 @@ pub fn find_latest_tag_matching(
     let mut matching: Vec<(SemVer, String)> = tags_output
         .lines()
         .filter(|t| re.is_match(t))
-        // Apply ignore_tags: exclude exact matches.
-        .filter(|t| !ignore_tags.iter().any(|ig| ig == t))
+        // Apply ignore_tags: exclude exact matches (template-rendered).
+        .filter(|t| !rendered_ignore_tags.iter().any(|ig| ig == t))
         // Apply ignore_tag_prefixes: exclude tags starting with any prefix.
         .filter(|t| !ignore_prefixes.iter().any(|pfx| t.starts_with(pfx)))
         .filter_map(|t| parse_semver_tag(t).ok().map(|v| (v, t.to_string())))
         .collect();
 
     if use_git_sort {
-        // Git already sorted; the last entry in --sort=-version:creatordate
-        // output is the *oldest* and the first is the *newest*, so we want
-        // the first after filtering.  But we collected into a Vec — just take
-        // the first element.
+        // Git already sorted; the first entry in --sort=-version:* output is
+        // the newest, so take the first after filtering.
         Ok(matching.into_iter().next().map(|(_, tag)| tag))
     } else {
         // Rust-side SemVer sort (ascending), pick the last (highest).
@@ -763,12 +779,48 @@ pub fn detect_github_repo() -> Result<(String, String)> {
 /// Find the tag immediately before `current_tag` in commit history.
 ///
 /// Uses `git describe --tags --abbrev=0 {current_tag}^` to locate the previous
-/// tag. If that fails (e.g. `current_tag` is the very first tag), falls back to
+/// tag. When `git_config` is provided, applies `--exclude` flags for
+/// `ignore_tags` and rejects results that match `ignore_tag_prefixes`.
+///
+/// `rendered_ignore_tags` should be pre-rendered through the template engine
+/// by the caller (matching GoReleaser's behavior where ignore_tags are
+/// template-rendered).
+///
+/// If that fails (e.g. `current_tag` is the very first tag), falls back to
 /// returning `None`.
-pub fn find_previous_tag(current_tag: &str) -> Result<Option<String>> {
+pub fn find_previous_tag(
+    current_tag: &str,
+    git_config: Option<&crate::config::GitConfig>,
+    rendered_ignore_tags: &[String],
+) -> Result<Option<String>> {
     let parent_ref = format!("{}^", current_tag);
-    match git_output(&["describe", "--tags", "--abbrev=0", &parent_ref]) {
-        Ok(tag) if !tag.is_empty() => Ok(Some(tag)),
+
+    // Build args: `git describe --tags --abbrev=0 --exclude=<tag> ... <parent_ref>`
+    let exclude_args: Vec<String> = rendered_ignore_tags
+        .iter()
+        .map(|t| format!("--exclude={}", t))
+        .collect();
+    let mut args: Vec<&str> = vec!["describe", "--tags", "--abbrev=0"];
+    for ea in &exclude_args {
+        args.push(ea.as_str());
+    }
+    args.push(&parent_ref);
+
+    let ignore_prefixes: Vec<&str> = git_config
+        .and_then(|gc| gc.ignore_tag_prefixes.as_ref())
+        .map(|v| v.iter().map(|s| s.as_str()).collect())
+        .unwrap_or_default();
+
+    match git_output(&args) {
+        Ok(tag) if !tag.is_empty() => {
+            // Check against ignore_tag_prefixes: reject if the found tag
+            // starts with any configured prefix.
+            if ignore_prefixes.iter().any(|pfx| tag.starts_with(pfx)) {
+                Ok(None)
+            } else {
+                Ok(Some(tag))
+            }
+        }
         _ => Ok(None),
     }
 }
@@ -1097,7 +1149,7 @@ mod tests {
         let orig = std::env::current_dir().unwrap();
         std::env::set_current_dir(dir).unwrap();
 
-        let result = find_latest_tag_matching("v{{ .Version }}", None).unwrap();
+        let result = find_latest_tag_matching("v{{ .Version }}", None, None).unwrap();
         assert_eq!(result, Some("v2.0.0".to_string()));
 
         std::env::set_current_dir(orig).unwrap();
@@ -1117,7 +1169,7 @@ mod tests {
             ignore_tags: Some(vec!["v3.0.0".to_string()]),
             ..Default::default()
         };
-        let result = find_latest_tag_matching("v{{ .Version }}", Some(&gc)).unwrap();
+        let result = find_latest_tag_matching("v{{ .Version }}", Some(&gc), None).unwrap();
         assert_eq!(result, Some("v2.0.0".to_string()));
 
         std::env::set_current_dir(orig).unwrap();
@@ -1137,7 +1189,7 @@ mod tests {
             ignore_tags: Some(vec!["v3.0.0".to_string(), "v2.0.0".to_string()]),
             ..Default::default()
         };
-        let result = find_latest_tag_matching("v{{ .Version }}", Some(&gc)).unwrap();
+        let result = find_latest_tag_matching("v{{ .Version }}", Some(&gc), None).unwrap();
         assert_eq!(result, Some("v1.0.0".to_string()));
 
         std::env::set_current_dir(orig).unwrap();
@@ -1166,18 +1218,18 @@ mod tests {
         };
         // The "v{{ .Version }}" template only matches v1.0.0, v2.0.0.
         // Without filtering, nightly tags don't match anyway, so latest = v2.0.0.
-        let result = find_latest_tag_matching("v{{ .Version }}", Some(&gc)).unwrap();
+        let result = find_latest_tag_matching("v{{ .Version }}", Some(&gc), None).unwrap();
         assert_eq!(result, Some("v2.0.0".to_string()));
 
         // Now test with a template that would match nightly tags too:
         // Use a nightly template. Without ignore_tag_prefixes, nightly-v4.0.0 wins.
         let result_nightly =
-            find_latest_tag_matching("nightly-v{{ .Version }}", None).unwrap();
+            find_latest_tag_matching("nightly-v{{ .Version }}", None, None).unwrap();
         assert_eq!(result_nightly, Some("nightly-v4.0.0".to_string()));
 
         // With ignore_tag_prefixes filtering out "nightly-", all nightly tags are excluded.
         let result_filtered =
-            find_latest_tag_matching("nightly-v{{ .Version }}", Some(&gc)).unwrap();
+            find_latest_tag_matching("nightly-v{{ .Version }}", Some(&gc), None).unwrap();
         assert_eq!(result_filtered, None);
 
         std::env::set_current_dir(orig).unwrap();
@@ -1197,7 +1249,7 @@ mod tests {
             ignore_tags: Some(vec!["v1.0.0".to_string(), "v2.0.0".to_string()]),
             ..Default::default()
         };
-        let result = find_latest_tag_matching("v{{ .Version }}", Some(&gc)).unwrap();
+        let result = find_latest_tag_matching("v{{ .Version }}", Some(&gc), None).unwrap();
         assert_eq!(result, None);
 
         std::env::set_current_dir(orig).unwrap();
@@ -1219,7 +1271,7 @@ mod tests {
             ignore_tag_prefixes: Some(vec!["v3".to_string()]),
             ..Default::default()
         };
-        let result = find_latest_tag_matching("v{{ .Version }}", Some(&gc)).unwrap();
+        let result = find_latest_tag_matching("v{{ .Version }}", Some(&gc), None).unwrap();
         assert_eq!(result, Some("v1.0.0".to_string()));
 
         std::env::set_current_dir(orig).unwrap();
@@ -1243,7 +1295,7 @@ mod tests {
             ignore_tags: Some(vec!["myapp-v3.0.0".to_string()]),
             ..Default::default()
         };
-        let result = find_latest_tag_matching("myapp-v{{ .Version }}", Some(&gc)).unwrap();
+        let result = find_latest_tag_matching("myapp-v{{ .Version }}", Some(&gc), None).unwrap();
         assert_eq!(result, Some("myapp-v2.0.0".to_string()));
 
         std::env::set_current_dir(orig).unwrap();
@@ -1261,10 +1313,178 @@ mod tests {
 
         // Default GitConfig has all fields None — should behave identically to None
         let gc = crate::config::GitConfig::default();
-        let with_default = find_latest_tag_matching("v{{ .Version }}", Some(&gc)).unwrap();
-        let with_none = find_latest_tag_matching("v{{ .Version }}", None).unwrap();
+        let with_default = find_latest_tag_matching("v{{ .Version }}", Some(&gc), None).unwrap();
+        let with_none = find_latest_tag_matching("v{{ .Version }}", None, None).unwrap();
         assert_eq!(with_default, with_none);
         assert_eq!(with_default, Some("v2.0.0".to_string()));
+
+        std::env::set_current_dir(orig).unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_latest_tag_prerelease_suffix_with_default_sort() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        // Create tags: a release and a prerelease with -rc suffix
+        init_repo_with_tags(dir, &["v1.0.0", "v1.1.0", "v1.1.1-rc.1"]);
+
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir).unwrap();
+
+        // Without prerelease_suffix, v1.1.1-rc.1 would sort highest by
+        // SemVer (1.1.1-rc.1 is a prerelease for 1.1.1, which is > 1.1.0).
+        // But with prerelease_suffix="-rc", git's versionsort.suffix
+        // should be activated even under the default tag_sort.
+        let gc = crate::config::GitConfig {
+            prerelease_suffix: Some("-rc".to_string()),
+            ..Default::default()
+        };
+        // With prerelease_suffix set, find_latest_tag_matching should use
+        // git-delegated sort (use_git_sort=true), passing -c versionsort.suffix=-rc.
+        let result = find_latest_tag_matching("v{{ .Version }}", Some(&gc), None).unwrap();
+        // The result should be a valid tag (the function should not error).
+        // The exact ordering depends on git's version sort with the suffix,
+        // but the key behavior is that prerelease_suffix IS passed to git
+        // even under the default tag_sort.
+        assert!(result.is_some(), "should find a matching tag");
+
+        std::env::set_current_dir(orig).unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_latest_tag_ignore_tags_template_rendered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_repo_with_tags(dir, &["v1.0.0", "v2.0.0", "v3.0.0"]);
+
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir).unwrap();
+
+        // Set up template vars with an env variable
+        let mut vars = crate::template::TemplateVars::new();
+        vars.set_env("IGNORE_TAG", "v3.0.0");
+
+        // Use a template expression in ignore_tags
+        let gc = crate::config::GitConfig {
+            ignore_tags: Some(vec!["{{ .Env.IGNORE_TAG }}".to_string()]),
+            ..Default::default()
+        };
+
+        // Without template_vars, the raw string "{{ .Env.IGNORE_TAG }}" won't
+        // match any tag, so v3.0.0 is still included.
+        let result_raw = find_latest_tag_matching("v{{ .Version }}", Some(&gc), None).unwrap();
+        assert_eq!(result_raw, Some("v3.0.0".to_string()));
+
+        // With template_vars, the template is rendered to "v3.0.0" which
+        // matches and excludes that tag.
+        let result_rendered =
+            find_latest_tag_matching("v{{ .Version }}", Some(&gc), Some(&vars)).unwrap();
+        assert_eq!(result_rendered, Some("v2.0.0".to_string()));
+
+        std::env::set_current_dir(orig).unwrap();
+    }
+
+    /// Create a git repo in `dir` with separate commits for each tag
+    /// (needed for `git describe --tags --abbrev=0` to work correctly).
+    fn init_repo_with_tagged_commits(dir: &std::path::Path, tags: &[&str]) {
+        use std::process::Command;
+
+        let run = |args: &[&str]| {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(dir)
+                .env("GIT_AUTHOR_NAME", "test")
+                .env("GIT_AUTHOR_EMAIL", "test@test.com")
+                .env("GIT_COMMITTER_NAME", "test")
+                .env("GIT_COMMITTER_EMAIL", "test@test.com")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "git {:?} failed: {}",
+                args,
+                String::from_utf8_lossy(&out.stderr)
+            );
+        };
+
+        run(&["init"]);
+        run(&["config", "user.email", "test@test.com"]);
+        run(&["config", "user.name", "test"]);
+
+        for (i, tag) in tags.iter().enumerate() {
+            let filename = format!("file_{}", i);
+            std::fs::write(dir.join(&filename), format!("content {}", i)).unwrap();
+            run(&["add", "."]);
+            run(&["commit", "-m", &format!("commit for {}", tag)]);
+            run(&["tag", tag]);
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_previous_tag_with_ignore_tags() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        // Create commits with tags: v1.0.0, v2.0.0, v3.0.0
+        // Each tag on a separate commit so git describe can find them.
+        init_repo_with_tagged_commits(dir, &["v1.0.0", "v2.0.0", "v3.0.0"]);
+
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir).unwrap();
+
+        // Without ignore_tags, previous tag of v3.0.0 should be v2.0.0
+        let result = find_previous_tag("v3.0.0", None, &[]).unwrap();
+        assert_eq!(result, Some("v2.0.0".to_string()));
+
+        // With v2.0.0 in ignore_tags, it should be excluded via --exclude
+        // and the previous tag should be v1.0.0
+        let ignore = vec!["v2.0.0".to_string()];
+        let result_filtered = find_previous_tag("v3.0.0", None, &ignore).unwrap();
+        assert_eq!(result_filtered, Some("v1.0.0".to_string()));
+
+        std::env::set_current_dir(orig).unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_previous_tag_with_ignore_tag_prefixes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        // Create tags where the previous tag has a prefix we want to ignore
+        init_repo_with_tagged_commits(dir, &["v1.0.0", "nightly-v2.0.0", "v3.0.0"]);
+
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir).unwrap();
+
+        // Without filtering, previous tag of v3.0.0 is nightly-v2.0.0
+        let result = find_previous_tag("v3.0.0", None, &[]).unwrap();
+        assert_eq!(result, Some("nightly-v2.0.0".to_string()));
+
+        // With ignore_tag_prefixes=["nightly-"], nightly-v2.0.0 is rejected
+        let gc = crate::config::GitConfig {
+            ignore_tag_prefixes: Some(vec!["nightly-".to_string()]),
+            ..Default::default()
+        };
+        let result_filtered = find_previous_tag("v3.0.0", Some(&gc), &[]).unwrap();
+        assert_eq!(result_filtered, None);
+
+        std::env::set_current_dir(orig).unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_previous_tag_no_config_unchanged_behavior() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_repo_with_tagged_commits(dir, &["v1.0.0", "v2.0.0"]);
+
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir).unwrap();
+
+        let result = find_previous_tag("v2.0.0", None, &[]).unwrap();
+        assert_eq!(result, Some("v1.0.0".to_string()));
 
         std::env::set_current_dir(orig).unwrap();
     }

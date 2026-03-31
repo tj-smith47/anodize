@@ -406,7 +406,7 @@ fn detect_changed_crates(
     let mut oldest_tag: Option<String> = None;
 
     for c in crates {
-        let latest_tag = git::find_latest_tag_matching(&c.tag_template, git_config)?;
+        let latest_tag = git::find_latest_tag_matching(&c.tag_template, git_config, None)?;
         match &latest_tag {
             None => {
                 // No tag at all → always include
