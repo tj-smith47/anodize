@@ -2353,8 +2353,8 @@ pub struct NsisConfig {
     pub name: Option<String>,
     /// Path to the NSIS script template (.nsi). Goes through template engine.
     pub script: Option<String>,
-    /// Additional files to include alongside the installer.
-    pub extra_files: Option<Vec<String>>,
+    /// Additional files to include alongside the installer (glob or {glob, name_template}).
+    pub extra_files: Option<Vec<ExtraFileSpec>>,
     /// Template string; when it evaluates to "true", skip this config.
     pub disable: Option<String>,
     /// Remove source archives from artifacts, keeping only the installer.
@@ -2380,8 +2380,8 @@ pub struct AppBundleConfig {
     pub icon: Option<String>,
     /// Bundle identifier in reverse-DNS notation (e.g. com.example.myapp). Required.
     pub bundle: Option<String>,
-    /// Additional files to include in the bundle.
-    pub extra_files: Option<Vec<String>>,
+    /// Additional files to include in the bundle (src/dst/info objects or glob strings).
+    pub extra_files: Option<Vec<ArchiveFileSpec>>,
     /// Output timestamp for reproducible builds.
     pub mod_timestamp: Option<String>,
 }
@@ -2642,7 +2642,7 @@ pub struct SbomConfig {
     pub args: Option<Vec<String>>,
     /// Output document path templates (supports templates).
     pub documents: Option<Vec<String>>,
-    /// Which artifacts to catalog: "source", "archive", "binary", "package", "any" (default: "archive").
+    /// Which artifacts to catalog: "source", "archive", "binary", "package", "diskimage", "installer", "any" (default: "archive").
     pub artifacts: Option<String>,
     /// Filter by artifact IDs (ignored if artifacts="source").
     pub ids: Option<Vec<String>>,
