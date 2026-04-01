@@ -348,8 +348,10 @@ pub struct CrateConfig {
     pub release: Option<ReleaseConfig>,
     /// Publishing targets (Homebrew, Scoop, AUR, etc.) for this crate.
     pub publish: Option<PublishConfig>,
-    /// Docker image build configurations for this crate.
+    /// Docker image build configurations for this crate (legacy API).
     pub docker: Option<Vec<DockerConfig>>,
+    /// Docker V2 image build configurations for this crate (newer API with images+tags, annotations, build_args, sbom, disable).
+    pub docker_v2: Option<Vec<DockerV2Config>>,
     /// Docker multi-platform manifest configurations for this crate.
     pub docker_manifests: Option<Vec<DockerManifestConfig>>,
     /// Linux package (deb, rpm, apk) configurations for this crate.
@@ -404,6 +406,7 @@ impl Default for CrateConfig {
             release: None,
             publish: None,
             docker: None,
+            docker_v2: None,
             docker_manifests: None,
             nfpm: None,
             snapcrafts: None,
@@ -1902,6 +1905,55 @@ pub struct DockerRetryConfig {
 }
 
 // ---------------------------------------------------------------------------
+// DockerV2Config
+// ---------------------------------------------------------------------------
+
+/// Docker V2 configuration — the newer, cleaner Docker build API.
+///
+/// Key differences from the legacy [`DockerConfig`]:
+/// - `images` + `tags` instead of `image_templates` (cleaner separation)
+/// - `annotations` map (OCI annotations via `--annotation`)
+/// - `build_args` as a map instead of `build_flag_templates`
+/// - `disable` as [`StringOrBool`] template
+/// - `sbom` as [`StringOrBool`] — when truthy, adds `--sbom=true` to buildx
+/// - `flags` for arbitrary extra flags
+/// - No `goos`/`goarch`/`goarm` fields — uses `platforms` only
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct DockerV2Config {
+    /// Unique identifier for this Docker V2 config.
+    pub id: Option<String>,
+    /// Build IDs filter: only include binary artifacts whose metadata `id` is in this list.
+    pub ids: Option<Vec<String>>,
+    /// Path to the Dockerfile relative to the project root.
+    pub dockerfile: String,
+    /// Base image names (e.g., ["ghcr.io/owner/app"]). Combined with `tags` to form full references.
+    pub images: Vec<String>,
+    /// Tag suffixes (e.g., ["latest", "{{ .Version }}"]). Each image is tagged with each tag.
+    pub tags: Vec<String>,
+    /// OCI labels to apply to the image via `--label key=value` flags.
+    pub labels: Option<HashMap<String, String>>,
+    /// OCI annotations to apply via `--annotation key=value` flags.
+    pub annotations: Option<HashMap<String, String>>,
+    /// Extra files to copy into the Docker build context.
+    pub extra_files: Option<Vec<String>>,
+    /// Target platforms for multi-arch builds (e.g., ["linux/amd64", "linux/arm64"]).
+    pub platforms: Option<Vec<String>>,
+    /// Build arguments passed as `--build-arg KEY=VALUE`.
+    pub build_args: Option<HashMap<String, String>>,
+    /// Retry configuration for docker push operations.
+    pub retry: Option<DockerRetryConfig>,
+    /// Arbitrary extra flags passed to the docker build command.
+    pub flags: Option<Vec<String>>,
+    /// When truthy, skip this docker build entirely. Supports templates.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub disable: Option<StringOrBool>,
+    /// When truthy, adds `--sbom=true` to buildx. Supports templates.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub sbom: Option<StringOrBool>,
+}
+
+// ---------------------------------------------------------------------------
 // DockerManifestConfig
 // ---------------------------------------------------------------------------
 
@@ -2001,6 +2053,32 @@ pub struct NfpmConfig {
     pub apk: Option<NfpmApkConfig>,
     /// Archlinux-specific configuration.
     pub archlinux: Option<NfpmArchlinuxConfig>,
+    /// CGo library installation directories (header, carchive, cshared).
+    pub libdirs: Option<NfpmLibdirs>,
+    /// Path to a YAML-format changelog file for deb/rpm packages.
+    pub changelog: Option<String>,
+}
+
+/// Installation directories for CGo library outputs.
+///
+/// Controls where header files, static archives, and shared libraries
+/// are installed in the package.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct NfpmLibdirs {
+    /// Installation directory for C header files.
+    pub header: Option<String>,
+    /// Installation directory for carchive (.a) static libraries.
+    pub carchive: Option<String>,
+    /// Installation directory for cshared (.so / .dylib) shared libraries.
+    pub cshared: Option<String>,
+}
+
+impl NfpmLibdirs {
+    /// Returns true when all sub-fields are None (nothing to emit).
+    pub fn is_empty(&self) -> bool {
+        self.header.is_none() && self.carchive.is_none() && self.cshared.is_none()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
