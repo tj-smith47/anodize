@@ -107,10 +107,18 @@ env:
 Stages can write values to the `Outputs` map, and templates can read them:
 
 ```yaml
+# Tera-style
 body_template: "Build ID: {{ Outputs.build_id }}"
+# Go-style (also supported)
+body_template: "Build ID: {{ .Outputs.build_id }}"
 ```
 
 Similar to `Var.*` but for pipeline outputs rather than user config values.
+
+> **Note:** Only reference keys that are actually set by stages. For optional keys, use the `| default` guard:
+> ```yaml
+> body_template: "Build: {{ Outputs.build_id | default(value=\"unknown\") }}"
+> ```
 
 ## Filters
 

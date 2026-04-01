@@ -962,6 +962,8 @@ pub struct TemplateVars {
     /// Pipeline outputs map accessible as {{ .Outputs.key }}.
     /// Stages can populate this and templates can read it.
     /// Similar to `.Var.*` but for pipeline outputs rather than user config.
+    /// Concrete stage->key mappings will be added as stages are enhanced
+    /// (e.g. build_id, checksum, etc.).
     outputs: HashMap<String, String>,
 }
 
@@ -992,6 +994,9 @@ impl TemplateVars {
     }
 
     /// Set a pipeline output value accessible as `{{ .Outputs.key }}`.
+    ///
+    /// Infrastructure: no stage populates Outputs yet. Concrete key mappings
+    /// will be added as individual stages are enhanced (e.g. build -> build_id).
     pub fn set_output(&mut self, key: &str, value: &str) {
         self.outputs.insert(key.to_string(), value.to_string());
     }
@@ -1048,13 +1053,15 @@ fn build_tera_context(vars: &TemplateVars) -> tera::Context {
     }
     ctx.insert("Env", &vars.env);
 
-    // Always insert Var (even when empty) so that `{{ Var.key }}` returns ""
-    // instead of a hard Tera error when no variables are defined. This matches
+    // Always insert Var (even when empty) so that referencing the `Var`
+    // namespace does not produce a hard Tera error. Accessing a missing key
+    // within the map still requires `| default(value="")`. This matches
     // GoReleaser which provides an empty .Var map by default.
     ctx.insert("Var", &vars.custom_vars);
 
-    // Always insert Outputs (even when empty) so that `{{ Outputs.key }}`
-    // returns "" instead of a hard Tera error when no outputs are set.
+    // Always insert Outputs (even when empty) so that referencing the
+    // `Outputs` namespace does not produce a hard Tera error. Accessing a
+    // missing key within the map still requires `| default(value="")`.
     ctx.insert("Outputs", &vars.outputs);
 
     // Build a nested `Runtime` map for GoReleaser `Runtime.Goos` / `Runtime.Goarch` compat.
@@ -2863,6 +2870,11 @@ mod tests {
     #[test]
     fn test_extract_artifact_ext_rpm() {
         assert_eq!(extract_artifact_ext("myapp-1.0.0.x86_64.rpm"), ".rpm");
+    }
+
+    #[test]
+    fn test_extract_artifact_ext_empty_string() {
+        assert_eq!(extract_artifact_ext(""), "");
     }
 
     // --- Outputs template variable tests ---

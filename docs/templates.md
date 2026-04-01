@@ -100,9 +100,14 @@ sign:
 
 | Variable | Description | Example |
 |----------|-------------|---------|
-| `Outputs.key` | Pipeline output set by stages | `{{ Outputs.build_id }}` |
+| `Outputs.key` | Pipeline output set by stages | `{{ Outputs.build_id }}` or `{{ .Outputs.build_id }}` |
 
 Pipeline outputs are a writable map that stages can populate and templates can read. Similar to `Var.*` but for pipeline outputs rather than user config values.
+
+> **Note:** Only reference keys that are actually set by stages. For optional keys, use the `| default` guard:
+> ```yaml
+> body_template: "Build: {{ Outputs.build_id | default(value=\"unknown\") }}"
+> ```
 
 ### Sign-stage Variables
 

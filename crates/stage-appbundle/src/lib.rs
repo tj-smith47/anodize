@@ -524,6 +524,11 @@ impl Stage for AppBundleStage {
             }
         }
 
+        // Clear per-target template vars so they don't leak to downstream stages.
+        ctx.template_vars_mut().set("Os", "");
+        ctx.template_vars_mut().set("Arch", "");
+        ctx.template_vars_mut().set("Target", "");
+
         // Remove replaced archives
         if !archives_to_remove.is_empty() {
             ctx.artifacts.remove_by_paths(&archives_to_remove);

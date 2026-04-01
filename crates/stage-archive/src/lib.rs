@@ -1257,6 +1257,15 @@ impl Stage for ArchiveStage {
             }
         }
 
+        // Clear per-target template vars so they don't leak to downstream stages.
+        ctx.template_vars_mut().set("Os", "");
+        ctx.template_vars_mut().set("Arch", "");
+        ctx.template_vars_mut().set("Target", "");
+        ctx.template_vars_mut().set("Binary", "");
+        ctx.template_vars_mut().set("ArtifactName", "");
+        ctx.template_vars_mut().set("ArtifactPath", "");
+        ctx.template_vars_mut().set("ArtifactExt", "");
+
         for artifact in new_artifacts {
             ctx.artifacts.add(artifact);
         }

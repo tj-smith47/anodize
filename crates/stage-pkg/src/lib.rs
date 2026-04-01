@@ -390,6 +390,11 @@ impl Stage for PkgStage {
             }
         }
 
+        // Clear per-target template vars so they don't leak to downstream stages.
+        ctx.template_vars_mut().set("Os", "");
+        ctx.template_vars_mut().set("Arch", "");
+        ctx.template_vars_mut().set("Target", "");
+
         // Remove archive artifacts marked for replacement
         if !archive_paths_to_remove.is_empty() {
             ctx.artifacts.remove_by_paths(&archive_paths_to_remove);
