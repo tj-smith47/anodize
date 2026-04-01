@@ -62,9 +62,12 @@ You can freely mix both styles in the same config file. The leading dot is strip
 |----------|-------------|---------|
 | `Os` | Mapped OS name | `linux`, `darwin`, `windows` |
 | `Arch` | Mapped architecture | `amd64`, `arm64` |
+| `Target` | Full target triple | `x86_64-unknown-linux-gnu` |
 | `Binary` | Current binary name | `myapp` |
 | `ArtifactName` | Current artifact name | `myapp-1.0.0-linux-amd64.tar.gz` |
 | `ArtifactPath` | Full path to artifact | `/path/to/dist/myapp-1.0.0.tar.gz` |
+| `ArtifactExt` | Artifact extension (compound-aware) | `.tar.gz`, `.exe`, `.deb` |
+| `Checksums` | Combined checksum file contents | `abc123  myapp.tar.gz\n...` |
 
 ### Release state
 
@@ -98,6 +101,16 @@ env:
   CUSTOM_SUFFIX: "special"
   BUILD_MODE: "production"
 ```
+
+### Pipeline outputs
+
+Stages can write values to the `Outputs` map, and templates can read them:
+
+```yaml
+body_template: "Build ID: {{ Outputs.build_id }}"
+```
+
+Similar to `Var.*` but for pipeline outputs rather than user config values.
 
 ## Filters
 

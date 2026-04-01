@@ -99,6 +99,10 @@ pub(crate) fn collect_extra_files(
                                     entry.file_name().unwrap_or_default().to_string_lossy();
                                 let mut vars = ctx.template_vars().clone();
                                 vars.set("ArtifactName", &filename);
+                                vars.set(
+                                    "ArtifactExt",
+                                    anodize_core::template::extract_artifact_ext(&filename),
+                                );
                                 anodize_core::template::render(tmpl, &vars).ok()
                             });
                             results.push((entry, name));

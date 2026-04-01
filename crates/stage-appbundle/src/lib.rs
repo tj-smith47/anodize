@@ -314,9 +314,11 @@ impl Stage for AppBundleStage {
                     // Derive Os/Arch from the target triple for template rendering
                     let (os, arch) = os_arch_from_target(target.as_deref());
 
-                    // Set Os/Arch in template vars for this iteration
+                    // Set Os/Arch/Target in template vars for this iteration
                     ctx.template_vars_mut().set("Os", &os);
                     ctx.template_vars_mut().set("Arch", &arch);
+                    ctx.template_vars_mut()
+                        .set("Target", target.as_deref().unwrap_or(""));
 
                     // Determine output bundle name from name template or default
                     let name_template =

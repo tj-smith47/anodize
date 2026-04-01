@@ -258,14 +258,15 @@ pub fn build_publisher_command(
     // Clone the base vars and add artifact-scoped variables
     let mut vars = base_vars.clone();
     vars.set("ArtifactPath", &artifact.path.to_string_lossy());
+    let artifact_name = artifact
+        .path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    vars.set("ArtifactName", &artifact_name);
     vars.set(
-        "ArtifactName",
-        artifact
-            .path
-            .file_name()
-            .map(|n| n.to_string_lossy())
-            .as_deref()
-            .unwrap_or(""),
+        "ArtifactExt",
+        anodize_core::template::extract_artifact_ext(&artifact_name),
     );
     vars.set("ArtifactKind", artifact.kind.as_str());
 

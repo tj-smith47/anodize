@@ -476,9 +476,11 @@ impl Stage for SnapcraftStage {
                     // Determine output filename from name_template or default
                     let snap_name = snap_cfg.name.as_deref().unwrap_or(&krate.name);
                     let snap_filename = if let Some(tmpl) = &snap_cfg.name_template {
-                        // Set Os/Arch in template vars temporarily
+                        // Set Os/Arch/Target in template vars temporarily
                         ctx.template_vars_mut().set("Os", &os);
                         ctx.template_vars_mut().set("Arch", &arch);
+                        ctx.template_vars_mut()
+                            .set("Target", target.as_deref().unwrap_or(""));
                         let rendered = ctx.render_template(tmpl).with_context(|| {
                             format!(
                                 "snapcraft: render name_template for crate {} target {:?}",

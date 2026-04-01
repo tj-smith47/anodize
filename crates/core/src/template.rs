@@ -959,6 +959,10 @@ pub struct TemplateVars {
     env: HashMap<String, String>,
     /// Custom user-defined variables accessible as {{ .Var.key }}.
     custom_vars: HashMap<String, String>,
+    /// Pipeline outputs map accessible as {{ .Outputs.key }}.
+    /// Stages can populate this and templates can read it.
+    /// Similar to `.Var.*` but for pipeline outputs rather than user config.
+    outputs: HashMap<String, String>,
 }
 
 impl TemplateVars {
@@ -967,6 +971,7 @@ impl TemplateVars {
             vars: HashMap::new(),
             env: HashMap::new(),
             custom_vars: HashMap::new(),
+            outputs: HashMap::new(),
         }
     }
 
@@ -984,6 +989,16 @@ impl TemplateVars {
 
     pub fn set_custom_var(&mut self, key: &str, value: &str) {
         self.custom_vars.insert(key.to_string(), value.to_string());
+    }
+
+    /// Set a pipeline output value accessible as `{{ .Outputs.key }}`.
+    pub fn set_output(&mut self, key: &str, value: &str) {
+        self.outputs.insert(key.to_string(), value.to_string());
+    }
+
+    /// Get a pipeline output value by key.
+    pub fn get_output(&self, key: &str) -> Option<&String> {
+        self.outputs.get(key)
     }
 
     /// Return all template variables (excluding env and custom vars).
@@ -1037,6 +1052,10 @@ fn build_tera_context(vars: &TemplateVars) -> tera::Context {
     // instead of a hard Tera error when no variables are defined. This matches
     // GoReleaser which provides an empty .Var map by default.
     ctx.insert("Var", &vars.custom_vars);
+
+    // Always insert Outputs (even when empty) so that `{{ Outputs.key }}`
+    // returns "" instead of a hard Tera error when no outputs are set.
+    ctx.insert("Outputs", &vars.outputs);
 
     // Build a nested `Runtime` map for GoReleaser `Runtime.Goos` / `Runtime.Goarch` compat.
     let mut runtime = HashMap::new();
@@ -1120,6 +1139,31 @@ pub fn render(template: &str, vars: &TemplateVars) -> Result<String> {
 
     tera.render("__inline__", &ctx)
         .with_context(|| format!("failed to render template: {}", template))
+}
+
+/// Extract the extension from an artifact filename, including compound
+/// extensions like `.tar.gz`, `.tar.xz`, `.tar.zst`, `.tar.bz2`, `.tar.lz4`,
+/// `.tar.sz`. Returns the extension with a leading dot (e.g. `.tar.gz`, `.exe`,
+/// `.dmg`), or an empty string if there is no extension.
+///
+/// This matches GoReleaser's `.ArtifactExt` behavior.
+pub fn extract_artifact_ext(filename: &str) -> &str {
+    // Check for compound tar extensions first
+    const TAR_COMPOUND_SUFFIXES: &[&str] = &[
+        ".tar.gz", ".tar.xz", ".tar.zst", ".tar.bz2", ".tar.lz4", ".tar.sz",
+    ];
+    let lower = filename.to_ascii_lowercase();
+    for suffix in TAR_COMPOUND_SUFFIXES {
+        if lower.ends_with(suffix) {
+            // Return the slice from the original filename (preserving case)
+            return &filename[filename.len() - suffix.len()..];
+        }
+    }
+    // Fall back to the last dot-extension
+    match filename.rfind('.') {
+        Some(pos) if pos > 0 => &filename[pos..],
+        _ => "",
+    }
 }
 
 /// Validate that a template string contains only a single `{{ Env.VAR }}` reference.
@@ -2750,5 +2794,143 @@ mod tests {
                 );
             }
         }
+    }
+
+    // --- extract_artifact_ext tests ---
+
+    #[test]
+    fn test_extract_artifact_ext_tar_gz() {
+        assert_eq!(extract_artifact_ext("myapp-1.0.0-linux-amd64.tar.gz"), ".tar.gz");
+    }
+
+    #[test]
+    fn test_extract_artifact_ext_tar_xz() {
+        assert_eq!(extract_artifact_ext("myapp.tar.xz"), ".tar.xz");
+    }
+
+    #[test]
+    fn test_extract_artifact_ext_tar_zst() {
+        assert_eq!(extract_artifact_ext("myapp.tar.zst"), ".tar.zst");
+    }
+
+    #[test]
+    fn test_extract_artifact_ext_tar_bz2() {
+        assert_eq!(extract_artifact_ext("myapp.tar.bz2"), ".tar.bz2");
+    }
+
+    #[test]
+    fn test_extract_artifact_ext_tar_lz4() {
+        assert_eq!(extract_artifact_ext("archive.tar.lz4"), ".tar.lz4");
+    }
+
+    #[test]
+    fn test_extract_artifact_ext_tar_sz() {
+        assert_eq!(extract_artifact_ext("archive.tar.sz"), ".tar.sz");
+    }
+
+    #[test]
+    fn test_extract_artifact_ext_exe() {
+        assert_eq!(extract_artifact_ext("myapp.exe"), ".exe");
+    }
+
+    #[test]
+    fn test_extract_artifact_ext_dmg() {
+        assert_eq!(extract_artifact_ext("myapp-1.0.0.dmg"), ".dmg");
+    }
+
+    #[test]
+    fn test_extract_artifact_ext_zip() {
+        assert_eq!(extract_artifact_ext("myapp-1.0.0.zip"), ".zip");
+    }
+
+    #[test]
+    fn test_extract_artifact_ext_no_extension() {
+        assert_eq!(extract_artifact_ext("myapp"), "");
+    }
+
+    #[test]
+    fn test_extract_artifact_ext_hidden_file_no_ext() {
+        // A dotfile with no extension beyond the leading dot — treated as no extension
+        // (the leading dot is the filename, not an extension separator)
+        assert_eq!(extract_artifact_ext(".gitignore"), "");
+    }
+
+    #[test]
+    fn test_extract_artifact_ext_deb() {
+        assert_eq!(extract_artifact_ext("myapp_1.0.0_amd64.deb"), ".deb");
+    }
+
+    #[test]
+    fn test_extract_artifact_ext_rpm() {
+        assert_eq!(extract_artifact_ext("myapp-1.0.0.x86_64.rpm"), ".rpm");
+    }
+
+    // --- Outputs template variable tests ---
+
+    #[test]
+    fn test_outputs_set_and_render() {
+        let mut vars = test_vars();
+        vars.set_output("build_id", "abc123");
+        let result = render("{{ .Outputs.build_id }}", &vars).unwrap();
+        assert_eq!(result, "abc123");
+    }
+
+    #[test]
+    fn test_outputs_multiple_keys() {
+        let mut vars = test_vars();
+        vars.set_output("key1", "val1");
+        vars.set_output("key2", "val2");
+        let result = render("{{ .Outputs.key1 }}-{{ .Outputs.key2 }}", &vars).unwrap();
+        assert_eq!(result, "val1-val2");
+    }
+
+    #[test]
+    fn test_outputs_empty_map_renders_empty_string() {
+        let vars = test_vars();
+        // Accessing a non-existent key in Outputs should return "" (Tera default)
+        let result = render("{{ Outputs.missing | default(value=\"\") }}", &vars).unwrap();
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_outputs_get_output() {
+        let mut vars = TemplateVars::new();
+        vars.set_output("x", "42");
+        assert_eq!(vars.get_output("x"), Some(&"42".to_string()));
+        assert_eq!(vars.get_output("y"), None);
+    }
+
+    // --- ArtifactExt template variable rendering test ---
+
+    #[test]
+    fn test_artifact_ext_template_rendering() {
+        let mut vars = test_vars();
+        vars.set("ArtifactName", "myapp-1.0.0-linux-amd64.tar.gz");
+        vars.set("ArtifactExt", ".tar.gz");
+        let result = render("{{ .ArtifactName }}{{ .ArtifactExt }}", &vars).unwrap();
+        assert_eq!(result, "myapp-1.0.0-linux-amd64.tar.gz.tar.gz");
+    }
+
+    // --- Target template variable rendering test ---
+
+    #[test]
+    fn test_target_template_rendering() {
+        let mut vars = test_vars();
+        vars.set("Target", "x86_64-unknown-linux-gnu");
+        let result =
+            render("{{ .ProjectName }}-{{ .Version }}-{{ .Target }}", &vars).unwrap();
+        assert_eq!(result, "cfgd-1.2.3-x86_64-unknown-linux-gnu");
+    }
+
+    // --- Checksums template variable rendering test ---
+
+    #[test]
+    fn test_checksums_template_rendering() {
+        let mut vars = test_vars();
+        let checksum_content =
+            "abc123  myapp-1.0.0.tar.gz\ndef456  myapp-1.0.0.zip\n";
+        vars.set("Checksums", checksum_content);
+        let result = render("{{ .Checksums }}", &vars).unwrap();
+        assert_eq!(result, checksum_content);
     }
 }

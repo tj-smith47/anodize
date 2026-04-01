@@ -214,9 +214,11 @@ impl Stage for PkgStage {
                         .map(anodize_core::target::map_target)
                         .unwrap_or_else(|| ("darwin".to_string(), "amd64".to_string()));
 
-                    // Set Os/Arch in template vars for name template rendering
+                    // Set Os/Arch/Target in template vars for name template rendering
                     ctx.template_vars_mut().set("Os", &os);
                     ctx.template_vars_mut().set("Arch", &arch);
+                    ctx.template_vars_mut()
+                        .set("Target", target.as_deref().unwrap_or(""));
 
                     // Determine output filename
                     let name_template = pkg_cfg.name.as_deref().unwrap_or(DEFAULT_NAME_TEMPLATE);

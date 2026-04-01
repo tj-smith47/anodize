@@ -681,16 +681,22 @@ impl SourceStage {
                 .and_then(|n| n.to_str())
                 .unwrap_or("artifact");
             ctx.template_vars_mut().set("ArtifactName", artifact_name);
+            ctx.template_vars_mut().set(
+                "ArtifactExt",
+                anodize_core::template::extract_artifact_ext(artifact_name),
+            );
 
-            // If artifact has target info, set Os/Arch
+            // If artifact has target info, set Os/Arch/Target
             if let Some(target) = artifact_target {
                 let (os, arch) = anodize_core::target::map_target(target);
                 ctx.template_vars_mut().set("Os", &os);
                 ctx.template_vars_mut().set("Arch", &arch);
+                ctx.template_vars_mut().set("Target", target);
             } else if let Some(target) = artifact_meta.get("target") {
                 let (os, arch) = anodize_core::target::map_target(target);
                 ctx.template_vars_mut().set("Os", &os);
                 ctx.template_vars_mut().set("Arch", &arch);
+                ctx.template_vars_mut().set("Target", target);
             }
 
             // Render document paths

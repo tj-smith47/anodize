@@ -164,8 +164,11 @@ impl Context {
     /// - `Binary` — binary name, set by build stage per binary and archive stage per archive
     /// - `ArtifactName` — output artifact filename, set by archive stage after creating each archive
     /// - `ArtifactPath` — absolute path to artifact, set by archive stage after creating each archive
+    /// - `ArtifactExt` — artifact file extension (e.g. `.tar.gz`, `.exe`), set alongside ArtifactName
     /// - `Os` — target OS, set by archive/nfpm stages per target
     /// - `Arch` — target architecture, set by archive/nfpm stages per target
+    /// - `Target` — full target triple (e.g. `x86_64-unknown-linux-gnu`), set alongside Os/Arch
+    /// - `Checksums` — combined checksum file contents, set by checksum stage
     pub fn populate_git_vars(&mut self) {
         if let Some(ref info) = self.git_info {
             // Version: strip the `v` prefix from the tag (like GoReleaser's
@@ -913,5 +916,48 @@ mod tests {
             ctx.template_vars().get("ReleaseNotes"),
             Some(&"notes-a".to_string())
         );
+    }
+
+    #[test]
+    fn test_outputs_accessible_in_templates() {
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set_output("build_id", "abc123");
+        ctx.template_vars_mut()
+            .set_output("deploy_url", "https://example.com");
+
+        let result = ctx
+            .render_template("{{ .Outputs.build_id }}-{{ .Outputs.deploy_url }}")
+            .unwrap();
+        assert_eq!(result, "abc123-https://example.com");
+    }
+
+    #[test]
+    fn test_artifact_ext_and_target_template_vars() {
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("ArtifactName", "myapp.tar.gz");
+        ctx.template_vars_mut().set("ArtifactExt", ".tar.gz");
+        ctx.template_vars_mut()
+            .set("Target", "x86_64-unknown-linux-gnu");
+
+        let result = ctx
+            .render_template("{{ .ArtifactExt }}_{{ .Target }}")
+            .unwrap();
+        assert_eq!(result, ".tar.gz_x86_64-unknown-linux-gnu");
+    }
+
+    #[test]
+    fn test_checksums_template_var() {
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        let checksum_text = "abc123  myapp.tar.gz\ndef456  myapp.zip\n";
+        ctx.template_vars_mut().set("Checksums", checksum_text);
+
+        let result = ctx.render_template("{{ .Checksums }}").unwrap();
+        assert_eq!(result, checksum_text);
     }
 }

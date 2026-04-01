@@ -391,10 +391,13 @@ impl Stage for ChecksumStage {
 
                 // Determine the display name for this artifact in the checksum line.
                 // If the extra file has a name_template, render it to get an alias.
+                let artifact_ext =
+                    anodize_core::template::extract_artifact_ext(filename);
                 let checksum_name = if let Some(tmpl) = artifact.metadata.get("extra_name_template")
                 {
                     let mut vars = ctx.template_vars().clone();
                     vars.set("ArtifactName", filename);
+                    vars.set("ArtifactExt", artifact_ext);
                     anodize_core::template::render(tmpl, &vars)
                         .unwrap_or_else(|_| filename.to_string())
                 } else {
@@ -410,6 +413,7 @@ impl Stage for ChecksumStage {
                         // Use name_template for sidecar naming when provided
                         let mut vars = ctx.template_vars().clone();
                         vars.set("ArtifactName", filename);
+                        vars.set("ArtifactExt", artifact_ext);
                         let rendered =
                             anodize_core::template::render(tmpl, &vars).with_context(|| {
                                 format!(
@@ -491,6 +495,19 @@ impl Stage for ChecksumStage {
 
                 let combined_path = dist.join(&combined_filename);
 
+                // Build the combined content string for both file writing and
+                // the Checksums template variable.
+                // Match GoReleaser: each line gets "\n" appended, then
+                // all are joined with no separator (strings.Join(lines, "")).
+                let content: String = combined_lines
+                    .iter()
+                    .map(|l| format!("{}\n", l))
+                    .collect();
+
+                // Set the Checksums template variable so release body templates
+                // can reference {{ .Checksums }}.
+                ctx.template_vars_mut().set("Checksums", &content);
+
                 // Only write files in non-dry-run mode; hash computation and
                 // artifact registration always happen so downstream stages
                 // (sign, release) can reference checksums.
@@ -501,12 +518,6 @@ impl Stage for ChecksumStage {
                     let mut combined_file = File::create(&combined_path).with_context(|| {
                         format!("checksum: create combined file {}", combined_path.display())
                     })?;
-                    // Match GoReleaser: each line gets "\n" appended, then
-                    // all are joined with no separator (strings.Join(lines, "")).
-                    let content: String = combined_lines
-                        .iter()
-                        .map(|l| format!("{}\n", l))
-                        .collect();
                     write!(combined_file, "{}", content).with_context(|| {
                         format!("checksum: write combined file {}", combined_path.display())
                     })?;

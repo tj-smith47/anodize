@@ -867,6 +867,7 @@ impl Stage for ArchiveStage {
                     let tvars = ctx.template_vars_mut();
                     tvars.set("Os", &os);
                     tvars.set("Arch", &arch);
+                    tvars.set("Target", target);
 
                     // Set Binary to the first selected binary's name (matches GoReleaser behavior)
                     if let Some(bin_name) =
@@ -1212,6 +1213,10 @@ impl Stage for ArchiveStage {
                         let tvars = ctx.template_vars_mut();
                         tvars.set("ArtifactName", &archive_filename);
                         tvars.set("ArtifactPath", &archive_path.to_string_lossy());
+                        tvars.set(
+                            "ArtifactExt",
+                            anodize_core::template::extract_artifact_ext(&archive_filename),
+                        );
 
                         let mut metadata = HashMap::from([
                             ("format".to_string(), format.clone()),

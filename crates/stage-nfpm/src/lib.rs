@@ -819,6 +819,8 @@ impl Stage for NfpmStage {
                         // Release, Epoch) before rendering file_name_template.
                         ctx.template_vars_mut().set("Os", &os);
                         ctx.template_vars_mut().set("Arch", &arch);
+                        ctx.template_vars_mut()
+                            .set("Target", target.as_deref().unwrap_or(""));
                         ctx.template_vars_mut().set("Format", format);
                         ctx.template_vars_mut().set("PackageName", pkg_name);
                         ctx.template_vars_mut().set("ConventionalExtension", ext);
@@ -924,6 +926,7 @@ impl Stage for NfpmStage {
         // Clear per-target template vars so they don't leak to downstream stages.
         ctx.template_vars_mut().set("Os", "");
         ctx.template_vars_mut().set("Arch", "");
+        ctx.template_vars_mut().set("Target", "");
         ctx.template_vars_mut().set("Format", "");
         ctx.template_vars_mut().set("PackageName", "");
         ctx.template_vars_mut().set("ConventionalExtension", "");

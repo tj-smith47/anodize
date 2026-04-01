@@ -353,6 +353,8 @@ impl Stage for MsiStage {
                     // Set template vars for this binary
                     ctx.template_vars_mut().set("Os", "windows");
                     ctx.template_vars_mut().set("Arch", &arch);
+                    ctx.template_vars_mut()
+                        .set("Target", target.as_deref().unwrap_or(""));
                     ctx.template_vars_mut().set("MsiArch", &msi_arch);
 
                     // I3: Expose binary path as template variable

@@ -57,9 +57,12 @@ You can freely mix both styles in the same config file. The leading dot is strip
 |----------|-------------|---------|
 | `Os` | Mapped OS name (from target triple) | `linux`, `darwin`, `windows` |
 | `Arch` | Mapped architecture (from target triple) | `amd64`, `arm64` |
+| `Target` | Full target triple | `x86_64-unknown-linux-gnu` |
 | `Binary` | Name of the current binary being archived | `myapp` |
 | `ArtifactName` | Name of the current artifact | `myapp-1.0.0-linux-amd64.tar.gz` |
 | `ArtifactPath` | Full path to the current artifact | `/path/to/dist/myapp-1.0.0.tar.gz` |
+| `ArtifactExt` | Artifact file extension (compound-aware) | `.tar.gz`, `.exe`, `.deb` |
+| `Checksums` | Combined checksum file contents | `abc123  myapp.tar.gz\n...` |
 
 ### Release State
 
@@ -92,6 +95,14 @@ sign:
     - "--local-user"
     - "{{ Env.GPG_FINGERPRINT }}"
 ```
+
+### Pipeline Outputs
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `Outputs.key` | Pipeline output set by stages | `{{ Outputs.build_id }}` |
+
+Pipeline outputs are a writable map that stages can populate and templates can read. Similar to `Var.*` but for pipeline outputs rather than user config values.
 
 ### Sign-stage Variables
 
