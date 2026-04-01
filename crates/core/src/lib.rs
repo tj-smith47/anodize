@@ -9,6 +9,7 @@ pub mod partial;
 pub mod stage;
 pub mod target;
 pub mod template;
+mod template_preprocess;
 pub mod util;
 
 #[cfg(feature = "test-helpers")]
