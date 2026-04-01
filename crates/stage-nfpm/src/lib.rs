@@ -3534,6 +3534,8 @@ crates:
             ctx.template_vars().get("ConventionalFileName"),
             Some(&String::new())
         );
+        assert_eq!(ctx.template_vars().get("Release"), Some(&String::new()));
+        assert_eq!(ctx.template_vars().get("Epoch"), Some(&String::new()));
     }
 
     #[test]
@@ -3879,11 +3881,10 @@ crates:
         assert_eq!(pkgs.len(), 1);
 
         let filename = pkgs[0].path.file_name().unwrap().to_str().unwrap();
-        assert!(
-            filename.contains("-2_"),
-            "expected Release '2' in filename, got: {filename}"
+        assert_eq!(
+            filename, "myapp_1.0.0-2_amd64.rpm",
+            "expected exact Release filename, got: {filename}"
         );
-        assert!(filename.ends_with(".rpm"));
     }
 
     #[test]
@@ -3929,11 +3930,10 @@ crates:
         assert_eq!(pkgs.len(), 1);
 
         let filename = pkgs[0].path.file_name().unwrap().to_str().unwrap();
-        assert!(
-            filename.starts_with("myapp_3_2.0.0_"),
-            "expected Epoch '3' in filename, got: {filename}"
+        assert_eq!(
+            filename, "myapp_3_2.0.0_amd64.deb",
+            "expected exact Epoch filename, got: {filename}"
         );
-        assert!(filename.ends_with(".deb"));
     }
 
     #[test]
@@ -3979,10 +3979,59 @@ crates:
         assert_eq!(pkgs.len(), 1);
 
         let filename = pkgs[0].path.file_name().unwrap().to_str().unwrap();
-        // With empty Release and Epoch, should be "myapp_1.0.0..."
-        assert!(
-            filename.starts_with("myapp_1.0.0"),
+        assert_eq!(
+            filename, "myapp_1.0.0.deb",
             "expected empty Release/Epoch (no extra text), got: {filename}"
+        );
+    }
+
+    #[test]
+    fn test_release_and_epoch_combined_in_file_name_template() {
+        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["rpm".to_string()],
+            release: Some("2".to_string()),
+            epoch: Some("1".to_string()),
+            file_name_template: Some(
+                "{{ .PackageName }}-{{ .Epoch }}:{{ .Release }}-{{ .Arch }}{{ .ConventionalExtension }}".to_string(),
+            ),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nfpm: Some(vec![nfpm_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "3.0.0");
+
+        NfpmStage.run(&mut ctx).unwrap();
+
+        let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+        assert_eq!(pkgs.len(), 1);
+
+        let filename = pkgs[0].path.file_name().unwrap().to_str().unwrap();
+        assert_eq!(
+            filename, "myapp-1:2-amd64.rpm",
+            "expected combined Epoch:Release filename, got: {filename}"
         );
     }
 }
