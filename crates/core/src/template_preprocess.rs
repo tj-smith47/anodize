@@ -17,12 +17,15 @@ static GO_BLOCK_RE: LazyLock<Regex> =
 /// Preprocess a template: convert Go-style syntax to Tera-native syntax.
 ///
 /// Pass 1: strip Go-style leading dots (`{{ .Field }}` → `{{ Field }}`).
-/// Pass 2: convert positional function syntax to named-arg syntax.
+/// Pass 2: rewrite Go-style `(list ...)` subexpressions to Tera array literals.
+/// Pass 3: convert positional function syntax to named-arg syntax.
 pub fn preprocess(template: &str) -> String {
     // Pass 1: strip Go-style leading dots.
     let dot_stripped = preprocess_strip_dots(template);
-    // Pass 2: convert positional function syntax to named-arg syntax.
-    preprocess_positional_syntax(&dot_stripped)
+    // Pass 2: rewrite `(list "a" "b")` → `["a", "b"]`.
+    let list_rewritten = preprocess_list_subexpr(&dot_stripped);
+    // Pass 3: convert positional function syntax to named-arg syntax.
+    preprocess_positional_syntax(&list_rewritten)
 }
 
 /// Pass 1: Strip Go-style leading dots from variable references.
@@ -84,7 +87,41 @@ fn preprocess_strip_dots(template: &str) -> String {
         .to_string()
 }
 
-/// Pass 2: Convert Go-style positional function calls to Tera named-arg syntax.
+/// Regex matching `(list "a" "b" ...)` subexpressions inside template blocks.
+/// Captures the inner quoted strings (variadic args to `list`).
+// SAFETY: This is a compile-time regex literal; it is known to be valid.
+static LIST_SUBEXPR_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"\(list\s+((?:"[^"]*"(?:\s+"[^"]*")*)|(?:'[^']*'(?:\s+'[^']*')*))\)"#).unwrap());
+
+/// Pass 2: Rewrite Go-style `(list "a" "b" "c")` subexpressions to Tera array literals.
+///
+/// `(list "a" "b" "c")` → `["a", "b", "c"]`
+///
+/// This runs before positional syntax rewriting so that the `in` function can
+/// receive a Tera array literal as its first argument.
+fn preprocess_list_subexpr(template: &str) -> String {
+    GO_BLOCK_RE
+        .replace_all(template, |caps: &regex::Captures| {
+            let block = &caps[0];
+            // Only process blocks that contain `(list ` — fast path for the common case.
+            if !block.contains("(list ") {
+                return block.to_string();
+            }
+            LIST_SUBEXPR_RE
+                .replace_all(block, |lcaps: &regex::Captures| {
+                    let inner = &lcaps[1];
+                    // Split quoted strings and rejoin as a Tera array literal.
+                    static QUOTED_RE: LazyLock<Regex> =
+                        LazyLock::new(|| Regex::new(r#""[^"]*"|'[^']*'"#).unwrap());
+                    let items: Vec<&str> = QUOTED_RE.find_iter(inner).map(|m| m.as_str()).collect();
+                    format!("[{}]", items.join(", "))
+                })
+                .to_string()
+        })
+        .to_string()
+}
+
+/// Pass 3: Convert Go-style positional function calls to Tera named-arg syntax.
 ///
 /// Handles two forms for `replace`, `split`, and `contains`:
 ///
@@ -227,6 +264,8 @@ enum Token {
     Ident(String),
     /// A quoted string literal including its quotes (e.g., `"v"`).
     Quoted(String),
+    /// A Tera array literal including brackets (e.g., `["a", "b", "c"]`).
+    ArrayLiteral(String),
     /// The pipe operator `|`.
     Pipe,
     /// Whitespace (preserved for reconstruction).
@@ -269,6 +308,39 @@ fn tokenize_block(inner: &str) -> Vec<Token> {
                 i += 1; // closing quote
             }
             tokens.push(Token::Quoted(inner[start..i].to_string()));
+            continue;
+        }
+
+        // Array literal: `[...]` — capture the entire bracketed expression as one token.
+        // This handles Tera array syntax like `["a", "b", "c"]`.
+        if bytes[i] == b'[' {
+            let start = i;
+            let mut depth = 1;
+            i += 1;
+            while i < bytes.len() && depth > 0 {
+                if bytes[i] == b'[' {
+                    depth += 1;
+                } else if bytes[i] == b']' {
+                    depth -= 1;
+                } else if bytes[i] == b'"' || bytes[i] == b'\'' {
+                    // Skip quoted strings inside the array
+                    let quote = bytes[i];
+                    i += 1;
+                    while i < bytes.len() && bytes[i] != quote {
+                        if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                            i += 2;
+                        } else {
+                            i += 1;
+                        }
+                    }
+                    if i < bytes.len() {
+                        i += 1; // closing quote
+                    }
+                    continue;
+                }
+                i += 1;
+            }
+            tokens.push(Token::ArrayLiteral(inner[start..i].to_string()));
             continue;
         }
 
@@ -341,6 +413,18 @@ static POSITIONAL_FUNCTIONS: &[PositionalSyntax] = &[
         arity: 2,
         standalone_params: &["s", "substr"],
         piped_params: &["substr"],
+    },
+    PositionalSyntax {
+        name: "in",
+        arity: 2,
+        standalone_params: &["items", "value"],
+        piped_params: &["value"],
+    },
+    PositionalSyntax {
+        name: "reReplaceAll",
+        arity: 3,
+        standalone_params: &["pattern", "input", "replacement"],
+        piped_params: &["pattern", "replacement"],
     },
 ];
 
@@ -501,10 +585,12 @@ fn try_rewrite_piped(tokens: &[Token]) -> Option<String> {
 /// Format a token as a Tera argument value.
 /// - Quoted strings are used as-is (they already have quotes).
 /// - Identifiers are used bare (they reference template variables).
+/// - Array literals are used as-is (e.g., `["a", "b"]`).
 fn format_arg_value(token: &Token) -> Option<String> {
     match token {
         Token::Quoted(s) => Some(s.clone()),
         Token::Ident(s) => Some(s.clone()),
+        Token::ArrayLiteral(s) => Some(s.clone()),
         _ => None,
     }
 }
@@ -512,9 +598,11 @@ fn format_arg_value(token: &Token) -> Option<String> {
 /// Convert a token back to its string representation.
 fn token_to_str(token: &Token) -> Cow<'_, str> {
     match token {
-        Token::Ident(s) | Token::Quoted(s) | Token::Space(s) | Token::Other(s) => {
-            Cow::Borrowed(s.as_str())
-        }
+        Token::Ident(s)
+        | Token::Quoted(s)
+        | Token::ArrayLiteral(s)
+        | Token::Space(s)
+        | Token::Other(s) => Cow::Borrowed(s.as_str()),
         Token::Pipe => Cow::Borrowed("|"),
     }
 }
@@ -674,6 +762,132 @@ mod tests {
         assert_eq!(
             result,
             "{{ Version | trimprefix(prefix=\"v\") | replace(from=\".\", to=\"-\") }}"
+        );
+    }
+
+    // --- `in` positional syntax preprocessing tests ---
+
+    #[test]
+    fn test_preprocess_in_with_list_subexpr() {
+        // Go-style: {{ in (list "a" "b" "c") "b" }}
+        // Pass 2: (list "a" "b" "c") → ["a", "b", "c"]
+        // Pass 3: in ["a", "b", "c"] "b" → in(items=["a", "b", "c"], value="b")
+        let input = "{{ in (list \"a\" \"b\" \"c\") \"b\" }}";
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            "{{ in(items=[\"a\", \"b\", \"c\"], value=\"b\") }}"
+        );
+    }
+
+    #[test]
+    fn test_preprocess_in_with_variable() {
+        // Positional: {{ in myList "b" }} → {{ in(items=myList, value="b") }}
+        let input = "{{ in myList \"b\" }}";
+        let result = preprocess(input);
+        assert_eq!(result, "{{ in(items=myList, value=\"b\") }}");
+    }
+
+    #[test]
+    fn test_preprocess_in_named_args_unchanged() {
+        let input = "{{ in(items=[\"a\", \"b\"], value=\"a\") }}";
+        let result = preprocess(input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_preprocess_in_with_dot_var() {
+        // {{ in .MyList "val" }} → dot-strip → {{ in MyList "val" }} → positional
+        let input = "{{ in .MyList \"val\" }}";
+        let result = preprocess(input);
+        assert_eq!(result, "{{ in(items=MyList, value=\"val\") }}");
+    }
+
+    #[test]
+    fn test_preprocess_in_control_block() {
+        // {% if in myList "b" %} → {% if in(items=myList, value="b") %}
+        let input = "{% if in myList \"b\" %}yes{% endif %}";
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            "{% if in(items=myList, value=\"b\") %}yes{% endif %}"
+        );
+    }
+
+    #[test]
+    fn test_preprocess_list_subexpr_rewrite() {
+        // Verify the list subexpression rewrite pass in isolation:
+        // (list "a" "b" "c") → ["a", "b", "c"]
+        let input = "{{ in (list \"x\" \"y\") \"x\" }}";
+        let result = preprocess(input);
+        assert_eq!(result, "{{ in(items=[\"x\", \"y\"], value=\"x\") }}");
+    }
+
+    #[test]
+    fn test_preprocess_in_control_block_with_list_subexpr() {
+        // {% if in (list "a" "b") "a" %} → list rewrite → {% if in ["a", "b"] "a" %}
+        // → positional → {% if in(items=["a", "b"], value="a") %}
+        let input = "{% if in (list \"a\" \"b\") \"a\" %}yes{% endif %}";
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            "{% if in(items=[\"a\", \"b\"], value=\"a\") %}yes{% endif %}"
+        );
+    }
+
+    // --- `reReplaceAll` positional syntax preprocessing tests ---
+
+    #[test]
+    fn test_preprocess_re_replace_all_positional() {
+        // {{ reReplaceAll "(.*)" "hello" "$1-world" }}
+        // → {{ reReplaceAll(pattern="(.*)", input="hello", replacement="$1-world") }}
+        let input = "{{ reReplaceAll \"(.*)\" \"hello\" \"$1-world\" }}";
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            "{{ reReplaceAll(pattern=\"(.*)\", input=\"hello\", replacement=\"$1-world\") }}"
+        );
+    }
+
+    #[test]
+    fn test_preprocess_re_replace_all_with_variable() {
+        // {{ reReplaceAll "(v)(.*)" Tag "prefix-$2" }}
+        // → {{ reReplaceAll(pattern="(v)(.*)", input=Tag, replacement="prefix-$2") }}
+        let input = "{{ reReplaceAll \"(v)(.*)\" Tag \"prefix-$2\" }}";
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            "{{ reReplaceAll(pattern=\"(v)(.*)\", input=Tag, replacement=\"prefix-$2\") }}"
+        );
+    }
+
+    #[test]
+    fn test_preprocess_re_replace_all_named_args_unchanged() {
+        let input = "{{ reReplaceAll(pattern=\"x\", input=\"ax\", replacement=\"y\") }}";
+        let result = preprocess(input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_preprocess_re_replace_all_piped() {
+        // {{ Message | reReplaceAll "(.*)" "$1-done" }}
+        // → {{ Message | reReplaceAll(pattern="(.*)", replacement="$1-done") }}
+        let input = "{{ Message | reReplaceAll \"(.*)\" \"$1-done\" }}";
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            "{{ Message | reReplaceAll(pattern=\"(.*)\", replacement=\"$1-done\") }}"
+        );
+    }
+
+    #[test]
+    fn test_preprocess_re_replace_all_control_block() {
+        // {% if reReplaceAll "v" Tag "" %} → named-arg form
+        let input = "{% if reReplaceAll \"v\" Tag \"\" %}yes{% endif %}";
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            "{% if reReplaceAll(pattern=\"v\", input=Tag, replacement=\"\") %}yes{% endif %}"
         );
     }
 }

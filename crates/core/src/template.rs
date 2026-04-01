@@ -32,6 +32,19 @@ fn expand_tilde(path: &str) -> String {
     path.to_string()
 }
 
+/// Convert a Tera `Value` to a string for comparison purposes.
+/// Numbers, bools, and strings are all stringified; null → "".
+fn value_to_string(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Null => String::new(),
+        // Arrays and objects: fall back to JSON representation
+        other => other.to_string(),
+    }
+}
+
 enum VersionPart {
     Major,
     Minor,
@@ -406,6 +419,72 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
                 .and_then(|v| v.as_array())
                 .ok_or_else(|| tera::Error::msg("list requires `items` argument"))?;
             Ok(Value::Array(items.clone()))
+        },
+    );
+
+    // in(items=[...], value="x") — check if a list contains a value (GoReleaser Pro parity)
+    // Go-style: {{ in (list "a" "b" "c") "b" }} → true
+    // Named:    {{ in(items=["a","b","c"], value="b") }} → true
+    // Compares all elements as strings.
+    tera.register_function(
+        "in",
+        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+            let items = args
+                .get("items")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| tera::Error::msg("in requires `items` argument (must be an array)"))?;
+            let value = args
+                .get("value")
+                .ok_or_else(|| tera::Error::msg("in requires `value` argument"))?;
+            // Convert the search value to a string for comparison.
+            let needle = value_to_string(value);
+            let found = items.iter().any(|item| value_to_string(item) == needle);
+            Ok(Value::Bool(found))
+        },
+    );
+
+    // reReplaceAll(pattern="...", input="...", replacement="...") — regex replace (GoReleaser Pro parity)
+    // Go-style: {{ reReplaceAll "(.*)" .Message "$1" }}
+    // Named:    {{ reReplaceAll(pattern="(.*)", input="hello", replacement="$1") }}
+    // Supports capture group references ($1, $2, etc.).
+    // Returns a Tera error on invalid regex (no panic).
+    tera.register_function(
+        "reReplaceAll",
+        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+            let pattern = args
+                .get("pattern")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tera::Error::msg("reReplaceAll requires `pattern` argument"))?;
+            let input = args
+                .get("input")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tera::Error::msg("reReplaceAll requires `input` argument"))?;
+            let replacement = args
+                .get("replacement")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tera::Error::msg("reReplaceAll requires `replacement` argument"))?;
+            let re = Regex::new(pattern)
+                .map_err(|e| tera::Error::msg(format!("reReplaceAll: invalid regex '{}': {}", pattern, e)))?;
+            Ok(Value::String(re.replace_all(input, replacement).to_string()))
+        },
+    );
+
+    // reReplaceAll filter form: {{ Field | reReplaceAll(pattern="...", replacement="...") }}
+    tera.register_filter(
+        "reReplaceAll",
+        |value: &Value, args: &HashMap<String, Value>| {
+            let input = tera::try_get_value!("reReplaceAll", "value", String, value);
+            let pattern = args
+                .get("pattern")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tera::Error::msg("reReplaceAll filter requires `pattern` argument"))?;
+            let replacement = args
+                .get("replacement")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| tera::Error::msg("reReplaceAll filter requires `replacement` argument"))?;
+            let re = Regex::new(pattern)
+                .map_err(|e| tera::Error::msg(format!("reReplaceAll: invalid regex '{}': {}", pattern, e)))?;
+            Ok(Value::String(re.replace_all(&input, replacement).to_string()))
         },
     );
 
@@ -2258,4 +2337,289 @@ mod tests {
         assert_eq!(result, "1-2-3");
     }
 
+    // ---- `in` function tests ----
+
+    #[test]
+    fn test_in_list_contains_value() {
+        let vars = test_vars();
+        let result = render(
+            "{% if in(items=[\"a\", \"b\", \"c\"], value=\"b\") %}yes{% else %}no{% endif %}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "yes");
+    }
+
+    #[test]
+    fn test_in_list_not_contains_value() {
+        let vars = test_vars();
+        let result = render(
+            "{% if in(items=[\"a\", \"b\", \"c\"], value=\"d\") %}yes{% else %}no{% endif %}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "no");
+    }
+
+    #[test]
+    fn test_in_empty_list() {
+        let vars = test_vars();
+        let result = render(
+            "{% if in(items=[], value=\"a\") %}yes{% else %}no{% endif %}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "no");
+    }
+
+    #[test]
+    fn test_in_go_style_positional_with_list_subexpr() {
+        // Go-style: {{ in (list "a" "b" "c") "b" }}
+        // This exercises the full preprocessing pipeline:
+        // 1. (list "a" "b" "c") → ["a", "b", "c"]
+        // 2. in ["a", "b", "c"] "b" → in(items=["a", "b", "c"], value="b")
+        let vars = test_vars();
+        let result = render(
+            "{% if in (list \"linux\" \"darwin\") \"linux\" %}yes{% else %}no{% endif %}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "yes");
+    }
+
+    #[test]
+    fn test_in_go_style_positional_with_list_subexpr_not_found() {
+        let vars = test_vars();
+        let result = render(
+            "{% if in (list \"linux\" \"darwin\") \"windows\" %}yes{% else %}no{% endif %}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "no");
+    }
+
+    #[test]
+    fn test_in_positional_with_variable() {
+        // {{ in myList "b" }} where myList is a template variable
+        // NOTE: This requires myList to be set as a Tera array in the context.
+        // Since TemplateVars only supports string vars, we test with the list subexpr form instead.
+        let vars = test_vars();
+        let result = render(
+            "{% if in (list \"a\" \"b\" \"c\") \"c\" %}found{% else %}nope{% endif %}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "found");
+    }
+
+    #[test]
+    fn test_in_renders_bool_string() {
+        // When used in an expression context, `in` should render as "true" or "false"
+        let vars = test_vars();
+        let result = render(
+            "{{ in(items=[\"a\", \"b\"], value=\"a\") }}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "true");
+    }
+
+    #[test]
+    fn test_in_renders_bool_string_false() {
+        let vars = test_vars();
+        let result = render(
+            "{{ in(items=[\"a\", \"b\"], value=\"z\") }}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "false");
+    }
+
+    #[test]
+    fn test_in_missing_items_arg_error() {
+        let vars = test_vars();
+        let result = render("{{ in(value=\"a\") }}", &vars);
+        assert!(result.is_err(), "in without items should error");
+    }
+
+    #[test]
+    fn test_in_missing_value_arg_error() {
+        let vars = test_vars();
+        let result = render("{{ in(items=[\"a\"]) }}", &vars);
+        assert!(result.is_err(), "in without value should error");
+    }
+
+    // ---- `reReplaceAll` function tests ----
+
+    #[test]
+    fn test_re_replace_all_basic() {
+        let vars = test_vars();
+        let result = render(
+            "{{ reReplaceAll(pattern=\"world\", input=\"hello world\", replacement=\"rust\") }}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "hello rust");
+    }
+
+    #[test]
+    fn test_re_replace_all_with_capture_groups() {
+        let vars = test_vars();
+        // Pattern `(\w+) (\w+)` captures two words; replacement swaps them.
+        // In Tera strings, backslash is literal (no \w escape interpretation).
+        let result = render(
+            r#"{{ reReplaceAll(pattern="(\w+) (\w+)", input="hello world", replacement="$2 $1") }}"#,
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "world hello");
+    }
+
+    #[test]
+    fn test_re_replace_all_capture_group_goreleaser_style() {
+        // Mimics the GoReleaser docs example:
+        // reReplaceAll "(.*) \(#(.*)\)" .Message "$1 [#$2](url/$2)"
+        let mut vars = test_vars();
+        vars.set("Message", "fix bug (#123)");
+        let result = render(
+            r#"{{ reReplaceAll(pattern="(.*) \(#(.*)\)", input=Message, replacement="$1 [#$2](https://tracker/$2)") }}"#,
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "fix bug [#123](https://tracker/123)");
+    }
+
+    #[test]
+    fn test_re_replace_all_no_match() {
+        let vars = test_vars();
+        let result = render(
+            "{{ reReplaceAll(pattern=\"xyz\", input=\"hello\", replacement=\"replaced\") }}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn test_re_replace_all_invalid_regex_error() {
+        let vars = test_vars();
+        let result = render(
+            "{{ reReplaceAll(pattern=\"[invalid\", input=\"hello\", replacement=\"x\") }}",
+            &vars,
+        );
+        assert!(result.is_err(), "invalid regex should produce an error");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("invalid regex") || err.contains("reReplaceAll"),
+            "error should mention reReplaceAll or invalid regex, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_re_replace_all_replaces_all_occurrences() {
+        let vars = test_vars();
+        let result = render(
+            "{{ reReplaceAll(pattern=\"o\", input=\"foo bar boo\", replacement=\"0\") }}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "f00 bar b00");
+    }
+
+    #[test]
+    fn test_re_replace_all_go_style_positional() {
+        // Go-style: {{ reReplaceAll "pattern" "input" "replacement" }}
+        let vars = test_vars();
+        let result = render(
+            "{{ reReplaceAll \"world\" \"hello world\" \"rust\" }}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "hello rust");
+    }
+
+    #[test]
+    fn test_re_replace_all_go_style_with_variable() {
+        // Go-style with a variable as input: {{ reReplaceAll "v" Tag "" }}
+        let vars = test_vars();
+        let result = render("{{ reReplaceAll \"v\" Tag \"\" }}", &vars).unwrap();
+        assert_eq!(result, "1.2.3");
+    }
+
+    #[test]
+    fn test_re_replace_all_filter_form() {
+        // Filter form: {{ Field | reReplaceAll(pattern="...", replacement="...") }}
+        let vars = test_vars();
+        let result = render(
+            "{{ Tag | reReplaceAll(pattern=\"v\", replacement=\"\") }}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "1.2.3");
+    }
+
+    #[test]
+    fn test_re_replace_all_filter_form_with_capture() {
+        let vars = test_vars();
+        let result = render(
+            "{{ Tag | reReplaceAll(pattern=\"v(.*)\", replacement=\"ver-$1\") }}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "ver-1.2.3");
+    }
+
+    #[test]
+    fn test_re_replace_all_piped_positional() {
+        // Piped positional: {{ Tag | reReplaceAll "v" "" }}
+        let vars = test_vars();
+        let result = render("{{ Tag | reReplaceAll \"v\" \"\" }}", &vars).unwrap();
+        assert_eq!(result, "1.2.3");
+    }
+
+    #[test]
+    fn test_re_replace_all_missing_pattern_error() {
+        let vars = test_vars();
+        let result = render(
+            "{{ reReplaceAll(input=\"hello\", replacement=\"x\") }}",
+            &vars,
+        );
+        assert!(result.is_err(), "reReplaceAll without pattern should error");
+    }
+
+    #[test]
+    fn test_re_replace_all_missing_input_error() {
+        let vars = test_vars();
+        let result = render(
+            "{{ reReplaceAll(pattern=\"x\", replacement=\"y\") }}",
+            &vars,
+        );
+        assert!(result.is_err(), "reReplaceAll without input should error");
+    }
+
+    #[test]
+    fn test_re_replace_all_missing_replacement_error() {
+        let vars = test_vars();
+        let result = render(
+            "{{ reReplaceAll(pattern=\"x\", input=\"hello\") }}",
+            &vars,
+        );
+        assert!(
+            result.is_err(),
+            "reReplaceAll without replacement should error"
+        );
+    }
+
+    #[test]
+    fn test_re_replace_all_filter_invalid_regex_error() {
+        let vars = test_vars();
+        let result = render(
+            "{{ Tag | reReplaceAll(pattern=\"[bad\", replacement=\"x\") }}",
+            &vars,
+        );
+        assert!(
+            result.is_err(),
+            "invalid regex in filter form should produce an error"
+        );
+    }
 }
