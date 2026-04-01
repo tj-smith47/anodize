@@ -1139,6 +1139,9 @@ impl Stage for BuildStage {
                     let artifact_ext = if os == "windows" { ".exe" } else { "" };
                     ctx.template_vars_mut().set("ArtifactExt", artifact_ext);
 
+                    // Set ArtifactID from the build config's id field
+                    ctx.template_vars_mut().set("ArtifactID", build.id.as_deref().unwrap_or(""));
+
                     // Render env values through template engine
                     let mut rendered_env: HashMap<String, String> = HashMap::new();
                     for (k, v) in &target_env {
@@ -1179,6 +1182,7 @@ impl Stage for BuildStage {
                     ctx.template_vars_mut().set("Amd64", "");
                     ctx.template_vars_mut().set("I386", "");
                     ctx.template_vars_mut().set("ArtifactExt", "");
+                    ctx.template_vars_mut().set("ArtifactID", "");
 
                     // Reproducible builds: inject SOURCE_DATE_EPOCH and RUSTFLAGS
                     if build.reproducible.unwrap_or(false) {

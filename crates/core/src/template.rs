@@ -1027,6 +1027,17 @@ impl TemplateVars {
     pub fn all_env(&self) -> &HashMap<String, String> {
         &self.env
     }
+
+    /// Get a structured (non-string) template variable by key.
+    /// Returns `None` if the key does not exist in the structured map.
+    pub fn get_structured(&self, key: &str) -> Option<&tera::Value> {
+        self.structured.get(key)
+    }
+
+    /// Return all structured template variables.
+    pub fn all_structured(&self) -> &HashMap<String, Value> {
+        &self.structured
+    }
 }
 
 impl Default for TemplateVars {

@@ -52,7 +52,7 @@ struct SnapcraftYaml {
     parts: HashMap<String, SnapcraftYamlPart>,
 }
 
-#[derive(Serialize)]
+#[derive(Default, Serialize)]
 struct SnapcraftYamlApp {
     #[serde(skip_serializing_if = "Option::is_none")]
     command: Option<String>,
@@ -65,7 +65,7 @@ struct SnapcraftYamlApp {
     #[serde(skip_serializing_if = "is_empty_vec")]
     plugs: Vec<String>,
     #[serde(skip_serializing_if = "HashMap::is_empty")]
-    environment: HashMap<String, String>,
+    environment: HashMap<String, serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     adapter: Option<String>,
     #[serde(skip_serializing_if = "is_empty_vec")]
@@ -90,6 +90,7 @@ struct SnapcraftYamlApp {
     extensions: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "install-mode")]
     install_mode: Option<String>,
+    #[serde(flatten)]
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     passthrough: HashMap<String, serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "post-stop-command")]
@@ -257,35 +258,7 @@ pub fn generate_snapcraft_yaml(
             primary_binary.to_string(),
             SnapcraftYamlApp {
                 command: Some(format!("bin/{primary_binary}")),
-                daemon: None,
-                stop_mode: None,
-                restart_condition: None,
-                plugs: Vec::new(),
-                environment: HashMap::new(),
-                adapter: None,
-                after: Vec::new(),
-                aliases: Vec::new(),
-                autostart: None,
-                before: Vec::new(),
-                bus_name: None,
-                command_chain: Vec::new(),
-                common_id: None,
-                completer: None,
-                desktop: None,
-                extensions: Vec::new(),
-                install_mode: None,
-                passthrough: HashMap::new(),
-                post_stop_command: None,
-                refresh_mode: None,
-                reload_command: None,
-                restart_delay: None,
-                slots: Vec::new(),
-                sockets: HashMap::new(),
-                start_timeout: None,
-                stop_command: None,
-                stop_timeout: None,
-                timer: None,
-                watchdog_timeout: None,
+                ..Default::default()
             },
         );
         default_apps
@@ -321,19 +294,43 @@ pub fn generate_snapcraft_yaml(
         prime_files.push(format!("bin/{bin_name}"));
     }
 
-    // Include extra files in organize/stage/prime
+    // Include extra files in organize/stage/prime, handling duplicate basenames
     if let Some(files) = extra_files {
+        let mut seen_names: HashMap<String, usize> = HashMap::new();
         for file in files {
             let source = file.source();
-            let source_filename = std::path::Path::new(source)
+            let base_name = std::path::Path::new(source)
                 .file_name()
                 .and_then(|n| n.to_str())
-                .unwrap_or(source);
-            // If destination is set, use it; otherwise use the source filename
-            let dest = file
-                .destination()
-                .unwrap_or(source_filename);
-            organize.insert(source_filename.to_string(), dest.to_string());
+                .unwrap_or(source)
+                .to_string();
+            // Compute the temp-dir filename, deduplicating collisions
+            let temp_name = if file.destination().is_some() {
+                // When destination is explicit, use its basename as the
+                // temp-dir name (matches the copy logic in SnapcraftStage)
+                let d = file.destination().unwrap();
+                std::path::Path::new(d)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(&base_name)
+                    .to_string()
+            } else {
+                let count = seen_names.entry(base_name.clone()).or_insert(0);
+                *count += 1;
+                if *count > 1 {
+                    let p = std::path::Path::new(&base_name);
+                    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("extra");
+                    let ext = p.extension().and_then(|e| e.to_str());
+                    match ext {
+                        Some(e) => format!("{stem}_{}.{e}", *count - 1),
+                        None => format!("{stem}_{}", *count - 1),
+                    }
+                } else {
+                    base_name.clone()
+                }
+            };
+            let dest = file.destination().unwrap_or(&temp_name);
+            organize.insert(temp_name.to_string(), dest.to_string());
             stage_files.push(dest.to_string());
             prime_files.push(dest.to_string());
         }
@@ -689,19 +686,60 @@ impl Stage for SnapcraftStage {
                         })?;
                     }
 
-                    // Copy extra files into temp directory
+                    // Copy extra files into temp directory, handling duplicate basenames
                     if let Some(extra_files) = &snap_cfg.extra_files {
+                        let mut seen_names: HashMap<String, usize> = HashMap::new();
                         for extra in extra_files {
                             let src = PathBuf::from(extra.source());
-                            let file_name =
-                                src.file_name().and_then(|n| n.to_str()).unwrap_or("extra");
-                            let dest = tmp_dir.path().join(file_name);
+                            let base_name = src
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("extra")
+                                .to_string();
+                            // If a destination is specified, use its basename;
+                            // otherwise use source basename with a counter for
+                            // collisions.
+                            let dest_name = if let Some(d) = extra.destination() {
+                                std::path::Path::new(d)
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or(&base_name)
+                                    .to_string()
+                            } else {
+                                let count = seen_names.entry(base_name.clone()).or_insert(0);
+                                *count += 1;
+                                if *count > 1 {
+                                    // Add counter suffix before extension to
+                                    // avoid overwriting
+                                    let p = std::path::Path::new(&base_name);
+                                    let stem = p
+                                        .file_stem()
+                                        .and_then(|s| s.to_str())
+                                        .unwrap_or("extra");
+                                    let ext = p.extension().and_then(|e| e.to_str());
+                                    match ext {
+                                        Some(e) => format!("{stem}_{}.{e}", *count - 1),
+                                        None => format!("{stem}_{}", *count - 1),
+                                    }
+                                } else {
+                                    base_name.clone()
+                                }
+                            };
+                            let dest = tmp_dir.path().join(&dest_name);
                             fs::copy(&src, &dest).with_context(|| {
                                 format!("copy extra file {} to {}", src.display(), dest.display())
                             })?;
                             // Apply file mode if specified
                             #[cfg(unix)]
                             if let Some(mode) = extra.mode() {
+                                if mode > 0o7777 {
+                                    anyhow::bail!(
+                                        "snapcraft: invalid file mode {:o} for '{}' — \
+                                         must be in range 0-7777 (octal)",
+                                        mode,
+                                        src.display()
+                                    );
+                                }
                                 use std::os::unix::fs::PermissionsExt;
                                 let perms = std::fs::Permissions::from_mode(mode);
                                 std::fs::set_permissions(&dest, perms).with_context(|| {
@@ -957,7 +995,7 @@ mod tests {
                 stop_mode: Some("sigterm".to_string()),
                 restart_condition: Some("on-failure".to_string()),
                 plugs: Some(vec!["network".to_string(), "home".to_string()]),
-                environment: Some(HashMap::from([("LANG".to_string(), "C.UTF-8".to_string())])),
+                environment: Some(HashMap::from([("LANG".to_string(), serde_json::json!("C.UTF-8"))])),
                 args: Some("--verbose".to_string()),
                 ..Default::default()
             },
@@ -1699,7 +1737,7 @@ crates:
         assert_eq!(app.plugs.as_ref().unwrap(), &["network"]);
         assert_eq!(
             app.environment.as_ref().unwrap().get("LANG").unwrap(),
-            "C.UTF-8"
+            &serde_json::json!("C.UTF-8")
         );
         assert_eq!(app.args.as_deref(), Some("--verbose"));
 
@@ -2552,6 +2590,106 @@ crates:
             }
             other => panic!("expected Detailed, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_generate_yaml_environment_non_string_values() {
+        let mut env = HashMap::new();
+        env.insert("MY_PORT".to_string(), serde_json::json!(8080));
+        env.insert("DEBUG".to_string(), serde_json::json!(true));
+        env.insert("NAME".to_string(), serde_json::json!("myapp"));
+
+        let mut apps = HashMap::new();
+        apps.insert(
+            "myapp".to_string(),
+            SnapcraftApp {
+                command: Some("bin/myapp".to_string()),
+                environment: Some(env),
+                ..Default::default()
+            },
+        );
+
+        let cfg = SnapcraftConfig {
+            name: Some("mysnap".to_string()),
+            apps: Some(apps),
+            ..Default::default()
+        };
+        let yaml = generate_snapcraft_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
+        assert!(yaml.contains("MY_PORT: 8080"), "missing integer env\n{yaml}");
+        assert!(yaml.contains("DEBUG: true"), "missing boolean env\n{yaml}");
+        assert!(yaml.contains("NAME: myapp"), "missing string env\n{yaml}");
+    }
+
+    #[test]
+    fn test_generate_yaml_extra_files_duplicate_basenames() {
+        // Two extra files with the same basename should not collide in organize
+        let cfg = SnapcraftConfig {
+            name: Some("mysnap".to_string()),
+            ..Default::default()
+        };
+        let extra = vec![
+            SnapcraftExtraFileSpec::Source("a/config.yaml".to_string()),
+            SnapcraftExtraFileSpec::Source("b/config.yaml".to_string()),
+        ];
+        let yaml = generate_snapcraft_yaml(&cfg, "1.0.0", &["myapp"], Some(&extra), None).unwrap();
+        // The first file keeps its name; the second gets a counter suffix
+        assert!(
+            yaml.contains("config.yaml"),
+            "first config.yaml missing\n{yaml}"
+        );
+        assert!(
+            yaml.contains("config_1.yaml"),
+            "deduplicated config_1.yaml missing\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn test_config_parse_kebab_case_aliases() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: .
+    tag_template: "v{{ .Version }}"
+    snapcrafts:
+      - name: mysnap
+        apps:
+          myapp:
+            command: bin/myapp
+            stop-mode: sigterm
+            restart-condition: on-failure
+            bus-name: com.example.myapp
+            command-chain:
+              - bin/wrapper
+            common-id: com.example.myapp
+            install-mode: disable
+            post-stop-command: bin/cleanup
+            refresh-mode: endure
+            reload-command: bin/reload
+            restart-delay: 10s
+            start-timeout: 30s
+            stop-command: bin/stop
+            stop-timeout: 15s
+            watchdog-timeout: 60s
+"#;
+        let config: Config =
+            serde_yaml_ng::from_str(yaml).expect("failed to parse kebab-case config");
+        let snaps = config.crates[0].snapcrafts.as_ref().unwrap();
+        let app = snaps[0].apps.as_ref().unwrap().get("myapp").unwrap();
+        assert_eq!(app.stop_mode.as_deref(), Some("sigterm"));
+        assert_eq!(app.restart_condition.as_deref(), Some("on-failure"));
+        assert_eq!(app.bus_name.as_deref(), Some("com.example.myapp"));
+        assert_eq!(app.command_chain.as_ref().unwrap(), &["bin/wrapper"]);
+        assert_eq!(app.common_id.as_deref(), Some("com.example.myapp"));
+        assert_eq!(app.install_mode.as_deref(), Some("disable"));
+        assert_eq!(app.post_stop_command.as_deref(), Some("bin/cleanup"));
+        assert_eq!(app.refresh_mode.as_deref(), Some("endure"));
+        assert_eq!(app.reload_command.as_deref(), Some("bin/reload"));
+        assert_eq!(app.restart_delay.as_deref(), Some("10s"));
+        assert_eq!(app.start_timeout.as_deref(), Some("30s"));
+        assert_eq!(app.stop_command.as_deref(), Some("bin/stop"));
+        assert_eq!(app.stop_timeout.as_deref(), Some("15s"));
+        assert_eq!(app.watchdog_timeout.as_deref(), Some("60s"));
     }
 
     #[test]

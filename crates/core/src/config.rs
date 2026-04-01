@@ -2295,14 +2295,16 @@ pub struct SnapcraftApp {
     /// Daemon type: simple, forking, oneshot, notify, dbus.
     pub daemon: Option<String>,
     /// How to stop the daemon: sigterm, sigkill, etc.
+    #[serde(alias = "stop-mode")]
     pub stop_mode: Option<String>,
     /// Interface plugs the app needs.
     pub plugs: Option<Vec<String>>,
-    /// Environment variables for the app.
-    pub environment: Option<HashMap<String, String>>,
+    /// Environment variables for the app (supports string, integer, and boolean values).
+    pub environment: Option<HashMap<String, serde_json::Value>>,
     /// Additional arguments passed to the command.
     pub args: Option<String>,
     /// Restart condition: on-failure, always, on-success, on-abnormal, on-abort, on-watchdog, never.
+    #[serde(alias = "restart-condition")]
     pub restart_condition: Option<String>,
     /// Snap adapter type: "none" or "full" (default: "full").
     pub adapter: Option<String>,
@@ -2315,10 +2317,13 @@ pub struct SnapcraftApp {
     /// Services that must start after this app.
     pub before: Option<Vec<String>>,
     /// D-Bus well-known bus name.
+    #[serde(alias = "bus-name")]
     pub bus_name: Option<String>,
     /// Wrapper commands run before the main command.
+    #[serde(alias = "command-chain")]
     pub command_chain: Option<Vec<String>>,
     /// AppStream metadata common ID.
+    #[serde(alias = "common-id")]
     pub common_id: Option<String>,
     /// Path to bash completion script relative to snap.
     pub completer: Option<String>,
@@ -2327,30 +2332,39 @@ pub struct SnapcraftApp {
     /// Snap extensions to apply.
     pub extensions: Option<Vec<String>>,
     /// Installation mode: "enable" or "disable".
+    #[serde(alias = "install-mode")]
     pub install_mode: Option<String>,
     /// Arbitrary YAML passed through to snap.yaml.
     pub passthrough: Option<HashMap<String, serde_json::Value>>,
     /// Command to run after daemon stops.
+    #[serde(alias = "post-stop-command")]
     pub post_stop_command: Option<String>,
     /// Refresh behavior: "endure" or "restart".
+    #[serde(alias = "refresh-mode")]
     pub refresh_mode: Option<String>,
     /// Command to reload daemon config.
+    #[serde(alias = "reload-command")]
     pub reload_command: Option<String>,
     /// Delay between restarts (duration string).
+    #[serde(alias = "restart-delay")]
     pub restart_delay: Option<String>,
     /// Interface slots this app provides.
     pub slots: Option<Vec<String>>,
     /// Socket definitions map.
     pub sockets: Option<HashMap<String, serde_json::Value>>,
     /// Start timeout duration string.
+    #[serde(alias = "start-timeout")]
     pub start_timeout: Option<String>,
     /// Command to gracefully stop the daemon.
+    #[serde(alias = "stop-command")]
     pub stop_command: Option<String>,
     /// Stop timeout duration string.
+    #[serde(alias = "stop-timeout")]
     pub stop_timeout: Option<String>,
     /// Timer definition (systemd timer syntax).
     pub timer: Option<String>,
     /// Watchdog timeout duration string.
+    #[serde(alias = "watchdog-timeout")]
     pub watchdog_timeout: Option<String>,
 }
 
@@ -3264,9 +3278,18 @@ pub struct NightlyConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct MetadataConfig {
+    /// Human-readable project description (exposed as `{{ .Metadata.Description }}`).
+    pub description: Option<String>,
+    /// Project homepage URL (exposed as `{{ .Metadata.Homepage }}`).
+    pub homepage: Option<String>,
+    /// Project license identifier, e.g. "MIT" or "Apache-2.0" (exposed as `{{ .Metadata.License }}`).
+    pub license: Option<String>,
+    /// List of project maintainers (exposed as `{{ .Metadata.Maintainers }}`).
+    pub maintainers: Option<Vec<String>>,
     /// Global modification timestamp for metadata output files (metadata.json and artifacts.json).
     /// Template string (e.g. "{{ .CommitTimestamp }}") or unix timestamp.
     /// When set, rendered late in the pipeline and applied as file mtime.
+    /// Exposed as `{{ .Metadata.ModTimestamp }}`.
     pub mod_timestamp: Option<String>,
 }
 

@@ -173,6 +173,7 @@ impl Context {
     /// - `ArtifactName` — output artifact filename, set by archive stage after creating each archive
     /// - `ArtifactPath` — absolute path to artifact, set by archive stage after creating each archive
     /// - `ArtifactExt` — artifact file extension (e.g. `.tar.gz`, `.exe`), set alongside ArtifactName
+    /// - `ArtifactID` — build config `id` field, set by build stage per build config
     /// - `Os` — target OS, set by archive/nfpm stages per target
     /// - `Arch` — target architecture, set by archive/nfpm stages per target
     /// - `Target` — full target triple (e.g. `x86_64-unknown-linux-gnu`), set alongside Os/Arch
@@ -239,8 +240,13 @@ impl Context {
             self.template_vars
                 .set("PrefixedTag", &format!("{}{}", tag_prefix, info.tag));
             let prev_tag = info.previous_tag.as_deref().unwrap_or("");
+            let prefixed_prev = if prev_tag.is_empty() {
+                String::new()
+            } else {
+                format!("{}{}", tag_prefix, prev_tag)
+            };
             self.template_vars
-                .set("PrefixedPreviousTag", &format!("{}{}", tag_prefix, prev_tag));
+                .set("PrefixedPreviousTag", &prefixed_prev);
             self.template_vars
                 .set("PrefixedSummary", &format!("{}{}", tag_prefix, info.summary));
         }
@@ -360,6 +366,14 @@ impl Context {
     ///
     /// Each artifact is serialized as a map with keys: `name`, `path`, `target`,
     /// `kind`, `crate_name`, and `metadata`.
+    ///
+    /// **Known metadata keys** (populated by individual stages):
+    /// - `format` — archive format (e.g. `"tar.gz"`, `"zip"`), set by archive stage
+    /// - `extra_file` — `"true"` when artifact is an extra file, set by checksum stage
+    /// - `extra_name_template` — name template override for extra files, set by checksum stage
+    /// - `digest` — docker image digest (e.g. `sha256:abc123...`), set by docker stage
+    /// - `id` — artifact ID from config, set by docker and build stages
+    /// - `binary` — binary name, set by build stage
     pub fn refresh_artifacts_var(&mut self) {
         let artifacts_value: Vec<serde_json::Value> = self
             .artifacts
@@ -376,41 +390,49 @@ impl Context {
                 })
             })
             .collect();
-        // Convert serde_json::Value to tera::Value (both are serde_json::Value under the hood).
-        let tera_value =
-            tera::Value::Array(artifacts_value.into_iter().map(json_to_tera).collect());
+        // serde_json::Value and tera::Value are the same type under the hood,
+        // so no conversion is needed — pass values directly.
+        let tera_value = tera::Value::Array(artifacts_value);
         self.template_vars
             .set_structured("Artifacts", tera_value);
     }
 
     /// Populate the `Metadata` structured template variable from config.metadata.
     ///
-    /// Exposes the project metadata block as a nested map with keys:
-    /// `description`, `homepage`, `license`, `maintainers`, `mod_timestamp`.
-    /// Missing fields are empty strings / empty arrays.
+    /// Exposes the project metadata block as a nested map with PascalCase keys
+    /// matching GoReleaser's `.Metadata.*` namespace:
+    /// `Description`, `Homepage`, `License`, `Maintainers`, `ModTimestamp`.
+    /// Missing fields default to empty strings / empty arrays.
     pub fn populate_metadata_var(&mut self) {
         let meta = self.config.metadata.as_ref();
+        let description = meta
+            .and_then(|m| m.description.as_deref())
+            .unwrap_or("");
+        let homepage = meta
+            .and_then(|m| m.homepage.as_deref())
+            .unwrap_or("");
+        let license = meta
+            .and_then(|m| m.license.as_deref())
+            .unwrap_or("");
+        let maintainers: Vec<&str> = meta
+            .and_then(|m| m.maintainers.as_ref())
+            .map(|v| v.iter().map(|s| s.as_str()).collect())
+            .unwrap_or_default();
         let mod_timestamp = meta
             .and_then(|m| m.mod_timestamp.as_deref())
             .unwrap_or("");
 
         let meta_map = serde_json::json!({
-            "description": "",
-            "homepage": "",
-            "license": "",
-            "maintainers": [],
-            "mod_timestamp": mod_timestamp,
+            "Description": description,
+            "Homepage": homepage,
+            "License": license,
+            "Maintainers": maintainers,
+            "ModTimestamp": mod_timestamp,
         });
+        // serde_json::Value and tera::Value are the same type, so pass directly.
         self.template_vars
-            .set_structured("Metadata", json_to_tera(meta_map));
+            .set_structured("Metadata", meta_map);
     }
-}
-
-/// Convert a `serde_json::Value` to a `tera::Value`.
-/// Tera's `Value` is just a re-export of `serde_json::Value`, so this is a
-/// no-op type alias cast in practice.
-fn json_to_tera(v: serde_json::Value) -> tera::Value {
-    v
 }
 
 /// Map Rust's `std::env::consts::OS` to Go-compatible GOOS naming.
@@ -1117,10 +1139,11 @@ mod tests {
         ctx.git_info = Some(info);
         ctx.populate_git_vars();
 
-        // Prefix is prepended even to empty previous tag
+        // When there is no previous tag, PrefixedPreviousTag should be empty
+        // (not just the prefix), matching GoReleaser behavior.
         assert_eq!(
             ctx.template_vars().get("PrefixedPreviousTag"),
-            Some(&"api/".to_string())
+            Some(&"".to_string())
         );
     }
 
@@ -1244,6 +1267,9 @@ mod tests {
 
         let config = Config::default();
         let mut ctx = Context::new(config, ContextOptions::default());
+        // Artifacts are created with empty `name` — ArtifactRegistry::add()
+        // auto-derives the name from the path's filename component when name
+        // is empty (see artifact.rs add() implementation).
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
             name: String::new(),
@@ -1288,13 +1314,14 @@ mod tests {
         let mut config = Config::default();
         config.metadata = Some(crate::config::MetadataConfig {
             mod_timestamp: Some("{{ .CommitTimestamp }}".to_string()),
+            ..Default::default()
         });
         let mut ctx = Context::new(config, ContextOptions::default());
         ctx.populate_metadata_var();
 
-        // Metadata should be accessible as a nested map
+        // Metadata should be accessible as a nested map with PascalCase keys
         let result = ctx
-            .render_template("{{ Metadata.mod_timestamp }}")
+            .render_template("{{ Metadata.ModTimestamp }}")
             .unwrap();
         assert_eq!(result, "{{ .CommitTimestamp }}");
     }
@@ -1305,9 +1332,35 @@ mod tests {
         let mut ctx = Context::new(config, ContextOptions::default());
         ctx.populate_metadata_var();
 
-        // Should render empty strings for missing fields
-        let result = ctx.render_template("{{ Metadata.description }}").unwrap();
+        // Should render empty strings for missing fields (PascalCase keys)
+        let result = ctx.render_template("{{ Metadata.Description }}").unwrap();
         assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_populate_metadata_var_reads_from_config() {
+        let mut config = Config::default();
+        config.metadata = Some(crate::config::MetadataConfig {
+            description: Some("A test project".to_string()),
+            homepage: Some("https://example.com".to_string()),
+            license: Some("MIT".to_string()),
+            maintainers: Some(vec!["Alice".to_string(), "Bob".to_string()]),
+            mod_timestamp: Some("1234567890".to_string()),
+        });
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.populate_metadata_var();
+
+        let desc = ctx.render_template("{{ Metadata.Description }}").unwrap();
+        assert_eq!(desc, "A test project");
+
+        let home = ctx.render_template("{{ Metadata.Homepage }}").unwrap();
+        assert_eq!(home, "https://example.com");
+
+        let lic = ctx.render_template("{{ Metadata.License }}").unwrap();
+        assert_eq!(lic, "MIT");
+
+        let ts = ctx.render_template("{{ Metadata.ModTimestamp }}").unwrap();
+        assert_eq!(ts, "1234567890");
     }
 
     #[test]

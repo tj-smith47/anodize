@@ -224,6 +224,14 @@ fn is_disabled(
 // ChecksumStage
 // ---------------------------------------------------------------------------
 
+/// Checksum stage: computes checksums for all build/archive artifacts.
+///
+/// **Note on `Artifacts` template variable**: This stage does NOT call
+/// `ctx.refresh_artifacts_var()` because it only renders naming templates
+/// (e.g. `name_template`, `extra_name_template`) — not user-facing release
+/// body or announce templates where `{{ Artifacts }}` would be iterated.
+/// The `Artifacts` variable is refreshed by the release and announce stages
+/// just before they render their body templates.
 pub struct ChecksumStage;
 
 impl Stage for ChecksumStage {

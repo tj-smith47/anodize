@@ -673,6 +673,14 @@ fn label_to_static(label: &str) -> &'static str {
 // SignStage
 // ---------------------------------------------------------------------------
 
+/// Sign stage: signs artifacts using GPG, cosign, or other signing tools.
+///
+/// **Note on `Artifacts` template variable**: This stage does NOT call
+/// `ctx.refresh_artifacts_var()` because it only renders signing-related
+/// templates (e.g. `if_condition`, `signature`, `certificate`, args) — not
+/// user-facing release body or announce templates where `{{ Artifacts }}`
+/// would be iterated. The `Artifacts` variable is refreshed by the release
+/// and announce stages just before they render their body templates.
 pub struct SignStage;
 
 impl Stage for SignStage {
