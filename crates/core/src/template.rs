@@ -6,6 +6,7 @@
 
 use anyhow::{Context as _, Result};
 use regex::Regex;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
@@ -34,14 +35,15 @@ fn expand_tilde(path: &str) -> String {
 
 /// Convert a Tera `Value` to a string for comparison purposes.
 /// Numbers, bools, and strings are all stringified; null → "".
-fn value_to_string(v: &Value) -> String {
+/// Returns `Cow::Borrowed` for strings (avoiding a clone), `Cow::Owned` otherwise.
+fn value_to_string(v: &Value) -> Cow<'_, str> {
     match v {
-        Value::String(s) => s.clone(),
-        Value::Number(n) => n.to_string(),
-        Value::Bool(b) => b.to_string(),
-        Value::Null => String::new(),
+        Value::String(s) => Cow::Borrowed(s.as_str()),
+        Value::Number(n) => Cow::Owned(n.to_string()),
+        Value::Bool(b) => Cow::Owned(b.to_string()),
+        Value::Null => Cow::Borrowed(""),
         // Arrays and objects: fall back to JSON representation
-        other => other.to_string(),
+        other => Cow::Owned(other.to_string()),
     }
 }
 
@@ -411,6 +413,10 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     );
 
     // list(items=[...]) — creates a list from an items array.
+    // Note: Go-style `(list "a" "b")` syntax is handled by the preprocessor
+    // (Pass 2 in template_preprocess.rs), which rewrites it to `["a", "b"]`
+    // before Tera sees it. This function registration exists for direct Tera
+    // usage, e.g. `{{ list(items=["a", "b"]) }}`.
     tera.register_function(
         "list",
         |args: &HashMap<String, Value>| -> tera::Result<Value> {
@@ -448,6 +454,8 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     // Named:    {{ reReplaceAll(pattern="(.*)", input="hello", replacement="$1") }}
     // Supports capture group references ($1, $2, etc.).
     // Returns a Tera error on invalid regex (no panic).
+    // Note: regex is compiled per call. This is acceptable for template rendering
+    // where each pattern is typically used once per render pass.
     tera.register_function(
         "reReplaceAll",
         |args: &HashMap<String, Value>| -> tera::Result<Value> {
@@ -470,6 +478,8 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     );
 
     // reReplaceAll filter form: {{ Field | reReplaceAll(pattern="...", replacement="...") }}
+    // Note: regex is compiled per call. This is acceptable for template rendering
+    // where each pattern is typically used once per render pass.
     tera.register_filter(
         "reReplaceAll",
         |value: &Value, args: &HashMap<String, Value>| {
@@ -2662,5 +2672,83 @@ mod tests {
             result.is_err(),
             "invalid regex in filter form should produce an error"
         );
+    }
+
+    // --- Finding 7: `in` with numeric values ---
+
+    #[test]
+    fn test_in_numeric_value_as_string() {
+        // in(items=[1, 2, 3], value="2") — string needle matches numeric item via stringification
+        let vars = test_vars();
+        let result = render(
+            "{% if in(items=[1, 2, 3], value=\"2\") %}yes{% else %}no{% endif %}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "yes");
+    }
+
+    #[test]
+    fn test_in_numeric_value_as_number() {
+        // in(items=[1, 2, 3], value=2) — numeric needle matches numeric item
+        let vars = test_vars();
+        let result = render(
+            "{% if in(items=[1, 2, 3], value=2) %}yes{% else %}no{% endif %}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "yes");
+    }
+
+    #[test]
+    fn test_in_numeric_value_not_found() {
+        let vars = test_vars();
+        let result = render(
+            "{% if in(items=[1, 2, 3], value=4) %}yes{% else %}no{% endif %}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "no");
+    }
+
+    // --- Finding 8: `reReplaceAll` with empty input ---
+
+    #[test]
+    fn test_re_replace_all_empty_input() {
+        let vars = test_vars();
+        let result = render(
+            "{{ reReplaceAll(pattern=\".*\", input=\"\", replacement=\"x\") }}",
+            &vars,
+        )
+        .unwrap();
+        // `.*` matches the empty string once, producing "x"
+        assert_eq!(result, "x");
+    }
+
+    // --- Finding 9: `in` keyword conflict in {% set %} context ---
+
+    #[test]
+    fn test_in_set_context_keyword_conflict() {
+        // Verify that `in` as a function name works inside `{% set %}` assignment.
+        // Tera's parser uses `in` as a keyword in `{% for x in list %}`, so we need
+        // to confirm it doesn't choke when used as a function call in `{% set %}`.
+        let vars = test_vars();
+        let result = render(
+            "{% set result = in(items=[\"a\"], value=\"a\") %}{{ result }}",
+            &vars,
+        );
+        // If Tera can't parse this, we'll get an error. Check behavior.
+        match result {
+            Ok(val) => assert_eq!(val, "true"),
+            Err(e) => {
+                // If Tera rejects `in` as a function name in set context,
+                // this is a known limitation — the test documents it.
+                panic!(
+                    "Tera rejects `in` as function name in set context: {}. \
+                     Consider renaming to `listContains`.",
+                    e
+                );
+            }
+        }
     }
 }

@@ -1,9 +1,15 @@
 // Template preprocessing: converts Go-style syntax to Tera-native syntax.
 //
 // Pass 1 (`preprocess_strip_dots`): strips leading dots from `{{ .Field }}` → `{{ Field }}`.
-// Pass 2 (`preprocess_positional_syntax`): converts positional function calls to named-arg syntax:
+// Pass 2 (`preprocess_list_subexpr`): rewrites `(list ...)` subexpressions to Tera array literals:
+//   `(list "a" "b" "c")` → `["a", "b", "c"]`
+//   `(list .Os "windows")` → (after dot-strip) `[Os, "windows"]`
+// Pass 3 (`preprocess_positional_syntax`): converts positional function calls to named-arg syntax
+//   for `replace`, `split`, `contains`, `in`, and `reReplaceAll`:
 //   `{{ replace Version "v" "" }}` → `{{ replace(s=Version, old="v", new="") }}`
 //   `{{ Version | replace "v" "" }}` → `{{ Version | replace(from="v", to="") }}`
+//   `{{ in (list "a" "b") "a" }}` → `{{ in(items=["a", "b"], value="a") }}`
+//   `{{ reReplaceAll "v" Tag "" }}` → `{{ reReplaceAll(pattern="v", input=Tag, replacement="") }}`
 
 use regex::Regex;
 use std::borrow::Cow;
@@ -88,13 +94,15 @@ fn preprocess_strip_dots(template: &str) -> String {
 }
 
 /// Regex matching `(list "a" "b" ...)` subexpressions inside template blocks.
-/// Captures the inner quoted strings (variadic args to `list`).
-/// Each item independently matches either double- or single-quoted strings,
-/// supporting mixed quote styles and escaped quotes within strings.
+/// Captures the inner arguments (variadic args to `list`).
+/// Each item independently matches:
+/// - Double-quoted strings with escaped-quote support: `"hello \"world\""`
+/// - Single-quoted strings with escaped-quote support: `'it\'s'`
+/// - Bare identifiers (variable references): `Os`, `Env.FOO`, `Version`
 // SAFETY: Built from deterministic string literals; the resulting pattern is known to be valid.
 static LIST_SUBEXPR_RE: LazyLock<Regex> = LazyLock::new(|| {
-    // A single quoted item: double-quoted with escaped-quote support, OR single-quoted with same.
-    let item = r#"(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')"#;
+    // A single item: quoted string OR bare identifier (dotted paths like Env.FOO allowed).
+    let item = r#"(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[a-zA-Z_][a-zA-Z0-9_.]*)"#;
     let pattern = format!(r"\(list\s+({item}(?:\s+{item})*)\)");
     Regex::new(&pattern).unwrap()
 });
@@ -116,11 +124,11 @@ fn preprocess_list_subexpr(template: &str) -> String {
             LIST_SUBEXPR_RE
                 .replace_all(block, |lcaps: &regex::Captures| {
                     let inner = &lcaps[1];
-                    // Split quoted strings and rejoin as a Tera array literal.
-                    // Handles escaped quotes inside strings (e.g., "hello \"world\"").
-                    static QUOTED_RE: LazyLock<Regex> =
-                        LazyLock::new(|| Regex::new(r#""(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'"#).unwrap());
-                    let items: Vec<&str> = QUOTED_RE.find_iter(inner).map(|m| m.as_str()).collect();
+                    // Split items (quoted strings or bare identifiers) and rejoin as a Tera array literal.
+                    // Bare identifiers pass through as variable references: `[Os, "windows"]`.
+                    static ITEM_RE: LazyLock<Regex> =
+                        LazyLock::new(|| Regex::new(r#""(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[a-zA-Z_][a-zA-Z0-9_.]*"#).unwrap());
+                    let items: Vec<&str> = ITEM_RE.find_iter(inner).map(|m| m.as_str()).collect();
                     format!("[{}]", items.join(", "))
                 })
                 .to_string()
@@ -130,17 +138,21 @@ fn preprocess_list_subexpr(template: &str) -> String {
 
 /// Pass 3: Convert Go-style positional function calls to Tera named-arg syntax.
 ///
-/// Handles two forms for `replace`, `split`, and `contains`:
+/// Handles two forms for `replace`, `split`, `contains`, `in`, and `reReplaceAll`:
 ///
 /// **Standalone (function) form:**
 /// - `{{ replace Version "v" "" }}` → `{{ replace(s=Version, old="v", new="") }}`
 /// - `{{ split Version "." }}` → `{{ split(s=Version, sep=".") }}`
 /// - `{{ contains Version "rc" }}` → `{{ contains(s=Version, substr="rc") }}`
+/// - `{{ in ["a","b"] "a" }}` → `{{ in(items=["a","b"], value="a") }}`
+/// - `{{ reReplaceAll "v" Tag "" }}` → `{{ reReplaceAll(pattern="v", input=Tag, replacement="") }}`
 ///
 /// **Piped (filter) form:**
 /// - `{{ Version | replace "v" "" }}` → `{{ Version | replace(from="v", to="") }}`
 /// - `{{ Version | split "." }}` → `{{ Version | split(sep=".") }}`
 /// - `{{ Version | contains "rc" }}` → `{{ Version | contains(substr="rc") }}`
+/// - `{{ myList | in "val" }}` → `{{ myList | in(value="val") }}`
+/// - `{{ Tag | reReplaceAll "v" "" }}` → `{{ Tag | reReplaceAll(pattern="v", replacement="") }}`
 ///
 /// Already-named-arg syntax (contains `(`) is passed through unchanged.
 fn preprocess_positional_syntax(template: &str) -> String {
@@ -940,6 +952,52 @@ mod tests {
         assert_eq!(
             result,
             "{{ in(items=[\"double\", 'single', \"another\"], value=\"double\") }}"
+        );
+    }
+
+    // --- Finding 5: `(list ...)` with bare identifiers (variable references) ---
+
+    #[test]
+    fn test_preprocess_list_subexpr_with_bare_identifier() {
+        // (list .Os "windows") → after dot-strip: (list Os "windows") → [Os, "windows"]
+        let input = "{{ in (list .Os \"windows\") \"linux\" }}";
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            "{{ in(items=[Os, \"windows\"], value=\"linux\") }}"
+        );
+    }
+
+    #[test]
+    fn test_preprocess_list_subexpr_with_dotted_path() {
+        // (list .Env.FOO "fallback") → after dot-strip: (list Env.FOO "fallback") → [Env.FOO, "fallback"]
+        let input = "{{ in (list .Env.FOO \"fallback\") \"val\" }}";
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            "{{ in(items=[Env.FOO, \"fallback\"], value=\"val\") }}"
+        );
+    }
+
+    #[test]
+    fn test_preprocess_list_subexpr_all_bare_identifiers() {
+        // (list .Os .Arch) → after dot-strip: (list Os Arch) → [Os, Arch]
+        let input = "{{ in (list .Os .Arch) \"linux\" }}";
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            "{{ in(items=[Os, Arch], value=\"linux\") }}"
+        );
+    }
+
+    #[test]
+    fn test_preprocess_list_subexpr_mixed_vars_and_strings() {
+        // (list .Os "windows" .Arch) → after dot-strip: (list Os "windows" Arch) → [Os, "windows", Arch]
+        let input = "{{ in (list .Os \"windows\" .Arch) \"test\" }}";
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            "{{ in(items=[Os, \"windows\", Arch], value=\"test\") }}"
         );
     }
 }
