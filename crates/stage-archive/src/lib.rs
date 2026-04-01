@@ -1217,6 +1217,11 @@ impl Stage for ArchiveStage {
                             "ArtifactExt",
                             anodize_core::template::extract_artifact_ext(&archive_filename),
                         );
+                        // Set ArtifactID from archive config id (Pro addition)
+                        tvars.set(
+                            "ArtifactID",
+                            archive_cfg.id.as_deref().unwrap_or(""),
+                        );
 
                         let mut metadata = HashMap::from([
                             ("format".to_string(), format.clone()),
@@ -1265,6 +1270,7 @@ impl Stage for ArchiveStage {
         ctx.template_vars_mut().set("ArtifactName", "");
         ctx.template_vars_mut().set("ArtifactPath", "");
         ctx.template_vars_mut().set("ArtifactExt", "");
+        ctx.template_vars_mut().set("ArtifactID", "");
 
         for artifact in new_artifacts {
             ctx.artifacts.add(artifact);

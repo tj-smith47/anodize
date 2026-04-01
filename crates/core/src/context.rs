@@ -29,6 +29,8 @@ pub struct ContextOptions {
     /// Partial build target for split/merge mode. When set, the build stage
     /// filters targets to only those matching this partial target.
     pub partial_target: Option<PartialTarget>,
+    /// When true, running with `--merge` flag (merging artifacts from split builds).
+    pub merge: bool,
 }
 
 impl Default for ContextOptions {
@@ -48,6 +50,7 @@ impl Default for ContextOptions {
             release_notes_path: None,
             fail_fast: false,
             partial_target: None,
+            merge: false,
         }
     }
 }
@@ -159,6 +162,11 @@ impl Context {
     /// - `IsDraft` — "false" (stages may override to "true")
     /// - `IsSingleTarget` — "true"/"false" based on single_target option
     /// - `PreviousTag` — previous matching tag (or empty)
+    /// - `PrefixedTag` — tag prefixed with monorepo tag_prefix (Pro addition)
+    /// - `PrefixedPreviousTag` — previous tag prefixed with tag_prefix (Pro addition)
+    /// - `PrefixedSummary` — summary prefixed with tag_prefix (Pro addition)
+    /// - `IsRelease` — "true" if not snapshot and not nightly (Pro addition)
+    /// - `IsMerging` — "true" if running with --merge flag (Pro addition)
     ///
     /// **Stage-scoped variables** (NOT set here; set per-artifact during stage execution):
     /// - `Binary` — binary name, set by build stage per binary and archive stage per archive
@@ -219,6 +227,22 @@ impl Context {
                 .set("PreviousTag", info.previous_tag.as_deref().unwrap_or(""));
             self.template_vars
                 .set("FirstCommit", info.first_commit.as_deref().unwrap_or(""));
+
+            // Pro additions: PrefixedTag, PrefixedPreviousTag, PrefixedSummary
+            // Prepend tag_prefix from config (monorepo support).
+            let tag_prefix = self
+                .config
+                .tag
+                .as_ref()
+                .and_then(|t| t.tag_prefix.as_deref())
+                .unwrap_or("");
+            self.template_vars
+                .set("PrefixedTag", &format!("{}{}", tag_prefix, info.tag));
+            let prev_tag = info.previous_tag.as_deref().unwrap_or("");
+            self.template_vars
+                .set("PrefixedPreviousTag", &format!("{}{}", tag_prefix, prev_tag));
+            self.template_vars
+                .set("PrefixedSummary", &format!("{}{}", tag_prefix, info.summary));
         }
 
         self.template_vars.set(
@@ -253,6 +277,17 @@ impl Context {
             } else {
                 "false"
             },
+        );
+
+        // Pro addition: IsRelease — true if this is a regular release (not snapshot, not nightly).
+        let is_release = !self.options.snapshot && !self.options.nightly;
+        self.template_vars
+            .set("IsRelease", if is_release { "true" } else { "false" });
+
+        // Pro addition: IsMerging — true if running with --merge flag.
+        self.template_vars.set(
+            "IsMerging",
+            if self.options.merge { "true" } else { "false" },
         );
     }
 
@@ -318,6 +353,64 @@ impl Context {
             .unwrap_or_default();
         self.template_vars.set("ReleaseNotes", &notes);
     }
+
+    /// Refresh the `Artifacts` structured template variable from the current
+    /// artifact registry. Should be called before rendering release body and
+    /// announce templates so they can iterate over all artifacts.
+    ///
+    /// Each artifact is serialized as a map with keys: `name`, `path`, `target`,
+    /// `kind`, `crate_name`, and `metadata`.
+    pub fn refresh_artifacts_var(&mut self) {
+        let artifacts_value: Vec<serde_json::Value> = self
+            .artifacts
+            .all()
+            .iter()
+            .map(|a| {
+                serde_json::json!({
+                    "name": a.name,
+                    "path": a.path.to_string_lossy(),
+                    "target": a.target.as_deref().unwrap_or(""),
+                    "kind": a.kind.as_str(),
+                    "crate_name": a.crate_name,
+                    "metadata": a.metadata,
+                })
+            })
+            .collect();
+        // Convert serde_json::Value to tera::Value (both are serde_json::Value under the hood).
+        let tera_value =
+            tera::Value::Array(artifacts_value.into_iter().map(json_to_tera).collect());
+        self.template_vars
+            .set_structured("Artifacts", tera_value);
+    }
+
+    /// Populate the `Metadata` structured template variable from config.metadata.
+    ///
+    /// Exposes the project metadata block as a nested map with keys:
+    /// `description`, `homepage`, `license`, `maintainers`, `mod_timestamp`.
+    /// Missing fields are empty strings / empty arrays.
+    pub fn populate_metadata_var(&mut self) {
+        let meta = self.config.metadata.as_ref();
+        let mod_timestamp = meta
+            .and_then(|m| m.mod_timestamp.as_deref())
+            .unwrap_or("");
+
+        let meta_map = serde_json::json!({
+            "description": "",
+            "homepage": "",
+            "license": "",
+            "maintainers": [],
+            "mod_timestamp": mod_timestamp,
+        });
+        self.template_vars
+            .set_structured("Metadata", json_to_tera(meta_map));
+    }
+}
+
+/// Convert a `serde_json::Value` to a `tera::Value`.
+/// Tera's `Value` is just a re-export of `serde_json::Value`, so this is a
+/// no-op type alias cast in practice.
+fn json_to_tera(v: serde_json::Value) -> tera::Value {
+    v
 }
 
 /// Map Rust's `std::env::consts::OS` to Go-compatible GOOS naming.
@@ -959,5 +1052,344 @@ mod tests {
 
         let result = ctx.render_template("{{ .Checksums }}").unwrap();
         assert_eq!(result, checksum_text);
+    }
+
+    // --- Pro template variable tests ---
+
+    #[test]
+    fn test_prefixed_tag_with_tag_prefix() {
+        let mut config = Config::default();
+        config.tag = Some(crate::config::TagConfig {
+            tag_prefix: Some("api/".to_string()),
+            ..Default::default()
+        });
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.git_info = Some(make_git_info(false, None));
+        ctx.populate_git_vars();
+
+        assert_eq!(
+            ctx.template_vars().get("PrefixedTag"),
+            Some(&"api/v1.2.3".to_string())
+        );
+    }
+
+    #[test]
+    fn test_prefixed_tag_without_tag_prefix() {
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.git_info = Some(make_git_info(false, None));
+        ctx.populate_git_vars();
+
+        // No tag_prefix configured — PrefixedTag should equal Tag
+        assert_eq!(
+            ctx.template_vars().get("PrefixedTag"),
+            Some(&"v1.2.3".to_string())
+        );
+    }
+
+    #[test]
+    fn test_prefixed_previous_tag_with_tag_prefix() {
+        let mut config = Config::default();
+        config.tag = Some(crate::config::TagConfig {
+            tag_prefix: Some("api/".to_string()),
+            ..Default::default()
+        });
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.git_info = Some(make_git_info(false, None));
+        ctx.populate_git_vars();
+
+        assert_eq!(
+            ctx.template_vars().get("PrefixedPreviousTag"),
+            Some(&"api/v1.2.2".to_string())
+        );
+    }
+
+    #[test]
+    fn test_prefixed_previous_tag_empty_when_no_previous() {
+        let mut config = Config::default();
+        config.tag = Some(crate::config::TagConfig {
+            tag_prefix: Some("api/".to_string()),
+            ..Default::default()
+        });
+        let mut ctx = Context::new(config, ContextOptions::default());
+        let mut info = make_git_info(false, None);
+        info.previous_tag = None;
+        ctx.git_info = Some(info);
+        ctx.populate_git_vars();
+
+        // Prefix is prepended even to empty previous tag
+        assert_eq!(
+            ctx.template_vars().get("PrefixedPreviousTag"),
+            Some(&"api/".to_string())
+        );
+    }
+
+    #[test]
+    fn test_prefixed_summary_with_tag_prefix() {
+        let mut config = Config::default();
+        config.tag = Some(crate::config::TagConfig {
+            tag_prefix: Some("api/".to_string()),
+            ..Default::default()
+        });
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.git_info = Some(make_git_info(false, None));
+        ctx.populate_git_vars();
+
+        assert_eq!(
+            ctx.template_vars().get("PrefixedSummary"),
+            Some(&"api/v1.2.3-0-gabc123d".to_string())
+        );
+    }
+
+    #[test]
+    fn test_is_release_true_for_normal_release() {
+        let config = Config::default();
+        let opts = ContextOptions {
+            snapshot: false,
+            nightly: false,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        ctx.git_info = Some(make_git_info(false, None));
+        ctx.populate_git_vars();
+
+        assert_eq!(
+            ctx.template_vars().get("IsRelease"),
+            Some(&"true".to_string())
+        );
+    }
+
+    #[test]
+    fn test_is_release_false_for_snapshot() {
+        let config = Config::default();
+        let opts = ContextOptions {
+            snapshot: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        ctx.git_info = Some(make_git_info(false, None));
+        ctx.populate_git_vars();
+
+        assert_eq!(
+            ctx.template_vars().get("IsRelease"),
+            Some(&"false".to_string())
+        );
+    }
+
+    #[test]
+    fn test_is_release_false_for_nightly() {
+        let config = Config::default();
+        let opts = ContextOptions {
+            nightly: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        ctx.git_info = Some(make_git_info(false, None));
+        ctx.populate_git_vars();
+
+        assert_eq!(
+            ctx.template_vars().get("IsRelease"),
+            Some(&"false".to_string())
+        );
+    }
+
+    #[test]
+    fn test_is_merging_true_when_merge_flag_set() {
+        let config = Config::default();
+        let opts = ContextOptions {
+            merge: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        ctx.git_info = Some(make_git_info(false, None));
+        ctx.populate_git_vars();
+
+        assert_eq!(
+            ctx.template_vars().get("IsMerging"),
+            Some(&"true".to_string())
+        );
+    }
+
+    #[test]
+    fn test_is_merging_false_by_default() {
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.git_info = Some(make_git_info(false, None));
+        ctx.populate_git_vars();
+
+        assert_eq!(
+            ctx.template_vars().get("IsMerging"),
+            Some(&"false".to_string())
+        );
+    }
+
+    #[test]
+    fn test_refresh_artifacts_var_empty() {
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.refresh_artifacts_var();
+
+        // Should render as an empty array
+        let result = ctx
+            .render_template("{% for a in Artifacts %}{{ a.name }}{% endfor %}")
+            .unwrap();
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_refresh_artifacts_var_with_artifacts() {
+        use crate::artifact::{Artifact, ArtifactKind};
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp-1.0.0-linux-amd64.tar.gz"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("format".to_string(), "tar.gz".to_string())]),
+            size: None,
+        });
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+        ctx.refresh_artifacts_var();
+
+        // Iterate over artifacts and collect names
+        let result = ctx
+            .render_template(
+                "{% for a in Artifacts %}{{ a.name }},{% endfor %}",
+            )
+            .unwrap();
+        assert!(result.contains("myapp-1.0.0-linux-amd64.tar.gz"));
+        assert!(result.contains("myapp"));
+
+        // Check kind field
+        let result_kinds = ctx
+            .render_template(
+                "{% for a in Artifacts %}{{ a.kind }},{% endfor %}",
+            )
+            .unwrap();
+        assert!(result_kinds.contains("archive"));
+        assert!(result_kinds.contains("binary"));
+    }
+
+    #[test]
+    fn test_populate_metadata_var_with_mod_timestamp() {
+        let mut config = Config::default();
+        config.metadata = Some(crate::config::MetadataConfig {
+            mod_timestamp: Some("{{ .CommitTimestamp }}".to_string()),
+        });
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.populate_metadata_var();
+
+        // Metadata should be accessible as a nested map
+        let result = ctx
+            .render_template("{{ Metadata.mod_timestamp }}")
+            .unwrap();
+        assert_eq!(result, "{{ .CommitTimestamp }}");
+    }
+
+    #[test]
+    fn test_populate_metadata_var_empty_when_no_config() {
+        let config = Config::default();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.populate_metadata_var();
+
+        // Should render empty strings for missing fields
+        let result = ctx.render_template("{{ Metadata.description }}").unwrap();
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_artifact_id_template_var() {
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("ArtifactID", "default");
+
+        let result = ctx.render_template("{{ .ArtifactID }}").unwrap();
+        assert_eq!(result, "default");
+    }
+
+    #[test]
+    fn test_artifact_id_empty_when_not_set() {
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("ArtifactID", "");
+
+        let result = ctx.render_template("{{ .ArtifactID }}").unwrap();
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_pro_vars_rendered_in_templates() {
+        // Test that all Pro vars can be used in templates together
+        let mut config = Config::default();
+        config.tag = Some(crate::config::TagConfig {
+            tag_prefix: Some("api/".to_string()),
+            ..Default::default()
+        });
+        let opts = ContextOptions {
+            snapshot: false,
+            nightly: false,
+            merge: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        ctx.git_info = Some(make_git_info(false, None));
+        ctx.populate_git_vars();
+
+        let result = ctx
+            .render_template(
+                "{% if IsRelease %}release{% endif %}-{% if IsMerging %}merge{% endif %}-{{ .PrefixedTag }}",
+            )
+            .unwrap();
+        assert_eq!(result, "release-merge-api/v1.2.3");
+    }
+
+    #[test]
+    fn test_is_release_without_git_info() {
+        // IsRelease should still be set even without git info
+        let config = Config::default();
+        let opts = ContextOptions {
+            snapshot: false,
+            nightly: false,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        ctx.populate_git_vars();
+
+        assert_eq!(
+            ctx.template_vars().get("IsRelease"),
+            Some(&"true".to_string())
+        );
+    }
+
+    #[test]
+    fn test_is_merging_without_git_info() {
+        // IsMerging should still be set even without git info
+        let config = Config::default();
+        let opts = ContextOptions {
+            merge: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        ctx.populate_git_vars();
+
+        assert_eq!(
+            ctx.template_vars().get("IsMerging"),
+            Some(&"true".to_string())
+        );
     }
 }

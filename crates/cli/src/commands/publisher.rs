@@ -269,6 +269,11 @@ pub fn build_publisher_command(
         anodize_core::template::extract_artifact_ext(&artifact_name),
     );
     vars.set("ArtifactKind", artifact.kind.as_str());
+    // Set ArtifactID from artifact metadata "id" key (Pro addition)
+    vars.set(
+        "ArtifactID",
+        artifact.metadata.get("id").map(|s| s.as_str()).unwrap_or(""),
+    );
 
     // Also expose artifact metadata entries as template vars under the same key
     for (k, v) in &artifact.metadata {

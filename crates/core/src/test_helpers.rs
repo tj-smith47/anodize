@@ -309,6 +309,7 @@ impl TestContextBuilder {
             release_notes_path: None,
             fail_fast: false,
             partial_target: None,
+            merge: false,
         };
 
         let mut ctx = Context::new(config, options);

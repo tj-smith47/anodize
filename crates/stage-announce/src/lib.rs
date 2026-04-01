@@ -97,6 +97,10 @@ impl Stage for AnnounceStage {
 
     fn run(&self, ctx: &mut Context) -> Result<()> {
         let log = ctx.logger("announce");
+
+        // Refresh Artifacts template var so announce templates can iterate artifacts.
+        ctx.refresh_artifacts_var();
+
         let announce = match ctx.config.announce.clone() {
             Some(a) => a,
             None => {

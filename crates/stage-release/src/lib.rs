@@ -413,6 +413,9 @@ impl Stage for ReleaseStage {
                 ));
             }
 
+            // Refresh Artifacts template var so release body templates can iterate artifacts.
+            ctx.refresh_artifacts_var();
+
             // Resolve and template-render header/footer before building release body.
             let rendered_header = release_cfg
                 .header

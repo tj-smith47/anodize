@@ -187,10 +187,12 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
         release_notes_path: opts.release_notes,
         fail_fast: opts.fail_fast,
         partial_target: None, // Set by --split mode in run_split()
+        merge: opts.merge,
     };
     let mut ctx = Context::new(config.clone(), ctx_opts);
     ctx.populate_time_vars();
     ctx.populate_runtime_vars();
+    ctx.populate_metadata_var();
 
     // Populate user-defined env vars into template context
     helpers::setup_env(&mut ctx, &config, &log)?;

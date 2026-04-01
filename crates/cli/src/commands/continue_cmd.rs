@@ -36,11 +36,13 @@ pub fn run(opts: ContinueOpts) -> Result<()> {
         debug: opts.debug,
         skip_stages: opts.skip,
         token: opts.token,
+        merge: true, // `continue` command always implies --merge
         ..Default::default()
     };
     let mut ctx = Context::new(config.clone(), ctx_opts);
     ctx.populate_time_vars();
     ctx.populate_runtime_vars();
+    ctx.populate_metadata_var();
     helpers::setup_env(&mut ctx, &config, &log)?;
     helpers::resolve_git_context(&mut ctx, &config, &log)?;
 

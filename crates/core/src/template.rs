@@ -965,6 +965,10 @@ pub struct TemplateVars {
     /// Concrete stage->key mappings will be added as stages are enhanced
     /// (e.g. build_id, checksum, etc.).
     outputs: HashMap<String, String>,
+    /// Structured values (arrays, objects) inserted into the Tera context as-is.
+    /// Used for complex template variables like `Artifacts` (list of maps) and
+    /// `Metadata` (nested map) that cannot be represented as flat strings.
+    structured: HashMap<String, Value>,
 }
 
 impl TemplateVars {
@@ -974,6 +978,7 @@ impl TemplateVars {
             env: HashMap::new(),
             custom_vars: HashMap::new(),
             outputs: HashMap::new(),
+            structured: HashMap::new(),
         }
     }
 
@@ -1004,6 +1009,13 @@ impl TemplateVars {
     /// Get a pipeline output value by key.
     pub fn get_output(&self, key: &str) -> Option<&String> {
         self.outputs.get(key)
+    }
+
+    /// Set a structured (non-string) value accessible directly in Tera context.
+    /// Used for complex types like arrays of maps (`Artifacts`) or nested maps
+    /// (`Metadata`) that cannot be represented as flat key=value strings.
+    pub fn set_structured(&mut self, key: &str, value: Value) {
+        self.structured.insert(key.to_string(), value);
     }
 
     /// Return all template variables (excluding env and custom vars).
@@ -1074,6 +1086,11 @@ fn build_tera_context(vars: &TemplateVars) -> tera::Context {
     }
     if !runtime.is_empty() {
         ctx.insert("Runtime", &runtime);
+    }
+
+    // Insert structured values (arrays, objects) directly into the context.
+    for (k, v) in &vars.structured {
+        ctx.insert(k.as_str(), v);
     }
 
     ctx

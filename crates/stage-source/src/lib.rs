@@ -685,6 +685,11 @@ impl SourceStage {
                 "ArtifactExt",
                 anodize_core::template::extract_artifact_ext(artifact_name),
             );
+            // Set ArtifactID from artifact metadata "id" key (Pro addition)
+            ctx.template_vars_mut().set(
+                "ArtifactID",
+                artifact_meta.get("id").map(|s| s.as_str()).unwrap_or(""),
+            );
 
             // If artifact has target info, set Os/Arch/Target
             if let Some(target) = artifact_target {
@@ -788,6 +793,7 @@ impl SourceStage {
         ctx.template_vars_mut().set("Target", "");
         ctx.template_vars_mut().set("ArtifactName", "");
         ctx.template_vars_mut().set("ArtifactExt", "");
+        ctx.template_vars_mut().set("ArtifactID", "");
 
         Ok(())
     }
