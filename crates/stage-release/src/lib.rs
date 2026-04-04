@@ -317,6 +317,38 @@ fn build_release_json(
 }
 
 // ---------------------------------------------------------------------------
+// resolve_release_tag
+// ---------------------------------------------------------------------------
+
+/// Resolve the GitHub release tag for a crate.
+///
+/// If `release_tag_override` is `Some`, render it as a template and use the
+/// result.  Otherwise, render `tag_template`.  This implements the GoReleaser
+/// Pro `release.tag` override behaviour.
+pub(crate) fn resolve_release_tag(
+    ctx: &Context,
+    tag_template: &str,
+    release_tag_override: Option<&str>,
+    crate_name: &str,
+) -> Result<String> {
+    if let Some(override_tmpl) = release_tag_override {
+        ctx.render_template(override_tmpl).with_context(|| {
+            format!(
+                "release: render release.tag override for crate '{}'",
+                crate_name
+            )
+        })
+    } else {
+        ctx.render_template(tag_template).with_context(|| {
+            format!(
+                "release: render tag_template for crate '{}'",
+                crate_name
+            )
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ReleaseStage
 // ---------------------------------------------------------------------------
 
@@ -448,30 +480,13 @@ impl Stage for ReleaseStage {
                 rendered_footer.as_deref(),
             );
 
-            // Resolve tag from template.
-            let tag = ctx
-                .render_template(&crate_cfg.tag_template)
-                .with_context(|| {
-                    format!(
-                        "release: render tag_template for crate '{}'",
-                        crate_cfg.name
-                    )
-                })?;
-
-            // If release.tag is set, render it as a template and use the result
-            // as the GitHub release tag instead of the crate's tag_template.
-            // This is a GoReleaser Pro feature (release.tag) that allows
-            // overriding tag_name independently of the git tag.
-            let tag = if let Some(ref tag_override_tmpl) = release_cfg.tag {
-                ctx.render_template(tag_override_tmpl).with_context(|| {
-                    format!(
-                        "release: render release.tag override for crate '{}'",
-                        crate_cfg.name
-                    )
-                })?
-            } else {
-                tag
-            };
+            // Resolve tag: use release.tag override if set, otherwise tag_template.
+            let tag = resolve_release_tag(
+                ctx,
+                &crate_cfg.tag_template,
+                release_cfg.tag.as_deref(),
+                &crate_cfg.name,
+            )?;
 
             // Resolve release name.
             let release_name = if let Some(tmpl) = &release_cfg.name_template {
@@ -1492,69 +1507,41 @@ mod tests {
     // ---- release.tag override tests ----
 
     #[test]
-    fn test_dry_run_with_release_tag_override() {
-        // When release.tag is set, the override template should be rendered
-        // and used as the release tag instead of crate_cfg.tag_template.
-        let mut ctx = TestContextBuilder::new()
-            .project_name("test")
-            .dry_run(true)
-            .crates(vec![CrateConfig {
-                name: "testcrate".to_string(),
-                path: ".".to_string(),
-                tag_template: "myapp/v1.0.0".to_string(),
-                release: Some(ReleaseConfig {
-                    tag: Some("v1.0.0".to_string()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }])
-            .build();
-        let stage = ReleaseStage;
-        // Dry-run should succeed and use the overridden tag
-        assert!(stage.run(&mut ctx).is_ok());
+    fn test_resolve_release_tag_override() {
+        // When release.tag is set, the override value should be used as the
+        // release tag instead of crate_cfg.tag_template.
+        let ctx = TestContextBuilder::new().build();
+        let tag = resolve_release_tag(&ctx, "myapp/v1.0.0", Some("v1.0.0"), "testcrate").unwrap();
+        assert_eq!(tag, "v1.0.0", "release.tag override must take precedence over tag_template");
     }
 
     #[test]
-    fn test_dry_run_with_release_tag_template() {
+    fn test_resolve_release_tag_template_rendering() {
         // The release.tag field supports template rendering.
-        let mut ctx = TestContextBuilder::new()
-            .project_name("test")
-            .tag("v2.5.0")
-            .dry_run(true)
-            .crates(vec![CrateConfig {
-                name: "testcrate".to_string(),
-                path: ".".to_string(),
-                tag_template: "prefix/{{ .Tag }}".to_string(),
-                release: Some(ReleaseConfig {
-                    tag: Some("{{ .Tag }}".to_string()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }])
-            .build();
-        let stage = ReleaseStage;
-        assert!(stage.run(&mut ctx).is_ok());
+        let ctx = TestContextBuilder::new().tag("v2.5.0").build();
+        let tag = resolve_release_tag(&ctx, "prefix/{{ .Tag }}", Some("{{ .Tag }}"), "testcrate")
+            .unwrap();
+        assert_eq!(tag, "v2.5.0", "release.tag template must render to the git tag value");
     }
 
     #[test]
-    fn test_dry_run_without_release_tag_uses_tag_template() {
+    fn test_resolve_release_tag_falls_back_to_tag_template() {
         // When release.tag is None, the crate's tag_template is used as before.
-        let mut ctx = TestContextBuilder::new()
-            .project_name("test")
-            .dry_run(true)
-            .crates(vec![CrateConfig {
-                name: "testcrate".to_string(),
-                path: ".".to_string(),
-                tag_template: "v1.0.0".to_string(),
-                release: Some(ReleaseConfig {
-                    tag: None,
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }])
-            .build();
-        let stage = ReleaseStage;
-        assert!(stage.run(&mut ctx).is_ok());
+        let ctx = TestContextBuilder::new().build();
+        let tag = resolve_release_tag(&ctx, "v1.0.0", None, "testcrate").unwrap();
+        assert_eq!(tag, "v1.0.0", "with no release.tag, tag_template must be used");
+    }
+
+    #[test]
+    fn test_resolve_release_tag_invalid_template_errors() {
+        let ctx = TestContextBuilder::new().build();
+        let result = resolve_release_tag(&ctx, "ok", Some("{{ invalid"), "testcrate");
+        assert!(result.is_err(), "malformed template must return an error");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("release.tag override"),
+            "error should mention release.tag override context, got: {err}"
+        );
     }
 
     // ---- Error path tests (Task 3B) ----
