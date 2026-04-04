@@ -168,7 +168,7 @@ GoReleaser source: `internal/pipe/git/`, `internal/pipe/metadata/`, `internal/pi
 - [ ] Template files config section (id, src, dst, mode) — GoReleaser Pro feature, new processing stage
 - [ ] `templated_extra_files` across sections (render file CONTENTS as templates, distinct from extra_files) — GoReleaser Pro, needs per-stage wiring: checksums, release, docker, blob, publishers, snapcraft, dmg, nsis, app_bundles
 - [ ] Monorepo improvements (tag_prefix, dir) — GoReleaser Pro, needs PrefixedTag/PrefixedPreviousTag template var wiring
-- [ ] release.tag (Pro, template override) — needs wiring to release stage tag selection
+- [x] release.tag (Pro, template override) — config field + resolve_release_tag() wiring + template rendering + tests
 
 ### Session E2: Template Additions + Stage-Specific Extras
 

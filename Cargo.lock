@@ -51,6 +51,7 @@ dependencies = [
  "anodize-stage-sign",
  "anodize-stage-snapcraft",
  "anodize-stage-source",
+ "anodize-stage-templatefiles",
  "anodize-stage-upx",
  "anyhow",
  "chrono",
@@ -353,6 +354,16 @@ dependencies = [
  "serde_yaml_ng",
  "tempfile",
  "toml",
+]
+
+[[package]]
+name = "anodize-stage-templatefiles"
+version = "0.1.0"
+dependencies = [
+ "anodize-core",
+ "anyhow",
+ "serde_yaml_ng",
+ "tempfile",
 ]
 
 [[package]]

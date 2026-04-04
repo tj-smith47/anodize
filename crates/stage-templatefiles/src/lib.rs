@@ -1,0 +1,376 @@
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+use anyhow::{Context as _, Result};
+
+use anodize_core::artifact::{Artifact, ArtifactKind};
+use anodize_core::context::Context;
+use anodize_core::stage::Stage;
+
+/// Default file permission mode (octal 0o655 = decimal 429).
+const DEFAULT_MODE: u32 = 0o655;
+
+pub struct TemplateFilesStage;
+
+impl Stage for TemplateFilesStage {
+    fn name(&self) -> &str {
+        "templatefiles"
+    }
+
+    fn run(&self, ctx: &mut Context) -> Result<()> {
+        let entries = match ctx.config.template_files {
+            Some(ref entries) if !entries.is_empty() => entries.clone(),
+            _ => return Ok(()),
+        };
+
+        let log = ctx.logger("templatefiles");
+        let dist = ctx.config.dist.clone();
+        std::fs::create_dir_all(&dist)
+            .with_context(|| format!("templatefiles: failed to create dist dir: {}", dist.display()))?;
+
+        for entry in &entries {
+            let id = entry.id.as_deref().unwrap_or("default");
+
+            // Render the src path through the template engine
+            let rendered_src = ctx
+                .render_template(&entry.src)
+                .with_context(|| format!("templatefiles: failed to render src path for id '{}'", id))?;
+
+            // Read the source file
+            let src_path = PathBuf::from(&rendered_src);
+            let src_contents = std::fs::read_to_string(&src_path).with_context(|| {
+                format!(
+                    "templatefiles: source file '{}' not found (id: '{}')",
+                    src_path.display(),
+                    id
+                )
+            })?;
+
+            // Render the file contents through the template engine
+            let rendered_contents = ctx
+                .render_template(&src_contents)
+                .with_context(|| format!("templatefiles: failed to render contents of '{}' (id: '{}')", src_path.display(), id))?;
+
+            // Render the dst path through the template engine
+            let rendered_dst = ctx
+                .render_template(&entry.dst)
+                .with_context(|| format!("templatefiles: failed to render dst path for id '{}'", id))?;
+
+            // Write to dist/dst
+            let output_path = dist.join(&rendered_dst);
+            if let Some(parent) = output_path.parent() {
+                std::fs::create_dir_all(parent).with_context(|| {
+                    format!(
+                        "templatefiles: failed to create parent dir for '{}'",
+                        output_path.display()
+                    )
+                })?;
+            }
+            std::fs::write(&output_path, &rendered_contents).with_context(|| {
+                format!(
+                    "templatefiles: failed to write '{}'",
+                    output_path.display()
+                )
+            })?;
+
+            // Set file permissions
+            let mode = entry.mode.unwrap_or(DEFAULT_MODE);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&output_path, std::fs::Permissions::from_mode(mode))
+                    .with_context(|| {
+                        format!(
+                            "templatefiles: failed to set permissions on '{}'",
+                            output_path.display()
+                        )
+                    })?;
+            }
+
+            log.status(&format!(
+                "rendered '{}' -> '{}'",
+                rendered_src,
+                output_path.display()
+            ));
+
+            // Register as an artifact
+            ctx.artifacts.add(Artifact {
+                kind: ArtifactKind::UploadableFile,
+                path: output_path,
+                name: rendered_dst,
+                target: None,
+                crate_name: ctx.config.project_name.clone(),
+                metadata: HashMap::from([("id".to_string(), id.to_string())]),
+                size: None,
+            });
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anodize_core::test_helpers::TestContextBuilder;
+    use std::fs;
+    use tempfile::TempDir;
+
+    /// Helper: build a context with dist pointing to a temp directory.
+    fn build_ctx(tmp: &TempDir) -> Context {
+        let dist = tmp.path().join("dist");
+        fs::create_dir_all(&dist).unwrap();
+        TestContextBuilder::new()
+            .project_name("myapp")
+            .tag("v1.0.0")
+            .dist(dist)
+            .build()
+    }
+
+    #[test]
+    fn test_renders_template_file_contents() {
+        let tmp = TempDir::new().unwrap();
+        let mut ctx = build_ctx(&tmp);
+
+        // Create a template source file with template variables
+        let src_path = tmp.path().join("greeting.txt.tpl");
+        fs::write(&src_path, "Hello from {{ .ProjectName }} version {{ .Version }}!").unwrap();
+
+        ctx.config.template_files = Some(vec![
+            anodize_core::config::TemplateFileConfig {
+                id: Some("greeting".to_string()),
+                src: src_path.to_string_lossy().to_string(),
+                dst: "greeting.txt".to_string(),
+                mode: None,
+            },
+        ]);
+
+        let stage = TemplateFilesStage;
+        stage.run(&mut ctx).unwrap();
+
+        let output = ctx.config.dist.join("greeting.txt");
+        assert!(output.exists(), "output file should exist");
+        let contents = fs::read_to_string(&output).unwrap();
+        assert_eq!(contents, "Hello from myapp version 1.0.0!");
+    }
+
+    #[test]
+    fn test_writes_to_dist_dst_path() {
+        let tmp = TempDir::new().unwrap();
+        let mut ctx = build_ctx(&tmp);
+
+        let src_path = tmp.path().join("input.tpl");
+        fs::write(&src_path, "static content").unwrap();
+
+        ctx.config.template_files = Some(vec![
+            anodize_core::config::TemplateFileConfig {
+                id: None,
+                src: src_path.to_string_lossy().to_string(),
+                dst: "subdir/output.txt".to_string(),
+                mode: None,
+            },
+        ]);
+
+        let stage = TemplateFilesStage;
+        stage.run(&mut ctx).unwrap();
+
+        let output = ctx.config.dist.join("subdir/output.txt");
+        assert!(output.exists(), "output file in subdirectory should exist");
+        assert_eq!(fs::read_to_string(&output).unwrap(), "static content");
+    }
+
+    #[test]
+    fn test_default_mode_is_0o655() {
+        let tmp = TempDir::new().unwrap();
+        let mut ctx = build_ctx(&tmp);
+
+        let src_path = tmp.path().join("script.tpl");
+        fs::write(&src_path, "#!/bin/sh\necho hi").unwrap();
+
+        ctx.config.template_files = Some(vec![
+            anodize_core::config::TemplateFileConfig {
+                id: None,
+                src: src_path.to_string_lossy().to_string(),
+                dst: "script.sh".to_string(),
+                mode: None,
+            },
+        ]);
+
+        let stage = TemplateFilesStage;
+        stage.run(&mut ctx).unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let output = ctx.config.dist.join("script.sh");
+            let perms = fs::metadata(&output).unwrap().permissions();
+            assert_eq!(
+                perms.mode() & 0o7777,
+                0o655,
+                "default mode should be 0o655"
+            );
+        }
+    }
+
+    #[test]
+    fn test_custom_mode_is_applied() {
+        let tmp = TempDir::new().unwrap();
+        let mut ctx = build_ctx(&tmp);
+
+        let src_path = tmp.path().join("exec.tpl");
+        fs::write(&src_path, "#!/bin/bash").unwrap();
+
+        ctx.config.template_files = Some(vec![
+            anodize_core::config::TemplateFileConfig {
+                id: None,
+                src: src_path.to_string_lossy().to_string(),
+                dst: "exec.sh".to_string(),
+                mode: Some(0o755),
+            },
+        ]);
+
+        let stage = TemplateFilesStage;
+        stage.run(&mut ctx).unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let output = ctx.config.dist.join("exec.sh");
+            let perms = fs::metadata(&output).unwrap().permissions();
+            assert_eq!(
+                perms.mode() & 0o7777,
+                0o755,
+                "custom mode 0o755 should be applied"
+            );
+        }
+    }
+
+    #[test]
+    fn test_src_and_dst_paths_are_template_rendered() {
+        let tmp = TempDir::new().unwrap();
+        let mut ctx = build_ctx(&tmp);
+
+        // Create source file using a name that will be constructed via template
+        let src_path = tmp.path().join("myapp-install.tpl");
+        fs::write(&src_path, "install {{ .Tag }}").unwrap();
+
+        // Use template expressions in both src and dst
+        let src_template = format!("{}/{{{{ .ProjectName }}}}-install.tpl", tmp.path().display());
+        ctx.config.template_files = Some(vec![
+            anodize_core::config::TemplateFileConfig {
+                id: None,
+                src: src_template,
+                dst: "{{ .ProjectName }}-{{ .Version }}-install.sh".to_string(),
+                mode: None,
+            },
+        ]);
+
+        let stage = TemplateFilesStage;
+        stage.run(&mut ctx).unwrap();
+
+        let output = ctx.config.dist.join("myapp-1.0.0-install.sh");
+        assert!(output.exists(), "template-rendered dst path should exist");
+        assert_eq!(fs::read_to_string(&output).unwrap(), "install v1.0.0");
+    }
+
+    #[test]
+    fn test_noop_when_template_files_is_none() {
+        let tmp = TempDir::new().unwrap();
+        let mut ctx = build_ctx(&tmp);
+        ctx.config.template_files = None;
+
+        let stage = TemplateFilesStage;
+        stage.run(&mut ctx).unwrap();
+
+        // No artifacts should be registered
+        assert!(ctx.artifacts.all().is_empty());
+    }
+
+    #[test]
+    fn test_noop_when_template_files_is_empty() {
+        let tmp = TempDir::new().unwrap();
+        let mut ctx = build_ctx(&tmp);
+        ctx.config.template_files = Some(vec![]);
+
+        let stage = TemplateFilesStage;
+        stage.run(&mut ctx).unwrap();
+
+        assert!(ctx.artifacts.all().is_empty());
+    }
+
+    #[test]
+    fn test_error_when_src_file_does_not_exist() {
+        let tmp = TempDir::new().unwrap();
+        let mut ctx = build_ctx(&tmp);
+
+        ctx.config.template_files = Some(vec![
+            anodize_core::config::TemplateFileConfig {
+                id: Some("missing".to_string()),
+                src: "/nonexistent/path/template.tpl".to_string(),
+                dst: "output.txt".to_string(),
+                mode: None,
+            },
+        ]);
+
+        let stage = TemplateFilesStage;
+        let result = stage.run(&mut ctx);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("not found") || err.contains("No such file"),
+            "error should mention file not found: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_registers_artifact_with_correct_kind() {
+        let tmp = TempDir::new().unwrap();
+        let mut ctx = build_ctx(&tmp);
+
+        let src_path = tmp.path().join("data.tpl");
+        fs::write(&src_path, "some data").unwrap();
+
+        ctx.config.template_files = Some(vec![
+            anodize_core::config::TemplateFileConfig {
+                id: Some("my-file".to_string()),
+                src: src_path.to_string_lossy().to_string(),
+                dst: "data.txt".to_string(),
+                mode: None,
+            },
+        ]);
+
+        let stage = TemplateFilesStage;
+        stage.run(&mut ctx).unwrap();
+
+        let artifacts = ctx.artifacts.by_kind(ArtifactKind::UploadableFile);
+        assert_eq!(artifacts.len(), 1);
+        assert_eq!(artifacts[0].name, "data.txt");
+        assert_eq!(artifacts[0].crate_name, "myapp");
+        assert_eq!(artifacts[0].metadata.get("id").unwrap(), "my-file");
+    }
+
+    #[test]
+    fn test_default_id_is_default() {
+        let tmp = TempDir::new().unwrap();
+        let mut ctx = build_ctx(&tmp);
+
+        let src_path = tmp.path().join("file.tpl");
+        fs::write(&src_path, "content").unwrap();
+
+        ctx.config.template_files = Some(vec![
+            anodize_core::config::TemplateFileConfig {
+                id: None,
+                src: src_path.to_string_lossy().to_string(),
+                dst: "file.txt".to_string(),
+                mode: None,
+            },
+        ]);
+
+        let stage = TemplateFilesStage;
+        stage.run(&mut ctx).unwrap();
+
+        let artifacts = ctx.artifacts.by_kind(ArtifactKind::UploadableFile);
+        assert_eq!(artifacts[0].metadata.get("id").unwrap(), "default");
+    }
+}

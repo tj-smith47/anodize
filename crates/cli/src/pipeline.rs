@@ -271,6 +271,7 @@ impl Pipeline {
             "flatpak",
             "notarize",
             "source",
+            "templatefiles",
             "changelog",
             "checksum",
             "sign",
@@ -344,6 +345,7 @@ pub fn build_release_pipeline() -> Pipeline {
     use anodize_stage_appbundle::AppBundleStage;
     use anodize_stage_flatpak::FlatpakStage;
     use anodize_stage_notarize::NotarizeStage;
+    use anodize_stage_templatefiles::TemplateFilesStage;
 
     let mut p = Pipeline::new();
     p.add(Box::new(BuildStage));
@@ -363,6 +365,8 @@ pub fn build_release_pipeline() -> Pipeline {
     // Notarize runs after AppBundle, DMG, and PKG stages but before checksum/sign.
     p.add(Box::new(NotarizeStage));
     p.add(Box::new(SourceStage));
+    // Template files run after source but before checksum so they are checksummed and signed.
+    p.add(Box::new(TemplateFilesStage));
     p.add(Box::new(ChecksumStage));
     p.add(Box::new(SignStage));
     p.add(Box::new(ReleaseStage));
@@ -430,6 +434,7 @@ pub fn build_merge_pipeline() -> Pipeline {
     use anodize_stage_appbundle::AppBundleStage;
     use anodize_stage_flatpak::FlatpakStage;
     use anodize_stage_notarize::NotarizeStage;
+    use anodize_stage_templatefiles::TemplateFilesStage;
 
     let mut p = Pipeline::new();
     // Changelog runs before archive so release notes are available for archive naming.
@@ -447,6 +452,8 @@ pub fn build_merge_pipeline() -> Pipeline {
     // Notarize runs after AppBundle, DMG, and PKG stages but before checksum/sign.
     p.add(Box::new(NotarizeStage));
     p.add(Box::new(SourceStage));
+    // Template files run after source but before checksum so they are checksummed and signed.
+    p.add(Box::new(TemplateFilesStage));
     p.add(Box::new(ChecksumStage));
     p.add(Box::new(SignStage));
     p.add(Box::new(ReleaseStage));

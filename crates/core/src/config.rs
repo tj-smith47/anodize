@@ -93,6 +93,9 @@ pub struct Config {
     pub notarize: Option<NotarizeConfig>,
     /// Project metadata configuration (applied to metadata.json output files).
     pub metadata: Option<MetadataConfig>,
+    /// Template files to render and include as release artifacts.
+    /// File contents are processed through the template engine.
+    pub template_files: Option<Vec<TemplateFileConfig>>,
 }
 
 /// Helper schema function for the signs field (accepts object or array).
@@ -163,6 +166,7 @@ impl Default for Config {
             release: None,
             notarize: None,
             metadata: None,
+            template_files: None,
         }
     }
 }
@@ -3740,6 +3744,30 @@ pub struct MetadataConfig {
     /// When set, rendered late in the pipeline and applied as file mtime.
     /// Exposed as `{{ .Metadata.ModTimestamp }}`.
     pub mod_timestamp: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// TemplateFileConfig
+// ---------------------------------------------------------------------------
+
+/// Configuration for a template file that is rendered through the template
+/// engine and placed in the dist directory as a release artifact.
+///
+/// GoReleaser Pro feature: all rendered template files are uploaded to the
+/// release by default. Both `src` and `dst` paths support template rendering.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct TemplateFileConfig {
+    /// Identifier for this template file entry (default: "default").
+    pub id: Option<String>,
+    /// Source template file path. The file contents are rendered through the template engine.
+    /// Templates: allowed (in path itself).
+    pub src: String,
+    /// Destination filename, prefixed with the dist directory.
+    /// Templates: allowed.
+    pub dst: String,
+    /// File permissions in octal (default: 0o655).
+    pub mode: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -8256,5 +8284,47 @@ crates:
                 other
             ),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // TemplateFileConfig tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_template_files_parses_from_yaml() {
+        let yaml = r#"
+project_name: myproject
+crates: []
+template_files:
+  - id: install-script
+    src: install.sh.tpl
+    dst: install.sh
+    mode: 493
+  - src: README.md.tpl
+    dst: README.md
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let tfs = config.template_files.unwrap();
+        assert_eq!(tfs.len(), 2);
+
+        assert_eq!(tfs[0].id.as_deref(), Some("install-script"));
+        assert_eq!(tfs[0].src, "install.sh.tpl");
+        assert_eq!(tfs[0].dst, "install.sh");
+        assert_eq!(tfs[0].mode, Some(493)); // 0o755
+
+        assert_eq!(tfs[1].id, None);
+        assert_eq!(tfs[1].src, "README.md.tpl");
+        assert_eq!(tfs[1].dst, "README.md");
+        assert_eq!(tfs[1].mode, None);
+    }
+
+    #[test]
+    fn test_template_files_defaults_to_none() {
+        let yaml = r#"
+project_name: myproject
+crates: []
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(config.template_files.is_none());
     }
 }
