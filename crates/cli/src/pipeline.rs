@@ -1292,11 +1292,12 @@ path = "shared.yaml"
             "expanded_val",
             "header value must be expanded"
         );
-        // Also verify the key would NOT survive expansion (proves we need to NOT expand it)
+        // Verify that expanding the key WOULD destroy it (returns empty since
+        // KEY_LITERAL is not set as an env var), proving we must NOT expand keys.
         assert_eq!(
             expand_env_vars(key),
-            "$KEY_LITERAL",
-            "key with $ followed by non-alpha is preserved (dollar-sign rule)"
+            "",
+            "expanding a key with valid var name destroys it — proves keys must not be expanded"
         );
 
         unsafe { std::env::remove_var("ANODIZE_HDR_VAL") };
