@@ -291,7 +291,9 @@ impl ArtifactRegistry {
 }
 
 /// Artifact kinds that should be included in size reporting.
-/// Matches GoReleaser's reportsizes filter: uploadable types + binaries + library outputs.
+/// Matches GoReleaser's reportsizes filter: all uploadable types (including
+/// UploadableBinary, Makeself, PyWheel, PySdist) + build outputs (Binary,
+/// UniversalBinary, Library, Header, CArchive, CShared, Wasm) + Snap.
 pub fn size_reportable_kinds() -> &'static [ArtifactKind] {
     &[
         // Uploadable types (all appear in releases)

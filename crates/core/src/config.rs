@@ -3415,7 +3415,9 @@ pub struct ChangelogConfig {
     /// Default: `"{{ ShortSHA }} {{ Message }}"`
     pub format: Option<String>,
     /// File paths to filter commits by. Only commits touching files under these
-    /// paths are included. Only works with `use: git`. Supports template rendering.
+    /// paths are included. Works with `use: git` for precise per-commit filtering.
+    /// With `use: github`, only the first path is used for API queries; multi-path
+    /// filtering is coarse. Supports template rendering.
     pub paths: Option<Vec<String>>,
     /// Title heading for the changelog. Default: "Changelog". Supports templates.
     pub title: Option<String>,

@@ -824,14 +824,14 @@ fn fetch_github_commits(
         let mut endpoint = format!("/repos/{owner}/{repo}/commits?per_page=100");
         if let Some(first_path) = paths.first() {
             // URL-encode the path to handle spaces, #, ?, & etc.
-            let encoded: String = first_path
-                .bytes()
-                .flat_map(|b| match b {
+            let mut encoded = String::with_capacity(first_path.len());
+            for b in first_path.bytes() {
+                match b {
                     b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9'
-                    | b'-' | b'_' | b'.' | b'~' | b'/' => vec![b as char],
-                    _ => format!("%{:02X}", b).chars().collect(),
-                })
-                .collect();
+                    | b'-' | b'_' | b'.' | b'~' | b'/' => encoded.push(b as char),
+                    _ => encoded.push_str(&format!("%{:02X}", b)),
+                }
+            }
             endpoint.push_str(&format!("&path={}", encoded));
         }
         (gh_api_get_paginated(&endpoint, token)?, None)
@@ -3039,6 +3039,57 @@ prompt:
                 assert!(src.from_file.is_none());
             }
             other => panic!("expected Source prompt, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_resolve_prompt_source_file_overrides_url() {
+        use anodize_core::config::{ChangelogAiPromptSource, ContentFromFile, ContentFromUrl, ResolvedPromptSource};
+        let src = ChangelogAiPromptSource {
+            from_file: Some(ContentFromFile { path: Some("./prompt.md".to_string()) }),
+            from_url: Some(ContentFromUrl { url: Some("https://example.com/p".to_string()), headers: None }),
+        };
+        match src.resolve() {
+            ResolvedPromptSource::File(p) => assert_eq!(p, "./prompt.md"),
+            other => panic!("expected File, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_resolve_prompt_source_url_only() {
+        use anodize_core::config::{ChangelogAiPromptSource, ContentFromUrl, ResolvedPromptSource};
+        let mut headers = std::collections::HashMap::new();
+        headers.insert("Auth".to_string(), "Bearer x".to_string());
+        let src = ChangelogAiPromptSource {
+            from_file: None,
+            from_url: Some(ContentFromUrl { url: Some("https://example.com/p".to_string()), headers: Some(headers) }),
+        };
+        match src.resolve() {
+            ResolvedPromptSource::Url { url, headers } => {
+                assert_eq!(url, "https://example.com/p");
+                assert_eq!(headers.unwrap().get("Auth").map(|s| s.as_str()), Some("Bearer x"));
+            }
+            other => panic!("expected Url, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_resolve_prompt_source_none() {
+        use anodize_core::config::{ChangelogAiPromptSource, ResolvedPromptSource};
+        let src = ChangelogAiPromptSource { from_file: None, from_url: None };
+        assert!(matches!(src.resolve(), ResolvedPromptSource::None));
+    }
+
+    #[test]
+    fn test_resolve_prompt_source_file_with_empty_path_falls_through() {
+        use anodize_core::config::{ChangelogAiPromptSource, ContentFromFile, ContentFromUrl, ResolvedPromptSource};
+        let src = ChangelogAiPromptSource {
+            from_file: Some(ContentFromFile { path: None }),
+            from_url: Some(ContentFromUrl { url: Some("https://fallback.com".to_string()), headers: None }),
+        };
+        match src.resolve() {
+            ResolvedPromptSource::Url { url, .. } => assert_eq!(url, "https://fallback.com"),
+            other => panic!("expected Url fallback, got: {:?}", other),
         }
     }
 
