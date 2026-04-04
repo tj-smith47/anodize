@@ -10,6 +10,9 @@ use serde::Serialize;
 pub enum ArtifactKind {
     // --- Build outputs ---
     Binary,
+    /// Binary marked for upload (checksummed, signed, released).
+    /// Distinct from Binary which is a raw build output.
+    UploadableBinary,
     UniversalBinary,
     Library,
     Header,
@@ -79,6 +82,7 @@ impl ArtifactKind {
     pub fn as_str(&self) -> &'static str {
         match self {
             ArtifactKind::Binary => "binary",
+            ArtifactKind::UploadableBinary => "uploadable_binary",
             ArtifactKind::UniversalBinary => "universal_binary",
             ArtifactKind::Library => "library",
             ArtifactKind::Header => "header",
@@ -128,6 +132,7 @@ impl ArtifactKind {
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "binary" => Some(ArtifactKind::Binary),
+            "uploadable_binary" => Some(ArtifactKind::UploadableBinary),
             "universal_binary" => Some(ArtifactKind::UniversalBinary),
             "library" => Some(ArtifactKind::Library),
             "header" => Some(ArtifactKind::Header),
@@ -307,8 +312,10 @@ pub fn size_reportable_kinds() -> &'static [ArtifactKind] {
         ArtifactKind::Installer,
         ArtifactKind::MacOsPackage,
         ArtifactKind::Snap,
+        ArtifactKind::PublishableSnapcraft,
         // Build outputs (GoReleaser reports Binary, CArchive, CShared, Header)
         ArtifactKind::Binary,
+        ArtifactKind::UploadableBinary,
         ArtifactKind::UniversalBinary,
         ArtifactKind::Library,
         ArtifactKind::Header,
@@ -324,10 +331,12 @@ pub fn size_reportable_kinds() -> &'static [ArtifactKind] {
 pub fn uploadable_kinds() -> &'static [ArtifactKind] {
     &[
         ArtifactKind::Archive,
+        ArtifactKind::UploadableBinary,
         ArtifactKind::SourceArchive,
         ArtifactKind::UploadableFile,
         ArtifactKind::Makeself,
         ArtifactKind::LinuxPackage,
+        ArtifactKind::PublishableSnapcraft,
         ArtifactKind::Flatpak,
         ArtifactKind::SourceRpm,
         ArtifactKind::Sbom,
@@ -339,7 +348,6 @@ pub fn uploadable_kinds() -> &'static [ArtifactKind] {
         ArtifactKind::DiskImage,
         ArtifactKind::Installer,
         ArtifactKind::MacOsPackage,
-        ArtifactKind::Snap,
     ]
 }
 
@@ -565,6 +573,7 @@ mod tests {
 
     #[test]
     fn test_artifact_kind_new_variants_serialize() {
+        assert_eq!(serde_json::to_value(ArtifactKind::UploadableBinary).unwrap(), "uploadable_binary");
         assert_eq!(serde_json::to_value(ArtifactKind::UniversalBinary).unwrap(), "universal_binary");
         assert_eq!(serde_json::to_value(ArtifactKind::Header).unwrap(), "header");
         assert_eq!(serde_json::to_value(ArtifactKind::CArchive).unwrap(), "c_archive");
@@ -609,7 +618,8 @@ mod tests {
     #[test]
     fn test_artifact_kind_parse_roundtrip_all_variants() {
         let all_variants = [
-            ArtifactKind::Binary, ArtifactKind::UniversalBinary,
+            ArtifactKind::Binary, ArtifactKind::UploadableBinary,
+            ArtifactKind::UniversalBinary,
             ArtifactKind::Library, ArtifactKind::Header,
             ArtifactKind::CArchive, ArtifactKind::CShared,
             ArtifactKind::Wasm, ArtifactKind::PyWheel,
@@ -638,7 +648,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("parse({:?}) returned None", s));
             assert_eq!(*variant, parsed, "roundtrip failed for {:?}", s);
         }
-        assert_eq!(all_variants.len(), 43, "update test when adding variants");
+        assert_eq!(all_variants.len(), 44, "update test when adding variants");
     }
 
     #[test]
