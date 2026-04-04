@@ -4332,3 +4332,77 @@ fn test_crate_config_default_includes_docker_manifests() {
     let c = CrateConfig::default();
     assert!(c.docker_manifests.is_none());
 }
+
+// ---- monorepo config tests ----
+
+#[test]
+fn test_parse_monorepo_both_fields() {
+    let yaml = r#"
+crates: []
+monorepo:
+  tag_prefix: "subproject1/"
+  dir: subproj1
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let mono = config.monorepo.expect("monorepo should be Some");
+    assert_eq!(mono.tag_prefix.as_deref(), Some("subproject1/"));
+    assert_eq!(mono.dir.as_deref(), Some("subproj1"));
+}
+
+#[test]
+fn test_parse_monorepo_only_tag_prefix() {
+    let yaml = r#"
+crates: []
+monorepo:
+  tag_prefix: "myapp/"
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let mono = config.monorepo.expect("monorepo should be Some");
+    assert_eq!(mono.tag_prefix.as_deref(), Some("myapp/"));
+    assert!(mono.dir.is_none());
+}
+
+#[test]
+fn test_parse_monorepo_only_dir() {
+    let yaml = r#"
+crates: []
+monorepo:
+  dir: packages/backend
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let mono = config.monorepo.expect("monorepo should be Some");
+    assert!(mono.tag_prefix.is_none());
+    assert_eq!(mono.dir.as_deref(), Some("packages/backend"));
+}
+
+#[test]
+fn test_parse_monorepo_absent_defaults_to_none() {
+    let yaml = "crates: []";
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    assert!(config.monorepo.is_none());
+}
+
+#[test]
+fn test_parse_monorepo_empty_map_defaults_to_empty() {
+    let yaml = r#"
+crates: []
+monorepo: {}
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let mono = config.monorepo.expect("monorepo should be Some with defaults");
+    assert!(mono.tag_prefix.is_none());
+    assert!(mono.dir.is_none());
+}
+
+#[test]
+fn test_monorepo_config_default_struct() {
+    let m = MonorepoConfig::default();
+    assert!(m.tag_prefix.is_none());
+    assert!(m.dir.is_none());
+}
+
+#[test]
+fn test_config_default_has_monorepo_none() {
+    let config = Config::default();
+    assert!(config.monorepo.is_none());
+}

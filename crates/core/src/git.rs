@@ -328,6 +328,21 @@ pub fn extract_tag_prefix(template: &str) -> Option<String> {
     None
 }
 
+/// Strip a monorepo tag prefix from a tag string.
+///
+/// If `tag` starts with `prefix`, returns the remainder; otherwise returns
+/// the original tag unchanged.
+///
+/// # Examples
+/// ```
+/// # use anodize_core::git::strip_monorepo_prefix;
+/// assert_eq!(strip_monorepo_prefix("subproject1/v1.2.3", "subproject1/"), "v1.2.3");
+/// assert_eq!(strip_monorepo_prefix("v1.2.3", "subproject1/"), "v1.2.3");
+/// ```
+pub fn strip_monorepo_prefix<'a>(tag: &'a str, prefix: &str) -> &'a str {
+    tag.strip_prefix(prefix).unwrap_or(tag)
+}
+
 /// Find the latest tag matching a template pattern.
 /// E.g., tag_template "cfgd-core-v{{ .Version }}" → matches tags like "cfgd-core-v1.2.3"
 ///
@@ -348,6 +363,22 @@ pub fn find_latest_tag_matching(
     tag_template: &str,
     git_config: Option<&GitConfig>,
     template_vars: Option<&TemplateVars>,
+) -> Result<Option<String>> {
+    find_latest_tag_matching_with_prefix(tag_template, git_config, template_vars, None)
+}
+
+/// Like [`find_latest_tag_matching`], but with optional monorepo prefix filtering.
+///
+/// When `monorepo_prefix` is `Some`:
+/// - Only tags starting with the prefix are considered.
+/// - The prefix is stripped before SemVer parsing (so `subproject1/v1.2.3`
+///   parses as `v1.2.3` for version comparison).
+/// - The FULL tag (with prefix) is returned as the result.
+pub fn find_latest_tag_matching_with_prefix(
+    tag_template: &str,
+    git_config: Option<&GitConfig>,
+    template_vars: Option<&TemplateVars>,
+    monorepo_prefix: Option<&str>,
 ) -> Result<Option<String>> {
     // Replace version placeholders with a sentinel, regex-escape everything
     // else, then swap the sentinel back to the version regex pattern.
@@ -405,13 +436,46 @@ pub fn find_latest_tag_matching(
 
     let mut matching: Vec<(SemVer, String)> = tags_output
         .lines()
-        .filter(|t| re.is_match(t))
+        // When monorepo_prefix is set, only consider tags starting with it.
+        .filter(|t| {
+            monorepo_prefix
+                .map(|pfx| t.starts_with(pfx))
+                .unwrap_or(true)
+        })
+        // For regex matching: when monorepo_prefix is set, strip the prefix
+        // before matching (the tag_template pattern matches the version portion).
+        .filter(|t| {
+            let tag_for_match = monorepo_prefix
+                .map(|pfx| strip_monorepo_prefix(t, pfx))
+                .unwrap_or(t);
+            re.is_match(tag_for_match)
+        })
         // Apply ignore_tags: exclude via glob matching (template-rendered).
-        .filter(|t| !ignore_tag_globs.iter().any(|pat| pat.matches(t)))
+        // In monorepo mode, match against the STRIPPED tag so that user-defined
+        // patterns like "v*-rc*" work without needing the monorepo prefix.
+        .filter(|t| {
+            let tag_for_ignore = monorepo_prefix
+                .map(|pfx| strip_monorepo_prefix(t, pfx))
+                .unwrap_or(t);
+            !ignore_tag_globs.iter().any(|pat| pat.matches(tag_for_ignore))
+        })
         // Apply ignore_tag_prefixes: exclude tags starting with any prefix
-        // (template-rendered).
-        .filter(|t| !rendered_ignore_prefixes.iter().any(|pfx| t.starts_with(pfx.as_str())))
-        .filter_map(|t| parse_semver_tag(t).ok().map(|v| (v, t.to_string())))
+        // (template-rendered). In monorepo mode, match against stripped tag.
+        .filter(|t| {
+            let tag_for_ignore = monorepo_prefix
+                .map(|pfx| strip_monorepo_prefix(t, pfx))
+                .unwrap_or(t);
+            !rendered_ignore_prefixes.iter().any(|pfx| tag_for_ignore.starts_with(pfx.as_str()))
+        })
+        // For SemVer parsing: strip the monorepo prefix before parsing.
+        .filter_map(|t| {
+            let tag_for_parse = monorepo_prefix
+                .map(|pfx| strip_monorepo_prefix(t, pfx))
+                .unwrap_or(t);
+            parse_semver_tag(tag_for_parse)
+                .ok()
+                .map(|v| (v, t.to_string()))
+        })
         .collect();
 
     if use_git_sort {
@@ -839,10 +903,28 @@ pub fn detect_github_repo() -> Result<(String, String)> {
 ///
 /// If that fails (e.g. `current_tag` is the very first tag), falls back to
 /// returning `None`.
+///
+/// **Note:** This variant is not monorepo-aware — in a monorepo, use
+/// [`find_previous_tag_with_prefix`] to ensure only tags from the same
+/// subproject are considered.
 pub fn find_previous_tag(
     current_tag: &str,
     git_config: Option<&GitConfig>,
     template_vars: Option<&TemplateVars>,
+) -> Result<Option<String>> {
+    find_previous_tag_with_prefix(current_tag, git_config, template_vars, None)
+}
+
+/// Like [`find_previous_tag`], but with optional monorepo prefix filtering.
+///
+/// When `monorepo_prefix` is `Some`, adds `--match=<prefix>*` to the
+/// `git describe` call so only tags from the same subproject are considered.
+/// The full tag (with prefix) is returned.
+pub fn find_previous_tag_with_prefix(
+    current_tag: &str,
+    git_config: Option<&GitConfig>,
+    template_vars: Option<&TemplateVars>,
+    monorepo_prefix: Option<&str>,
 ) -> Result<Option<String>> {
     let parent_ref = format!("{}^", current_tag);
 
@@ -861,7 +943,15 @@ pub fn find_previous_tag(
         exclude_args.push(format!("--exclude={}*", pfx));
     }
 
+    // When monorepo_prefix is set, constrain git describe to only consider
+    // tags matching this prefix. Without this, git describe would return
+    // the nearest reachable tag from ANY subproject.
+    let match_arg;
     let mut args: Vec<&str> = vec!["describe", "--tags", "--abbrev=0"];
+    if let Some(prefix) = monorepo_prefix {
+        match_arg = format!("--match={}*", prefix);
+        args.push(&match_arg);
+    }
     for ea in &exclude_args {
         args.push(ea.as_str());
     }
@@ -891,6 +981,10 @@ pub fn get_first_commit() -> Result<String> {
 ///
 /// Compares the dereferenced tag object (`git rev-parse {tag}^{{}}`) with
 /// `git rev-parse HEAD`. Returns `false` if either command fails.
+///
+/// Works with any tag name including monorepo-prefixed tags (e.g.
+/// `subproject1/v1.2.3`), since `git rev-parse` resolves tag refs by
+/// name regardless of slashes or prefixes.
 pub fn tag_points_at_head(tag: &str) -> Result<bool> {
     let deref = format!("{}^{{}}", tag);
     let tag_sha = git_output(&["rev-parse", &deref])?;
@@ -1580,6 +1674,191 @@ mod tests {
 
         let result = find_previous_tag("v2.0.0", None, None).unwrap();
         assert_eq!(result, Some("v1.0.0".to_string()));
+
+        std::env::set_current_dir(orig).unwrap();
+    }
+
+    // -----------------------------------------------------------------------
+    // strip_monorepo_prefix tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_strip_monorepo_prefix_with_match() {
+        assert_eq!(strip_monorepo_prefix("subproject1/v1.2.3", "subproject1/"), "v1.2.3");
+    }
+
+    #[test]
+    fn test_strip_monorepo_prefix_no_match() {
+        assert_eq!(strip_monorepo_prefix("v1.2.3", "subproject1/"), "v1.2.3");
+    }
+
+    #[test]
+    fn test_strip_monorepo_prefix_empty_prefix() {
+        assert_eq!(strip_monorepo_prefix("v1.2.3", ""), "v1.2.3");
+    }
+
+    #[test]
+    fn test_strip_monorepo_prefix_partial_match() {
+        // "sub" is a prefix of "subproject1/" but not the full prefix.
+        assert_eq!(strip_monorepo_prefix("subproject1/v1.2.3", "sub"), "project1/v1.2.3");
+    }
+
+    // -----------------------------------------------------------------------
+    // find_latest_tag_matching_with_prefix (monorepo) tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    #[serial]
+    fn test_find_latest_tag_with_monorepo_prefix_filters_and_returns_full_tag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_repo_with_tags(
+            dir,
+            &[
+                "v1.0.0",
+                "subproject1/v1.0.0",
+                "subproject1/v2.0.0",
+                "subproject2/v3.0.0",
+            ],
+        );
+
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir).unwrap();
+
+        // With monorepo prefix "subproject1/", should only find subproject1 tags
+        // and return the FULL tag (with prefix).
+        let result = find_latest_tag_matching_with_prefix(
+            "v{{ .Version }}",
+            None,
+            None,
+            Some("subproject1/"),
+        )
+        .unwrap();
+        assert_eq!(
+            result,
+            Some("subproject1/v2.0.0".to_string()),
+            "should return the full tag with prefix"
+        );
+
+        std::env::set_current_dir(orig).unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_latest_tag_with_monorepo_prefix_semver_comparison_uses_stripped_tag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        // Versions should be compared using the stripped tag
+        init_repo_with_tags(
+            dir,
+            &[
+                "myapp/v1.0.0",
+                "myapp/v2.0.0",
+                "myapp/v1.5.0",
+            ],
+        );
+
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir).unwrap();
+
+        let result = find_latest_tag_matching_with_prefix(
+            "v{{ .Version }}",
+            None,
+            None,
+            Some("myapp/"),
+        )
+        .unwrap();
+        assert_eq!(
+            result,
+            Some("myapp/v2.0.0".to_string()),
+            "should pick the highest version based on stripped semver"
+        );
+
+        std::env::set_current_dir(orig).unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_latest_tag_with_monorepo_prefix_no_matching_tags() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_repo_with_tags(dir, &["v1.0.0", "v2.0.0"]);
+
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir).unwrap();
+
+        // No tags start with "myapp/" so result should be None.
+        let result = find_latest_tag_matching_with_prefix(
+            "v{{ .Version }}",
+            None,
+            None,
+            Some("myapp/"),
+        )
+        .unwrap();
+        assert_eq!(result, None);
+
+        std::env::set_current_dir(orig).unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_latest_tag_with_monorepo_prefix_none_behaves_like_original() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_repo_with_tags(dir, &["v1.0.0", "v1.1.0", "v2.0.0"]);
+
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir).unwrap();
+
+        // Without monorepo prefix, should behave exactly like find_latest_tag_matching.
+        let result_with_prefix = find_latest_tag_matching_with_prefix(
+            "v{{ .Version }}",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let result_original = find_latest_tag_matching(
+            "v{{ .Version }}",
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(result_with_prefix, result_original);
+        assert_eq!(result_with_prefix, Some("v2.0.0".to_string()));
+
+        std::env::set_current_dir(orig).unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn test_find_latest_tag_with_monorepo_prefix_and_prerelease() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_repo_with_tags(
+            dir,
+            &[
+                "svc/v1.0.0",
+                "svc/v1.1.0-rc.1",
+                "svc/v1.1.0",
+            ],
+        );
+
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir).unwrap();
+
+        let result = find_latest_tag_matching_with_prefix(
+            "v{{ .Version }}",
+            None,
+            None,
+            Some("svc/"),
+        )
+        .unwrap();
+        assert_eq!(
+            result,
+            Some("svc/v1.1.0".to_string()),
+            "release v1.1.0 should win over v1.1.0-rc.1"
+        );
 
         std::env::set_current_dir(orig).unwrap();
     }

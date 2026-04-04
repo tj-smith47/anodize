@@ -1,7 +1,7 @@
 use anodize_core::config::ChangelogGroup;
 use anodize_core::context::Context;
 use anodize_core::git::{
-    find_latest_tag_matching, get_all_commits_paths, get_commits_between_paths,
+    find_latest_tag_matching_with_prefix, get_all_commits_paths, get_commits_between_paths,
 };
 use anodize_core::stage::Stage;
 use anodize_core::template::{self, TemplateVars};
@@ -597,22 +597,28 @@ impl Stage for ChangelogStage {
             let crate_name = crate_cfg.name.clone();
 
             // Find the previous tag for this crate.
-            let prev_tag = find_latest_tag_matching(
+            let monorepo_prefix = ctx.config.monorepo_tag_prefix();
+            let prev_tag = find_latest_tag_matching_with_prefix(
                 &crate_cfg.tag_template,
                 ctx.config.git.as_ref(),
                 Some(ctx.template_vars()),
+                monorepo_prefix,
             )
             .unwrap_or(None);
 
-            // Path filter: changelog-level `paths` takes precedence, then per-crate path.
+            // Path filter: changelog-level `paths` takes precedence, then per-crate path,
+            // then monorepo.dir as a fallback.
             // GoReleaser's changelog.paths filters git log to specific directories.
             // Only effective with `use: git`.
+            let monorepo_dir = ctx.config.monorepo_dir();
             let paths: Vec<String> = if !changelog_paths.is_empty() {
                 changelog_paths.clone()
-            } else if crate_cfg.path.is_empty() || crate_cfg.path == "." {
-                vec![]
-            } else {
+            } else if !crate_cfg.path.is_empty() && crate_cfg.path != "." {
                 vec![crate_cfg.path.clone()]
+            } else if let Some(dir) = monorepo_dir {
+                vec![dir.to_string()]
+            } else {
+                vec![]
             };
 
             // Warn when multiple paths are used with the GitHub backend, since

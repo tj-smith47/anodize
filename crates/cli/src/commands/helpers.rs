@@ -87,10 +87,12 @@ pub fn resolve_git_context(
             ));
             override_tag.clone()
         } else {
-            let latest_tag = match git::find_latest_tag_matching(
+            let monorepo_prefix = config.monorepo_tag_prefix();
+            let latest_tag = match git::find_latest_tag_matching_with_prefix(
                 &crate_cfg.tag_template,
                 config.git.as_ref(),
                 Some(ctx.template_vars()),
+                monorepo_prefix,
             ) {
                 Ok(found) => found,
                 Err(e) => {
@@ -155,10 +157,11 @@ pub fn resolve_git_context(
                     ));
                     git_info.previous_tag = Some(prev_override);
                 } else {
-                    git_info.previous_tag = git::find_previous_tag(
+                    git_info.previous_tag = git::find_previous_tag_with_prefix(
                         &tag,
                         config.git.as_ref(),
                         Some(ctx.template_vars()),
+                        config.monorepo_tag_prefix(),
                     )
                     .ok()
                     .flatten();

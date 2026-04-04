@@ -82,7 +82,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read config file: {}", path.display()))?;
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-    let config = match ext {
+    let mut config = match ext {
         "yaml" | "yml" => load_yaml_config_with_includes(path, &content)?,
         "toml" => load_toml_config_with_includes(path, &content)?,
         _ => bail!("unsupported config format: {}", ext),
@@ -93,7 +93,34 @@ pub fn load_config(path: &Path) -> Result<Config> {
     // Validate git.tag_sort if present
     anodize_core::config::validate_tag_sort(&config).map_err(|e| anyhow::anyhow!("{}", e))?;
 
+    // Apply monorepo defaults: when monorepo.dir is set and a crate's path
+    // is empty or ".", default it to monorepo.dir.
+    apply_monorepo_defaults(&mut config);
+
     Ok(config)
+}
+
+/// Apply monorepo configuration defaults to crate configs.
+///
+/// When `monorepo.dir` is set and a crate's `path` is empty or `"."`,
+/// the crate's path is defaulted to `monorepo.dir`. This matches
+/// GoReleaser Pro's behavior where monorepo.dir acts as the default
+/// working directory for all builds.
+///
+/// Note: `BuildConfig` does not have a `dir` field — builds inherit
+/// their working directory from `CrateConfig.path`, which is already
+/// defaulted here. `PublisherConfig.dir` and `StructuredHook.dir` are
+/// intentionally left alone since they represent explicit overrides.
+fn apply_monorepo_defaults(config: &mut Config) {
+    let monorepo_dir = config.monorepo_dir().map(|s| s.to_string());
+
+    if let Some(dir) = monorepo_dir {
+        for crate_cfg in &mut config.crates {
+            if crate_cfg.path.is_empty() || crate_cfg.path == "." {
+                crate_cfg.path = dir.clone();
+            }
+        }
+    }
 }
 
 /// Load a YAML config, processing `includes` by deep-merging included files

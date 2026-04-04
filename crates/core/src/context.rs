@@ -161,10 +161,10 @@ impl Context {
     /// - `IsNightly` — from context options
     /// - `IsDraft` — "false" (stages may override to "true")
     /// - `IsSingleTarget` — "true"/"false" based on single_target option
-    /// - `PreviousTag` — previous matching tag (or empty)
-    /// - `PrefixedTag` — tag prefixed with monorepo tag_prefix (Pro addition)
-    /// - `PrefixedPreviousTag` — previous tag prefixed with tag_prefix (Pro addition)
-    /// - `PrefixedSummary` — summary prefixed with tag_prefix (Pro addition)
+    /// - `PreviousTag` — previous matching tag, stripped in monorepo mode (or empty)
+    /// - `PrefixedTag` — full tag with monorepo prefix, or tag_prefix-prepended (Pro addition)
+    /// - `PrefixedPreviousTag` — full previous tag with prefix (Pro addition)
+    /// - `PrefixedSummary` — full summary with prefix (Pro addition)
     /// - `IsRelease` — "true" if not snapshot and not nightly (Pro addition)
     /// - `IsMerging` — "true" if running with --merge flag (Pro addition)
     ///
@@ -230,25 +230,78 @@ impl Context {
                 .set("FirstCommit", info.first_commit.as_deref().unwrap_or(""));
 
             // Pro additions: PrefixedTag, PrefixedPreviousTag, PrefixedSummary
-            // Prepend tag_prefix from config (monorepo support).
-            let tag_prefix = self
-                .config
-                .tag
-                .as_ref()
-                .and_then(|t| t.tag_prefix.as_deref())
-                .unwrap_or("");
-            self.template_vars
-                .set("PrefixedTag", &format!("{}{}", tag_prefix, info.tag));
-            let prev_tag = info.previous_tag.as_deref().unwrap_or("");
-            let prefixed_prev = if prev_tag.is_empty() {
-                String::new()
+            //
+            // When monorepo.tag_prefix is configured, the git tag already
+            // contains the prefix (e.g. "subproject1/v1.2.3"). In this case:
+            //   - Tag = prefix stripped (e.g. "v1.2.3")
+            //   - PrefixedTag = full tag (e.g. "subproject1/v1.2.3")
+            //   - PrefixedPreviousTag = full previous tag
+            //
+            // When monorepo is NOT configured, fall back to the original
+            // behavior: prepend tag.tag_prefix to construct PrefixedTag.
+            let monorepo_prefix = self.config.monorepo_tag_prefix();
+
+            // monorepo.tag_prefix takes precedence over tag.tag_prefix for
+            // PrefixedTag / PrefixedPreviousTag / PrefixedSummary behavior.
+            // When monorepo is configured, info.tag and info.summary already
+            // contain the prefix from git, so we strip for the base vars and
+            // use the raw values for the Prefixed variants.
+            if let Some(prefix) = monorepo_prefix {
+                // Monorepo mode: the tag in git_info is the FULL prefixed tag.
+                // PrefixedTag = full tag (already has prefix).
+                self.template_vars.set("PrefixedTag", &info.tag);
+
+                // Tag = prefix stripped. Override the Tag we set above.
+                let stripped_tag = crate::git::strip_monorepo_prefix(&info.tag, prefix);
+                self.template_vars.set("Tag", stripped_tag);
+
+                // Version: derive from the stripped tag (overrides the initial
+                // value set above from info.tag, which in monorepo mode still
+                // contains the prefix).
+                let version = stripped_tag
+                    .strip_prefix('v')
+                    .unwrap_or(stripped_tag)
+                    .to_string();
+                self.template_vars.set("Version", &version);
+
+                // PrefixedPreviousTag = full previous tag (already has prefix).
+                let prev_tag = info.previous_tag.as_deref().unwrap_or("");
+                self.template_vars
+                    .set("PrefixedPreviousTag", prev_tag);
+
+                // PreviousTag = prefix stripped, consistent with Tag being stripped.
+                let stripped_prev = crate::git::strip_monorepo_prefix(prev_tag, prefix);
+                self.template_vars.set("PreviousTag", stripped_prev);
+
+                // PrefixedSummary: info.summary from `git describe` already
+                // includes the monorepo prefix (e.g. "subproject1/v1.2.3-0-gabc123d"),
+                // so use it as-is for the prefixed variant.
+                self.template_vars
+                    .set("PrefixedSummary", &info.summary);
+                // Summary: strip the monorepo prefix for the base variant.
+                let stripped_summary = crate::git::strip_monorepo_prefix(&info.summary, prefix);
+                self.template_vars.set("Summary", stripped_summary);
             } else {
-                format!("{}{}", tag_prefix, prev_tag)
-            };
-            self.template_vars
-                .set("PrefixedPreviousTag", &prefixed_prev);
-            self.template_vars
-                .set("PrefixedSummary", &format!("{}{}", tag_prefix, info.summary));
+                // Non-monorepo: prepend tag.tag_prefix to construct PrefixedTag.
+                let tag_prefix = self
+                    .config
+                    .tag
+                    .as_ref()
+                    .and_then(|t| t.tag_prefix.as_deref())
+                    .unwrap_or("");
+                self.template_vars
+                    .set("PrefixedTag", &format!("{}{}", tag_prefix, info.tag));
+                let prev_tag = info.previous_tag.as_deref().unwrap_or("");
+                let prefixed_prev = if prev_tag.is_empty() {
+                    String::new()
+                } else {
+                    format!("{}{}", tag_prefix, prev_tag)
+                };
+                self.template_vars
+                    .set("PrefixedPreviousTag", &prefixed_prev);
+                self.template_vars
+                    .set("PrefixedSummary", &format!("{}{}", tag_prefix, info.summary));
+            }
         }
 
         self.template_vars.set(
@@ -1444,5 +1497,259 @@ mod tests {
             ctx.template_vars().get("IsMerging"),
             Some(&"true".to_string())
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Monorepo template variable tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_monorepo_tag_prefix_strips_tag_for_template_var() {
+        let mut config = Config::default();
+        config.monorepo = Some(crate::config::MonorepoConfig {
+            tag_prefix: Some("subproject1/".to_string()),
+            dir: None,
+        });
+        let mut ctx = Context::new(config, ContextOptions::default());
+
+        // Simulate a monorepo tag: the full prefixed tag is stored in git_info.
+        let mut info = make_git_info(false, None);
+        info.tag = "subproject1/v1.2.3".to_string();
+        info.previous_tag = Some("subproject1/v1.2.2".to_string());
+        info.summary = "subproject1/v1.2.3-0-gabc123d".to_string();
+        ctx.git_info = Some(info);
+        ctx.populate_git_vars();
+
+        let v = ctx.template_vars();
+        // Tag should have the prefix stripped.
+        assert_eq!(v.get("Tag"), Some(&"v1.2.3".to_string()));
+        // Version should derive from stripped tag.
+        assert_eq!(v.get("Version"), Some(&"1.2.3".to_string()));
+        // PrefixedTag should retain the full tag.
+        assert_eq!(
+            v.get("PrefixedTag"),
+            Some(&"subproject1/v1.2.3".to_string())
+        );
+        // PreviousTag should be stripped (consistent with Tag).
+        assert_eq!(v.get("PreviousTag"), Some(&"v1.2.2".to_string()));
+        // PrefixedPreviousTag should retain the full tag.
+        assert_eq!(
+            v.get("PrefixedPreviousTag"),
+            Some(&"subproject1/v1.2.2".to_string())
+        );
+        // Summary should be stripped.
+        assert_eq!(
+            v.get("Summary"),
+            Some(&"v1.2.3-0-gabc123d".to_string())
+        );
+        // PrefixedSummary should retain the full summary.
+        assert_eq!(
+            v.get("PrefixedSummary"),
+            Some(&"subproject1/v1.2.3-0-gabc123d".to_string())
+        );
+    }
+
+    #[test]
+    fn test_monorepo_prefixed_previous_tag() {
+        let mut config = Config::default();
+        config.monorepo = Some(crate::config::MonorepoConfig {
+            tag_prefix: Some("svc/".to_string()),
+            dir: None,
+        });
+        let mut ctx = Context::new(config, ContextOptions::default());
+
+        let mut info = make_git_info(false, None);
+        info.tag = "svc/v2.0.0".to_string();
+        info.previous_tag = Some("svc/v1.9.0".to_string());
+        ctx.git_info = Some(info);
+        ctx.populate_git_vars();
+
+        let v = ctx.template_vars();
+        // PrefixedPreviousTag should be the full previous tag.
+        assert_eq!(
+            v.get("PrefixedPreviousTag"),
+            Some(&"svc/v1.9.0".to_string())
+        );
+        // PreviousTag should be stripped (prefix removed), consistent with Tag.
+        assert_eq!(
+            v.get("PreviousTag"),
+            Some(&"v1.9.0".to_string())
+        );
+    }
+
+    #[test]
+    fn test_no_monorepo_falls_back_to_tag_prefix() {
+        // When monorepo is not set, PrefixedTag should use tag.tag_prefix.
+        let mut config = Config::default();
+        config.tag = Some(crate::config::TagConfig {
+            tag_prefix: Some("release/".to_string()),
+            ..Default::default()
+        });
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.git_info = Some(make_git_info(false, None));
+        ctx.populate_git_vars();
+
+        let v = ctx.template_vars();
+        // Tag is plain "v1.2.3" (not stripped because no monorepo).
+        assert_eq!(v.get("Tag"), Some(&"v1.2.3".to_string()));
+        // PrefixedTag should prepend tag_prefix.
+        assert_eq!(
+            v.get("PrefixedTag"),
+            Some(&"release/v1.2.3".to_string())
+        );
+        assert_eq!(
+            v.get("PrefixedPreviousTag"),
+            Some(&"release/v1.2.2".to_string())
+        );
+    }
+
+    #[test]
+    fn test_monorepo_overrides_tag_prefix_for_prefixed_vars() {
+        // When both monorepo.tag_prefix and tag.tag_prefix are set,
+        // monorepo should take precedence for PrefixedTag.
+        let mut config = Config::default();
+        config.tag = Some(crate::config::TagConfig {
+            tag_prefix: Some("release/".to_string()),
+            ..Default::default()
+        });
+        config.monorepo = Some(crate::config::MonorepoConfig {
+            tag_prefix: Some("svc/".to_string()),
+            dir: None,
+        });
+        let mut ctx = Context::new(config, ContextOptions::default());
+
+        let mut info = make_git_info(false, None);
+        info.tag = "svc/v1.2.3".to_string();
+        info.previous_tag = Some("svc/v1.2.2".to_string());
+        ctx.git_info = Some(info);
+        ctx.populate_git_vars();
+
+        let v = ctx.template_vars();
+        // Monorepo takes precedence: Tag is stripped.
+        assert_eq!(v.get("Tag"), Some(&"v1.2.3".to_string()));
+        // PrefixedTag is the full monorepo tag, NOT tag_prefix-prepended.
+        assert_eq!(
+            v.get("PrefixedTag"),
+            Some(&"svc/v1.2.3".to_string())
+        );
+    }
+
+    #[test]
+    fn test_monorepo_prefixed_summary() {
+        let mut config = Config::default();
+        config.monorepo = Some(crate::config::MonorepoConfig {
+            tag_prefix: Some("pkg/".to_string()),
+            dir: None,
+        });
+        let mut ctx = Context::new(config, ContextOptions::default());
+
+        let mut info = make_git_info(false, None);
+        info.tag = "pkg/v1.2.3".to_string();
+        // In a real monorepo, `git describe` already includes the prefix in the summary.
+        info.summary = "pkg/v1.2.3-0-gabc123d".to_string();
+        ctx.git_info = Some(info);
+        ctx.populate_git_vars();
+
+        // PrefixedSummary is info.summary as-is (already contains prefix).
+        assert_eq!(
+            ctx.template_vars().get("PrefixedSummary"),
+            Some(&"pkg/v1.2.3-0-gabc123d".to_string())
+        );
+        // Summary should have the prefix stripped.
+        assert_eq!(
+            ctx.template_vars().get("Summary"),
+            Some(&"v1.2.3-0-gabc123d".to_string())
+        );
+    }
+
+    #[test]
+    fn test_monorepo_no_previous_tag() {
+        let mut config = Config::default();
+        config.monorepo = Some(crate::config::MonorepoConfig {
+            tag_prefix: Some("svc/".to_string()),
+            dir: None,
+        });
+        let mut ctx = Context::new(config, ContextOptions::default());
+
+        let mut info = make_git_info(false, None);
+        info.tag = "svc/v1.0.0".to_string();
+        info.previous_tag = None;
+        ctx.git_info = Some(info);
+        ctx.populate_git_vars();
+
+        let v = ctx.template_vars();
+        assert_eq!(v.get("PrefixedPreviousTag"), Some(&"".to_string()));
+        // PreviousTag should also be empty when no previous tag exists.
+        assert_eq!(v.get("PreviousTag"), Some(&"".to_string()));
+    }
+
+    // -----------------------------------------------------------------------
+    // Integration test: full monorepo flow
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_monorepo_full_flow_all_vars() {
+        // End-to-end test: config with monorepo.tag_prefix + dir
+        // → context creation → populate_git_vars → verify ALL template vars.
+        let mut config = Config::default();
+        config.project_name = "mymonorepo".to_string();
+        config.monorepo = Some(crate::config::MonorepoConfig {
+            tag_prefix: Some("services/api/".to_string()),
+            dir: Some("services/api".to_string()),
+        });
+
+        // Verify Config helper methods work
+        assert_eq!(config.monorepo_tag_prefix(), Some("services/api/"));
+        assert_eq!(config.monorepo_dir(), Some("services/api"));
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+
+        // Simulate git info as it would appear in a monorepo:
+        // tag and summary already contain the prefix from git.
+        let mut info = make_git_info(false, None);
+        info.tag = "services/api/v2.1.0".to_string();
+        info.previous_tag = Some("services/api/v2.0.5".to_string());
+        info.summary = "services/api/v2.1.0-0-gabc123d".to_string();
+        info.semver = crate::git::SemVer {
+            major: 2,
+            minor: 1,
+            patch: 0,
+            prerelease: None,
+            build_metadata: None,
+        };
+        ctx.git_info = Some(info);
+        ctx.populate_git_vars();
+
+        let v = ctx.template_vars();
+
+        // Base vars should have the prefix STRIPPED.
+        assert_eq!(v.get("Tag"), Some(&"v2.1.0".to_string()));
+        assert_eq!(v.get("Version"), Some(&"2.1.0".to_string()));
+        assert_eq!(v.get("RawVersion"), Some(&"2.1.0".to_string()));
+        assert_eq!(v.get("Major"), Some(&"2".to_string()));
+        assert_eq!(v.get("Minor"), Some(&"1".to_string()));
+        assert_eq!(v.get("Patch"), Some(&"0".to_string()));
+        assert_eq!(v.get("PreviousTag"), Some(&"v2.0.5".to_string()));
+        assert_eq!(
+            v.get("Summary"),
+            Some(&"v2.1.0-0-gabc123d".to_string())
+        );
+
+        // Prefixed vars should retain the FULL prefix.
+        assert_eq!(
+            v.get("PrefixedTag"),
+            Some(&"services/api/v2.1.0".to_string())
+        );
+        assert_eq!(
+            v.get("PrefixedPreviousTag"),
+            Some(&"services/api/v2.0.5".to_string())
+        );
+        assert_eq!(
+            v.get("PrefixedSummary"),
+            Some(&"services/api/v2.1.0-0-gabc123d".to_string())
+        );
+
+        // Project name should be available.
+        assert_eq!(v.get("ProjectName"), Some(&"mymonorepo".to_string()));
     }
 }

@@ -164,7 +164,7 @@ GoReleaser source: `internal/pipe/git/`, `internal/pipe/metadata/`, `internal/pi
 - [x] StringOrBool/template `disable` + `skip_upload` on ALL config sections — upgraded SnapcraftConfig, AurConfig, PublisherConfig, ChocolateyConfig (disable + skip_publish), HomebrewConfig, ScoopConfig, WingetConfig, KrewConfig, NixConfig; wired is_disabled()/should_skip_upload() with template rendering in all stages
 
 **Deferred to E1-continued** (need full GoReleaser source comparison + behavioral wiring)
-- [ ] Config includes from URL (with headers) + from_file structured form — needs HTTP client, custom deserializer, GoReleaser Pro behavior match
+- [x] Config includes from URL (with headers) + from_file structured form — IncludeSpec enum, HTTP fetching with headers, env var expansion, GitHub raw URL shorthand, body size limit, TOML detection
 - [x] Template files config section (id, src, dst, mode) — new stage-templatefiles crate, template rendering + artifact registration + path safety + tests
 - [ ] `templated_extra_files` across sections (render file CONTENTS as templates, distinct from extra_files) — GoReleaser Pro, needs per-stage wiring: checksums, release, docker, blob, publishers, snapcraft, dmg, nsis, app_bundles
 - [ ] Monorepo improvements (tag_prefix, dir) — GoReleaser Pro, needs PrefixedTag/PrefixedPreviousTag template var wiring

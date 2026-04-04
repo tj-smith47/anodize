@@ -121,7 +121,12 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
             // --all --force: include every crate
             config.crates.iter().map(|c| c.name.clone()).collect()
         } else {
-            detect_changed_crates(&config.crates, config.git.as_ref(), &log)?
+            detect_changed_crates(
+                &config.crates,
+                config.git.as_ref(),
+                config.monorepo_tag_prefix(),
+                &log,
+            )?
         }
     } else {
         opts.crate_names.clone()
@@ -481,6 +486,7 @@ fn run_post_pipeline(
 fn detect_changed_crates(
     crates: &[CrateConfig],
     git_config: Option<&anodize_core::config::GitConfig>,
+    monorepo_prefix: Option<&str>,
     log: &StageLogger,
 ) -> Result<Vec<String>> {
     // Log when ignore_tags/ignore_tag_prefixes contain template expressions
@@ -506,7 +512,7 @@ fn detect_changed_crates(
     let mut oldest_tag: Option<String> = None;
 
     for c in crates {
-        let latest_tag = git::find_latest_tag_matching(&c.tag_template, git_config, None)?;
+        let latest_tag = git::find_latest_tag_matching_with_prefix(&c.tag_template, git_config, None, monorepo_prefix)?;
         match &latest_tag {
             None => {
                 // No tag at all → always include
