@@ -1,9 +1,10 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use anyhow::{Context as _, Result};
+use anyhow::{bail, Context as _, Result};
 
 use anodize_core::artifact::{Artifact, ArtifactKind};
+use anodize_core::config::parse_octal_mode;
 use anodize_core::context::Context;
 use anodize_core::stage::Stage;
 
@@ -56,6 +57,14 @@ impl Stage for TemplateFilesStage {
                 .render_template(&entry.dst)
                 .with_context(|| format!("templatefiles: failed to render dst path for id '{}'", id))?;
 
+            // Reject path traversal attempts
+            if rendered_dst.contains("..") || Path::new(&rendered_dst).is_absolute() {
+                bail!(
+                    "templatefiles: dst '{}' must be a relative path within dist (no '..' or absolute paths)",
+                    rendered_dst
+                );
+            }
+
             // Write to dist/dst
             let output_path = dist.join(&rendered_dst);
             if let Some(parent) = output_path.parent() {
@@ -74,7 +83,17 @@ impl Stage for TemplateFilesStage {
             })?;
 
             // Set file permissions
-            let mode = entry.mode.unwrap_or(DEFAULT_MODE);
+            let mode = match &entry.mode {
+                Some(mode_str) => match parse_octal_mode(mode_str) {
+                    Some(m) => m,
+                    None => anyhow::bail!(
+                        "templatefiles: invalid mode '{}' for id '{}' (expected octal like \"0755\")",
+                        mode_str,
+                        id
+                    ),
+                },
+                None => DEFAULT_MODE,
+            };
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -225,7 +244,7 @@ mod tests {
                 id: None,
                 src: src_path.to_string_lossy().to_string(),
                 dst: "exec.sh".to_string(),
-                mode: Some(0o755),
+                mode: Some("0755".to_string()),
             },
         ]);
 
@@ -372,5 +391,152 @@ mod tests {
 
         let artifacts = ctx.artifacts.by_kind(ArtifactKind::UploadableFile);
         assert_eq!(artifacts[0].metadata.get("id").unwrap(), "default");
+    }
+
+    #[test]
+    fn test_multiple_template_file_entries() {
+        let tmp = TempDir::new().unwrap();
+        let mut ctx = build_ctx(&tmp);
+
+        let src_a = tmp.path().join("a.tpl");
+        let src_b = tmp.path().join("b.tpl");
+        let src_c = tmp.path().join("c.tpl");
+        fs::write(&src_a, "content A for {{ .ProjectName }}").unwrap();
+        fs::write(&src_b, "content B version {{ .Version }}").unwrap();
+        fs::write(&src_c, "content C static").unwrap();
+
+        ctx.config.template_files = Some(vec![
+            anodize_core::config::TemplateFileConfig {
+                id: Some("file-a".to_string()),
+                src: src_a.to_string_lossy().to_string(),
+                dst: "a.txt".to_string(),
+                mode: None,
+            },
+            anodize_core::config::TemplateFileConfig {
+                id: Some("file-b".to_string()),
+                src: src_b.to_string_lossy().to_string(),
+                dst: "subdir/b.txt".to_string(),
+                mode: Some("0755".to_string()),
+            },
+            anodize_core::config::TemplateFileConfig {
+                id: Some("file-c".to_string()),
+                src: src_c.to_string_lossy().to_string(),
+                dst: "c.txt".to_string(),
+                mode: None,
+            },
+        ]);
+
+        let stage = TemplateFilesStage;
+        stage.run(&mut ctx).unwrap();
+
+        // Verify all files were written
+        assert_eq!(
+            fs::read_to_string(ctx.config.dist.join("a.txt")).unwrap(),
+            "content A for myapp"
+        );
+        assert_eq!(
+            fs::read_to_string(ctx.config.dist.join("subdir/b.txt")).unwrap(),
+            "content B version 1.0.0"
+        );
+        assert_eq!(
+            fs::read_to_string(ctx.config.dist.join("c.txt")).unwrap(),
+            "content C static"
+        );
+
+        // Verify all artifacts were registered
+        let artifacts = ctx.artifacts.by_kind(ArtifactKind::UploadableFile);
+        assert_eq!(artifacts.len(), 3);
+        let ids: Vec<&str> = artifacts
+            .iter()
+            .map(|a| a.metadata.get("id").unwrap().as_str())
+            .collect();
+        assert!(ids.contains(&"file-a"));
+        assert!(ids.contains(&"file-b"));
+        assert!(ids.contains(&"file-c"));
+    }
+
+    #[test]
+    fn test_malformed_template_returns_error() {
+        let tmp = TempDir::new().unwrap();
+        let mut ctx = build_ctx(&tmp);
+
+        // Create a source file with a malformed template expression
+        let src_path = tmp.path().join("bad.tpl");
+        fs::write(&src_path, "Hello {{ invalid").unwrap();
+
+        ctx.config.template_files = Some(vec![
+            anodize_core::config::TemplateFileConfig {
+                id: Some("bad-template".to_string()),
+                src: src_path.to_string_lossy().to_string(),
+                dst: "bad.txt".to_string(),
+                mode: None,
+            },
+        ]);
+
+        let stage = TemplateFilesStage;
+        let result = stage.run(&mut ctx);
+        assert!(result.is_err(), "malformed template should produce an error");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("failed to render") || err.contains("template"),
+            "error should mention rendering failure: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_path_traversal_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let mut ctx = build_ctx(&tmp);
+
+        let src_path = tmp.path().join("escape.tpl");
+        fs::write(&src_path, "trying to escape").unwrap();
+
+        ctx.config.template_files = Some(vec![
+            anodize_core::config::TemplateFileConfig {
+                id: None,
+                src: src_path.to_string_lossy().to_string(),
+                dst: "../escaped.txt".to_string(),
+                mode: None,
+            },
+        ]);
+
+        let stage = TemplateFilesStage;
+        let result = stage.run(&mut ctx);
+        assert!(result.is_err(), "path traversal should be rejected");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("must be a relative path within dist"),
+            "error should mention path restriction: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_absolute_dst_path_rejected() {
+        let tmp = TempDir::new().unwrap();
+        let mut ctx = build_ctx(&tmp);
+
+        let src_path = tmp.path().join("abs.tpl");
+        fs::write(&src_path, "content").unwrap();
+
+        ctx.config.template_files = Some(vec![
+            anodize_core::config::TemplateFileConfig {
+                id: None,
+                src: src_path.to_string_lossy().to_string(),
+                dst: "/etc/evil.txt".to_string(),
+                mode: None,
+            },
+        ]);
+
+        let stage = TemplateFilesStage;
+        let result = stage.run(&mut ctx);
+        assert!(result.is_err(), "absolute dst path should be rejected");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("must be a relative path within dist"),
+            "error should mention path restriction: {}",
+            err
+        );
     }
 }

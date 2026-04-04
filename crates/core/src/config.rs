@@ -3766,8 +3766,9 @@ pub struct TemplateFileConfig {
     /// Destination filename, prefixed with the dist directory.
     /// Templates: allowed.
     pub dst: String,
-    /// File permissions in octal (default: 0o655).
-    pub mode: Option<u32>,
+    /// File permissions in octal notation as a string, e.g. `"0755"` (default: `"0655"`).
+    /// Parsed at runtime via `parse_octal_mode()` to avoid YAML interpreting as decimal.
+    pub mode: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -8299,7 +8300,7 @@ template_files:
   - id: install-script
     src: install.sh.tpl
     dst: install.sh
-    mode: 493
+    mode: "0755"
   - src: README.md.tpl
     dst: README.md
 "#;
@@ -8310,7 +8311,7 @@ template_files:
         assert_eq!(tfs[0].id.as_deref(), Some("install-script"));
         assert_eq!(tfs[0].src, "install.sh.tpl");
         assert_eq!(tfs[0].dst, "install.sh");
-        assert_eq!(tfs[0].mode, Some(493)); // 0o755
+        assert_eq!(tfs[0].mode, Some("0755".to_string()));
 
         assert_eq!(tfs[1].id, None);
         assert_eq!(tfs[1].src, "README.md.tpl");
