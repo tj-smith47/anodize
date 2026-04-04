@@ -3423,7 +3423,7 @@ pub struct ChangelogConfig {
     pub paths: Option<Vec<String>>,
     /// Title heading for the changelog. Default: "Changelog". Supports templates.
     pub title: Option<String>,
-    /// Divider string inserted between changelog groups (e.g. `"---"`).
+    /// Divider string inserted between changelog groups (e.g. `"---"`). Supports templates.
     pub divider: Option<String>,
     /// AI-powered changelog enhancement configuration.
     pub ai: Option<ChangelogAiConfig>,
@@ -3462,6 +3462,37 @@ pub struct ChangelogAiPromptSource {
     pub from_url: Option<ContentFromUrl>,
     /// Load prompt from a local file. Overrides from_url if both set.
     pub from_file: Option<ContentFromFile>,
+}
+
+/// Resolved prompt source kind after applying priority rules.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolvedPromptSource {
+    /// Load from a local file path.
+    File(String),
+    /// Load from a URL (with optional headers).
+    Url { url: String, headers: Option<std::collections::HashMap<String, String>> },
+    /// No source configured.
+    None,
+}
+
+impl ChangelogAiPromptSource {
+    /// Resolve the prompt source applying priority: from_file overrides from_url.
+    pub fn resolve(&self) -> ResolvedPromptSource {
+        if let Some(ref file) = self.from_file {
+            if let Some(ref path) = file.path {
+                return ResolvedPromptSource::File(path.clone());
+            }
+        }
+        if let Some(ref url_cfg) = self.from_url {
+            if let Some(ref url) = url_cfg.url {
+                return ResolvedPromptSource::Url {
+                    url: url.clone(),
+                    headers: url_cfg.headers.clone(),
+                };
+            }
+        }
+        ResolvedPromptSource::None
+    }
 }
 
 /// Load content from a URL with optional headers.
@@ -6987,6 +7018,7 @@ crates: []
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_load_token_files_reads_tokens() {
         use std::io::Write;
         let dir = tempfile::TempDir::new().unwrap();
@@ -7035,6 +7067,7 @@ crates: []
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_load_token_files_env_var_takes_precedence() {
         use std::io::Write;
         let dir = tempfile::TempDir::new().unwrap();
