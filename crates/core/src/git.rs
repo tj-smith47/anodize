@@ -451,37 +451,53 @@ fn parse_commit_output(output: &str) -> Vec<Commit> {
 
 /// Get commits between two refs, optionally filtered to a path.
 pub fn get_commits_between(from: &str, to: &str, path_filter: Option<&str>) -> Result<Vec<Commit>> {
+    get_commits_between_paths(from, to, &path_filter.into_iter().map(String::from).collect::<Vec<_>>())
+}
+
+/// Get commits between two refs, filtered to multiple paths (git log -- path1 path2 ...).
+pub fn get_commits_between_paths(from: &str, to: &str, paths: &[String]) -> Result<Vec<Commit>> {
     let range = format!("{}..{}", from, to);
     let mut args = vec![
-        "-c",
-        "log.showSignature=false",
-        "log",
-        "--pretty=format:%H%n%h%n%s%n%an%n%ae",
-        &range,
+        "-c".to_string(),
+        "log.showSignature=false".to_string(),
+        "log".to_string(),
+        "--pretty=format:%H%n%h%n%s%n%an%n%ae".to_string(),
+        range,
     ];
-    if let Some(path) = path_filter {
-        args.push("--");
-        args.push(path);
+    if !paths.is_empty() {
+        args.push("--".to_string());
+        for p in paths {
+            args.push(p.clone());
+        }
     }
-    let output = git_output(&args)?;
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let output = git_output(&arg_refs)?;
     Ok(parse_commit_output(&output))
 }
 
 /// Get all commits reachable from HEAD, optionally filtered to a path.
 /// Used for initial releases where there is no previous tag.
 pub fn get_all_commits(path_filter: Option<&str>) -> Result<Vec<Commit>> {
+    get_all_commits_paths(&path_filter.into_iter().map(String::from).collect::<Vec<_>>())
+}
+
+/// Get all commits reachable from HEAD, filtered to multiple paths.
+pub fn get_all_commits_paths(paths: &[String]) -> Result<Vec<Commit>> {
     let mut args = vec![
-        "-c",
-        "log.showSignature=false",
-        "log",
-        "--pretty=format:%H%n%h%n%s%n%an%n%ae",
-        "HEAD",
+        "-c".to_string(),
+        "log.showSignature=false".to_string(),
+        "log".to_string(),
+        "--pretty=format:%H%n%h%n%s%n%an%n%ae".to_string(),
+        "HEAD".to_string(),
     ];
-    if let Some(path) = path_filter {
-        args.push("--");
-        args.push(path);
+    if !paths.is_empty() {
+        args.push("--".to_string());
+        for p in paths {
+            args.push(p.clone());
+        }
     }
-    let output = git_output(&args)?;
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let output = git_output(&arg_refs)?;
     Ok(parse_commit_output(&output))
 }
 

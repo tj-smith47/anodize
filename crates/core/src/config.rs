@@ -3418,6 +3418,68 @@ pub struct ChangelogConfig {
     /// Logins (comma-separated list of all GitHub usernames in the release, `github` backend only).
     /// Default: `"{{ ShortSHA }} {{ Message }}"`
     pub format: Option<String>,
+    /// File paths to filter commits by. Only commits touching files under these
+    /// paths are included. Only works with `use: git`. Supports template rendering.
+    pub paths: Option<Vec<String>>,
+    /// Title heading for the changelog. Default: "Changelog". Supports templates.
+    pub title: Option<String>,
+    /// Divider string inserted between changelog groups (e.g. `"---"`).
+    pub divider: Option<String>,
+    /// AI-powered changelog enhancement configuration.
+    pub ai: Option<ChangelogAiConfig>,
+}
+
+/// AI-powered changelog enhancement configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct ChangelogAiConfig {
+    /// AI provider to use. Valid: "anthropic", "openai", "ollama".
+    /// Empty disables the feature.
+    #[serde(rename = "use")]
+    pub provider: Option<String>,
+    /// Model name (e.g. "gpt-4", "claude-sonnet-4-20250514"). Defaults to provider's default.
+    pub model: Option<String>,
+    /// Prompt template for the AI. Can be a string, or use `from_url`/`from_file`.
+    /// Template variable `.ReleaseNotes` contains the current changelog.
+    pub prompt: Option<ChangelogAiPrompt>,
+}
+
+/// Prompt source for AI changelog: inline string, URL, or file path.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum ChangelogAiPrompt {
+    /// Inline prompt string (supports templates).
+    Inline(String),
+    /// Structured prompt with from_url/from_file sources.
+    Source(ChangelogAiPromptSource),
+}
+
+/// Structured prompt source: load from URL or file.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct ChangelogAiPromptSource {
+    /// Load prompt from a URL.
+    pub from_url: Option<ContentFromUrl>,
+    /// Load prompt from a local file. Overrides from_url if both set.
+    pub from_file: Option<ContentFromFile>,
+}
+
+/// Load content from a URL with optional headers.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct ContentFromUrl {
+    /// URL to fetch (supports templates).
+    pub url: Option<String>,
+    /// HTTP headers to send with the request.
+    pub headers: Option<std::collections::HashMap<String, String>>,
+}
+
+/// Load content from a local file.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct ContentFromFile {
+    /// Path to the file (supports templates).
+    pub path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]

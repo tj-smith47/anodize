@@ -7,24 +7,57 @@ use serde::Serialize;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactKind {
+    // --- Build outputs ---
     Binary,
-    Archive,
-    Checksum,
-    DockerImage,
-    DockerManifest,
-    LinuxPackage,
-    Metadata,
-    Signature,
-    Certificate,
+    UniversalBinary,
     Library,
+    Header,
+    CArchive,
+    CShared,
     Wasm,
+
+    // --- Packaged archives ---
+    Archive,
     SourceArchive,
-    Sbom,
+
+    // --- Linux packages ---
+    LinuxPackage,
     Snap,
+    PublishableSnapcraft,
+    Flatpak,
+    SourceRpm,
+
+    // --- macOS/Windows installers ---
     DiskImage,
     Installer,
     MacOsPackage,
-    Flatpak,
+
+    // --- Container images ---
+    DockerImage,
+    DockerImageV2,
+    PublishableDockerImage,
+    DockerManifest,
+
+    // --- Publisher manifests ---
+    BrewFormula,
+    BrewCask,
+    Nixpkg,
+    ScoopManifest,
+    PublishableChocolatey,
+    WingetInstaller,
+    WingetDefaultLocale,
+    WingetVersion,
+    PkgBuild,
+    SrcInfo,
+    KrewPluginManifest,
+
+    // --- Integrity/metadata ---
+    Checksum,
+    Signature,
+    Certificate,
+    Sbom,
+    Metadata,
+    UploadableFile,
 }
 
 impl std::fmt::Display for ArtifactKind {
@@ -38,23 +71,43 @@ impl ArtifactKind {
     pub fn as_str(&self) -> &'static str {
         match self {
             ArtifactKind::Binary => "binary",
-            ArtifactKind::Archive => "archive",
-            ArtifactKind::Checksum => "checksum",
-            ArtifactKind::DockerImage => "docker_image",
-            ArtifactKind::DockerManifest => "docker_manifest",
-            ArtifactKind::LinuxPackage => "linux_package",
-            ArtifactKind::Metadata => "metadata",
-            ArtifactKind::Signature => "signature",
-            ArtifactKind::Certificate => "certificate",
+            ArtifactKind::UniversalBinary => "universal_binary",
             ArtifactKind::Library => "library",
+            ArtifactKind::Header => "header",
+            ArtifactKind::CArchive => "c_archive",
+            ArtifactKind::CShared => "c_shared",
             ArtifactKind::Wasm => "wasm",
+            ArtifactKind::Archive => "archive",
             ArtifactKind::SourceArchive => "source_archive",
-            ArtifactKind::Sbom => "sbom",
+            ArtifactKind::LinuxPackage => "linux_package",
             ArtifactKind::Snap => "snap",
+            ArtifactKind::PublishableSnapcraft => "publishable_snapcraft",
+            ArtifactKind::Flatpak => "flatpak",
+            ArtifactKind::SourceRpm => "source_rpm",
             ArtifactKind::DiskImage => "disk_image",
             ArtifactKind::Installer => "installer",
             ArtifactKind::MacOsPackage => "macos_package",
-            ArtifactKind::Flatpak => "flatpak",
+            ArtifactKind::DockerImage => "docker_image",
+            ArtifactKind::DockerImageV2 => "docker_image_v2",
+            ArtifactKind::PublishableDockerImage => "publishable_docker_image",
+            ArtifactKind::DockerManifest => "docker_manifest",
+            ArtifactKind::BrewFormula => "brew_formula",
+            ArtifactKind::BrewCask => "brew_cask",
+            ArtifactKind::Nixpkg => "nixpkg",
+            ArtifactKind::ScoopManifest => "scoop_manifest",
+            ArtifactKind::PublishableChocolatey => "publishable_chocolatey",
+            ArtifactKind::WingetInstaller => "winget_installer",
+            ArtifactKind::WingetDefaultLocale => "winget_default_locale",
+            ArtifactKind::WingetVersion => "winget_version",
+            ArtifactKind::PkgBuild => "pkg_build",
+            ArtifactKind::SrcInfo => "src_info",
+            ArtifactKind::KrewPluginManifest => "krew_plugin_manifest",
+            ArtifactKind::Checksum => "checksum",
+            ArtifactKind::Signature => "signature",
+            ArtifactKind::Certificate => "certificate",
+            ArtifactKind::Sbom => "sbom",
+            ArtifactKind::Metadata => "metadata",
+            ArtifactKind::UploadableFile => "uploadable_file",
         }
     }
 
@@ -62,23 +115,43 @@ impl ArtifactKind {
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "binary" => Some(ArtifactKind::Binary),
-            "archive" => Some(ArtifactKind::Archive),
-            "checksum" => Some(ArtifactKind::Checksum),
-            "docker_image" => Some(ArtifactKind::DockerImage),
-            "docker_manifest" => Some(ArtifactKind::DockerManifest),
-            "linux_package" => Some(ArtifactKind::LinuxPackage),
-            "metadata" => Some(ArtifactKind::Metadata),
-            "signature" => Some(ArtifactKind::Signature),
-            "certificate" => Some(ArtifactKind::Certificate),
+            "universal_binary" => Some(ArtifactKind::UniversalBinary),
             "library" => Some(ArtifactKind::Library),
+            "header" => Some(ArtifactKind::Header),
+            "c_archive" => Some(ArtifactKind::CArchive),
+            "c_shared" => Some(ArtifactKind::CShared),
             "wasm" => Some(ArtifactKind::Wasm),
+            "archive" => Some(ArtifactKind::Archive),
             "source_archive" => Some(ArtifactKind::SourceArchive),
-            "sbom" => Some(ArtifactKind::Sbom),
+            "linux_package" => Some(ArtifactKind::LinuxPackage),
             "snap" => Some(ArtifactKind::Snap),
+            "publishable_snapcraft" => Some(ArtifactKind::PublishableSnapcraft),
+            "flatpak" => Some(ArtifactKind::Flatpak),
+            "source_rpm" => Some(ArtifactKind::SourceRpm),
             "disk_image" => Some(ArtifactKind::DiskImage),
             "installer" => Some(ArtifactKind::Installer),
             "macos_package" => Some(ArtifactKind::MacOsPackage),
-            "flatpak" => Some(ArtifactKind::Flatpak),
+            "docker_image" => Some(ArtifactKind::DockerImage),
+            "docker_image_v2" => Some(ArtifactKind::DockerImageV2),
+            "publishable_docker_image" => Some(ArtifactKind::PublishableDockerImage),
+            "docker_manifest" => Some(ArtifactKind::DockerManifest),
+            "brew_formula" => Some(ArtifactKind::BrewFormula),
+            "brew_cask" => Some(ArtifactKind::BrewCask),
+            "nixpkg" => Some(ArtifactKind::Nixpkg),
+            "scoop_manifest" => Some(ArtifactKind::ScoopManifest),
+            "publishable_chocolatey" => Some(ArtifactKind::PublishableChocolatey),
+            "winget_installer" => Some(ArtifactKind::WingetInstaller),
+            "winget_default_locale" => Some(ArtifactKind::WingetDefaultLocale),
+            "winget_version" => Some(ArtifactKind::WingetVersion),
+            "pkg_build" => Some(ArtifactKind::PkgBuild),
+            "src_info" => Some(ArtifactKind::SrcInfo),
+            "krew_plugin_manifest" => Some(ArtifactKind::KrewPluginManifest),
+            "checksum" => Some(ArtifactKind::Checksum),
+            "signature" => Some(ArtifactKind::Signature),
+            "certificate" => Some(ArtifactKind::Certificate),
+            "sbom" => Some(ArtifactKind::Sbom),
+            "metadata" => Some(ArtifactKind::Metadata),
+            "uploadable_file" => Some(ArtifactKind::UploadableFile),
             _ => None,
         }
     }
@@ -195,44 +268,54 @@ impl ArtifactRegistry {
 }
 
 /// Artifact kinds that should be included in size reporting.
-/// Matches GoReleaser's reportsizes filter: releasable types + binaries + snaps,
-/// plus Library (maps to GoReleaser CArchive/CShared) and Wasm (anodize distributable).
+/// Matches GoReleaser's reportsizes filter: uploadable types + binaries + library outputs.
 pub fn size_reportable_kinds() -> &'static [ArtifactKind] {
     &[
+        // Uploadable types (all appear in releases)
         ArtifactKind::Archive,
-        ArtifactKind::Binary,
         ArtifactKind::SourceArchive,
+        ArtifactKind::UploadableFile,
         ArtifactKind::LinuxPackage,
         ArtifactKind::Flatpak,
+        ArtifactKind::SourceRpm,
         ArtifactKind::Sbom,
         ArtifactKind::Checksum,
         ArtifactKind::Signature,
         ArtifactKind::Certificate,
-        ArtifactKind::Snap,
         ArtifactKind::DiskImage,
         ArtifactKind::Installer,
         ArtifactKind::MacOsPackage,
+        ArtifactKind::Snap,
+        // Build outputs (GoReleaser reports Binary, CArchive, CShared, Header)
+        ArtifactKind::Binary,
+        ArtifactKind::UniversalBinary,
         ArtifactKind::Library,
+        ArtifactKind::Header,
+        ArtifactKind::CArchive,
+        ArtifactKind::CShared,
         ArtifactKind::Wasm,
     ]
 }
 
 /// Artifact kinds that are uploadable to releases/blob storage.
-/// Single source of truth — used by release and blob stages.
+/// Matches GoReleaser's ReleaseUploadableTypes — the canonical list of types
+/// that should be uploaded, checksummed, signed, and distributed.
 pub fn uploadable_kinds() -> &'static [ArtifactKind] {
     &[
         ArtifactKind::Archive,
-        ArtifactKind::Checksum,
+        ArtifactKind::SourceArchive,
+        ArtifactKind::UploadableFile,
         ArtifactKind::LinuxPackage,
-        ArtifactKind::Snap,
+        ArtifactKind::Flatpak,
+        ArtifactKind::SourceRpm,
+        ArtifactKind::Sbom,
+        ArtifactKind::Checksum,
+        ArtifactKind::Signature,
+        ArtifactKind::Certificate,
         ArtifactKind::DiskImage,
         ArtifactKind::Installer,
         ArtifactKind::MacOsPackage,
-        ArtifactKind::SourceArchive,
-        ArtifactKind::Sbom,
-        ArtifactKind::Signature,
-        ArtifactKind::Certificate,
-        ArtifactKind::Flatpak,
+        ArtifactKind::Snap,
     ]
 }
 
@@ -457,6 +540,30 @@ mod tests {
     }
 
     #[test]
+    fn test_artifact_kind_new_variants_serialize() {
+        assert_eq!(serde_json::to_value(ArtifactKind::UniversalBinary).unwrap(), "universal_binary");
+        assert_eq!(serde_json::to_value(ArtifactKind::Header).unwrap(), "header");
+        assert_eq!(serde_json::to_value(ArtifactKind::CArchive).unwrap(), "c_archive");
+        assert_eq!(serde_json::to_value(ArtifactKind::CShared).unwrap(), "c_shared");
+        assert_eq!(serde_json::to_value(ArtifactKind::DockerImageV2).unwrap(), "docker_image_v2");
+        assert_eq!(serde_json::to_value(ArtifactKind::PublishableDockerImage).unwrap(), "publishable_docker_image");
+        assert_eq!(serde_json::to_value(ArtifactKind::PublishableSnapcraft).unwrap(), "publishable_snapcraft");
+        assert_eq!(serde_json::to_value(ArtifactKind::SourceRpm).unwrap(), "source_rpm");
+        assert_eq!(serde_json::to_value(ArtifactKind::BrewFormula).unwrap(), "brew_formula");
+        assert_eq!(serde_json::to_value(ArtifactKind::BrewCask).unwrap(), "brew_cask");
+        assert_eq!(serde_json::to_value(ArtifactKind::Nixpkg).unwrap(), "nixpkg");
+        assert_eq!(serde_json::to_value(ArtifactKind::ScoopManifest).unwrap(), "scoop_manifest");
+        assert_eq!(serde_json::to_value(ArtifactKind::PublishableChocolatey).unwrap(), "publishable_chocolatey");
+        assert_eq!(serde_json::to_value(ArtifactKind::WingetInstaller).unwrap(), "winget_installer");
+        assert_eq!(serde_json::to_value(ArtifactKind::WingetDefaultLocale).unwrap(), "winget_default_locale");
+        assert_eq!(serde_json::to_value(ArtifactKind::WingetVersion).unwrap(), "winget_version");
+        assert_eq!(serde_json::to_value(ArtifactKind::PkgBuild).unwrap(), "pkg_build");
+        assert_eq!(serde_json::to_value(ArtifactKind::SrcInfo).unwrap(), "src_info");
+        assert_eq!(serde_json::to_value(ArtifactKind::KrewPluginManifest).unwrap(), "krew_plugin_manifest");
+        assert_eq!(serde_json::to_value(ArtifactKind::UploadableFile).unwrap(), "uploadable_file");
+    }
+
+    #[test]
     fn test_artifact_kind_library_and_wasm() {
         let json = serde_json::to_value(ArtifactKind::Library).unwrap();
         assert_eq!(json, "library");
@@ -468,6 +575,38 @@ mod tests {
     fn test_artifact_kind_as_str_library_wasm() {
         assert_eq!(ArtifactKind::Library.as_str(), "library");
         assert_eq!(ArtifactKind::Wasm.as_str(), "wasm");
+    }
+
+    #[test]
+    fn test_artifact_kind_parse_roundtrip_all_variants() {
+        let all_variants = [
+            ArtifactKind::Binary, ArtifactKind::UniversalBinary,
+            ArtifactKind::Library, ArtifactKind::Header,
+            ArtifactKind::CArchive, ArtifactKind::CShared,
+            ArtifactKind::Wasm, ArtifactKind::Archive,
+            ArtifactKind::SourceArchive, ArtifactKind::LinuxPackage,
+            ArtifactKind::Snap, ArtifactKind::PublishableSnapcraft,
+            ArtifactKind::Flatpak, ArtifactKind::SourceRpm,
+            ArtifactKind::DiskImage, ArtifactKind::Installer,
+            ArtifactKind::MacOsPackage, ArtifactKind::DockerImage,
+            ArtifactKind::DockerImageV2, ArtifactKind::PublishableDockerImage,
+            ArtifactKind::DockerManifest, ArtifactKind::BrewFormula,
+            ArtifactKind::BrewCask, ArtifactKind::Nixpkg,
+            ArtifactKind::ScoopManifest, ArtifactKind::PublishableChocolatey,
+            ArtifactKind::WingetInstaller, ArtifactKind::WingetDefaultLocale,
+            ArtifactKind::WingetVersion, ArtifactKind::PkgBuild,
+            ArtifactKind::SrcInfo, ArtifactKind::KrewPluginManifest,
+            ArtifactKind::Checksum, ArtifactKind::Signature,
+            ArtifactKind::Certificate, ArtifactKind::Sbom,
+            ArtifactKind::Metadata, ArtifactKind::UploadableFile,
+        ];
+        for variant in &all_variants {
+            let s = variant.as_str();
+            let parsed = ArtifactKind::parse(s)
+                .unwrap_or_else(|| panic!("parse({:?}) returned None", s));
+            assert_eq!(*variant, parsed, "roundtrip failed for {:?}", s);
+        }
+        assert_eq!(all_variants.len(), 38, "update test when adding variants");
     }
 
     #[test]
@@ -505,11 +644,13 @@ mod tests {
     #[test]
     fn test_size_reportable_kinds_includes_releasable_and_binaries() {
         let kinds = size_reportable_kinds();
-        // Releasable types
+        // Uploadable types
         assert!(kinds.contains(&ArtifactKind::Archive));
         assert!(kinds.contains(&ArtifactKind::SourceArchive));
+        assert!(kinds.contains(&ArtifactKind::UploadableFile));
         assert!(kinds.contains(&ArtifactKind::LinuxPackage));
         assert!(kinds.contains(&ArtifactKind::Flatpak));
+        assert!(kinds.contains(&ArtifactKind::SourceRpm));
         assert!(kinds.contains(&ArtifactKind::Sbom));
         assert!(kinds.contains(&ArtifactKind::Checksum));
         assert!(kinds.contains(&ArtifactKind::Signature));
@@ -517,11 +658,14 @@ mod tests {
         assert!(kinds.contains(&ArtifactKind::DiskImage));
         assert!(kinds.contains(&ArtifactKind::Installer));
         assert!(kinds.contains(&ArtifactKind::MacOsPackage));
-        // Binary + Snap (GoReleaser extras)
-        assert!(kinds.contains(&ArtifactKind::Binary));
         assert!(kinds.contains(&ArtifactKind::Snap));
-        // Library (maps to GoReleaser CArchive/CShared) + Wasm (anodize distributable)
+        // Build outputs
+        assert!(kinds.contains(&ArtifactKind::Binary));
+        assert!(kinds.contains(&ArtifactKind::UniversalBinary));
         assert!(kinds.contains(&ArtifactKind::Library));
+        assert!(kinds.contains(&ArtifactKind::Header));
+        assert!(kinds.contains(&ArtifactKind::CArchive));
+        assert!(kinds.contains(&ArtifactKind::CShared));
         assert!(kinds.contains(&ArtifactKind::Wasm));
     }
 
@@ -531,6 +675,8 @@ mod tests {
         assert!(!kinds.contains(&ArtifactKind::DockerImage));
         assert!(!kinds.contains(&ArtifactKind::DockerManifest));
         assert!(!kinds.contains(&ArtifactKind::Metadata));
+        assert!(!kinds.contains(&ArtifactKind::BrewFormula));
+        assert!(!kinds.contains(&ArtifactKind::ScoopManifest));
     }
 
     #[test]
