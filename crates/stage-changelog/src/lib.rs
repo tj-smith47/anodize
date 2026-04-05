@@ -1145,9 +1145,12 @@ fn fetch_gitea_commits(
             api, owner, repo, prev
         )
     } else {
-        // No previous tag — list recent commits.
+        // No previous tag — list recent commits via the Commits API (not
+        // /git/commits which returns a different JSON shape without the
+        // top-level author object). This endpoint returns the same
+        // GitHub-style commit objects as the compare endpoint.
         format!(
-            "{}/repos/{}/{}/git/commits?sha=HEAD&limit=100",
+            "{}/repos/{}/{}/commits?sha=HEAD&limit=100",
             api, owner, repo
         )
     };
@@ -3458,24 +3461,31 @@ use: gitea
     }
 
     #[test]
-    fn test_validation_accepts_gitlab() {
-        // The validation check in ChangelogStage.run accepts "gitlab".
-        // We test the validation logic directly rather than running the full
-        // stage (which would require git repo and API access).
-        let valid = ["git", "github", "gitlab", "gitea"];
-        assert!(valid.contains(&"gitlab"));
-    }
+    fn test_validation_rejects_unsupported_source() {
+        // Exercise the actual production validation path — "bitbucket" should
+        // cause the stage to bail with "unsupported use source".
+        use anodize_core::config::{ChangelogConfig, Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
 
-    #[test]
-    fn test_validation_accepts_gitea() {
-        let valid = ["git", "github", "gitlab", "gitea"];
-        assert!(valid.contains(&"gitea"));
-    }
+        let mut config = Config::default();
+        config.project_name = "test".to_string();
+        config.changelog = Some(ChangelogConfig {
+            use_source: Some("bitbucket".to_string()),
+            ..Default::default()
+        });
+        config.crates = vec![CrateConfig {
+            name: "mylib".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            ..Default::default()
+        }];
 
-    #[test]
-    fn test_validation_rejects_bitbucket() {
-        let valid = ["git", "github", "gitlab", "gitea"];
-        assert!(!valid.contains(&"bitbucket"));
+        let mut ctx = Context::new(config, ContextOptions::default());
+        let stage = ChangelogStage;
+        let result = stage.run(&mut ctx);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("unsupported use source"), "got: {msg}");
     }
 
     #[test]
