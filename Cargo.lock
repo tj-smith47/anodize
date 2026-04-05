@@ -181,6 +181,8 @@ dependencies = [
  "anodize-core",
  "anyhow",
  "regex",
+ "reqwest",
+ "serde_json",
  "serde_yaml_ng",
  "serial_test",
  "tempfile",

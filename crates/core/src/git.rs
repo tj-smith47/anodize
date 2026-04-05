@@ -891,6 +891,73 @@ pub fn detect_github_repo() -> Result<(String, String)> {
     })
 }
 
+/// Parse owner and repo from any git remote URL, regardless of host.
+///
+/// Supports HTTPS (`https://host/owner/repo.git`) and SSH (`git@host:owner/repo.git`)
+/// formats. Returns `(owner, repo)` with `.git` suffix stripped.
+///
+/// This is a host-agnostic version of [`parse_github_remote`], suitable for
+/// GitLab, Gitea, and other SCM providers.
+pub fn parse_remote_owner_repo(url: &str) -> Option<(String, String)> {
+    let url = url.trim();
+    if url.is_empty() {
+        return None;
+    }
+
+    // Strip trailing ".git" if present
+    let url = url.strip_suffix(".git").unwrap_or(url);
+
+    // HTTPS: https://host/owner/repo or https://host/group/subgroup/repo
+    if url.starts_with("https://") || url.starts_with("http://") {
+        // Strip scheme and host
+        let after_scheme = if let Some(rest) = url.strip_prefix("https://") {
+            rest
+        } else {
+            url.strip_prefix("http://")?
+        };
+        // Strip any credentials (user:pass@host or user@host)
+        let after_host = after_scheme
+            .find('/')
+            .map(|i| &after_scheme[i + 1..])?;
+        // For nested groups (e.g. group/subgroup/repo), the owner is everything
+        // up to the last slash.
+        let last_slash = after_host.rfind('/')?;
+        let owner = &after_host[..last_slash];
+        let repo = &after_host[last_slash + 1..];
+        if !owner.is_empty() && !repo.is_empty() {
+            return Some((owner.to_string(), repo.to_string()));
+        }
+    }
+
+    // SSH: git@host:owner/repo or git@host:group/subgroup/repo
+    if let Some(colon_pos) = url.find(':') {
+        let before_colon = &url[..colon_pos];
+        // Ensure it looks like an SSH URL (contains @, no //)
+        if before_colon.contains('@') && !before_colon.contains("//") {
+            let path = &url[colon_pos + 1..];
+            let last_slash = path.rfind('/')?;
+            let owner = &path[..last_slash];
+            let repo = &path[last_slash + 1..];
+            if !owner.is_empty() && !repo.is_empty() {
+                return Some((owner.to_string(), repo.to_string()));
+            }
+        }
+    }
+
+    None
+}
+
+/// Get the owner/repo from the `origin` remote, regardless of SCM host.
+///
+/// Uses [`parse_remote_owner_repo`] which works with any git hosting provider
+/// (GitHub, GitLab, Gitea, etc.).
+pub fn detect_owner_repo() -> Result<(String, String)> {
+    let url = git_output(&["remote", "get-url", "origin"])?;
+    parse_remote_owner_repo(&url).ok_or_else(|| {
+        anyhow::anyhow!("could not parse owner/repo from remote URL: {}", url)
+    })
+}
+
 /// Find the tag immediately before `current_tag` in commit history.
 ///
 /// Uses `git describe --tags --abbrev=0 {current_tag}^` to locate the previous
@@ -1138,6 +1205,73 @@ mod tests {
     fn test_parse_github_remote_empty() {
         let result = parse_github_remote("");
         assert_eq!(result, None);
+    }
+
+    // -- parse_remote_owner_repo (generic) -----------------------------------
+
+    #[test]
+    fn test_parse_remote_github_https() {
+        let result = parse_remote_owner_repo("https://github.com/owner/repo.git");
+        assert_eq!(result, Some(("owner".to_string(), "repo".to_string())));
+    }
+
+    #[test]
+    fn test_parse_remote_gitlab_https() {
+        let result = parse_remote_owner_repo("https://gitlab.com/owner/repo.git");
+        assert_eq!(result, Some(("owner".to_string(), "repo".to_string())));
+    }
+
+    #[test]
+    fn test_parse_remote_gitea_https() {
+        let result = parse_remote_owner_repo("https://gitea.example.com/myorg/myapp.git");
+        assert_eq!(result, Some(("myorg".to_string(), "myapp".to_string())));
+    }
+
+    #[test]
+    fn test_parse_remote_gitlab_nested_group() {
+        let result = parse_remote_owner_repo("https://gitlab.com/group/subgroup/repo.git");
+        assert_eq!(
+            result,
+            Some(("group/subgroup".to_string(), "repo".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_parse_remote_ssh_gitlab() {
+        let result = parse_remote_owner_repo("git@gitlab.com:owner/repo.git");
+        assert_eq!(result, Some(("owner".to_string(), "repo".to_string())));
+    }
+
+    #[test]
+    fn test_parse_remote_ssh_gitea() {
+        let result = parse_remote_owner_repo("git@gitea.example.com:org/app.git");
+        assert_eq!(result, Some(("org".to_string(), "app".to_string())));
+    }
+
+    #[test]
+    fn test_parse_remote_ssh_nested_group() {
+        let result = parse_remote_owner_repo("git@gitlab.com:group/subgroup/repo.git");
+        assert_eq!(
+            result,
+            Some(("group/subgroup".to_string(), "repo".to_string()))
+        );
+    }
+
+    #[test]
+    fn test_parse_remote_no_dotgit() {
+        let result = parse_remote_owner_repo("https://gitlab.com/owner/repo");
+        assert_eq!(result, Some(("owner".to_string(), "repo".to_string())));
+    }
+
+    #[test]
+    fn test_parse_remote_empty() {
+        assert_eq!(parse_remote_owner_repo(""), None);
+    }
+
+    #[test]
+    fn test_parse_remote_http() {
+        let result = parse_remote_owner_repo("http://gitlab.local/team/project.git");
+        assert_eq!(result, Some(("team".to_string(), "project".to_string())));
     }
 
     #[test]

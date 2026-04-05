@@ -13,6 +13,8 @@ categories.workspace = true
 anodize-core.workspace = true
 anyhow.workspace = true
 regex.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 serde_yaml_ng.workspace = true
