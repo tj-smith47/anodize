@@ -11,6 +11,13 @@ pub fn cloudsmith_default_formats() -> Vec<&'static str> {
     vec!["apk", "deb", "rpm"]
 }
 
+/// Check if a filename matches any of the given format extensions.
+pub fn cloudsmith_format_matches(filename: &str, formats: &[impl AsRef<str>]) -> bool {
+    formats
+        .iter()
+        .any(|fmt| filename.ends_with(&format!(".{}", fmt.as_ref())))
+}
+
 /// Build the CloudSmith upload URL for the given org, repo, format, and distribution.
 pub fn cloudsmith_upload_url(org: &str, repo: &str, format: &str, distribution: &str) -> String {
     format!(
@@ -90,7 +97,7 @@ pub fn publish_to_cloudsmith(ctx: &Context, log: &StageLogger) -> Result<()> {
 
         // --- Dry-run logging ---
         if ctx.is_dry_run() {
-            let sample_url = cloudsmith_upload_url(&organization, &repository, "<format>", "<dist>");
+            let sample_url = cloudsmith_upload_url(&organization, &repository, "{format}", "{distribution}");
             log.status(&format!(
                 "(dry-run) would upload packages to CloudSmith org '{}' repo '{}' at {}",
                 organization, repository, sample_url
@@ -103,13 +110,29 @@ pub fn publish_to_cloudsmith(ctx: &Context, log: &StageLogger) -> Result<()> {
                 log.status(&format!("(dry-run) build ID filter: {:?}", ids));
             }
             if let Some(ref distributions) = entry.distributions {
-                log.status(&format!("(dry-run) distributions: {:?}", distributions));
+                let rendered: std::collections::HashMap<&str, String> = distributions
+                    .iter()
+                    .map(|(k, v)| {
+                        let rendered_val = match v.as_str() {
+                            Some(s) => ctx.render_template(s).unwrap_or_else(|_| s.to_string()),
+                            None => v.to_string(),
+                        };
+                        (k.as_str(), rendered_val)
+                    })
+                    .collect();
+                log.status(&format!("(dry-run) distributions: {:?}", rendered));
             }
             if let Some(ref component) = entry.component {
-                log.status(&format!("(dry-run) component: {}", component));
+                let rendered_component = ctx
+                    .render_template(component)
+                    .unwrap_or_else(|_| component.to_string());
+                log.status(&format!("(dry-run) component: {}", rendered_component));
             }
-            if let Some(republish) = entry.republish {
-                log.status(&format!("(dry-run) republish: {}", republish));
+            if let Some(ref republish) = entry.republish {
+                log.status(&format!(
+                    "(dry-run) republish: {}",
+                    republish.evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+                ));
             }
             log.status(&format!(
                 "(dry-run) credential env var: {}",
@@ -377,7 +400,7 @@ mod tests {
         config.cloudsmiths = Some(vec![CloudSmithConfig {
             organization: Some("myorg".to_string()),
             repository: Some("myrepo".to_string()),
-            republish: Some(true),
+            republish: Some(StringOrBool::Bool(true)),
             ..Default::default()
         }]);
         let ctx = dry_run_ctx(config);
@@ -446,5 +469,26 @@ mod tests {
             "error should mention the secret env var name, got: {}",
             msg
         );
+    }
+
+    #[test]
+    fn test_cloudsmith_format_matches() {
+        let formats = vec!["deb".to_string(), "rpm".to_string()];
+        assert!(cloudsmith_format_matches("myapp_1.0.0_amd64.deb", &formats));
+        assert!(cloudsmith_format_matches("myapp-1.0.0.x86_64.rpm", &formats));
+        assert!(!cloudsmith_format_matches("myapp-1.0.0.tar.gz", &formats));
+    }
+
+    #[test]
+    fn test_cloudsmith_format_matches_apk() {
+        let formats = vec!["apk".to_string()];
+        assert!(cloudsmith_format_matches("myapp-1.0.0.apk", &formats));
+        assert!(!cloudsmith_format_matches("myapp-1.0.0.deb", &formats));
+    }
+
+    #[test]
+    fn test_cloudsmith_format_matches_empty_formats() {
+        let formats: Vec<String> = vec![];
+        assert!(!cloudsmith_format_matches("myapp.deb", &formats));
     }
 }

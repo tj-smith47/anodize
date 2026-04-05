@@ -4461,7 +4461,8 @@ pub struct CloudSmithConfig {
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
     /// When true, allow republishing over existing package versions.
-    pub republish: Option<bool>,
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub republish: Option<StringOrBool>,
 }
 
 // ---------------------------------------------------------------------------
