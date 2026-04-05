@@ -17,6 +17,7 @@ http.workspace = true
 hyper-rustls.workspace = true
 hyper-util.workspace = true
 octocrab.workspace = true
+percent-encoding.workspace = true
 reqwest.workspace = true
 rustls.workspace = true
 serde_json.workspace = true

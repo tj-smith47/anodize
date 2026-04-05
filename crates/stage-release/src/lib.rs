@@ -6,12 +6,15 @@ use anodize_core::config::{
 };
 use anodize_core::context::Context;
 use anodize_core::git;
+use anodize_core::scm::ScmTokenType;
 use anodize_core::stage::Stage;
 use anyhow::{Context as _, Result, bail};
 use http::header::HeaderValue;
 use octocrab::service::middleware::auth_header::AuthHeaderLayer;
 use octocrab::service::middleware::base_uri::BaseUriLayer;
 use octocrab::service::middleware::extra_headers::ExtraHeadersLayer;
+
+mod gitlab;
 
 // ---------------------------------------------------------------------------
 // should_mark_prerelease
@@ -840,28 +843,55 @@ impl Stage for ReleaseStage {
             }
 
             if dry_run {
-                // Log GitHub Enterprise URLs when configured.
-                if let Some(urls) = &ctx.config.github_urls {
-                    if let Some(api) = &urls.api {
-                        log.status(&format!("(dry-run)   github_urls.api = {}", api));
+                let backend_label = match ctx.token_type {
+                    ScmTokenType::GitLab => "GitLab",
+                    ScmTokenType::Gitea => "Gitea",
+                    ScmTokenType::GitHub => "GitHub",
+                };
+
+                // Log platform-specific URLs when configured.
+                match ctx.token_type {
+                    ScmTokenType::GitHub => {
+                        if let Some(urls) = &ctx.config.github_urls {
+                            if let Some(api) = &urls.api {
+                                log.status(&format!("(dry-run)   github_urls.api = {}", api));
+                            }
+                            if let Some(upload) = &urls.upload {
+                                log.status(&format!("(dry-run)   github_urls.upload = {}", upload));
+                            }
+                            if let Some(download) = &urls.download {
+                                log.status(&format!("(dry-run)   github_urls.download = {}", download));
+                            }
+                            if urls.skip_tls_verify.unwrap_or(false) {
+                                log.status("(dry-run)   github_urls.skip_tls_verify = true");
+                            }
+                        }
                     }
-                    if let Some(upload) = &urls.upload {
-                        log.status(&format!("(dry-run)   github_urls.upload = {}", upload));
+                    ScmTokenType::GitLab => {
+                        if let Some(urls) = &ctx.config.gitlab_urls {
+                            if let Some(api) = &urls.api {
+                                log.status(&format!("(dry-run)   gitlab_urls.api = {}", api));
+                            }
+                            if let Some(download) = &urls.download {
+                                log.status(&format!("(dry-run)   gitlab_urls.download = {}", download));
+                            }
+                            if urls.skip_tls_verify.unwrap_or(false) {
+                                log.status("(dry-run)   gitlab_urls.skip_tls_verify = true");
+                            }
+                            if urls.use_package_registry.unwrap_or(false) {
+                                log.status("(dry-run)   gitlab_urls.use_package_registry = true");
+                            }
+                            if urls.use_job_token.unwrap_or(false) {
+                                log.status("(dry-run)   gitlab_urls.use_job_token = true");
+                            }
+                        }
                     }
-                    // The download URL is informational only — it is used by the
-                    // `scm` module for generating release URL templates, not by
-                    // the HTTP client that talks to the GitHub API.
-                    if let Some(download) = &urls.download {
-                        log.status(&format!("(dry-run)   github_urls.download = {}", download));
-                    }
-                    if urls.skip_tls_verify.unwrap_or(false) {
-                        log.status("(dry-run)   github_urls.skip_tls_verify = true");
-                    }
+                    ScmTokenType::Gitea => {}
                 }
 
                 log.status(&format!(
-                    "(dry-run) would create GitHub Release '{}' (tag={}, draft={}, prerelease={}, mode={}) for crate '{}'",
-                    release_name, tag, draft, prerelease, release_mode, crate_cfg.name
+                    "(dry-run) would create {} Release '{}' (tag={}, draft={}, prerelease={}, mode={}) for crate '{}'",
+                    backend_label, release_name, tag, draft, prerelease, release_mode, crate_cfg.name
                 ));
                 if skip_upload {
                     log.status("(dry-run)   skip_upload is set, would skip artifact uploads");
@@ -884,259 +914,95 @@ impl Stage for ReleaseStage {
                 continue;
             }
 
-            // Require a GitHub config block.
-            let github = match &release_cfg.github {
-                Some(g) => g.clone(),
-                None => {
-                    log.warn(&format!(
-                        "no github config for crate '{}', skipping",
-                        crate_cfg.name
-                    ));
-                    continue;
-                }
-            };
+            // ---------------------------------------------------------------
+            // Backend dispatch: GitHub, GitLab, or Gitea
+            // ---------------------------------------------------------------
+            let release_url = match ctx.token_type {
 
-            // Require a token for real API calls.
-            let token_str = match &token {
-                Some(t) => t.clone(),
-                None => {
-                    anyhow::bail!(
-                        "release: no GitHub token available (set GITHUB_TOKEN or ANODIZE_GITHUB_TOKEN, or pass --token)"
-                    );
-                }
-            };
+            // ===============================================================
+            // GitLab backend
+            // ===============================================================
+            ScmTokenType::GitLab => {
+                // Resolve the repo config: prefer release.gitlab, fall back to release.github.
+                let repo_cfg = match release_cfg.gitlab.as_ref().or(release_cfg.github.as_ref()) {
+                    Some(r) => r.clone(),
+                    None => {
+                        log.warn(&format!(
+                            "no gitlab config for crate '{}', skipping",
+                            crate_cfg.name
+                        ));
+                        continue;
+                    }
+                };
 
-            // Extract github_urls config for GitHub Enterprise support.
-            let github_urls = ctx.config.github_urls.clone();
-
-            // Build the octocrab instance and perform async API calls inside a
-            // dedicated tokio runtime (the Stage trait is synchronous).
-            let url = rt.block_on(async {
-                let octo = build_octocrab_client(&token_str, &github_urls)?;
-
-                // Helper: list all releases (with pagination) and find a draft
-                // matching the release name. GoReleaser searches by name (not tag).
-                async fn find_draft_by_name(
-                    octo: &octocrab::Octocrab,
-                    owner: &str,
-                    repo: &str,
-                    name: &str,
-                ) -> Result<Option<octocrab::models::repos::Release>> {
-                    // Cap at 10 pages (1000 releases) to avoid runaway pagination
-                    // on repos with very long release histories.
-                    const MAX_PAGES: u32 = 10;
-                    let mut page: u32 = 1;
-                    loop {
-                        let route = format!(
-                            "/repos/{}/{}/releases?per_page=100&page={}",
-                            owner, repo, page
+                let token_str = match &token {
+                    Some(t) => t.clone(),
+                    None => {
+                        bail!(
+                            "release: no GitLab token available (set GITLAB_TOKEN, or pass --token)"
                         );
-                        let releases: Vec<octocrab::models::repos::Release> =
-                            octo.get(route, None::<&()>).await
-                                .with_context(|| format!(
-                                    "release: list releases on {}/{} (page {})",
-                                    owner, repo, page
-                                ))?;
-                        if let Some(found) = releases
-                            .iter()
-                            .find(|r| r.draft && r.name.as_deref() == Some(name))
-                        {
-                            return Ok(Some(found.clone()));
-                        }
-                        // If we got fewer than 100 results, there are no more pages.
-                        if releases.len() < 100 {
-                            break;
-                        }
-                        page += 1;
-                        if page > MAX_PAGES {
-                            break;
-                        }
                     }
-                    Ok(None)
-                }
+                };
 
-                // Handle replace_existing_draft: check if a draft release with
-                // the same NAME exists and delete it.
-                if replace_existing_draft && draft
-                    && let Some(existing) =
-                        find_draft_by_name(&octo, &github.owner, &github.name, &release_name)
-                            .await?
-                {
-                    log.status(&format!(
-                        "replacing existing draft release '{}' (id={})",
-                        release_name, existing.id
-                    ));
-                    octo.repos(&github.owner, &github.name)
-                        .releases()
-                        .delete(existing.id.into_inner())
-                        .await
-                        .with_context(|| {
-                            format!(
-                                "release: delete existing draft release '{}' on {}/{}",
-                                release_name, github.owner, github.name
-                            )
-                        })?;
-                }
+                let gitlab_urls = ctx.config.gitlab_urls.clone().unwrap_or_default();
+                let api_url = gitlab_urls
+                    .api
+                    .unwrap_or_else(|| "https://gitlab.com/api/v4".to_string());
+                let download_url = gitlab_urls
+                    .download
+                    .unwrap_or_else(|| "https://gitlab.com".to_string());
+                let skip_tls = gitlab_urls.skip_tls_verify.unwrap_or(false);
+                let use_job_token = gitlab_urls.use_job_token.unwrap_or(false);
+                let use_pkg_registry = gitlab_urls.use_package_registry.unwrap_or(false) || use_job_token;
 
-                // Handle use_existing_draft: look for an existing draft release
-                // with the same NAME and update it instead of creating a new one.
-                let existing_draft = if use_existing_draft {
-                    match find_draft_by_name(
-                        &octo,
-                        &github.owner,
-                        &github.name,
+                let project_id = gitlab::gitlab_project_id(&repo_cfg.owner, &repo_cfg.name);
+                let commit_sha = ctx
+                    .git_info
+                    .as_ref()
+                    .map(|g| g.commit.clone())
+                    .unwrap_or_default();
+
+                let project_name_for_pkg = ctx.config.project_name.clone();
+                let version_for_pkg = ctx
+                    .git_info
+                    .as_ref()
+                    .map(|g| {
+                        // Strip leading 'v' for package version (e.g. "v1.2.3" -> "1.2.3").
+                        g.tag.strip_prefix('v').unwrap_or(&g.tag).to_string()
+                    })
+                    .unwrap_or_else(|| "0.0.0".to_string());
+
+                let url = rt.block_on(async {
+                    let client = gitlab::build_gitlab_client(&token_str, skip_tls, use_job_token)?;
+
+                    // Create or update the release.
+                    gitlab::gitlab_create_release(
+                        &client,
+                        &api_url,
+                        &project_id,
+                        &tag,
                         &release_name,
+                        &release_body,
+                        &commit_sha,
+                        &release_mode,
                     )
-                    .await?
-                    {
-                        Some(existing) => {
-                            log.status(&format!(
-                                "reusing existing draft release '{}' (id={})",
-                                release_name, existing.id
-                            ));
-                            Some(existing)
-                        }
-                        None => None,
-                    }
-                } else {
-                    None
-                };
+                    .await?;
 
-                // When updating an existing release, apply mode-based body composition.
-                // Also track any existing release found by tag so we can PATCH it
-                // instead of POSTing a new one (which would 422 on duplicate tags).
-                let (final_body, existing_by_tag) = if let Some(ref existing) = existing_draft {
-                    let existing_body = existing.body.as_deref();
-                    (compose_body_for_mode(&release_mode, existing_body, &release_body), None)
-                } else {
-                    // For new releases, check if a release exists for mode != "replace".
-                    if release_mode != "replace" {
-                        match octo
-                            .repos(&github.owner, &github.name)
-                            .releases()
-                            .get_by_tag(&tag)
-                            .await
-                        {
-                            Ok(existing) => {
-                                let existing_body = existing.body.as_deref();
-                                let body = compose_body_for_mode(&release_mode, existing_body, &release_body);
-                                (body, Some(existing))
-                            }
-                            Err(_) => (release_body.clone(), None),
-                        }
-                    } else {
-                        (release_body.clone(), None)
-                    }
-                };
-
-                // Create or update the release. We use raw API calls for all paths
-                // to support target_commitish and discussion_category_name, which
-                // are not fully exposed by octocrab's builder API.
-                //
-                // Draft-then-publish: always create as draft first so users never
-                // see a release with missing artifacts. After all uploads succeed,
-                // we PATCH draft=false if the user wanted a non-draft release.
-                let user_wants_draft = draft;
-                // GitHub ignores discussion_category_name on draft releases and
-                // make_latest is meaningless until publish. Send them only in the
-                // un-draft PATCH (below) to match GoReleaser behaviour.
-                let json_body = build_release_json(
-                    &tag,
-                    &release_name,
-                    &final_body,
-                    true, // always create as draft first
-                    prerelease,
-                    &None,  // make_latest deferred to publish PATCH
-                    &target_commitish,
-                    &None,  // discussion_category_name deferred to publish PATCH
-                    github_native_changelog,
-                );
-
-                let release = if let Some(ref existing) = existing_draft {
-                    // Update the existing draft release via PATCH.
-                    let route = format!(
-                        "/repos/{}/{}/releases/{}",
-                        github.owner, github.name, existing.id
-                    );
-                    octo.patch::<octocrab::models::repos::Release, _, _>(route, Some(&json_body))
-                        .await
-                        .with_context(|| {
-                            format!(
-                                "release: update existing draft release '{}' on {}/{}",
-                                tag, github.owner, github.name
-                            )
-                        })?
-                } else if let Some(ref existing) = existing_by_tag {
-                    // An existing release was found by tag (append/prepend/keep-existing
-                    // mode). PATCH it instead of POSTing a new one, which would cause
-                    // a 422 "tag already exists" error from GitHub.
                     log.status(&format!(
-                        "updating existing release '{}' (id={}, mode={})",
-                        release_name, existing.id, release_mode
+                        "created GitLab Release '{}' (tag={}) on {}",
+                        release_name, tag, project_id
                     ));
-                    let route = format!(
-                        "/repos/{}/{}/releases/{}",
-                        github.owner, github.name, existing.id
-                    );
-                    octo.patch::<octocrab::models::repos::Release, _, _>(route, Some(&json_body))
-                        .await
-                        .with_context(|| {
-                            format!(
-                                "release: update existing release '{}' on {}/{}",
-                                tag, github.owner, github.name
-                            )
-                        })?
-                } else {
-                    // Create a new release via POST.
-                    let route = format!(
-                        "/repos/{}/{}/releases",
-                        github.owner, github.name
-                    );
-                    octo.post::<_, octocrab::models::repos::Release>(route, Some(&json_body))
-                        .await
-                        .with_context(|| {
-                            format!(
-                                "release: create GitHub release '{}' on {}/{}",
-                                tag, github.owner, github.name
-                            )
-                        })?
-                };
 
-                log.status(&format!(
-                    "created GitHub Release '{}' (id={}) on {}/{}",
-                    release_name, release.id, github.owner, github.name
-                ));
-
-                let html_url = release.html_url.to_string();
-                let release_id_raw = release.id.into_inner();
-
-                // Wrap octo in Arc for shared use across parallel upload tasks
-                // and the subsequent publish PATCH.
-                let octo = std::sync::Arc::new(octo);
-
-                // Upload artifacts (unless skip_upload is set), with bounded
-                // parallelism using a semaphore (context's parallelism setting,
-                // minimum 1).
-                if skip_upload {
-                    log.status("skip_upload is set, skipping artifact uploads");
-                } else {
-                    let upload_parallelism = std::cmp::max(ctx.options.parallelism, 1);
-                    let semaphore = std::sync::Arc::new(
-                        tokio::sync::Semaphore::new(upload_parallelism),
-                    );
-                    let gh_owner = github.owner.clone();
-                    let gh_name = github.name.clone();
-                    let release_assets = release.assets.clone();
-                    let tag_for_upload = tag.clone();
-
-                    // Prepare the list of uploadable entries (error on missing files).
-                    let mut missing_files = Vec::new();
-                    let prepared_entries: Vec<(std::path::PathBuf, String)> = artifact_entries
-                        .iter()
-                        .filter_map(|(path, custom_name)| {
+                    // Upload artifacts (unless skip_upload is set).
+                    if skip_upload {
+                        log.status("skip_upload is set, skipping artifact uploads");
+                    } else {
+                        for (path, custom_name) in &artifact_entries {
                             if !path.exists() {
-                                missing_files.push(path.display().to_string());
-                                return None;
+                                bail!(
+                                    "release: artifact file missing: {}",
+                                    path.display()
+                                );
                             }
                             let file_name = if let Some(name) = custom_name {
                                 name.clone()
@@ -1145,217 +1011,533 @@ impl Stage for ReleaseStage {
                                     .map(|n| n.to_string_lossy().into_owned())
                                     .unwrap_or_else(|| "artifact".to_string())
                             };
-                            Some((path.clone(), file_name))
-                        })
-                        .collect();
 
-                    if !missing_files.is_empty() {
-                        anyhow::bail!(
-                            "the following artifact files are missing:\n  {}",
-                            missing_files.join("\n  ")
-                        );
-                    }
+                            gitlab::gitlab_upload_asset(
+                                &client,
+                                &api_url,
+                                &project_id,
+                                &tag,
+                                path,
+                                &file_name,
+                                &project_name_for_pkg,
+                                &version_for_pkg,
+                                use_pkg_registry,
+                                &download_url,
+                            )
+                            .await
+                            .with_context(|| {
+                                format!(
+                                    "release: upload artifact '{}' to GitLab release '{}'",
+                                    file_name, tag
+                                )
+                            })?;
 
-                    let mut join_set = tokio::task::JoinSet::new();
-
-                    for (path, file_name) in prepared_entries {
-                        let sem = semaphore.clone();
-                        let octo = octo.clone();
-                        let gh_owner = gh_owner.clone();
-                        let gh_name = gh_name.clone();
-                        let tag_c = tag_for_upload.clone();
-                        let release_assets = release_assets.clone();
-
-                        join_set.spawn(async move {
-                            let _permit = sem.acquire().await
-                                .map_err(|e| anyhow::anyhow!("semaphore closed: {}", e))?;
-
-                            // Handle replace_existing_artifacts: if an asset with the
-                            // same name already exists, delete it before uploading.
-                            if replace_existing_artifacts {
-                                for existing_asset in &release_assets {
-                                    if existing_asset.name == file_name {
-                                        octo.repos(&gh_owner, &gh_name)
-                                            .release_assets()
-                                            .delete(existing_asset.id.into_inner())
-                                            .await
-                                            .with_context(|| {
-                                                format!(
-                                                    "release: delete existing artifact '{}' from release '{}'",
-                                                    file_name, tag_c
-                                                )
-                                            })?;
-                                        break;
-                                    }
-                                }
-                            }
-
-                            // Retry loop: up to 10 attempts with exponential backoff.
-                            const MAX_UPLOAD_ATTEMPTS: u32 = 10;
-                            const INITIAL_RETRY_DELAY: std::time::Duration =
-                                std::time::Duration::from_millis(50);
-                            const MAX_RETRY_DELAY: std::time::Duration =
-                                std::time::Duration::from_secs(30);
-
-                            let mut last_err: Option<anyhow::Error> = None;
-                            for attempt in 1..=MAX_UPLOAD_ATTEMPTS {
-                                let data = std::fs::read(&path).with_context(|| {
-                                    format!("release: read artifact {}", path.display())
-                                })?;
-
-                                match octo
-                                    .repos(&gh_owner, &gh_name)
-                                    .releases()
-                                    .upload_asset(release_id_raw, &file_name, data.into())
-                                    .send()
-                                    .await
-                                {
-                                    Ok(_) => {
-                                        last_err = None;
-                                        break;
-                                    }
-                                    Err(err) => {
-                                        let err_str = err.to_string();
-                                        let is_server_error = matches!(
-                                            &err,
-                                            octocrab::Error::GitHub { source, .. }
-                                                if source.status_code.is_server_error()
-                                        );
-                                        let is_already_exists = matches!(
-                                            &err,
-                                            octocrab::Error::GitHub { source, .. }
-                                                if source.status_code.as_u16() == 422
-                                        ) && err_str.contains("already_exists");
-
-                                        if is_already_exists && replace_existing_artifacts {
-                                            // Delete the conflicting asset and retry.
-                                            let current_release = octo
-                                                .repos(&gh_owner, &gh_name)
-                                                .releases()
-                                                .get(release_id_raw)
-                                                .await
-                                                .with_context(|| {
-                                                    format!(
-                                                        "release: fetch release to find duplicate asset '{}'",
-                                                        file_name
-                                                    )
-                                                })?;
-                                            for asset in &current_release.assets {
-                                                if asset.name == file_name {
-                                                    octo.repos(&gh_owner, &gh_name)
-                                                        .release_assets()
-                                                        .delete(asset.id.into_inner())
-                                                        .await
-                                                        .with_context(|| {
-                                                            format!(
-                                                                "release: delete duplicate artifact '{}' from release '{}'",
-                                                                file_name, tag_c
-                                                            )
-                                                        })?;
-                                                    break;
-                                                }
-                                            }
-                                            last_err = Some(anyhow::anyhow!(err));
-                                            if attempt < MAX_UPLOAD_ATTEMPTS {
-                                                let delay = std::cmp::min(
-                                                    INITIAL_RETRY_DELAY * 2u32.pow(attempt - 1),
-                                                    MAX_RETRY_DELAY,
-                                                );
-                                                tokio::time::sleep(delay).await;
-                                            }
-                                            continue;
-                                        } else if is_server_error
-                                            || matches!(&err, octocrab::Error::Hyper { .. })
-                                            || matches!(&err, octocrab::Error::Http { .. })
-                                        {
-                                            last_err = Some(anyhow::anyhow!(err));
-                                            if attempt < MAX_UPLOAD_ATTEMPTS {
-                                                let delay = std::cmp::min(
-                                                    INITIAL_RETRY_DELAY * 2u32.pow(attempt - 1),
-                                                    MAX_RETRY_DELAY,
-                                                );
-                                                tokio::time::sleep(delay).await;
-                                            }
-                                            continue;
-                                        } else {
-                                            // Non-retryable error — fail immediately.
-                                            return Err(anyhow::anyhow!(err)).with_context(|| {
-                                                format!(
-                                                    "release: upload artifact '{}' to release '{}'",
-                                                    file_name, tag_c
-                                                )
-                                            });
-                                        }
-                                    }
-                                }
-                            }
-                            if let Some(err) = last_err {
-                                return Err(err).with_context(|| {
-                                    format!(
-                                        "release: upload artifact '{}' to release '{}' failed after {} attempts",
-                                        file_name, tag_c, MAX_UPLOAD_ATTEMPTS
-                                    )
-                                });
-                            }
-
-                            Ok::<String, anyhow::Error>(file_name)
-                        });
-                    }
-
-                    // Collect results from all upload tasks.
-                    while let Some(result) = join_set.join_next().await {
-                        match result {
-                            Ok(Ok(file_name)) => {
-                                log.verbose(&format!("uploaded artifact: {}", file_name));
-                            }
-                            Ok(Err(e)) => return Err(e),
-                            Err(join_err) => {
-                                return Err(anyhow::anyhow!(
-                                    "release: upload task panicked: {}", join_err
-                                ));
-                            }
+                            log.verbose(&format!("uploaded artifact: {}", file_name));
                         }
                     }
 
-                }
+                    // GitLab does not support draft releases — publish is a no-op.
 
-                // Draft-then-publish: if the user's config has draft=false,
-                // un-draft the release now that all assets are uploaded.
-                if !user_wants_draft {
-                    let publish_route = format!(
-                        "/repos/{}/{}/releases/{}",
-                        github.owner, github.name, release_id_raw
+                    let html_url = gitlab::gitlab_release_url(
+                        &download_url,
+                        &repo_cfg.owner,
+                        &repo_cfg.name,
+                        &tag,
                     );
-                    let mut publish_body = serde_json::json!({ "draft": false });
-                    if let Some(ml) = &make_latest {
-                        publish_body["make_latest"] =
-                            serde_json::Value::String(ml.to_string());
+                    Ok::<String, anyhow::Error>(html_url)
+                })?;
+
+                url
+            }
+
+            // ===============================================================
+            // Gitea backend (not yet implemented)
+            // ===============================================================
+            ScmTokenType::Gitea => {
+                bail!("release: Gitea release backend not yet implemented");
+            }
+
+            // ===============================================================
+            // GitHub backend (existing octocrab implementation)
+            // ===============================================================
+            ScmTokenType::GitHub => {
+                // Require a GitHub config block.
+                let github = match &release_cfg.github {
+                    Some(g) => g.clone(),
+                    None => {
+                        log.warn(&format!(
+                            "no github config for crate '{}', skipping",
+                            crate_cfg.name
+                        ));
+                        continue;
                     }
-                    if let Some(dc) = &discussion_category_name {
-                        publish_body["discussion_category_name"] =
-                            serde_json::json!(dc);
+                };
+
+                // Require a token for real API calls.
+                let token_str = match &token {
+                    Some(t) => t.clone(),
+                    None => {
+                        anyhow::bail!(
+                            "release: no GitHub token available (set GITHUB_TOKEN or ANODIZE_GITHUB_TOKEN, or pass --token)"
+                        );
                     }
-                    octo.patch::<octocrab::models::repos::Release, _, _>(
-                        publish_route,
-                        Some(&publish_body),
-                    )
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "release: publish (un-draft) release '{}' on {}/{}",
-                            tag, github.owner, github.name
+                };
+
+                // Extract github_urls config for GitHub Enterprise support.
+                let github_urls = ctx.config.github_urls.clone();
+
+                // Build the octocrab instance and perform async API calls inside a
+                // dedicated tokio runtime (the Stage trait is synchronous).
+                let url = rt.block_on(async {
+                    let octo = build_octocrab_client(&token_str, &github_urls)?;
+
+                    // Helper: list all releases (with pagination) and find a draft
+                    // matching the release name. GoReleaser searches by name (not tag).
+                    async fn find_draft_by_name(
+                        octo: &octocrab::Octocrab,
+                        owner: &str,
+                        repo: &str,
+                        name: &str,
+                    ) -> Result<Option<octocrab::models::repos::Release>> {
+                        // Cap at 10 pages (1000 releases) to avoid runaway pagination
+                        // on repos with very long release histories.
+                        const MAX_PAGES: u32 = 10;
+                        let mut page: u32 = 1;
+                        loop {
+                            let route = format!(
+                                "/repos/{}/{}/releases?per_page=100&page={}",
+                                owner, repo, page
+                            );
+                            let releases: Vec<octocrab::models::repos::Release> =
+                                octo.get(route, None::<&()>).await
+                                    .with_context(|| format!(
+                                        "release: list releases on {}/{} (page {})",
+                                        owner, repo, page
+                                    ))?;
+                            if let Some(found) = releases
+                                .iter()
+                                .find(|r| r.draft && r.name.as_deref() == Some(name))
+                            {
+                                return Ok(Some(found.clone()));
+                            }
+                            // If we got fewer than 100 results, there are no more pages.
+                            if releases.len() < 100 {
+                                break;
+                            }
+                            page += 1;
+                            if page > MAX_PAGES {
+                                break;
+                            }
+                        }
+                        Ok(None)
+                    }
+
+                    // Handle replace_existing_draft: check if a draft release with
+                    // the same NAME exists and delete it.
+                    if replace_existing_draft && draft
+                        && let Some(existing) =
+                            find_draft_by_name(&octo, &github.owner, &github.name, &release_name)
+                                .await?
+                    {
+                        log.status(&format!(
+                            "replacing existing draft release '{}' (id={})",
+                            release_name, existing.id
+                        ));
+                        octo.repos(&github.owner, &github.name)
+                            .releases()
+                            .delete(existing.id.into_inner())
+                            .await
+                            .with_context(|| {
+                                format!(
+                                    "release: delete existing draft release '{}' on {}/{}",
+                                    release_name, github.owner, github.name
+                                )
+                            })?;
+                    }
+
+                    // Handle use_existing_draft: look for an existing draft release
+                    // with the same NAME and update it instead of creating a new one.
+                    let existing_draft = if use_existing_draft {
+                        match find_draft_by_name(
+                            &octo,
+                            &github.owner,
+                            &github.name,
+                            &release_name,
                         )
-                    })?;
+                        .await?
+                        {
+                            Some(existing) => {
+                                log.status(&format!(
+                                    "reusing existing draft release '{}' (id={})",
+                                    release_name, existing.id
+                                ));
+                                Some(existing)
+                            }
+                            None => None,
+                        }
+                    } else {
+                        None
+                    };
+
+                    // When updating an existing release, apply mode-based body composition.
+                    // Also track any existing release found by tag so we can PATCH it
+                    // instead of POSTing a new one (which would 422 on duplicate tags).
+                    let (final_body, existing_by_tag) = if let Some(ref existing) = existing_draft {
+                        let existing_body = existing.body.as_deref();
+                        (compose_body_for_mode(&release_mode, existing_body, &release_body), None)
+                    } else {
+                        // For new releases, check if a release exists for mode != "replace".
+                        if release_mode != "replace" {
+                            match octo
+                                .repos(&github.owner, &github.name)
+                                .releases()
+                                .get_by_tag(&tag)
+                                .await
+                            {
+                                Ok(existing) => {
+                                    let existing_body = existing.body.as_deref();
+                                    let body = compose_body_for_mode(&release_mode, existing_body, &release_body);
+                                    (body, Some(existing))
+                                }
+                                Err(_) => (release_body.clone(), None),
+                            }
+                        } else {
+                            (release_body.clone(), None)
+                        }
+                    };
+
+                    // Create or update the release. We use raw API calls for all paths
+                    // to support target_commitish and discussion_category_name, which
+                    // are not fully exposed by octocrab's builder API.
+                    //
+                    // Draft-then-publish: always create as draft first so users never
+                    // see a release with missing artifacts. After all uploads succeed,
+                    // we PATCH draft=false if the user wanted a non-draft release.
+                    let user_wants_draft = draft;
+                    // GitHub ignores discussion_category_name on draft releases and
+                    // make_latest is meaningless until publish. Send them only in the
+                    // un-draft PATCH (below) to match GoReleaser behaviour.
+                    let json_body = build_release_json(
+                        &tag,
+                        &release_name,
+                        &final_body,
+                        true, // always create as draft first
+                        prerelease,
+                        &None,  // make_latest deferred to publish PATCH
+                        &target_commitish,
+                        &None,  // discussion_category_name deferred to publish PATCH
+                        github_native_changelog,
+                    );
+
+                    let release = if let Some(ref existing) = existing_draft {
+                        // Update the existing draft release via PATCH.
+                        let route = format!(
+                            "/repos/{}/{}/releases/{}",
+                            github.owner, github.name, existing.id
+                        );
+                        octo.patch::<octocrab::models::repos::Release, _, _>(route, Some(&json_body))
+                            .await
+                            .with_context(|| {
+                                format!(
+                                    "release: update existing draft release '{}' on {}/{}",
+                                    tag, github.owner, github.name
+                                )
+                            })?
+                    } else if let Some(ref existing) = existing_by_tag {
+                        // An existing release was found by tag (append/prepend/keep-existing
+                        // mode). PATCH it instead of POSTing a new one, which would cause
+                        // a 422 "tag already exists" error from GitHub.
+                        log.status(&format!(
+                            "updating existing release '{}' (id={}, mode={})",
+                            release_name, existing.id, release_mode
+                        ));
+                        let route = format!(
+                            "/repos/{}/{}/releases/{}",
+                            github.owner, github.name, existing.id
+                        );
+                        octo.patch::<octocrab::models::repos::Release, _, _>(route, Some(&json_body))
+                            .await
+                            .with_context(|| {
+                                format!(
+                                    "release: update existing release '{}' on {}/{}",
+                                    tag, github.owner, github.name
+                                )
+                            })?
+                    } else {
+                        // Create a new release via POST.
+                        let route = format!(
+                            "/repos/{}/{}/releases",
+                            github.owner, github.name
+                        );
+                        octo.post::<_, octocrab::models::repos::Release>(route, Some(&json_body))
+                            .await
+                            .with_context(|| {
+                                format!(
+                                    "release: create GitHub release '{}' on {}/{}",
+                                    tag, github.owner, github.name
+                                )
+                            })?
+                    };
+
                     log.status(&format!(
-                        "published release '{}' (draft -> live)",
-                        release_name
+                        "created GitHub Release '{}' (id={}) on {}/{}",
+                        release_name, release.id, github.owner, github.name
                     ));
-                }
 
-                Ok::<String, anyhow::Error>(html_url)
-            })?;
+                    let html_url = release.html_url.to_string();
+                    let release_id_raw = release.id.into_inner();
 
-            ctx.set_release_url(&url);
+                    // Wrap octo in Arc for shared use across parallel upload tasks
+                    // and the subsequent publish PATCH.
+                    let octo = std::sync::Arc::new(octo);
+
+                    // Upload artifacts (unless skip_upload is set), with bounded
+                    // parallelism using a semaphore (context's parallelism setting,
+                    // minimum 1).
+                    if skip_upload {
+                        log.status("skip_upload is set, skipping artifact uploads");
+                    } else {
+                        let upload_parallelism = std::cmp::max(ctx.options.parallelism, 1);
+                        let semaphore = std::sync::Arc::new(
+                            tokio::sync::Semaphore::new(upload_parallelism),
+                        );
+                        let gh_owner = github.owner.clone();
+                        let gh_name = github.name.clone();
+                        let release_assets = release.assets.clone();
+                        let tag_for_upload = tag.clone();
+
+                        // Prepare the list of uploadable entries (error on missing files).
+                        let mut missing_files = Vec::new();
+                        let prepared_entries: Vec<(std::path::PathBuf, String)> = artifact_entries
+                            .iter()
+                            .filter_map(|(path, custom_name)| {
+                                if !path.exists() {
+                                    missing_files.push(path.display().to_string());
+                                    return None;
+                                }
+                                let file_name = if let Some(name) = custom_name {
+                                    name.clone()
+                                } else {
+                                    path.file_name()
+                                        .map(|n| n.to_string_lossy().into_owned())
+                                        .unwrap_or_else(|| "artifact".to_string())
+                                };
+                                Some((path.clone(), file_name))
+                            })
+                            .collect();
+
+                        if !missing_files.is_empty() {
+                            anyhow::bail!(
+                                "the following artifact files are missing:\n  {}",
+                                missing_files.join("\n  ")
+                            );
+                        }
+
+                        let mut join_set = tokio::task::JoinSet::new();
+
+                        for (path, file_name) in prepared_entries {
+                            let sem = semaphore.clone();
+                            let octo = octo.clone();
+                            let gh_owner = gh_owner.clone();
+                            let gh_name = gh_name.clone();
+                            let tag_c = tag_for_upload.clone();
+                            let release_assets = release_assets.clone();
+
+                            join_set.spawn(async move {
+                                let _permit = sem.acquire().await
+                                    .map_err(|e| anyhow::anyhow!("semaphore closed: {}", e))?;
+
+                                // Handle replace_existing_artifacts: if an asset with the
+                                // same name already exists, delete it before uploading.
+                                if replace_existing_artifacts {
+                                    for existing_asset in &release_assets {
+                                        if existing_asset.name == file_name {
+                                            octo.repos(&gh_owner, &gh_name)
+                                                .release_assets()
+                                                .delete(existing_asset.id.into_inner())
+                                                .await
+                                                .with_context(|| {
+                                                    format!(
+                                                        "release: delete existing artifact '{}' from release '{}'",
+                                                        file_name, tag_c
+                                                    )
+                                                })?;
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                // Retry loop: up to 10 attempts with exponential backoff.
+                                const MAX_UPLOAD_ATTEMPTS: u32 = 10;
+                                const INITIAL_RETRY_DELAY: std::time::Duration =
+                                    std::time::Duration::from_millis(50);
+                                const MAX_RETRY_DELAY: std::time::Duration =
+                                    std::time::Duration::from_secs(30);
+
+                                let mut last_err: Option<anyhow::Error> = None;
+                                for attempt in 1..=MAX_UPLOAD_ATTEMPTS {
+                                    let data = std::fs::read(&path).with_context(|| {
+                                        format!("release: read artifact {}", path.display())
+                                    })?;
+
+                                    match octo
+                                        .repos(&gh_owner, &gh_name)
+                                        .releases()
+                                        .upload_asset(release_id_raw, &file_name, data.into())
+                                        .send()
+                                        .await
+                                    {
+                                        Ok(_) => {
+                                            last_err = None;
+                                            break;
+                                        }
+                                        Err(err) => {
+                                            let err_str = err.to_string();
+                                            let is_server_error = matches!(
+                                                &err,
+                                                octocrab::Error::GitHub { source, .. }
+                                                    if source.status_code.is_server_error()
+                                            );
+                                            let is_already_exists = matches!(
+                                                &err,
+                                                octocrab::Error::GitHub { source, .. }
+                                                    if source.status_code.as_u16() == 422
+                                            ) && err_str.contains("already_exists");
+
+                                            if is_already_exists && replace_existing_artifacts {
+                                                // Delete the conflicting asset and retry.
+                                                let current_release = octo
+                                                    .repos(&gh_owner, &gh_name)
+                                                    .releases()
+                                                    .get(release_id_raw)
+                                                    .await
+                                                    .with_context(|| {
+                                                        format!(
+                                                            "release: fetch release to find duplicate asset '{}'",
+                                                            file_name
+                                                        )
+                                                    })?;
+                                                for asset in &current_release.assets {
+                                                    if asset.name == file_name {
+                                                        octo.repos(&gh_owner, &gh_name)
+                                                            .release_assets()
+                                                            .delete(asset.id.into_inner())
+                                                            .await
+                                                            .with_context(|| {
+                                                                format!(
+                                                                    "release: delete duplicate artifact '{}' from release '{}'",
+                                                                    file_name, tag_c
+                                                                )
+                                                            })?;
+                                                        break;
+                                                    }
+                                                }
+                                                last_err = Some(anyhow::anyhow!(err));
+                                                if attempt < MAX_UPLOAD_ATTEMPTS {
+                                                    let delay = std::cmp::min(
+                                                        INITIAL_RETRY_DELAY * 2u32.pow(attempt - 1),
+                                                        MAX_RETRY_DELAY,
+                                                    );
+                                                    tokio::time::sleep(delay).await;
+                                                }
+                                                continue;
+                                            } else if is_server_error
+                                                || matches!(&err, octocrab::Error::Hyper { .. })
+                                                || matches!(&err, octocrab::Error::Http { .. })
+                                            {
+                                                last_err = Some(anyhow::anyhow!(err));
+                                                if attempt < MAX_UPLOAD_ATTEMPTS {
+                                                    let delay = std::cmp::min(
+                                                        INITIAL_RETRY_DELAY * 2u32.pow(attempt - 1),
+                                                        MAX_RETRY_DELAY,
+                                                    );
+                                                    tokio::time::sleep(delay).await;
+                                                }
+                                                continue;
+                                            } else {
+                                                // Non-retryable error — fail immediately.
+                                                return Err(anyhow::anyhow!(err)).with_context(|| {
+                                                    format!(
+                                                        "release: upload artifact '{}' to release '{}'",
+                                                        file_name, tag_c
+                                                    )
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+                                if let Some(err) = last_err {
+                                    return Err(err).with_context(|| {
+                                        format!(
+                                            "release: upload artifact '{}' to release '{}' failed after {} attempts",
+                                            file_name, tag_c, MAX_UPLOAD_ATTEMPTS
+                                        )
+                                    });
+                                }
+
+                                Ok::<String, anyhow::Error>(file_name)
+                            });
+                        }
+
+                        // Collect results from all upload tasks.
+                        while let Some(result) = join_set.join_next().await {
+                            match result {
+                                Ok(Ok(file_name)) => {
+                                    log.verbose(&format!("uploaded artifact: {}", file_name));
+                                }
+                                Ok(Err(e)) => return Err(e),
+                                Err(join_err) => {
+                                    return Err(anyhow::anyhow!(
+                                        "release: upload task panicked: {}", join_err
+                                    ));
+                                }
+                            }
+                        }
+
+                    }
+
+                    // Draft-then-publish: if the user's config has draft=false,
+                    // un-draft the release now that all assets are uploaded.
+                    if !user_wants_draft {
+                        let publish_route = format!(
+                            "/repos/{}/{}/releases/{}",
+                            github.owner, github.name, release_id_raw
+                        );
+                        let mut publish_body = serde_json::json!({ "draft": false });
+                        if let Some(ml) = &make_latest {
+                            publish_body["make_latest"] =
+                                serde_json::Value::String(ml.to_string());
+                        }
+                        if let Some(dc) = &discussion_category_name {
+                            publish_body["discussion_category_name"] =
+                                serde_json::json!(dc);
+                        }
+                        octo.patch::<octocrab::models::repos::Release, _, _>(
+                            publish_route,
+                            Some(&publish_body),
+                        )
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "release: publish (un-draft) release '{}' on {}/{}",
+                                tag, github.owner, github.name
+                            )
+                        })?;
+                        log.status(&format!(
+                            "published release '{}' (draft -> live)",
+                            release_name
+                        ));
+                    }
+
+                    Ok::<String, anyhow::Error>(html_url)
+                })?;
+
+                url
+            }
+
+            }; // end match ctx.token_type
+
+            ctx.set_release_url(&release_url);
         }
 
         Ok(())
@@ -3707,5 +3889,159 @@ draft: true
 
         let stage = ReleaseStage;
         stage.run(&mut ctx).unwrap();
+    }
+
+    // ---- GitLab backend tests ----
+
+    #[test]
+    fn test_dry_run_gitlab_token_type_shows_gitlab_release() {
+        use anodize_core::config::ScmRepoConfig;
+        use anodize_core::scm::ScmTokenType;
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "testcrate".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    gitlab: Some(ScmRepoConfig {
+                        owner: "mygroup".to_string(),
+                        name: "myproject".to_string(),
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+        ctx.token_type = ScmTokenType::GitLab;
+
+        let stage = ReleaseStage;
+        // Dry-run with GitLab token type should succeed.
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_dry_run_gitlab_with_custom_urls() {
+        use anodize_core::config::{GitLabUrlsConfig, ScmRepoConfig};
+        use anodize_core::scm::ScmTokenType;
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "testcrate".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    gitlab: Some(ScmRepoConfig {
+                        owner: "corp".to_string(),
+                        name: "app".to_string(),
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+        ctx.token_type = ScmTokenType::GitLab;
+        ctx.config.gitlab_urls = Some(GitLabUrlsConfig {
+            api: Some("https://gitlab.example.com/api/v4".to_string()),
+            download: Some("https://gitlab.example.com".to_string()),
+            skip_tls_verify: Some(true),
+            use_package_registry: Some(true),
+            use_job_token: Some(false),
+        });
+
+        let stage = ReleaseStage;
+        // Dry-run with custom GitLab URLs should succeed and show them.
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_gitlab_backend_skips_when_no_gitlab_config() {
+        use anodize_core::scm::ScmTokenType;
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .token(Some("glpat-test-token".to_string()))
+            .crates(vec![CrateConfig {
+                name: "testcrate".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    // No gitlab config, no github config either.
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+        ctx.token_type = ScmTokenType::GitLab;
+
+        let stage = ReleaseStage;
+        // Should succeed by skipping (warn + continue) since no gitlab config.
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_gitlab_backend_falls_back_to_github_config() {
+        use anodize_core::config::ScmRepoConfig;
+        use anodize_core::scm::ScmTokenType;
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "testcrate".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    // Only github config set, no gitlab-specific config.
+                    github: Some(ScmRepoConfig {
+                        owner: "fallback-owner".to_string(),
+                        name: "fallback-repo".to_string(),
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+        ctx.token_type = ScmTokenType::GitLab;
+
+        let stage = ReleaseStage;
+        // Should succeed in dry-run because GitLab falls back to github config.
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_gitea_backend_not_yet_implemented() {
+        use anodize_core::config::ScmRepoConfig;
+        use anodize_core::scm::ScmTokenType;
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .token(Some("gitea-test-token".to_string()))
+            .crates(vec![CrateConfig {
+                name: "testcrate".to_string(),
+                path: ".".to_string(),
+                tag_template: "v1.0.0".to_string(),
+                release: Some(ReleaseConfig {
+                    gitea: Some(ScmRepoConfig {
+                        owner: "owner".to_string(),
+                        name: "repo".to_string(),
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+        ctx.token_type = ScmTokenType::Gitea;
+
+        let stage = ReleaseStage;
+        let result = stage.run(&mut ctx);
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("Gitea release backend not yet implemented")
+        );
     }
 }
