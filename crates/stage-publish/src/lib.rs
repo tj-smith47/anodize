@@ -1,6 +1,7 @@
 pub mod aur;
 pub mod chocolatey;
 pub mod crates_io;
+pub mod dockerhub;
 pub mod homebrew;
 pub mod krew;
 pub mod nix;
@@ -16,6 +17,7 @@ use anyhow::Result;
 use aur::publish_to_aur;
 use chocolatey::publish_to_chocolatey;
 use crates_io::publish_to_crates_io;
+use dockerhub::publish_to_dockerhub;
 use homebrew::publish_to_homebrew;
 use krew::publish_to_krew;
 use nix::publish_to_nix;
@@ -85,6 +87,9 @@ impl Stage for PublishStage {
         for crate_name in &crates_with_publisher(ctx, &selected, |p| p.nix.is_some()) {
             publish_to_nix(ctx, crate_name, &log)?;
         }
+
+        // 9. DockerHub — top-level publisher (not per-crate).
+        publish_to_dockerhub(ctx, &log)?;
 
         Ok(())
     }
