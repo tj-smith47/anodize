@@ -1,6 +1,7 @@
 pub mod artifactory;
 pub mod aur;
 pub mod chocolatey;
+pub mod cloudsmith;
 pub mod crates_io;
 pub mod dockerhub;
 pub mod fury;
@@ -19,6 +20,7 @@ use anyhow::Result;
 use artifactory::publish_to_artifactory;
 use aur::publish_to_aur;
 use chocolatey::publish_to_chocolatey;
+use cloudsmith::publish_to_cloudsmith;
 use crates_io::publish_to_crates_io;
 use dockerhub::publish_to_dockerhub;
 use fury::publish_to_fury;
@@ -100,6 +102,9 @@ impl Stage for PublishStage {
 
         // 11. GemFury — top-level publisher (not per-crate).
         publish_to_fury(ctx, &log)?;
+
+        // 12. CloudSmith — top-level publisher (not per-crate).
+        publish_to_cloudsmith(ctx, &log)?;
 
         Ok(())
     }
