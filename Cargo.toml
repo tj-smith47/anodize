@@ -86,6 +86,10 @@ xz2 = "0.1"
 zstd = "0.13"
 filetime = "0.2"
 glob = "0.3"
+http = "1"
+hyper-rustls = "0.27"
+hyper-util = { version = "0.1", features = ["client-legacy"] }
+rustls = { version = "0.23", features = ["ring"] }
 object_store = { version = "0.13", features = ["aws", "gcp", "azure"] }
 serial_test = "3"
 schemars = "0.8"

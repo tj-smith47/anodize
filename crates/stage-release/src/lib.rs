@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use anodize_core::artifact::ArtifactKind;
 use anodize_core::config::{
     ContentSource, ExtraFileSpec, GitHubUrlsConfig, MakeLatestConfig, PrereleaseConfig,
@@ -6,6 +8,10 @@ use anodize_core::context::Context;
 use anodize_core::git;
 use anodize_core::stage::Stage;
 use anyhow::{Context as _, Result, bail};
+use http::header::HeaderValue;
+use octocrab::service::middleware::auth_header::AuthHeaderLayer;
+use octocrab::service::middleware::base_uri::BaseUriLayer;
+use octocrab::service::middleware::extra_headers::ExtraHeadersLayer;
 
 // ---------------------------------------------------------------------------
 // should_mark_prerelease
@@ -412,7 +418,7 @@ fn build_octocrab_client_insecure(
     token: &str,
     github_urls: &Option<GitHubUrlsConfig>,
 ) -> Result<octocrab::Octocrab> {
-    use std::sync::Arc;
+    eprintln!("WARNING: TLS certificate verification disabled for GitHub API — this is insecure");
 
     // Build a rustls ClientConfig that accepts any server certificate.
     let crypto_provider = rustls::crypto::ring::default_provider();
@@ -420,7 +426,7 @@ fn build_octocrab_client_insecure(
         .with_safe_default_protocol_versions()
         .context("release: configure TLS protocol versions")?
         .dangerous()
-        .with_custom_certificate_verifier(Arc::new(DangerousNoCertVerifier))
+        .with_custom_certificate_verifier(Arc::new(DangerousNoCertVerifier::new()))
         .with_no_client_auth();
 
     let connector = hyper_rustls::HttpsConnectorBuilder::new()
@@ -458,11 +464,6 @@ fn build_octocrab_client_insecure(
 
     // Follow octocrab's custom_client.rs example: with_service → with_layer
     // for BaseUri, ExtraHeaders, and AuthHeader, then with_auth → build.
-    use http::header::HeaderValue;
-    use octocrab::service::middleware::auth_header::AuthHeaderLayer;
-    use octocrab::service::middleware::base_uri::BaseUriLayer;
-    use octocrab::service::middleware::extra_headers::ExtraHeadersLayer;
-
     let auth_header: HeaderValue = format!("Bearer {}", token)
         .parse()
         .context("release: format auth header")?;
@@ -489,7 +490,21 @@ fn build_octocrab_client_insecure(
 /// enabled — typically for self-signed GitHub Enterprise instances in development
 /// or air-gapped environments.
 #[derive(Debug)]
-struct DangerousNoCertVerifier;
+struct DangerousNoCertVerifier {
+    /// Pre-computed signature schemes from the ring crypto provider, avoiding
+    /// a fresh `CryptoProvider` allocation on every call to `supported_verify_schemes`.
+    schemes: Vec<rustls::SignatureScheme>,
+}
+
+impl DangerousNoCertVerifier {
+    fn new() -> Self {
+        Self {
+            schemes: rustls::crypto::ring::default_provider()
+                .signature_verification_algorithms
+                .supported_schemes(),
+        }
+    }
+}
 
 impl rustls::client::danger::ServerCertVerifier for DangerousNoCertVerifier {
     fn verify_server_cert(
@@ -522,9 +537,7 @@ impl rustls::client::danger::ServerCertVerifier for DangerousNoCertVerifier {
     }
 
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        rustls::crypto::ring::default_provider()
-            .signature_verification_algorithms
-            .supported_schemes()
+        self.schemes.clone()
     }
 }
 
@@ -835,6 +848,9 @@ impl Stage for ReleaseStage {
                     if let Some(upload) = &urls.upload {
                         log.status(&format!("(dry-run)   github_urls.upload = {}", upload));
                     }
+                    // The download URL is informational only — it is used by the
+                    // `scm` module for generating release URL templates, not by
+                    // the HTTP client that talks to the GitHub API.
                     if let Some(download) = &urls.download {
                         log.status(&format!("(dry-run)   github_urls.download = {}", download));
                     }

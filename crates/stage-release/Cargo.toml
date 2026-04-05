@@ -13,12 +13,12 @@ categories.workspace = true
 anodize-core.workspace = true
 anyhow.workspace = true
 glob.workspace = true
-http = "1"
-hyper-rustls = "0.27"
-hyper-util = { version = "0.1", features = ["client-legacy"] }
+http.workspace = true
+hyper-rustls.workspace = true
+hyper-util.workspace = true
 octocrab.workspace = true
 reqwest.workspace = true
-rustls = { version = "0.23", features = ["ring"] }
+rustls.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 
