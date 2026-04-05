@@ -8,6 +8,7 @@ pub mod fury;
 pub mod homebrew;
 pub mod krew;
 pub mod nix;
+pub mod npm;
 pub mod scoop;
 pub(crate) mod util;
 pub mod winget;
@@ -27,6 +28,7 @@ use fury::publish_to_fury;
 use homebrew::publish_to_homebrew;
 use krew::publish_to_krew;
 use nix::publish_to_nix;
+use npm::publish_to_npm;
 use scoop::publish_to_scoop;
 use winget::publish_to_winget;
 
@@ -105,6 +107,9 @@ impl Stage for PublishStage {
 
         // 12. CloudSmith — top-level publisher (not per-crate).
         publish_to_cloudsmith(ctx, &log)?;
+
+        // 13. NPM — top-level publisher (not per-crate).
+        publish_to_npm(ctx, &log)?;
 
         Ok(())
     }
