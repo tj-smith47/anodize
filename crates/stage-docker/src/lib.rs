@@ -980,6 +980,15 @@ impl Stage for DockerStage {
                     stage_extra_files(extra_files, &staging_dir, dry_run, &log, "docker")?;
                 }
 
+                // Process templated_extra_files: render and copy to staging dir
+                if let Some(ref tpl_specs) = docker_cfg.templated_extra_files {
+                    if !tpl_specs.is_empty() {
+                        anodize_core::templated_files::process_templated_extra_files(
+                            tpl_specs, ctx, &staging_dir, "docker",
+                        )?;
+                    }
+                }
+
                 // ------------------------------------------------------------------
                 // Render image tag templates
                 // ------------------------------------------------------------------
@@ -1914,6 +1923,7 @@ mod tests {
             build_flag_templates: None,
             skip_push: None,
             extra_files: None,
+            templated_extra_files: None,
             push_flags: None,
             id: None,
             ids: None,
@@ -2115,6 +2125,7 @@ push_flags:
                 extra1.to_string_lossy().into_owned(),
                 extra2.to_string_lossy().into_owned(),
             ]),
+            templated_extra_files: None,
             push_flags: None,
             id: None,
             ids: None,
@@ -2184,6 +2195,7 @@ push_flags:
                 extra1.to_string_lossy().into_owned(),
                 extra2.to_string_lossy().into_owned(),
             ]),
+            templated_extra_files: None,
             push_flags: None,
             id: None,
             ids: None,
@@ -2356,6 +2368,7 @@ dockerfile: Dockerfile
             build_flag_templates: None,
             skip_push: None,
             extra_files: None,
+            templated_extra_files: None,
             push_flags: None,
             id: None,
             ids: None,
@@ -2429,6 +2442,7 @@ dockerfile: Dockerfile
             build_flag_templates: None,
             skip_push: Some(SkipPushConfig::Bool(true)),
             extra_files: None,
+            templated_extra_files: None,
             push_flags: None,
             id: None,
             ids: None,
@@ -2564,6 +2578,7 @@ dockerfile: Dockerfile
             build_flag_templates: None,
             skip_push: None,
             extra_files: None,
+            templated_extra_files: None,
             push_flags: None,
             id: None,
             ids: None,
@@ -2621,6 +2636,7 @@ dockerfile: Dockerfile
             build_flag_templates: None,
             skip_push: None,
             extra_files: None,
+            templated_extra_files: None,
             push_flags: None,
             id: None,
             ids: None,
@@ -2684,6 +2700,7 @@ dockerfile: Dockerfile
             build_flag_templates: None,
             skip_push: None,
             extra_files: Some(vec![extra_dir.to_string_lossy().into_owned()]),
+            templated_extra_files: None,
             push_flags: None,
             id: None,
             ids: None,
@@ -2951,6 +2968,7 @@ retry:
             build_flag_templates: None,
             skip_push: None,
             extra_files: None,
+            templated_extra_files: None,
             push_flags: None,
             id: None,
             ids: None,
@@ -3017,6 +3035,7 @@ retry:
             build_flag_templates: None,
             skip_push: None,
             extra_files: None,
+            templated_extra_files: None,
             push_flags: None,
             id: None,
             ids: None,
@@ -3515,6 +3534,7 @@ use: podman
             build_flag_templates: None,
             skip_push: None,
             extra_files: None,
+            templated_extra_files: None,
             push_flags: None,
             id: None,
             ids: None,
@@ -4624,5 +4644,48 @@ crates:
             .collect();
         assert!(tags.contains(&"ghcr.io/owner/app:legacy"));
         assert!(tags.contains(&"ghcr.io/owner/app:v2"));
+    }
+
+    #[test]
+    fn test_templated_extra_files_written_to_staging_dir() {
+        use anodize_core::config::TemplatedExtraFile;
+        use anodize_core::template::TemplateVars;
+
+        let tmp = TempDir::new().unwrap();
+        let staging_dir = tmp.path().join("staging");
+        fs::create_dir_all(&staging_dir).unwrap();
+
+        // Create a source template file
+        let tpl_src = tmp.path().join("config.yaml.tpl");
+        fs::write(
+            &tpl_src,
+            "app: {{ .ProjectName }}\nversion: {{ .Version }}",
+        )
+        .unwrap();
+
+        let mut vars = TemplateVars::new();
+        vars.set("ProjectName", "myapp");
+        vars.set("Version", "1.0.0");
+
+        let specs = vec![TemplatedExtraFile {
+            src: tpl_src.to_string_lossy().to_string(),
+            dst: Some("config.yaml".to_string()),
+            mode: None,
+        }];
+
+        let results =
+            anodize_core::templated_files::process_templated_extra_files_with_vars(
+                &specs, &vars, &staging_dir, "docker",
+            )
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].1, "config.yaml");
+
+        // Verify the file was written to the staging directory
+        let output_path = staging_dir.join("config.yaml");
+        assert!(output_path.exists(), "templated file should exist in staging dir");
+        let content = fs::read_to_string(&output_path).unwrap();
+        assert_eq!(content, "app: myapp\nversion: 1.0.0");
     }
 }

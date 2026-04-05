@@ -479,6 +479,16 @@ impl Stage for AppBundleStage {
                         copy_extra_files(extra_files, &app_dir, &log)?;
                     }
 
+                    // Process templated_extra_files: render and copy into the app bundle
+                    if let Some(ref tpl_specs) = bundle_cfg.templated_extra_files {
+                        if !tpl_specs.is_empty() {
+                            let resources_dir = app_dir.join("Contents").join("Resources");
+                            anodize_core::templated_files::process_templated_extra_files(
+                                tpl_specs, ctx, &resources_dir, "appbundle",
+                            )?;
+                        }
+                    }
+
                     // Apply mod_timestamp if set (template-rendered)
                     if let Some(ref ts_tmpl) = bundle_cfg.mod_timestamp {
                         let ts = ctx.render_template(ts_tmpl)

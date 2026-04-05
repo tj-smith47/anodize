@@ -366,6 +366,15 @@ impl Stage for DmgStage {
                         }
                     }
 
+                    // Process templated_extra_files: render and copy to staging dir
+                    if let Some(ref tpl_specs) = dmg_cfg.templated_extra_files {
+                        if !tpl_specs.is_empty() {
+                            anodize_core::templated_files::process_templated_extra_files(
+                                tpl_specs, ctx, staging_dir, "dmg",
+                            )?;
+                        }
+                    }
+
                     // Apply mod_timestamp if set
                     if let Some(ts) = &dmg_cfg.mod_timestamp {
                         anodize_core::util::apply_mod_timestamp(staging_dir, ts, &log)?;

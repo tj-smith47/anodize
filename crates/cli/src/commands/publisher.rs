@@ -91,6 +91,37 @@ pub fn run_publishers(
             }
         }
 
+        // Resolve templated_extra_files: render template contents and add as artifacts.
+        // The TempDir is kept alive until the end of this publisher iteration so
+        // that the rendered files remain on disk while the publisher command runs.
+        let _tpl_dir_guard;
+        if let Some(ref tpl_specs) = publisher.templated_extra_files {
+            if !tpl_specs.is_empty() {
+                let tpl_dir = tempfile::TempDir::new()
+                    .context("publisher: create temp dir for templated files")?;
+                let rendered =
+                    anodize_core::templated_files::process_templated_extra_files_with_vars(
+                        tpl_specs, base_vars, tpl_dir.path(), &format!("publisher[{}]", label),
+                    )?;
+                for (path, name) in rendered {
+                    extra_artifacts.push(Artifact {
+                        kind: ArtifactKind::Archive,
+                        name,
+                        path,
+                        target: None,
+                        crate_name: String::new(),
+                        metadata: std::collections::HashMap::new(),
+                        size: None,
+                    });
+                }
+                _tpl_dir_guard = Some(tpl_dir);
+            } else {
+                _tpl_dir_guard = None;
+            }
+        } else {
+            _tpl_dir_guard = None;
+        }
+
         let matching: Vec<&Artifact> = artifacts
             .iter()
             .filter(|a| matches_publisher_filter(a, publisher))
@@ -353,6 +384,7 @@ mod tests {
             signature: None,
             meta: None,
             extra_files: None,
+            templated_extra_files: None,
         }
     }
 
@@ -526,6 +558,7 @@ mod tests {
             signature: None,
             meta: None,
             extra_files: None,
+            templated_extra_files: None,
         }];
 
         // In dry-run mode, the command is never executed, so a non-existent
@@ -568,6 +601,7 @@ mod tests {
             signature: None,
             meta: None,
             extra_files: None,
+            templated_extra_files: None,
         }];
 
         let result = run_publishers(&publishers, &artifacts, &vars, false, &test_logger(), 1);
@@ -728,6 +762,7 @@ crates:
             signature: None,
             meta: None,
             extra_files: None,
+            templated_extra_files: None,
         };
         assert_eq!(publisher.dir.as_deref(), Some("/tmp/work"));
     }
@@ -753,6 +788,7 @@ crates:
             signature: None,
             meta: None,
             extra_files: None,
+            templated_extra_files: None,
         }];
 
         // Publisher with disable="true" should be skipped entirely
@@ -787,6 +823,7 @@ crates:
             signature: None,
             meta: None,
             extra_files: None,
+            templated_extra_files: None,
         }];
 
         // When IsSnapshot is "true", the disable template renders to "true" and publisher is skipped

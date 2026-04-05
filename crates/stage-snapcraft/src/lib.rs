@@ -749,6 +749,18 @@ impl Stage for SnapcraftStage {
                         }
                     }
 
+                    // Process templated_extra_files: render and copy to snap build dir
+                    if let Some(ref tpl_specs) = snap_cfg.templated_extra_files {
+                        if !tpl_specs.is_empty() {
+                            anodize_core::templated_files::process_templated_extra_files(
+                                tpl_specs,
+                                ctx,
+                                tmp_dir.path(),
+                                "snapcraft",
+                            )?;
+                        }
+                    }
+
                     // Apply mod_timestamp if set
                     if let Some(ts) = &snap_cfg.mod_timestamp {
                         anodize_core::util::apply_mod_timestamp(tmp_dir.path(), ts, &log)?;

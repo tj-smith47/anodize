@@ -617,6 +617,22 @@ impl Stage for ReleaseStage {
                 artifact_entries.extend(extra);
             }
 
+            // Process templated_extra_files: render template contents and write to dist dir.
+            // NOTE: Rendered files are written to the shared dist directory. If multiple
+            // release configs use the same dst name, later writes will overwrite earlier
+            // ones. Users should ensure dst names are unique across configs.
+            if let Some(ref tpl_specs) = release_cfg.templated_extra_files {
+                if !tpl_specs.is_empty() {
+                    let dist_dir = &ctx.config.dist;
+                    let rendered = anodize_core::templated_files::process_templated_extra_files(
+                        tpl_specs, ctx, dist_dir, "release",
+                    )?;
+                    for (path, dst_name) in rendered {
+                        artifact_entries.push((path, Some(dst_name)));
+                    }
+                }
+            }
+
             // include_meta: upload metadata.json and artifacts.json from dist dir.
             if include_meta {
                 let dist_dir = &ctx.config.dist;
@@ -3278,5 +3294,51 @@ draft: true
             false,
         );
         assert_eq!(json["draft"].as_bool().unwrap(), false);
+    }
+
+    #[test]
+    fn test_dry_run_with_templated_extra_files() {
+        use anodize_core::config::TemplatedExtraFile;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+
+        // Create a source template file
+        let tpl_src = tmp.path().join("NOTES.md.tpl");
+        std::fs::write(&tpl_src, "Release {{ .ProjectName }} {{ .Version }}").unwrap();
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .tag("v2.0.0")
+            .dry_run(true)
+            .dist(dist.clone())
+            .crates(vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                release: Some(ReleaseConfig {
+                    templated_extra_files: Some(vec![TemplatedExtraFile {
+                        src: tpl_src.to_string_lossy().to_string(),
+                        dst: Some("RELEASE-NOTES.md".to_string()),
+                        mode: None,
+                    }]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+
+        let stage = ReleaseStage;
+        stage.run(&mut ctx).unwrap();
+
+        // Verify the templated file was rendered and written to dist
+        let rendered = dist.join("RELEASE-NOTES.md");
+        assert!(
+            rendered.exists(),
+            "templated extra file should be written to dist"
+        );
+        let content = std::fs::read_to_string(&rendered).unwrap();
+        assert_eq!(content, "Release myapp 2.0.0");
     }
 }

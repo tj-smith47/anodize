@@ -1166,6 +1166,21 @@ impl ExtraFileSpec {
     }
 }
 
+/// A file whose contents are rendered through the template engine before use.
+/// Used by `templated_extra_files` across multiple stages (GoReleaser Pro feature).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema, PartialEq)]
+#[serde(default)]
+pub struct TemplatedExtraFile {
+    /// Source template file path.
+    pub src: String,
+    /// Destination filename for the rendered output.
+    /// Supports template variables (e.g. `"{{ .ProjectName }}-NOTES.txt"`).
+    pub dst: Option<String>,
+    /// File permissions in octal notation as a string, e.g. `"0755"`.
+    /// Parsed at runtime via `parse_octal_mode()` to avoid YAML interpreting as decimal.
+    pub mode: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct ChecksumConfig {
@@ -1178,6 +1193,10 @@ pub struct ChecksumConfig {
     pub disable: Option<StringOrBool>,
     /// Extra files to include in the checksum file (beyond build artifacts).
     pub extra_files: Option<Vec<ExtraFileSpec>>,
+    /// Extra files whose contents are rendered through the template engine before inclusion.
+    /// Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded.
+    /// GoReleaser Pro feature.
+    pub templated_extra_files: Option<Vec<TemplatedExtraFile>>,
     /// Build IDs filter: only checksum artifacts from builds whose `id` is in this list.
     pub ids: Option<Vec<String>>,
     /// When true, produce one checksum file per artifact instead of a combined file.
@@ -1241,6 +1260,10 @@ pub struct ReleaseConfig {
     pub footer: Option<ContentSource>,
     /// Extra files to upload to the release beyond build artifacts.
     pub extra_files: Option<Vec<ExtraFileSpec>>,
+    /// Extra files whose contents are rendered through the template engine before upload.
+    /// Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded.
+    /// GoReleaser Pro feature.
+    pub templated_extra_files: Option<Vec<TemplatedExtraFile>>,
     /// Skip uploading artifacts: true, false, or "auto" (skip for snapshots).
     /// Accepts bool or template string (GoReleaser uses string type).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
@@ -2232,6 +2255,10 @@ pub struct DockerConfig {
     pub skip_push: Option<SkipPushConfig>,
     /// Extra files to copy into the Docker build context.
     pub extra_files: Option<Vec<String>>,
+    /// Extra files whose contents are rendered through the template engine before copying.
+    /// Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded.
+    /// GoReleaser Pro feature.
+    pub templated_extra_files: Option<Vec<TemplatedExtraFile>>,
     /// Extra flags passed to `docker push`.
     pub push_flags: Option<Vec<String>>,
     /// Build IDs filter: only include binary artifacts whose metadata `id` is in this list.
@@ -2699,6 +2726,10 @@ pub struct SnapcraftConfig {
     pub layouts: Option<HashMap<String, SnapcraftLayout>>,
     /// Additional static files to bundle (string shorthand or structured form).
     pub extra_files: Option<Vec<SnapcraftExtraFileSpec>>,
+    /// Extra files whose contents are rendered through the template engine before bundling.
+    /// Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded.
+    /// GoReleaser Pro feature.
+    pub templated_extra_files: Option<Vec<TemplatedExtraFile>>,
     /// Template for the output snap filename.
     pub name_template: Option<String>,
     /// Disable this snapcraft config. Accepts bool or template string
@@ -2867,6 +2898,10 @@ pub struct DmgConfig {
     pub name: Option<String>,
     /// Additional files to include in the DMG (glob or {glob, name_template}).
     pub extra_files: Option<Vec<ExtraFileSpec>>,
+    /// Extra files whose contents are rendered through the template engine before inclusion.
+    /// Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded.
+    /// GoReleaser Pro feature.
+    pub templated_extra_files: Option<Vec<TemplatedExtraFile>>,
     /// Remove source archives from artifacts, keeping only DMG.
     pub replace: Option<bool>,
     /// Output timestamp for reproducible builds.
@@ -2959,6 +2994,10 @@ pub struct NsisConfig {
     pub script: Option<String>,
     /// Additional files to include alongside the installer (glob or {glob, name_template}).
     pub extra_files: Option<Vec<ExtraFileSpec>>,
+    /// Extra files whose contents are rendered through the template engine before inclusion.
+    /// Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded.
+    /// GoReleaser Pro feature.
+    pub templated_extra_files: Option<Vec<TemplatedExtraFile>>,
     /// Disable this NSIS config. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub disable: Option<StringOrBool>,
@@ -2987,6 +3026,10 @@ pub struct AppBundleConfig {
     pub bundle: Option<String>,
     /// Additional files to include in the bundle (src/dst/info objects or glob strings).
     pub extra_files: Option<Vec<ArchiveFileSpec>>,
+    /// Extra files whose contents are rendered through the template engine before inclusion.
+    /// Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded.
+    /// GoReleaser Pro feature.
+    pub templated_extra_files: Option<Vec<TemplatedExtraFile>>,
     /// Output timestamp for reproducible builds.
     pub mod_timestamp: Option<String>,
     /// Remove source archives from artifacts, keeping only the app bundle.
@@ -3079,6 +3122,10 @@ pub struct BlobConfig {
     pub include_meta: Option<bool>,
     /// Pre-existing files to upload (supports glob patterns).
     pub extra_files: Option<Vec<ExtraFile>>,
+    /// Extra files whose contents are rendered through the template engine before upload.
+    /// Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded.
+    /// GoReleaser Pro feature.
+    pub templated_extra_files: Option<Vec<TemplatedExtraFile>>,
     /// Upload only extra files (skip artifacts).
     pub extra_files_only: Option<bool>,
     /// Maximum number of parallel uploads for this blob config.
@@ -4202,6 +4249,10 @@ pub struct PublisherConfig {
     pub meta: Option<bool>,
     /// Extra files to include in publishing (glob patterns with optional name override).
     pub extra_files: Option<Vec<ExtraFile>>,
+    /// Extra files whose contents are rendered through the template engine before publishing.
+    /// Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded.
+    /// GoReleaser Pro feature.
+    pub templated_extra_files: Option<Vec<TemplatedExtraFile>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -5265,6 +5316,63 @@ crates:
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let release = config.crates[0].release.as_ref().unwrap();
         assert_eq!(release.extra_files, None);
+    }
+
+    // ---- ReleaseConfig templated_extra_files tests ----
+
+    #[test]
+    fn test_release_templated_extra_files_parsed() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    release:
+      templated_extra_files:
+        - src: LICENSE.tpl
+          dst: LICENSE.txt
+        - src: README.md.tpl
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let release = config.crates[0].release.as_ref().unwrap();
+        let tpl = release.templated_extra_files.as_ref().unwrap();
+        assert_eq!(tpl.len(), 2);
+        assert_eq!(tpl[0].src, "LICENSE.tpl");
+        assert_eq!(tpl[0].dst.as_deref(), Some("LICENSE.txt"));
+        assert_eq!(tpl[1].src, "README.md.tpl");
+        assert_eq!(tpl[1].dst, None);
+    }
+
+    #[test]
+    fn test_release_templated_extra_files_defaults_to_none() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    release:
+      draft: true
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let release = config.crates[0].release.as_ref().unwrap();
+        assert_eq!(release.templated_extra_files, None);
+    }
+
+    #[test]
+    fn test_checksum_templated_extra_files_parsed() {
+        let yaml = r#"
+name_template: "checksums.txt"
+templated_extra_files:
+  - src: "notes.tpl"
+    dst: "RELEASE_NOTES.txt"
+"#;
+        let cfg: ChecksumConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let tpl = cfg.templated_extra_files.as_ref().unwrap();
+        assert_eq!(tpl.len(), 1);
+        assert_eq!(tpl[0].src, "notes.tpl");
+        assert_eq!(tpl[0].dst.as_deref(), Some("RELEASE_NOTES.txt"));
     }
 
     // ---- ReleaseConfig skip_upload tests ----

@@ -263,6 +263,8 @@ impl Stage for ChecksumStage {
             .unwrap_or_else(|| "sha256".to_string());
         let global_name_template = global_cksum.and_then(|c| c.name_template.clone());
         let global_extra_files = global_cksum.and_then(|c| c.extra_files.clone());
+        let global_templated_extra_files =
+            global_cksum.and_then(|c| c.templated_extra_files.clone());
         let global_ids = global_cksum.and_then(|c| c.ids.clone());
         let global_split = global_cksum.and_then(|c| c.split);
 
@@ -302,6 +304,9 @@ impl Stage for ChecksumStage {
             let extra_files = crate_cksum
                 .and_then(|c| c.extra_files.clone())
                 .or_else(|| global_extra_files.clone());
+            let templated_extra_files = crate_cksum
+                .and_then(|c| c.templated_extra_files.clone())
+                .or_else(|| global_templated_extra_files.clone());
             let ids_filter = crate_cksum
                 .and_then(|c| c.ids.clone())
                 .or_else(|| global_ids.clone());
@@ -357,6 +362,29 @@ impl Stage for ChecksumStage {
                         metadata,
                         size: None,
                     });
+                }
+            }
+
+            // Process templated_extra_files: render and add as checksummable artifacts
+            if let Some(ref tpl_specs) = templated_extra_files {
+                if !tpl_specs.is_empty() {
+                    let rendered =
+                        anodize_core::templated_files::process_templated_extra_files(
+                            tpl_specs, ctx, &dist, "checksum",
+                        )?;
+                    for (path, dst_name) in rendered {
+                        let metadata =
+                            HashMap::from([("extra_file".to_string(), "true".to_string())]);
+                        source_artifacts.push(Artifact {
+                            kind: ArtifactKind::Archive,
+                            name: dst_name,
+                            path,
+                            target: None,
+                            crate_name: crate_name.clone(),
+                            metadata,
+                            size: None,
+                        });
+                    }
                 }
             }
 
@@ -2628,5 +2656,75 @@ extra_files:
             content.contains("myapp.tar.gz"),
             "combined file should contain the archive, got:\n{content}"
         );
+    }
+
+    #[test]
+    fn test_checksum_stage_with_templated_extra_files() {
+        use anodize_core::config::{ChecksumConfig, CrateConfig, TemplatedExtraFile};
+        use anodize_core::test_helpers::TestContextBuilder;
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        fs::create_dir_all(&dist).unwrap();
+
+        // Create a source template file
+        let tpl_src = tmp.path().join("NOTES.md.tpl");
+        fs::write(&tpl_src, "Release notes for {{ .ProjectName }} {{ .Version }}").unwrap();
+
+        // Create a fake archive
+        let archive_path = dist.join("myapp.tar.gz");
+        fs::write(&archive_path, b"fake archive").unwrap();
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .tag("v1.0.0")
+            .dist(dist.clone())
+            .crates(vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                checksum: Some(ChecksumConfig {
+                    templated_extra_files: Some(vec![TemplatedExtraFile {
+                        src: tpl_src.to_string_lossy().to_string(),
+                        dst: Some("NOTES.md".to_string()),
+                        mode: None,
+                    }]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            name: String::new(),
+            path: archive_path,
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        let stage = ChecksumStage;
+        stage.run(&mut ctx).unwrap();
+
+        // The combined checksum file should include an entry for the templated file
+        let combined = dist.join("myapp_1.0.0_checksums.txt");
+        assert!(combined.exists(), "combined checksums file should exist");
+        let content = fs::read_to_string(&combined).unwrap();
+        assert!(
+            content.contains("NOTES.md"),
+            "checksum file should include templated extra file, got:\n{content}"
+        );
+        assert!(
+            content.contains("myapp.tar.gz"),
+            "checksum file should still include the archive, got:\n{content}"
+        );
+
+        // Verify the rendered file was written with template content expanded
+        let rendered = dist.join("NOTES.md");
+        assert!(rendered.exists());
+        let rendered_content = fs::read_to_string(&rendered).unwrap();
+        assert_eq!(rendered_content, "Release notes for myapp 1.0.0");
     }
 }

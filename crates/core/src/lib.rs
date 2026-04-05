@@ -10,6 +10,7 @@ pub mod stage;
 pub mod target;
 pub mod template;
 mod template_preprocess;
+pub mod templated_files;
 pub mod util;
 
 #[cfg(feature = "test-helpers")]

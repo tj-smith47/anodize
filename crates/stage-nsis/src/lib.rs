@@ -304,6 +304,15 @@ impl Stage for NsisStage {
                         }
                     }
 
+                    // Process templated_extra_files: render and copy to staging dir
+                    if let Some(ref tpl_specs) = nsis_cfg.templated_extra_files {
+                        if !tpl_specs.is_empty() {
+                            anodize_core::templated_files::process_templated_extra_files(
+                                tpl_specs, ctx, &staging_dir, "nsis",
+                            )?;
+                        }
+                    }
+
                     // Set NSIS-specific template vars for script rendering
                     let exe_path_str = exe_path.to_string_lossy().into_owned();
                     let staged_binary_str = staged_binary.to_string_lossy().into_owned();

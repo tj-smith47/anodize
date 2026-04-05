@@ -577,6 +577,23 @@ impl Stage for BlobStage {
                     upload_items.extend(resolved);
                 }
 
+                // Process templated_extra_files: render and add to upload list.
+                // NOTE: Rendered files are written to the shared dist directory. If multiple
+                // blob configs use the same dst name, later writes will overwrite earlier
+                // ones. Users should ensure dst names are unique across configs.
+                if let Some(ref tpl_specs) = blob_cfg.templated_extra_files {
+                    if !tpl_specs.is_empty() {
+                        let rendered =
+                            anodize_core::templated_files::process_templated_extra_files(
+                                tpl_specs,
+                                ctx,
+                                &ctx.config.dist,
+                                "blobs",
+                            )?;
+                        upload_items.extend(rendered);
+                    }
+                }
+
                 // Note: metadata files are already handled by collect_artifacts()
                 // when include_meta is true — it includes ArtifactKind::Metadata
                 // in its filter. No separate scan needed here.
