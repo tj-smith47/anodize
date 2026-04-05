@@ -3,6 +3,7 @@ use anodize_core::config::{Config, GitHubConfig, WorkspaceConfig};
 use anodize_core::context::Context;
 use anodize_core::git;
 use anodize_core::log::StageLogger;
+use anodize_core::scm::{self, ScmTokenType};
 use anyhow::{Context as _, Result};
 use std::collections::HashMap;
 use std::path::Path;
@@ -319,6 +320,42 @@ pub fn auto_detect_github(config: &mut Config, log: &StageLogger) {
     }
 }
 
+/// Resolve the SCM token type and token value from config and environment.
+///
+/// This sets `ctx.token_type` based on priority:
+/// 1. `config.force_token` — explicit user config (`force_token: gitlab`)
+/// 2. Environment variable presence — `GITLAB_TOKEN` → GitLab, `GITEA_TOKEN` → Gitea
+/// 3. Default — GitHub
+///
+/// It also resolves the token value into `ctx.options.token` (if not already
+/// set by a CLI flag) from the appropriate environment variable:
+/// - GitLab: `GITLAB_TOKEN`
+/// - Gitea: `GITEA_TOKEN`
+/// - GitHub: `ANODIZE_GITHUB_TOKEN` or `GITHUB_TOKEN`
+pub fn resolve_scm_token_type(ctx: &mut Context, config: &Config) {
+    // Detect which SCM backend to use from environment variables.
+    let env_hint = if std::env::var("GITLAB_TOKEN").is_ok() {
+        Some("gitlab")
+    } else if std::env::var("GITEA_TOKEN").is_ok() {
+        Some("gitea")
+    } else {
+        None
+    };
+
+    ctx.token_type = scm::resolve_token_type(config.force_token.as_ref(), env_hint);
+
+    // Resolve the token value if not already provided via CLI flag.
+    if ctx.options.token.is_none() {
+        ctx.options.token = match ctx.token_type {
+            ScmTokenType::GitLab => std::env::var("GITLAB_TOKEN").ok(),
+            ScmTokenType::Gitea => std::env::var("GITEA_TOKEN").ok(),
+            ScmTokenType::GitHub => std::env::var("ANODIZE_GITHUB_TOKEN")
+                .ok()
+                .or_else(|| std::env::var("GITHUB_TOKEN").ok()),
+        };
+    }
+}
+
 /// Load artifacts from dist/artifacts.json into the context's artifact registry.
 /// Used by `publish` and `announce` commands that run from a completed dist/.
 pub fn load_artifacts_from_dist(ctx: &mut Context, dist: &Path) -> Result<()> {
@@ -370,7 +407,9 @@ pub fn load_artifacts_from_dist(ctx: &mut Context, dist: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anodize_core::config::{ChangelogConfig, CrateConfig, SignConfig};
+    use anodize_core::config::{ChangelogConfig, CrateConfig, ForceTokenKind, SignConfig};
+    use anodize_core::context::ContextOptions;
+    use anodize_core::scm::ScmTokenType;
 
     fn make_crate(name: &str) -> CrateConfig {
         CrateConfig {
@@ -663,5 +702,224 @@ mod tests {
         assert_eq!(loaded[1].name, "myapp");
         assert_eq!(loaded[1].target.as_deref(), Some("aarch64-apple-darwin"));
         assert_eq!(loaded[1].size, None);
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_scm_token_type tests
+    // -----------------------------------------------------------------------
+
+    /// Mutex to serialize tests that mutate process environment variables.
+    /// cargo test runs tests in parallel within a single process, so
+    /// concurrent env mutations cause flaky failures without serialization.
+    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Helper to run resolve_scm_token_type tests with controlled env state.
+    /// Acquires ENV_MUTEX, removes all SCM token env vars, runs the closure,
+    /// then restores original state.
+    fn with_clean_token_env<F: FnOnce()>(f: F) {
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Save and remove all token env vars to isolate the test.
+        let saved: Vec<(&str, Option<String>)> = [
+            "GITLAB_TOKEN",
+            "GITEA_TOKEN",
+            "ANODIZE_GITHUB_TOKEN",
+            "GITHUB_TOKEN",
+        ]
+        .iter()
+        .map(|&k| (k, std::env::var(k).ok()))
+        .collect();
+
+        for &(k, _) in &saved {
+            // SAFETY: ENV_MUTEX ensures no concurrent env access from our tests.
+            unsafe { std::env::remove_var(k) };
+        }
+
+        f();
+
+        // Restore original env state.
+        for (k, v) in saved {
+            match v {
+                Some(val) => unsafe { std::env::set_var(k, val) },
+                None => unsafe { std::env::remove_var(k) },
+            }
+        }
+    }
+
+    #[test]
+    fn test_resolve_scm_token_type_default_is_github() {
+        with_clean_token_env(|| {
+            let config = Config::default();
+            let mut ctx = Context::new(config.clone(), ContextOptions::default());
+            resolve_scm_token_type(&mut ctx, &config);
+
+            assert_eq!(ctx.token_type, ScmTokenType::GitHub);
+            // No token env vars set, token should remain None.
+            assert!(ctx.options.token.is_none());
+        });
+    }
+
+    #[test]
+    fn test_resolve_scm_token_type_force_gitlab() {
+        with_clean_token_env(|| {
+            let config = Config {
+                force_token: Some(ForceTokenKind::GitLab),
+                ..Default::default()
+            };
+            let mut ctx = Context::new(config.clone(), ContextOptions::default());
+
+            // Set GITLAB_TOKEN so token value resolution picks it up.
+            unsafe { std::env::set_var("GITLAB_TOKEN", "glpat-test123") };
+            resolve_scm_token_type(&mut ctx, &config);
+
+            assert_eq!(ctx.token_type, ScmTokenType::GitLab);
+            assert_eq!(ctx.options.token.as_deref(), Some("glpat-test123"));
+        });
+    }
+
+    #[test]
+    fn test_resolve_scm_token_type_force_gitea() {
+        with_clean_token_env(|| {
+            let config = Config {
+                force_token: Some(ForceTokenKind::Gitea),
+                ..Default::default()
+            };
+            let mut ctx = Context::new(config.clone(), ContextOptions::default());
+
+            unsafe { std::env::set_var("GITEA_TOKEN", "gitea-tok") };
+            resolve_scm_token_type(&mut ctx, &config);
+
+            assert_eq!(ctx.token_type, ScmTokenType::Gitea);
+            assert_eq!(ctx.options.token.as_deref(), Some("gitea-tok"));
+        });
+    }
+
+    #[test]
+    fn test_resolve_scm_token_type_env_gitlab_detected() {
+        with_clean_token_env(|| {
+            unsafe { std::env::set_var("GITLAB_TOKEN", "glpat-env") };
+
+            let config = Config::default();
+            let mut ctx = Context::new(config.clone(), ContextOptions::default());
+            resolve_scm_token_type(&mut ctx, &config);
+
+            assert_eq!(ctx.token_type, ScmTokenType::GitLab);
+            assert_eq!(ctx.options.token.as_deref(), Some("glpat-env"));
+        });
+    }
+
+    #[test]
+    fn test_resolve_scm_token_type_env_gitea_detected() {
+        with_clean_token_env(|| {
+            unsafe { std::env::set_var("GITEA_TOKEN", "gitea-env") };
+
+            let config = Config::default();
+            let mut ctx = Context::new(config.clone(), ContextOptions::default());
+            resolve_scm_token_type(&mut ctx, &config);
+
+            assert_eq!(ctx.token_type, ScmTokenType::Gitea);
+            assert_eq!(ctx.options.token.as_deref(), Some("gitea-env"));
+        });
+    }
+
+    #[test]
+    fn test_resolve_scm_token_type_github_token_from_env() {
+        with_clean_token_env(|| {
+            unsafe { std::env::set_var("GITHUB_TOKEN", "ghp-from-env") };
+
+            let config = Config::default();
+            let mut ctx = Context::new(config.clone(), ContextOptions::default());
+            resolve_scm_token_type(&mut ctx, &config);
+
+            assert_eq!(ctx.token_type, ScmTokenType::GitHub);
+            assert_eq!(ctx.options.token.as_deref(), Some("ghp-from-env"));
+        });
+    }
+
+    #[test]
+    fn test_resolve_scm_token_type_anodize_github_token_takes_precedence() {
+        with_clean_token_env(|| {
+            unsafe { std::env::set_var("ANODIZE_GITHUB_TOKEN", "anodize-tok") };
+            unsafe { std::env::set_var("GITHUB_TOKEN", "gh-tok") };
+
+            let config = Config::default();
+            let mut ctx = Context::new(config.clone(), ContextOptions::default());
+            resolve_scm_token_type(&mut ctx, &config);
+
+            assert_eq!(ctx.token_type, ScmTokenType::GitHub);
+            assert_eq!(
+                ctx.options.token.as_deref(),
+                Some("anodize-tok"),
+                "ANODIZE_GITHUB_TOKEN should take precedence over GITHUB_TOKEN"
+            );
+        });
+    }
+
+    #[test]
+    fn test_resolve_scm_token_type_cli_token_preserved() {
+        with_clean_token_env(|| {
+            unsafe { std::env::set_var("GITHUB_TOKEN", "from-env") };
+
+            let config = Config::default();
+            let opts = ContextOptions {
+                token: Some("from-cli".to_string()),
+                ..Default::default()
+            };
+            let mut ctx = Context::new(config.clone(), opts);
+            resolve_scm_token_type(&mut ctx, &config);
+
+            assert_eq!(ctx.token_type, ScmTokenType::GitHub);
+            assert_eq!(
+                ctx.options.token.as_deref(),
+                Some("from-cli"),
+                "CLI --token flag should not be overwritten by env var"
+            );
+        });
+    }
+
+    #[test]
+    fn test_resolve_scm_token_type_force_overrides_env_detection() {
+        with_clean_token_env(|| {
+            // GITLAB_TOKEN is set, but force_token says GitHub.
+            unsafe { std::env::set_var("GITLAB_TOKEN", "glpat-ignored") };
+
+            let config = Config {
+                force_token: Some(ForceTokenKind::GitHub),
+                ..Default::default()
+            };
+            let mut ctx = Context::new(config.clone(), ContextOptions::default());
+            resolve_scm_token_type(&mut ctx, &config);
+
+            assert_eq!(
+                ctx.token_type,
+                ScmTokenType::GitHub,
+                "force_token should override env-based detection"
+            );
+            // Token value should be None since no GitHub token env var is set.
+            assert!(
+                ctx.options.token.is_none(),
+                "no GitHub token env var set, so token should remain None"
+            );
+        });
+    }
+
+    #[test]
+    fn test_resolve_scm_token_type_gitlab_priority_over_gitea() {
+        with_clean_token_env(|| {
+            // Both GITLAB_TOKEN and GITEA_TOKEN are set; GITLAB should win.
+            unsafe { std::env::set_var("GITLAB_TOKEN", "gl-tok") };
+            unsafe { std::env::set_var("GITEA_TOKEN", "gt-tok") };
+
+            let config = Config::default();
+            let mut ctx = Context::new(config.clone(), ContextOptions::default());
+            resolve_scm_token_type(&mut ctx, &config);
+
+            assert_eq!(
+                ctx.token_type,
+                ScmTokenType::GitLab,
+                "GITLAB_TOKEN should be checked before GITEA_TOKEN"
+            );
+            assert_eq!(ctx.options.token.as_deref(), Some("gl-tok"));
+        });
     }
 }

@@ -40,6 +40,7 @@ pub fn run(opts: AnnounceOpts) -> Result<()> {
         ..Default::default()
     };
     let mut ctx = Context::new(config.clone(), ctx_opts);
+    helpers::resolve_scm_token_type(&mut ctx, &config);
     ctx.populate_time_vars();
     ctx.populate_runtime_vars();
     helpers::setup_env(&mut ctx, &config, &log)?;
