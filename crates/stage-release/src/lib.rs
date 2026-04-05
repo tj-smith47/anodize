@@ -1,5 +1,7 @@
 use anodize_core::artifact::ArtifactKind;
-use anodize_core::config::{ContentSource, ExtraFileSpec, MakeLatestConfig, PrereleaseConfig};
+use anodize_core::config::{
+    ContentSource, ExtraFileSpec, GitHubUrlsConfig, MakeLatestConfig, PrereleaseConfig,
+};
 use anodize_core::context::Context;
 use anodize_core::git;
 use anodize_core::stage::Stage;
@@ -349,6 +351,184 @@ pub(crate) fn resolve_release_tag(
 }
 
 // ---------------------------------------------------------------------------
+// build_octocrab_client — GitHub Enterprise URL support
+// ---------------------------------------------------------------------------
+
+/// Build an octocrab client, optionally configured for GitHub Enterprise.
+///
+/// When `github_urls` is `None` or has no custom API URL, this produces a
+/// standard GitHub.com client.  When an `api` URL is set, the octocrab
+/// builder's `base_uri` is pointed at the Enterprise API endpoint.  If
+/// `upload` is set, `upload_uri` is also overridden (octocrab uses this for
+/// release asset uploads).
+///
+/// `skip_tls_verify` is supported by constructing a custom `hyper_rustls`
+/// connector whose `rustls::ClientConfig` disables certificate verification.
+/// This is the same approach GoReleaser uses via Go's `InsecureSkipVerify`.
+fn build_octocrab_client(
+    token: &str,
+    github_urls: &Option<GitHubUrlsConfig>,
+) -> Result<octocrab::Octocrab> {
+    let skip_tls = github_urls
+        .as_ref()
+        .and_then(|u| u.skip_tls_verify)
+        .unwrap_or(false);
+
+    if skip_tls {
+        // Build a custom hyper client with TLS verification disabled, then
+        // wrap it in octocrab's expected service layer stack.
+        build_octocrab_client_insecure(token, github_urls)
+    } else {
+        // Normal path: use octocrab's built-in hyper client.
+        let mut builder = octocrab::Octocrab::builder()
+            .personal_token(token.to_owned());
+
+        if let Some(urls) = github_urls {
+            if let Some(api) = &urls.api {
+                builder = builder
+                    .base_uri(api.as_str())
+                    .context("release: invalid github_urls.api URL")?;
+            }
+            if let Some(upload) = &urls.upload {
+                builder = builder
+                    .upload_uri(upload.as_str())
+                    .context("release: invalid github_urls.upload URL")?;
+            }
+        }
+
+        builder
+            .build()
+            .context("release: build octocrab client")
+    }
+}
+
+/// Build an octocrab client that skips TLS certificate verification.
+///
+/// This follows octocrab's `custom_client.rs` example pattern: construct a
+/// hyper client with a custom `rustls::ClientConfig` that disables cert
+/// verification, then wrap it in octocrab's middleware layers for auth, base
+/// URI, and headers via `OctocrabBuilder::with_service` / `with_layer`.
+fn build_octocrab_client_insecure(
+    token: &str,
+    github_urls: &Option<GitHubUrlsConfig>,
+) -> Result<octocrab::Octocrab> {
+    use std::sync::Arc;
+
+    // Build a rustls ClientConfig that accepts any server certificate.
+    let crypto_provider = rustls::crypto::ring::default_provider();
+    let tls_config = rustls::ClientConfig::builder_with_provider(Arc::new(crypto_provider))
+        .with_safe_default_protocol_versions()
+        .context("release: configure TLS protocol versions")?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(DangerousNoCertVerifier))
+        .with_no_client_auth();
+
+    let connector = hyper_rustls::HttpsConnectorBuilder::new()
+        .with_tls_config(tls_config)
+        .https_or_http()
+        .enable_http1()
+        .build();
+
+    let client = hyper_util::client::legacy::Client::builder(
+        hyper_util::rt::TokioExecutor::new(),
+    )
+    .build(connector);
+
+    // Parse URIs the same way octocrab does.
+    let base_uri: http::Uri = if let Some(api) = github_urls.as_ref().and_then(|u| u.api.as_ref())
+    {
+        api.parse()
+            .context("release: invalid github_urls.api URL")?
+    } else {
+        "https://api.github.com"
+            .parse()
+            .expect("hardcoded URI is valid")
+    };
+
+    let upload_uri: http::Uri =
+        if let Some(upload) = github_urls.as_ref().and_then(|u| u.upload.as_ref()) {
+            upload
+                .parse()
+                .context("release: invalid github_urls.upload URL")?
+        } else {
+            "https://uploads.github.com"
+                .parse()
+                .expect("hardcoded URI is valid")
+        };
+
+    // Follow octocrab's custom_client.rs example: with_service → with_layer
+    // for BaseUri, ExtraHeaders, and AuthHeader, then with_auth → build.
+    use http::header::HeaderValue;
+    use octocrab::service::middleware::auth_header::AuthHeaderLayer;
+    use octocrab::service::middleware::base_uri::BaseUriLayer;
+    use octocrab::service::middleware::extra_headers::ExtraHeadersLayer;
+
+    let auth_header: HeaderValue = format!("Bearer {}", token)
+        .parse()
+        .context("release: format auth header")?;
+
+    octocrab::OctocrabBuilder::new_empty()
+        .with_service(client)
+        .with_layer(&ExtraHeadersLayer::new(Arc::new(vec![(
+            http::header::USER_AGENT,
+            HeaderValue::from_static("octocrab"),
+        )])))
+        .with_layer(&BaseUriLayer::new(base_uri.clone()))
+        .with_layer(&AuthHeaderLayer::new(
+            Some(auth_header),
+            base_uri,
+            upload_uri,
+        ))
+        .with_auth(octocrab::AuthState::None)
+        .build()
+        .map_err(|e| match e {}) // Infallible → never fails
+}
+
+/// A [`rustls::client::danger::ServerCertVerifier`] that accepts all certificates
+/// unconditionally.  Used only when `github_urls.skip_tls_verify` is explicitly
+/// enabled — typically for self-signed GitHub Enterprise instances in development
+/// or air-gapped environments.
+#[derive(Debug)]
+struct DangerousNoCertVerifier;
+
+impl rustls::client::danger::ServerCertVerifier for DangerousNoCertVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> std::result::Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ReleaseStage
 // ---------------------------------------------------------------------------
 
@@ -647,6 +827,22 @@ impl Stage for ReleaseStage {
             }
 
             if dry_run {
+                // Log GitHub Enterprise URLs when configured.
+                if let Some(urls) = &ctx.config.github_urls {
+                    if let Some(api) = &urls.api {
+                        log.status(&format!("(dry-run)   github_urls.api = {}", api));
+                    }
+                    if let Some(upload) = &urls.upload {
+                        log.status(&format!("(dry-run)   github_urls.upload = {}", upload));
+                    }
+                    if let Some(download) = &urls.download {
+                        log.status(&format!("(dry-run)   github_urls.download = {}", download));
+                    }
+                    if urls.skip_tls_verify.unwrap_or(false) {
+                        log.status("(dry-run)   github_urls.skip_tls_verify = true");
+                    }
+                }
+
                 log.status(&format!(
                     "(dry-run) would create GitHub Release '{}' (tag={}, draft={}, prerelease={}, mode={}) for crate '{}'",
                     release_name, tag, draft, prerelease, release_mode, crate_cfg.name
@@ -694,13 +890,13 @@ impl Stage for ReleaseStage {
                 }
             };
 
+            // Extract github_urls config for GitHub Enterprise support.
+            let github_urls = ctx.config.github_urls.clone();
+
             // Build the octocrab instance and perform async API calls inside a
             // dedicated tokio runtime (the Stage trait is synchronous).
             let url = rt.block_on(async {
-                let octo = octocrab::Octocrab::builder()
-                    .personal_token(token_str.clone())
-                    .build()
-                    .context("release: build octocrab client")?;
+                let octo = build_octocrab_client(&token_str, &github_urls)?;
 
                 // Helper: list all releases (with pagination) and find a draft
                 // matching the release name. GoReleaser searches by name (not tag).
@@ -3336,5 +3532,164 @@ draft: true
         );
         let content = std::fs::read_to_string(&rendered).unwrap();
         assert_eq!(content, "Release myapp 2.0.0");
+    }
+
+    // -----------------------------------------------------------------------
+    // GitHub Enterprise URL support tests
+    // -----------------------------------------------------------------------
+
+    /// Helper: build_octocrab_client requires a tokio runtime (octocrab's
+    /// Buffer service needs one) and a rustls CryptoProvider installed.
+    /// Wrap assertions in a temporary runtime with the provider set.
+    fn with_tokio<F: FnOnce()>(f: F) {
+        // Install the ring crypto provider if not already installed.
+        // ignore error if another test thread already installed it.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async { f() });
+    }
+
+    #[test]
+    fn test_build_octocrab_client_default_no_github_urls() {
+        // When github_urls is None, build_octocrab_client should succeed
+        // with standard GitHub.com endpoints.
+        with_tokio(|| {
+            let client = build_octocrab_client("ghp_fake_token_123", &None);
+            assert!(client.is_ok(), "default client (no github_urls) should build successfully");
+        });
+    }
+
+    #[test]
+    fn test_build_octocrab_client_with_enterprise_api_url() {
+        with_tokio(|| {
+            let urls = Some(GitHubUrlsConfig {
+                api: Some("https://github.example.com/api/v3/".to_string()),
+                upload: None,
+                download: None,
+                skip_tls_verify: None,
+            });
+            let client = build_octocrab_client("ghp_fake_token_123", &urls);
+            assert!(
+                client.is_ok(),
+                "client with enterprise api URL should build successfully"
+            );
+        });
+    }
+
+    #[test]
+    fn test_build_octocrab_client_with_enterprise_api_and_upload_urls() {
+        with_tokio(|| {
+            let urls = Some(GitHubUrlsConfig {
+                api: Some("https://github.example.com/api/v3/".to_string()),
+                upload: Some("https://github.example.com/api/uploads/".to_string()),
+                download: Some("https://github.example.com/".to_string()),
+                skip_tls_verify: None,
+            });
+            let client = build_octocrab_client("ghp_fake_token_123", &urls);
+            assert!(
+                client.is_ok(),
+                "client with enterprise api + upload URLs should build successfully"
+            );
+        });
+    }
+
+    #[test]
+    fn test_build_octocrab_client_with_skip_tls_verify() {
+        with_tokio(|| {
+            let urls = Some(GitHubUrlsConfig {
+                api: Some("https://github.example.com/api/v3/".to_string()),
+                upload: Some("https://github.example.com/api/uploads/".to_string()),
+                download: None,
+                skip_tls_verify: Some(true),
+            });
+            let client = build_octocrab_client("ghp_fake_token_123", &urls);
+            assert!(
+                client.is_ok(),
+                "client with skip_tls_verify should build successfully"
+            );
+        });
+    }
+
+    #[test]
+    fn test_build_octocrab_client_invalid_api_url_errors() {
+        with_tokio(|| {
+            let urls = Some(GitHubUrlsConfig {
+                api: Some("not a valid url \x00".to_string()),
+                upload: None,
+                download: None,
+                skip_tls_verify: None,
+            });
+            let result = build_octocrab_client("ghp_fake_token_123", &urls);
+            assert!(result.is_err(), "invalid api URL should produce an error");
+        });
+    }
+
+    #[test]
+    fn test_build_octocrab_client_skip_tls_false_uses_normal_path() {
+        // skip_tls_verify = Some(false) should use the normal (secure) path.
+        with_tokio(|| {
+            let urls = Some(GitHubUrlsConfig {
+                api: Some("https://github.example.com/api/v3/".to_string()),
+                upload: None,
+                download: None,
+                skip_tls_verify: Some(false),
+            });
+            let client = build_octocrab_client("ghp_fake_token_123", &urls);
+            assert!(
+                client.is_ok(),
+                "skip_tls_verify=false should use normal build path"
+            );
+        });
+    }
+
+    #[test]
+    fn test_dry_run_logs_github_enterprise_urls() {
+        // When github_urls are configured and dry_run is true, the release
+        // stage should log the enterprise URL configuration.
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .tag("v1.0.0")
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                release: Some(ReleaseConfig::default()),
+                ..Default::default()
+            }])
+            .build();
+
+        ctx.config.github_urls = Some(GitHubUrlsConfig {
+            api: Some("https://ghe.corp.example.com/api/v3/".to_string()),
+            upload: Some("https://ghe.corp.example.com/api/uploads/".to_string()),
+            download: Some("https://ghe.corp.example.com/".to_string()),
+            skip_tls_verify: Some(true),
+        });
+
+        let stage = ReleaseStage;
+        // Dry-run should succeed — no actual API calls are made.
+        stage.run(&mut ctx).unwrap();
+    }
+
+    #[test]
+    fn test_dry_run_without_github_urls_still_works() {
+        // Verify the default path (no github_urls) still works in dry-run.
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .tag("v1.0.0")
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                release: Some(ReleaseConfig::default()),
+                ..Default::default()
+            }])
+            .build();
+
+        assert!(ctx.config.github_urls.is_none());
+
+        let stage = ReleaseStage;
+        stage.run(&mut ctx).unwrap();
     }
 }
