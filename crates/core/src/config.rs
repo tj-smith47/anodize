@@ -143,9 +143,8 @@ pub struct Config {
     /// Custom Gitea API/download URLs for self-hosted Gitea installations.
     pub gitea_urls: Option<GiteaUrlsConfig>,
     /// Force a specific token type for authentication.
-    /// Supported values: "github", "gitlab", "gitea".
     /// When set, overrides automatic token detection from environment variables.
-    pub force_token: Option<String>,
+    pub force_token: Option<ForceTokenKind>,
     /// macOS code signing and notarization configuration.
     pub notarize: Option<NotarizeConfig>,
     /// Project metadata configuration (applied to metadata.json output files).
@@ -1257,11 +1256,11 @@ impl PartialEq for ContentSource {
 #[serde(default)]
 pub struct ReleaseConfig {
     /// GitHub repository to release to (owner and name).
-    pub github: Option<GitHubConfig>,
+    pub github: Option<ScmRepoConfig>,
     /// GitLab repository to release to (owner and name).
-    pub gitlab: Option<GitHubConfig>,
+    pub gitlab: Option<ScmRepoConfig>,
     /// Gitea repository to release to (owner and name).
-    pub gitea: Option<GitHubConfig>,
+    pub gitea: Option<ScmRepoConfig>,
     /// When true, create the release as a draft (unpublished).
     pub draft: Option<bool>,
     #[schemars(schema_with = "prerelease_schema")]
@@ -1386,11 +1385,27 @@ fn skip_push_schema(_generator: &mut schemars::r#gen::SchemaGenerator) -> schema
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct GitHubConfig {
-    /// GitHub repository owner (user or organization).
+pub struct ScmRepoConfig {
+    /// Repository owner (user or organization).
     pub owner: String,
-    /// GitHub repository name.
+    /// Repository name.
     pub name: String,
+}
+
+/// Backward-compatible alias — existing code can continue to use `GitHubConfig`.
+pub type GitHubConfig = ScmRepoConfig;
+
+// ---------------------------------------------------------------------------
+// ForceTokenKind
+// ---------------------------------------------------------------------------
+
+/// Which SCM token to force for authentication, overriding automatic detection.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum ForceTokenKind {
+    GitHub,
+    GitLab,
+    Gitea,
 }
 
 // ---------------------------------------------------------------------------
@@ -1400,7 +1415,7 @@ pub struct GitHubConfig {
 /// Custom GitHub API/upload/download URLs for GitHub Enterprise installations.
 /// Matches GoReleaser's `GitHubURLs` struct.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct GitHubUrlsConfig {
     /// GitHub API base URL (e.g. `https://github.example.com/api/v3/`).
     pub api: Option<String>,
@@ -1415,7 +1430,7 @@ pub struct GitHubUrlsConfig {
 /// Custom GitLab API/download URLs for self-hosted GitLab installations.
 /// Matches GoReleaser's `GitLabURLs` struct.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct GitLabUrlsConfig {
     /// GitLab API base URL (e.g. `https://gitlab.example.com/api/v4/`).
     pub api: Option<String>,
@@ -1432,7 +1447,7 @@ pub struct GitLabUrlsConfig {
 /// Custom Gitea API/download URLs for self-hosted Gitea installations.
 /// Matches GoReleaser's `GiteaURLs` struct.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct GiteaUrlsConfig {
     /// Gitea API base URL (e.g. `https://gitea.example.com/api/v1/`).
     pub api: Option<String>,
@@ -8859,26 +8874,26 @@ crates:
     tag_template: "v{{ .Version }}"
     release:
       github:
-        owner: myorg
-        name: myrepo
+        owner: gh-owner
+        name: gh-repo
       gitlab:
-        owner: myorg
-        name: myrepo
+        owner: gitlab-owner
+        name: gitlab-repo
       gitea:
-        owner: myorg
-        name: myrepo
+        owner: gitea-owner
+        name: gitea-repo
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let release = config.crates[0].release.as_ref().unwrap();
         let github = release.github.as_ref().unwrap();
-        assert_eq!(github.owner, "myorg");
-        assert_eq!(github.name, "myrepo");
+        assert_eq!(github.owner, "gh-owner");
+        assert_eq!(github.name, "gh-repo");
         let gitlab = release.gitlab.as_ref().unwrap();
-        assert_eq!(gitlab.owner, "myorg");
-        assert_eq!(gitlab.name, "myrepo");
+        assert_eq!(gitlab.owner, "gitlab-owner");
+        assert_eq!(gitlab.name, "gitlab-repo");
         let gitea = release.gitea.as_ref().unwrap();
-        assert_eq!(gitea.owner, "myorg");
-        assert_eq!(gitea.name, "myrepo");
+        assert_eq!(gitea.owner, "gitea-owner");
+        assert_eq!(gitea.name, "gitea-repo");
     }
 
     #[test]
@@ -8958,7 +8973,7 @@ crates:
     tag_template: "v{{ .Version }}"
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        assert_eq!(config.force_token.as_deref(), Some("gitlab"));
+        assert_eq!(config.force_token, Some(ForceTokenKind::GitLab));
     }
 
     #[test]
@@ -8971,7 +8986,7 @@ crates:
     tag_template: "v{{ .Version }}"
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        assert_eq!(config.force_token, None);
+        assert_eq!(config.force_token, None::<ForceTokenKind>);
     }
 
     #[test]
@@ -8992,13 +9007,22 @@ crates:
     tag_template: "v{{ .Version }}"
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        assert!(config.github_urls.is_some());
-        assert!(config.gitlab_urls.is_some());
-        assert!(config.gitea_urls.is_some());
-        assert_eq!(config.force_token.as_deref(), Some("github"));
+        assert_eq!(
+            config.github_urls.as_ref().unwrap().api.as_deref(),
+            Some("https://ghe.corp.com/api/v3/")
+        );
+        assert_eq!(
+            config.gitlab_urls.as_ref().unwrap().api.as_deref(),
+            Some("https://gitlab.corp.com/api/v4/")
+        );
         assert_eq!(
             config.gitlab_urls.as_ref().unwrap().use_job_token,
             Some(true)
         );
+        assert_eq!(
+            config.gitea_urls.as_ref().unwrap().api.as_deref(),
+            Some("https://gitea.corp.com/api/v1/")
+        );
+        assert_eq!(config.force_token, Some(ForceTokenKind::GitHub));
     }
 }
