@@ -1,3 +1,4 @@
+pub mod artifactory;
 pub mod aur;
 pub mod chocolatey;
 pub mod crates_io;
@@ -14,6 +15,7 @@ use anodize_core::context::Context;
 use anodize_core::stage::Stage;
 use anyhow::Result;
 
+use artifactory::publish_to_artifactory;
 use aur::publish_to_aur;
 use chocolatey::publish_to_chocolatey;
 use crates_io::publish_to_crates_io;
@@ -90,6 +92,9 @@ impl Stage for PublishStage {
 
         // 9. DockerHub — top-level publisher (not per-crate).
         publish_to_dockerhub(ctx, &log)?;
+
+        // 10. Artifactory — top-level publisher (not per-crate).
+        publish_to_artifactory(ctx, &log)?;
 
         Ok(())
     }
