@@ -136,6 +136,16 @@ pub struct Config {
     pub sboms: Vec<SbomConfig>,
     /// GitHub release configuration shared by all crates.
     pub release: Option<ReleaseConfig>,
+    /// Custom GitHub API/upload/download URLs for GitHub Enterprise installations.
+    pub github_urls: Option<GitHubUrlsConfig>,
+    /// Custom GitLab API/download URLs for self-hosted GitLab installations.
+    pub gitlab_urls: Option<GitLabUrlsConfig>,
+    /// Custom Gitea API/download URLs for self-hosted Gitea installations.
+    pub gitea_urls: Option<GiteaUrlsConfig>,
+    /// Force a specific token type for authentication.
+    /// Supported values: "github", "gitlab", "gitea".
+    /// When set, overrides automatic token detection from environment variables.
+    pub force_token: Option<String>,
     /// macOS code signing and notarization configuration.
     pub notarize: Option<NotarizeConfig>,
     /// Project metadata configuration (applied to metadata.json output files).
@@ -215,6 +225,10 @@ impl Default for Config {
             source: None,
             sboms: Vec::new(),
             release: None,
+            github_urls: None,
+            gitlab_urls: None,
+            gitea_urls: None,
+            force_token: None,
             notarize: None,
             metadata: None,
             template_files: None,
@@ -1244,6 +1258,10 @@ impl PartialEq for ContentSource {
 pub struct ReleaseConfig {
     /// GitHub repository to release to (owner and name).
     pub github: Option<GitHubConfig>,
+    /// GitLab repository to release to (owner and name).
+    pub gitlab: Option<GitHubConfig>,
+    /// Gitea repository to release to (owner and name).
+    pub gitea: Option<GitHubConfig>,
     /// When true, create the release as a draft (unpublished).
     pub draft: Option<bool>,
     #[schemars(schema_with = "prerelease_schema")]
@@ -1373,6 +1391,55 @@ pub struct GitHubConfig {
     pub owner: String,
     /// GitHub repository name.
     pub name: String,
+}
+
+// ---------------------------------------------------------------------------
+// Platform URL configs (GitHub Enterprise, GitLab self-hosted, Gitea)
+// ---------------------------------------------------------------------------
+
+/// Custom GitHub API/upload/download URLs for GitHub Enterprise installations.
+/// Matches GoReleaser's `GitHubURLs` struct.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct GitHubUrlsConfig {
+    /// GitHub API base URL (e.g. `https://github.example.com/api/v3/`).
+    pub api: Option<String>,
+    /// GitHub upload URL for release assets (e.g. `https://github.example.com/api/uploads/`).
+    pub upload: Option<String>,
+    /// GitHub download URL for release assets (e.g. `https://github.example.com/`).
+    pub download: Option<String>,
+    /// When true, skip TLS certificate verification for the custom URLs.
+    pub skip_tls_verify: Option<bool>,
+}
+
+/// Custom GitLab API/download URLs for self-hosted GitLab installations.
+/// Matches GoReleaser's `GitLabURLs` struct.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct GitLabUrlsConfig {
+    /// GitLab API base URL (e.g. `https://gitlab.example.com/api/v4/`).
+    pub api: Option<String>,
+    /// GitLab download URL for release assets.
+    pub download: Option<String>,
+    /// When true, skip TLS certificate verification for the custom URLs.
+    pub skip_tls_verify: Option<bool>,
+    /// When true, use the GitLab Package Registry for uploads instead of Generic Packages.
+    pub use_package_registry: Option<bool>,
+    /// When true, use the CI_JOB_TOKEN for authentication instead of a personal token.
+    pub use_job_token: Option<bool>,
+}
+
+/// Custom Gitea API/download URLs for self-hosted Gitea installations.
+/// Matches GoReleaser's `GiteaURLs` struct.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct GiteaUrlsConfig {
+    /// Gitea API base URL (e.g. `https://gitea.example.com/api/v1/`).
+    pub api: Option<String>,
+    /// Gitea download URL for release assets.
+    pub download: Option<String>,
+    /// When true, skip TLS certificate verification for the custom URLs.
+    pub skip_tls_verify: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -8703,5 +8770,235 @@ crates: []
             }
             other => panic!("expected FromUrl, got: {:?}", other),
         }
+    }
+
+    // ---- Platform URL config tests ----
+
+    #[test]
+    fn test_github_urls_config_all_fields() {
+        let yaml = r#"
+api: https://github.example.com/api/v3/
+upload: https://github.example.com/api/uploads/
+download: https://github.example.com/
+skip_tls_verify: true
+"#;
+        let cfg: GitHubUrlsConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.api.as_deref(), Some("https://github.example.com/api/v3/"));
+        assert_eq!(cfg.upload.as_deref(), Some("https://github.example.com/api/uploads/"));
+        assert_eq!(cfg.download.as_deref(), Some("https://github.example.com/"));
+        assert_eq!(cfg.skip_tls_verify, Some(true));
+    }
+
+    #[test]
+    fn test_github_urls_config_defaults() {
+        let yaml = "{}";
+        let cfg: GitHubUrlsConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.api, None);
+        assert_eq!(cfg.upload, None);
+        assert_eq!(cfg.download, None);
+        assert_eq!(cfg.skip_tls_verify, None);
+    }
+
+    #[test]
+    fn test_gitlab_urls_config_all_fields() {
+        let yaml = r#"
+api: https://gitlab.example.com/api/v4/
+download: https://gitlab.example.com/
+skip_tls_verify: false
+use_package_registry: true
+use_job_token: true
+"#;
+        let cfg: GitLabUrlsConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.api.as_deref(), Some("https://gitlab.example.com/api/v4/"));
+        assert_eq!(cfg.download.as_deref(), Some("https://gitlab.example.com/"));
+        assert_eq!(cfg.skip_tls_verify, Some(false));
+        assert_eq!(cfg.use_package_registry, Some(true));
+        assert_eq!(cfg.use_job_token, Some(true));
+    }
+
+    #[test]
+    fn test_gitlab_urls_config_defaults() {
+        let yaml = "{}";
+        let cfg: GitLabUrlsConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.api, None);
+        assert_eq!(cfg.download, None);
+        assert_eq!(cfg.skip_tls_verify, None);
+        assert_eq!(cfg.use_package_registry, None);
+        assert_eq!(cfg.use_job_token, None);
+    }
+
+    #[test]
+    fn test_gitea_urls_config_all_fields() {
+        let yaml = r#"
+api: https://gitea.example.com/api/v1/
+download: https://gitea.example.com/
+skip_tls_verify: true
+"#;
+        let cfg: GiteaUrlsConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.api.as_deref(), Some("https://gitea.example.com/api/v1/"));
+        assert_eq!(cfg.download.as_deref(), Some("https://gitea.example.com/"));
+        assert_eq!(cfg.skip_tls_verify, Some(true));
+    }
+
+    #[test]
+    fn test_gitea_urls_config_defaults() {
+        let yaml = "{}";
+        let cfg: GiteaUrlsConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.api, None);
+        assert_eq!(cfg.download, None);
+        assert_eq!(cfg.skip_tls_verify, None);
+    }
+
+    #[test]
+    fn test_release_config_gitlab_gitea_fields() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    release:
+      github:
+        owner: myorg
+        name: myrepo
+      gitlab:
+        owner: myorg
+        name: myrepo
+      gitea:
+        owner: myorg
+        name: myrepo
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let release = config.crates[0].release.as_ref().unwrap();
+        let github = release.github.as_ref().unwrap();
+        assert_eq!(github.owner, "myorg");
+        assert_eq!(github.name, "myrepo");
+        let gitlab = release.gitlab.as_ref().unwrap();
+        assert_eq!(gitlab.owner, "myorg");
+        assert_eq!(gitlab.name, "myrepo");
+        let gitea = release.gitea.as_ref().unwrap();
+        assert_eq!(gitea.owner, "myorg");
+        assert_eq!(gitea.name, "myrepo");
+    }
+
+    #[test]
+    fn test_config_github_urls_field() {
+        let yaml = r#"
+project_name: test
+github_urls:
+  api: https://ghe.corp.com/api/v3/
+  upload: https://ghe.corp.com/api/uploads/
+  download: https://ghe.corp.com/
+  skip_tls_verify: true
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let urls = config.github_urls.as_ref().unwrap();
+        assert_eq!(urls.api.as_deref(), Some("https://ghe.corp.com/api/v3/"));
+        assert_eq!(urls.upload.as_deref(), Some("https://ghe.corp.com/api/uploads/"));
+        assert_eq!(urls.download.as_deref(), Some("https://ghe.corp.com/"));
+        assert_eq!(urls.skip_tls_verify, Some(true));
+    }
+
+    #[test]
+    fn test_config_gitlab_urls_field() {
+        let yaml = r#"
+project_name: test
+gitlab_urls:
+  api: https://gitlab.corp.com/api/v4/
+  download: https://gitlab.corp.com/
+  skip_tls_verify: false
+  use_package_registry: true
+  use_job_token: false
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let urls = config.gitlab_urls.as_ref().unwrap();
+        assert_eq!(urls.api.as_deref(), Some("https://gitlab.corp.com/api/v4/"));
+        assert_eq!(urls.download.as_deref(), Some("https://gitlab.corp.com/"));
+        assert_eq!(urls.skip_tls_verify, Some(false));
+        assert_eq!(urls.use_package_registry, Some(true));
+        assert_eq!(urls.use_job_token, Some(false));
+    }
+
+    #[test]
+    fn test_config_gitea_urls_field() {
+        let yaml = r#"
+project_name: test
+gitea_urls:
+  api: https://gitea.corp.com/api/v1/
+  download: https://gitea.corp.com/
+  skip_tls_verify: true
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let urls = config.gitea_urls.as_ref().unwrap();
+        assert_eq!(urls.api.as_deref(), Some("https://gitea.corp.com/api/v1/"));
+        assert_eq!(urls.download.as_deref(), Some("https://gitea.corp.com/"));
+        assert_eq!(urls.skip_tls_verify, Some(true));
+    }
+
+    #[test]
+    fn test_config_force_token_field() {
+        let yaml = r#"
+project_name: test
+force_token: gitlab
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(config.force_token.as_deref(), Some("gitlab"));
+    }
+
+    #[test]
+    fn test_config_force_token_omitted() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(config.force_token, None);
+    }
+
+    #[test]
+    fn test_config_all_platform_urls_and_force_token() {
+        let yaml = r#"
+project_name: test
+github_urls:
+  api: https://ghe.corp.com/api/v3/
+gitlab_urls:
+  api: https://gitlab.corp.com/api/v4/
+  use_job_token: true
+gitea_urls:
+  api: https://gitea.corp.com/api/v1/
+force_token: github
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(config.github_urls.is_some());
+        assert!(config.gitlab_urls.is_some());
+        assert!(config.gitea_urls.is_some());
+        assert_eq!(config.force_token.as_deref(), Some("github"));
+        assert_eq!(
+            config.gitlab_urls.as_ref().unwrap().use_job_token,
+            Some(true)
+        );
     }
 }
