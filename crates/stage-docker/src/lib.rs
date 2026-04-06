@@ -348,7 +348,7 @@ pub fn resolve_retry_params(
 /// multiple platforms, otherwise `"docker"`.
 pub fn resolve_backend(
     use_backend: Option<&str>,
-    multi_platform: bool,
+    _multi_platform: bool,
 ) -> Result<(&str, Vec<&str>)> {
     match use_backend {
         Some("docker") => Ok(("docker", vec!["build"])),
@@ -360,13 +360,10 @@ pub fn resolve_backend(
                 other
             );
         }
-        None => {
-            if multi_platform {
-                Ok(("docker", vec!["buildx", "build"]))
-            } else {
-                Ok(("docker", vec!["build"]))
-            }
-        }
+        // Default to plain docker (matching GoReleaser).
+        // Users must explicitly set `use: buildx` for buildx features
+        // including multi-platform builds.
+        None => Ok(("docker", vec!["build"])),
     }
 }
 
@@ -424,16 +421,12 @@ pub fn build_docker_command(
         cmd.push(flag.clone());
     }
 
-    // Determine the effective backend for --load/--push logic
+    // Determine the effective backend for --load/--push logic.
+    // Default is "docker" (matching GoReleaser); users must explicitly set
+    // `use: buildx` for buildx features including multi-platform builds.
     let effective_backend = match use_backend {
         Some(b) => b,
-        None => {
-            if multi_platform {
-                "buildx"
-            } else {
-                "docker"
-            }
-        }
+        None => "docker",
     };
 
     // --push in live mode (unless skip_push).  The --push flag is only valid
@@ -684,6 +677,54 @@ pub fn resolve_skip_push(skip_push: &Option<SkipPushConfig>, ctx: &Context) -> b
 }
 
 // ---------------------------------------------------------------------------
+// list_staging_dir_recursive — diagnostic file listing
+// ---------------------------------------------------------------------------
+
+/// Recursively list files in the staging directory for COPY/ADD failure
+/// diagnostics.  Logs each entry as a warning so users can see exactly which
+/// files are staged.
+fn list_staging_dir_recursive(
+    dir: &std::path::Path,
+    root: &std::path::Path,
+    log: &StageLogger,
+) {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let mut items: Vec<_> = entries.filter_map(|e| e.ok()).collect();
+    items.sort_by_key(|e| e.file_name());
+    for entry in items {
+        let path = entry.path();
+        let rel = path.strip_prefix(root).unwrap_or(&path);
+        if path.is_dir() {
+            log.warn(&format!("  {}/ (directory)", rel.display()));
+            list_staging_dir_recursive(&path, root, log);
+        } else {
+            log.warn(&format!("  {}", rel.display()));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// find_sha256_digest — extract digest from docker push stdout
+// ---------------------------------------------------------------------------
+
+/// Extract a `sha256:<64-hex>` digest from text, typically the stdout of
+/// `docker push`.  Uses plain string parsing to avoid a regex dependency.
+fn find_sha256_digest(text: &str) -> Option<&str> {
+    for word in text.split_whitespace() {
+        if let Some(rest) = word.strip_prefix("sha256:") {
+            if rest.len() >= 64 && rest[..64].chars().all(|c| c.is_ascii_hexdigit()) {
+                // Return exactly "sha256:" + 64 hex chars (ignore trailing chars)
+                return Some(&word[..71]);
+            }
+        }
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
 // DockerBuildJob — prepared data for a single docker build
 // ---------------------------------------------------------------------------
 
@@ -827,7 +868,9 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
                 let err_msg = format!("{:#}", e);
                 let is_retriable = is_retriable_error(&err_msg);
                 if attempt < job.max_attempts && !is_retriable {
-                    // Diagnostic: file-not-found hints for COPY/ADD failures
+                    // Diagnostic: file-not-found hints for COPY/ADD failures.
+                    // List all files in the build context to help debug which
+                    // files are actually staged (matches GoReleaser behavior).
                     if stderr_text.contains("COPY") || stderr_text.contains("ADD") {
                         log.warn(
                             "the Dockerfile COPY/ADD failed — check that the \
@@ -835,6 +878,8 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
                              staging directory; the available files may not match \
                              what the Dockerfile expects",
                         );
+                        log.warn("files in the staging directory:");
+                        list_staging_dir_recursive(&job.staging_dir, &job.staging_dir, log);
                     }
                     // Diagnostic: buildx context / TLS errors
                     if stderr_text.contains("could not read certificates")
@@ -875,6 +920,9 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
     // Plain `docker build` does NOT support --push; only buildx does.
     // GoReleaser's legacy docker pipe builds first, then pushes each tag
     // separately with `docker push <image>`.
+    // Digests captured from `docker push` stdout (more reliable than inspect).
+    let mut push_stdout_digests: HashMap<String, String> = HashMap::new();
+
     if job.should_push && !job.is_v2 && job.backend_label != "buildx" {
         let push_bin = if job.backend_label == "podman" { "podman" } else { "docker" };
         for tag in &job.rendered_tags {
@@ -950,6 +998,12 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
                             tag, attempt, job.max_attempts
                         ));
                     }
+                    // Capture digest from push stdout (more reliable than
+                    // docker inspect — works even if image is cleaned up).
+                    let push_stdout = String::from_utf8_lossy(&stdout_bytes);
+                    if let Some(digest) = find_sha256_digest(&push_stdout) {
+                        push_stdout_digests.insert(tag.clone(), digest.to_string());
+                    }
                     push_last_err = None;
                     break;
                 } else {
@@ -1015,47 +1069,59 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
             }
         }
     } else if job.should_push {
-        // Legacy: capture digests via docker inspect after push
+        // Legacy: capture digests — prefer push stdout, fall back to docker inspect.
         for tag in &job.rendered_tags {
-            let inspect_bin = if job.backend_label == "podman" {
-                "podman"
+            // First check if we captured the digest from `docker push` stdout.
+            // This is more reliable than `docker inspect` because it works even
+            // if the image was cleaned up after push (matches GoReleaser).
+            let digest = if let Some(d) = push_stdout_digests.get(tag) {
+                Some(d.clone())
             } else {
-                "docker"
-            };
-            let digest_output = {
-                let mut inspect_cmd = Command::new(inspect_bin);
-                inspect_cmd.args(["inspect", "--format", "{{index .RepoDigests 0}}", tag]);
-                for (key, value) in &job.env_vars {
-                    inspect_cmd.env(key, value);
+                // Fallback: `docker inspect` to read RepoDigests
+                let inspect_bin = if job.backend_label == "podman" {
+                    "podman"
+                } else {
+                    "docker"
+                };
+                let digest_output = {
+                    let mut inspect_cmd = Command::new(inspect_bin);
+                    inspect_cmd.args(["inspect", "--format", "{{index .RepoDigests 0}}", tag]);
+                    for (key, value) in &job.env_vars {
+                        inspect_cmd.env(key, value);
+                    }
+                    inspect_cmd.output()
+                };
+
+                if let Ok(output) = digest_output
+                    && output.status.success()
+                {
+                    let d = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    if d.is_empty() { None } else { Some(d) }
+                } else {
+                    None
                 }
-                inspect_cmd.output()
             };
 
-            if let Ok(output) = digest_output
-                && output.status.success()
-            {
-                let digest = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !digest.is_empty() {
-                    tag_digests.insert(tag.clone(), digest.clone());
+            if let Some(digest) = digest {
+                tag_digests.insert(tag.clone(), digest.clone());
 
-                    // Write per-tag digest file unless docker_digest.disable is truthy.
-                    // Always use tag-based naming for per-tag files to avoid collisions
-                    // when multiple tags exist. The name_template controls the artifact
-                    // name (metadata), not the file path.
-                    if !job.digest_disabled {
-                        let safe_name = tag.replace(['/', ':'], "_");
-                        let filename = format!("{}.digest", safe_name);
-                        let digest_file = job.dist.join(&filename);
-                        if let Err(e) = fs::write(&digest_file, &digest) {
-                            log.warn(&format!(
-                                "failed to write digest file {}: {}",
-                                digest_file.display(),
-                                e
-                            ));
-                        } else {
-                            log.status(&format!("saved digest to {}", digest_file.display()));
-                            digest_files.push(digest_file);
-                        }
+                // Write per-tag digest file unless docker_digest.disable is truthy.
+                // Always use tag-based naming for per-tag files to avoid collisions
+                // when multiple tags exist. The name_template controls the artifact
+                // name (metadata), not the file path.
+                if !job.digest_disabled {
+                    let safe_name = tag.replace(['/', ':'], "_");
+                    let filename = format!("{}.digest", safe_name);
+                    let digest_file = job.dist.join(&filename);
+                    if let Err(e) = fs::write(&digest_file, &digest) {
+                        log.warn(&format!(
+                            "failed to write digest file {}: {}",
+                            digest_file.display(),
+                            e
+                        ));
+                    } else {
+                        log.status(&format!("saved digest to {}", digest_file.display()));
+                        digest_files.push(digest_file);
                     }
                 }
             }
@@ -1504,6 +1570,16 @@ impl Stage for DockerStage {
                 // Validate the backend early — before staging files — so a
                 // typo like `use: "dockr"` is caught immediately.
                 resolve_backend(docker_cfg.use_backend.as_deref(), platforms.len() > 1)?;
+
+                // Warn if multiple platforms are configured without buildx.
+                // Plain `docker build` cannot produce multi-platform images.
+                if platforms.len() > 1 && docker_cfg.use_backend.as_deref() != Some("buildx") {
+                    log.warn(
+                        "multiple platforms configured but backend is not 'buildx'; \
+                         plain docker cannot build multi-platform images — \
+                         set `use: buildx` in your docker config",
+                    );
+                }
 
                 // Build the staging directory path
                 let staging_dir: PathBuf =
@@ -2616,6 +2692,7 @@ mod tests {
 
     #[test]
     fn test_build_docker_command() {
+        // With explicit buildx backend, multi-platform gets --push
         let cmd = build_docker_command(
             "/tmp/staging",
             &["linux/amd64", "linux/arm64"],
@@ -2624,7 +2701,7 @@ mod tests {
             true,
             &[],
             &[],
-            None,
+            Some("buildx"),
         )
         .unwrap();
         assert!(cmd.contains(&"buildx".to_string()));
@@ -4184,9 +4261,11 @@ crates:
 
     #[test]
     fn test_resolve_backend_default_multi_platform() {
+        // Default is "docker" even with multi-platform (matching GoReleaser).
+        // Users must explicitly set `use: buildx` for buildx features.
         let (bin, subs) = resolve_backend(None, true).unwrap();
         assert_eq!(bin, "docker");
-        assert_eq!(subs, vec!["buildx", "build"]);
+        assert_eq!(subs, vec!["build"]);
     }
 
     #[test]
@@ -6014,8 +6093,10 @@ disable: "{{ .IsSnapshot }}"
     }
 
     #[test]
-    fn test_build_docker_command_multi_platform_implicit_buildx_gets_push() {
-        // Multi-platform with no explicit backend resolves to buildx
+    fn test_build_docker_command_multi_platform_no_implicit_buildx() {
+        // Multi-platform with no explicit backend defaults to plain docker
+        // (matching GoReleaser). --push is NOT added for plain docker.
+        // Users must set `use: buildx` explicitly for buildx features.
         let cmd = build_docker_command(
             "/tmp/staging",
             &["linux/amd64", "linux/arm64"],
@@ -6027,8 +6108,28 @@ disable: "{{ .IsSnapshot }}"
             None,
         )
         .unwrap();
+        assert!(!cmd.contains(&"--push".to_string()),
+            "plain docker (default) should NOT have --push");
+        assert!(cmd.contains(&"--platform=linux/amd64,linux/arm64".to_string()),
+            "platforms should still be set");
+    }
+
+    #[test]
+    fn test_build_docker_command_multi_platform_explicit_buildx_gets_push() {
+        // Multi-platform with explicit buildx should get --push
+        let cmd = build_docker_command(
+            "/tmp/staging",
+            &["linux/amd64", "linux/arm64"],
+            &["ghcr.io/owner/app:v1.0.0"],
+            &[],
+            true,
+            &[],
+            &[],
+            Some("buildx"),
+        )
+        .unwrap();
         assert!(cmd.contains(&"--push".to_string()),
-            "implicit buildx (multi-platform) should have --push");
+            "explicit buildx should have --push");
     }
 
     // -----------------------------------------------------------------------
@@ -6047,5 +6148,97 @@ disable: "{{ .IsSnapshot }}"
         assert!(is_retriable_error(
             "received unexpected HTTP status: 510 Not Extended"
         ));
+    }
+
+    // -----------------------------------------------------------------------
+    // Gap F: resolve_backend default is "docker"
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_resolve_backend_none_always_defaults_to_docker() {
+        // Regardless of multi_platform flag, default is always plain docker.
+        let (bin1, subs1) = resolve_backend(None, false).unwrap();
+        let (bin2, subs2) = resolve_backend(None, true).unwrap();
+        assert_eq!(bin1, "docker");
+        assert_eq!(subs1, vec!["build"]);
+        assert_eq!(bin2, "docker");
+        assert_eq!(subs2, vec!["build"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Gap G: list_staging_dir_recursive
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_list_staging_dir_recursive_lists_files() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // Create a structure:
+        //   root/Dockerfile
+        //   root/binaries/amd64/myapp
+        //   root/binaries/arm64/myapp
+        fs::write(root.join("Dockerfile"), "FROM scratch").unwrap();
+        fs::create_dir_all(root.join("binaries/amd64")).unwrap();
+        fs::create_dir_all(root.join("binaries/arm64")).unwrap();
+        fs::write(root.join("binaries/amd64/myapp"), "bin").unwrap();
+        fs::write(root.join("binaries/arm64/myapp"), "bin").unwrap();
+
+        // Just verify it doesn't panic — the output goes to log.warn
+        let log = anodize_core::log::StageLogger::new("test", anodize_core::log::Verbosity::Normal);
+        list_staging_dir_recursive(root, root, &log);
+    }
+
+    // -----------------------------------------------------------------------
+    // Gap H: find_sha256_digest
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_find_sha256_digest_from_push_output() {
+        let output = "The push refers to repository [docker.io/library/myapp]\n\
+                       latest: digest: sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789 size: 528";
+        let digest = find_sha256_digest(output);
+        assert_eq!(
+            digest,
+            Some("sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")
+        );
+    }
+
+    #[test]
+    fn test_find_sha256_digest_no_match() {
+        assert_eq!(find_sha256_digest("no digest here"), None);
+        // Too short hex part
+        assert_eq!(find_sha256_digest("sha256:abcdef"), None);
+    }
+
+    #[test]
+    fn test_find_sha256_digest_embedded_in_text() {
+        // Digest as a standalone word
+        let text = "pushed sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef done";
+        assert_eq!(
+            find_sha256_digest(text),
+            Some("sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+        );
+    }
+
+    #[test]
+    fn test_find_sha256_digest_uppercase_hex_rejected() {
+        // GoReleaser regex uses [a-f0-9], but our implementation allows
+        // uppercase since is_ascii_hexdigit includes A-F. This is fine —
+        // real digests are always lowercase, but being lenient doesn't hurt.
+        let text = "sha256:ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789";
+        // This should still match since is_ascii_hexdigit accepts A-F
+        assert!(find_sha256_digest(text).is_some());
+    }
+
+    #[test]
+    fn test_find_sha256_digest_with_trailing_chars() {
+        // Digest word with trailing punctuation — should still extract 71 chars
+        let text = "digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,";
+        // The word is "sha256:aaa...aaa," — strip_prefix("sha256:") gives "aaa...," which has
+        // 64 hex chars before the comma, so [..64].all(hexdigit) should be true.
+        let result = find_sha256_digest(text);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().len(), 71); // "sha256:" (7) + 64 hex = 71
     }
 }

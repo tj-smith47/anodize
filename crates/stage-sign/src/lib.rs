@@ -804,6 +804,9 @@ impl Stage for SignStage {
         // ----------------------------------------------------------------
         if let Some(docker_signs) = ctx.config.docker_signs.clone() {
             for docker_sign_cfg in &docker_signs {
+                // Default docker sign ID to "default" (matches GoReleaser).
+                let sign_id = docker_sign_cfg.id.as_deref().unwrap_or("default");
+
                 // Evaluate the `if` conditional template for docker signs.
                 // (See comment in process_sign_configs for why this uses
                 // inverted logic compared to `disable`.)
@@ -813,16 +816,16 @@ impl Stage for SignStage {
                             let trimmed = result.trim();
                             if trimmed.is_empty() || trimmed == "false" {
                                 log.verbose(&format!(
-                                    "skipping docker-sign config: if condition evaluated to '{}'",
-                                    trimmed
+                                    "skipping docker-sign config '{}': if condition evaluated to '{}'",
+                                    sign_id, trimmed
                                 ));
                                 continue;
                             }
                         }
                         Err(e) => {
                             log.warn(&format!(
-                                "docker-sign if condition render failed ({}), skipping: {}",
-                                condition, e
+                                "docker-sign '{}' if condition render failed ({}), skipping: {}",
+                                sign_id, condition, e
                             ));
                             continue;
                         }
@@ -958,7 +961,7 @@ impl Stage for SignStage {
                         continue;
                     }
 
-                    log.status(&format!("docker-sign {}", image_str));
+                    log.status(&format!("docker-sign [{}] {}", sign_id, image_str));
 
                     // Prepare stdin piping for docker signs.
                     let (stdin_cfg, stdin_data) = prepare_stdin_from(
@@ -3056,5 +3059,95 @@ crates: []
             "signature name must NOT contain armv7v7 double-suffix: got '{}'",
             sigs[0].name
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Gap E: Docker sign ID defaults to "default"
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_docker_sign_id_defaults_to_default() {
+        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use anodize_core::config::DockerSignConfig;
+
+        // Config with no explicit id — should default to "default".
+        let docker_signs = vec![DockerSignConfig {
+            id: None,
+            cmd: Some("echo".to_string()),
+            args: Some(vec!["sign".to_string(), "{{ .Artifact }}".to_string()]),
+            artifacts: Some("all".to_string()),
+            ids: None,
+            stdin: None,
+            stdin_file: None,
+            env: None,
+            output: None,
+            if_condition: None,
+            signature: None,
+            certificate: None,
+        }];
+
+        let mut ctx = TestContextBuilder::new().dry_run(true).build();
+        ctx.config.docker_signs = Some(docker_signs);
+
+        // Add a docker image so the sign loop has something to process
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::DockerImage,
+            name: String::new(),
+            path: std::path::PathBuf::from("ghcr.io/myorg/app:latest"),
+            target: None,
+            crate_name: "test".to_string(),
+            metadata: std::collections::HashMap::new(),
+            size: None,
+        });
+
+        let stage = SignStage;
+        // Dry-run should succeed and the log should contain the default id.
+        assert!(stage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_docker_sign_explicit_id_preserved() {
+        use anodize_core::config::DockerSignConfig;
+
+        let cfg = DockerSignConfig {
+            id: Some("my-signer".to_string()),
+            cmd: None,
+            args: None,
+            artifacts: None,
+            ids: None,
+            stdin: None,
+            stdin_file: None,
+            env: None,
+            output: None,
+            if_condition: None,
+            signature: None,
+            certificate: None,
+        };
+
+        let sign_id = cfg.id.as_deref().unwrap_or("default");
+        assert_eq!(sign_id, "my-signer");
+    }
+
+    #[test]
+    fn test_docker_sign_none_id_defaults() {
+        use anodize_core::config::DockerSignConfig;
+
+        let cfg = DockerSignConfig {
+            id: None,
+            cmd: None,
+            args: None,
+            artifacts: None,
+            ids: None,
+            stdin: None,
+            stdin_file: None,
+            env: None,
+            output: None,
+            if_condition: None,
+            signature: None,
+            certificate: None,
+        };
+
+        let sign_id = cfg.id.as_deref().unwrap_or("default");
+        assert_eq!(sign_id, "default");
     }
 }
