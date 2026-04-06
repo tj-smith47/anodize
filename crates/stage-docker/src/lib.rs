@@ -717,13 +717,24 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
                 )
             })?;
 
+        // Collect env pairs for redaction (context env + process env)
+        let env_pairs: Vec<(String, String)> = job.env_vars
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .chain(std::env::vars())
+            .collect();
+
         if !output.stdout.is_empty() {
+            let stdout_str = String::from_utf8_lossy(&output.stdout);
+            let redacted = anodize_core::redact::redact_string(&stdout_str, &env_pairs);
             use std::io::Write;
-            let _ = std::io::stdout().write_all(&output.stdout);
+            let _ = std::io::stdout().write_all(redacted.as_bytes());
         }
         if !output.stderr.is_empty() {
+            let stderr_str = String::from_utf8_lossy(&output.stderr);
+            let redacted = anodize_core::redact::redact_string(&stderr_str, &env_pairs);
             use std::io::Write;
-            let _ = std::io::stderr().write_all(&output.stderr);
+            let _ = std::io::stderr().write_all(redacted.as_bytes());
         }
 
         // Capture stderr for diagnostic hints before output is consumed.
