@@ -352,6 +352,28 @@ pub fn resolve_glob_patterns(patterns: &[String]) -> Result<Vec<PathBuf>> {
 }
 
 // ---------------------------------------------------------------------------
+// longest_common_prefix — used for glob directory preservation
+// ---------------------------------------------------------------------------
+
+/// Compute the longest common byte prefix of a slice of strings.
+/// Returns an empty string when the slice is empty.
+fn longest_common_prefix(strs: &[String]) -> String {
+    if strs.is_empty() {
+        return String::new();
+    }
+    let mut lcp = strs[0].as_str();
+    for s in &strs[1..] {
+        let end = lcp
+            .bytes()
+            .zip(s.bytes())
+            .take_while(|(a, b)| a == b)
+            .count();
+        lcp = &lcp[..end];
+    }
+    lcp.to_string()
+}
+
+// ---------------------------------------------------------------------------
 // resolve_file_specs — handle ArchiveFileSpec entries
 // ---------------------------------------------------------------------------
 
@@ -393,13 +415,68 @@ pub fn resolve_file_specs(specs: &[ArchiveFileSpec]) -> Result<Vec<ResolvedExtra
             } => {
                 let paths = resolve_glob_patterns(std::slice::from_ref(src))?;
                 let do_strip = strip_parent.unwrap_or(false);
-                for p in paths {
-                    results.push(ResolvedExtraFile {
-                        src: p,
-                        dst: dst.clone(),
-                        info: info.clone(),
-                        strip_parent: do_strip,
-                    });
+
+                // When dst is set and strip_parent is false, compute per-file
+                // destinations that preserve the directory structure relative
+                // to the longest common prefix of all matched paths.
+                //
+                // GoReleaser divergence: when src is a non-glob literal,
+                // GoReleaser uses it as the prefix directly, so
+                // Rel(file, file) = "." and the file is effectively renamed
+                // to dst. We always compute LCP, which for a single file
+                // produces dst/filename — more intuitive behavior (e.g.
+                // dst: "licenses/" puts the file inside a licenses directory
+                // rather than renaming it).
+                if dst.is_some() && !do_strip {
+                    let dst_prefix = dst.as_deref().unwrap();
+                    let file_strs: Vec<String> = paths
+                        .iter()
+                        .map(|p| p.to_string_lossy().to_string())
+                        .collect();
+
+                    // Compute prefix directory: use the LCP of matched paths,
+                    // then take its parent directory if it's not an existing
+                    // directory (inspired by GoReleaser's filepath.Dir fallback).
+                    let lcp = longest_common_prefix(&file_strs);
+                    let prefix_dir = {
+                        let lcp_path = std::path::Path::new(&lcp);
+                        if lcp_path.is_dir() {
+                            lcp_path.to_path_buf()
+                        } else {
+                            lcp_path
+                                .parent()
+                                .unwrap_or_else(|| std::path::Path::new(""))
+                                .to_path_buf()
+                        }
+                    };
+
+                    for p in paths {
+                        let rel = p
+                            .strip_prefix(&prefix_dir)
+                            .unwrap_or(&p)
+                            .to_string_lossy()
+                            .to_string();
+                        let dest =
+                            std::path::PathBuf::from(dst_prefix)
+                                .join(&rel)
+                                .to_string_lossy()
+                                .to_string();
+                        results.push(ResolvedExtraFile {
+                            src: p,
+                            dst: Some(dest),
+                            info: info.clone(),
+                            strip_parent: false,
+                        });
+                    }
+                } else {
+                    for p in paths {
+                        results.push(ResolvedExtraFile {
+                            src: p,
+                            dst: dst.clone(),
+                            info: info.clone(),
+                            strip_parent: do_strip,
+                        });
+                    }
                 }
             }
         }
@@ -4362,10 +4439,187 @@ crates:
         let resolved = resolve_file_specs(&specs).unwrap();
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].src, license);
-        assert_eq!(resolved[0].dst.as_deref(), Some("licenses/"));
+        // With LCP logic: single file, LCP is the file path itself, so
+        // prefix_dir = parent dir, rel = filename, dst = "licenses/LICENSE"
+        assert_eq!(resolved[0].dst.as_deref(), Some("licenses/LICENSE"));
         let info = resolved[0].info.as_ref().unwrap();
         assert_eq!(info.owner.as_deref(), Some("root"));
         assert_eq!(info.mode.as_deref(), Some("0644"));
+    }
+
+    // -----------------------------------------------------------------------
+    // longest_common_prefix tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_lcp_empty() {
+        assert_eq!(longest_common_prefix(&[]), "");
+    }
+
+    #[test]
+    fn test_lcp_single() {
+        let strs = vec!["/home/user/docs/README.md".to_string()];
+        assert_eq!(longest_common_prefix(&strs), "/home/user/docs/README.md");
+    }
+
+    #[test]
+    fn test_lcp_multiple_common() {
+        let strs = vec![
+            "/home/user/docs/README.md".to_string(),
+            "/home/user/docs/guide/intro.md".to_string(),
+            "/home/user/docs/guide/advanced.md".to_string(),
+        ];
+        assert_eq!(longest_common_prefix(&strs), "/home/user/docs/");
+    }
+
+    #[test]
+    fn test_lcp_no_common_prefix() {
+        let strs = vec![
+            "/usr/local/bin/foo".to_string(),
+            "/home/user/bar".to_string(),
+        ];
+        assert_eq!(longest_common_prefix(&strs), "/");
+    }
+
+    #[test]
+    fn test_lcp_identical_strings() {
+        let strs = vec![
+            "/home/user/file.txt".to_string(),
+            "/home/user/file.txt".to_string(),
+        ];
+        assert_eq!(longest_common_prefix(&strs), "/home/user/file.txt");
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_file_specs with dst — directory preservation via LCP
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_resolve_file_specs_dst_preserves_directory_structure() {
+        use anodize_core::config::ArchiveFileSpec;
+
+        let tmp = TempDir::new().unwrap();
+        let docs_dir = tmp.path().join("docs");
+        let guide_dir = docs_dir.join("guide");
+        fs::create_dir_all(&guide_dir).unwrap();
+        fs::write(docs_dir.join("README.md"), b"readme").unwrap();
+        fs::write(guide_dir.join("intro.md"), b"intro").unwrap();
+
+        let glob_pattern = format!("{}/**/*.md", docs_dir.display());
+        let specs = vec![ArchiveFileSpec::Detailed {
+            src: glob_pattern,
+            dst: Some("mydocs".to_string()),
+            info: None,
+            strip_parent: None,
+        }];
+
+        let mut resolved = resolve_file_specs(&specs).unwrap();
+        assert_eq!(resolved.len(), 2);
+
+        // Sort by dst for deterministic assertions
+        resolved.sort_by(|a, b| a.dst.cmp(&b.dst));
+
+        // The LCP of "/tmp/.../docs/README.md" and "/tmp/.../docs/guide/intro.md"
+        // is "/tmp/.../docs/" which IS an existing directory, so prefix_dir = docs_dir.
+        // Relative paths: "README.md" and "guide/intro.md"
+        // Destinations: "mydocs/README.md" and "mydocs/guide/intro.md"
+        assert_eq!(resolved[0].dst.as_deref(), Some("mydocs/README.md"));
+        assert_eq!(resolved[1].dst.as_deref(), Some("mydocs/guide/intro.md"));
+    }
+
+    #[test]
+    fn test_resolve_file_specs_dst_with_strip_parent_ignores_lcp() {
+        use anodize_core::config::ArchiveFileSpec;
+
+        let tmp = TempDir::new().unwrap();
+        let docs_dir = tmp.path().join("docs");
+        let guide_dir = docs_dir.join("guide");
+        fs::create_dir_all(&guide_dir).unwrap();
+        fs::write(docs_dir.join("README.md"), b"readme").unwrap();
+        fs::write(guide_dir.join("intro.md"), b"intro").unwrap();
+
+        let glob_pattern = format!("{}/**/*.md", docs_dir.display());
+        let specs = vec![ArchiveFileSpec::Detailed {
+            src: glob_pattern,
+            dst: Some("mydocs".to_string()),
+            info: None,
+            strip_parent: Some(true),
+        }];
+
+        let resolved = resolve_file_specs(&specs).unwrap();
+        assert_eq!(resolved.len(), 2);
+
+        // When strip_parent is true, dst is passed through as-is (no LCP logic)
+        for r in &resolved {
+            assert_eq!(r.dst.as_deref(), Some("mydocs"));
+            assert!(r.strip_parent);
+        }
+    }
+
+    #[test]
+    fn test_resolve_file_specs_literal_src_with_dst_preserves_filename() {
+        use anodize_core::config::ArchiveFileSpec;
+
+        let tmp = TempDir::new().unwrap();
+        let license = tmp.path().join("LICENSE");
+        fs::write(&license, b"MIT License").unwrap();
+
+        // Literal (non-glob) src with a dst directory — our LCP logic should
+        // produce "licenses/LICENSE" rather than renaming the file to "licenses".
+        // This is an intentional divergence from GoReleaser, which would rename
+        // the file.
+        let specs = vec![ArchiveFileSpec::Detailed {
+            src: license.to_string_lossy().to_string(),
+            dst: Some("licenses".to_string()),
+            info: None,
+            strip_parent: None,
+        }];
+
+        let resolved = resolve_file_specs(&specs).unwrap();
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].src, license);
+        assert_eq!(resolved[0].dst.as_deref(), Some("licenses/LICENSE"));
+    }
+
+    #[test]
+    fn test_resolve_file_specs_dst_partial_filename_lcp_fallback() {
+        use anodize_core::config::ArchiveFileSpec;
+
+        let tmp = TempDir::new().unwrap();
+        // Two files whose names share a prefix — the LCP of their full paths
+        // will be something like "/tmp/.../file_" which is NOT a directory.
+        // The code should fall back to the parent directory so both files
+        // appear under dst with just their filenames.
+        let alpha = tmp.path().join("file_alpha.txt");
+        let beta = tmp.path().join("file_beta.txt");
+        fs::write(&alpha, b"alpha").unwrap();
+        fs::write(&beta, b"beta").unwrap();
+
+        let glob_pattern = format!("{}/file_*.txt", tmp.path().display());
+        let specs = vec![ArchiveFileSpec::Detailed {
+            src: glob_pattern,
+            dst: Some("output".to_string()),
+            info: None,
+            strip_parent: None,
+        }];
+
+        let mut resolved = resolve_file_specs(&specs).unwrap();
+        assert_eq!(resolved.len(), 2);
+
+        // Sort for deterministic assertions
+        resolved.sort_by(|a, b| a.dst.cmp(&b.dst));
+
+        // LCP is "/tmp/.../file_" which is not a directory, so prefix_dir
+        // falls back to the parent dir ("/tmp/.../"). Relative paths are
+        // "file_alpha.txt" and "file_beta.txt".
+        assert_eq!(
+            resolved[0].dst.as_deref(),
+            Some("output/file_alpha.txt")
+        );
+        assert_eq!(
+            resolved[1].dst.as_deref(),
+            Some("output/file_beta.txt")
+        );
     }
 
     // -----------------------------------------------------------------------
