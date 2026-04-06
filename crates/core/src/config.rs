@@ -681,6 +681,7 @@ pub struct BuildOverride {
     /// Glob patterns to match against target triples (e.g., `["x86_64-*", "*-linux-*"]`).
     pub targets: Vec<String>,
     /// Extra environment variables to set for matching targets.
+    #[serde(default, deserialize_with = "deserialize_env_map")]
     pub env: Option<HashMap<String, String>>,
     /// Extra flags to append for matching targets.
     pub flags: Option<String>,
@@ -4026,6 +4027,7 @@ pub struct SignConfig {
     /// Build IDs filter: only sign artifacts from builds whose `id` is in this list.
     pub ids: Option<Vec<String>>,
     /// Environment variables passed to the signing command.
+    #[serde(default, deserialize_with = "deserialize_env_map")]
     pub env: Option<HashMap<String, String>>,
     /// Certificate file to embed in the signature (Cosign bundle signing).
     pub certificate: Option<String>,
@@ -4058,6 +4060,7 @@ pub struct DockerSignConfig {
     /// Path to a file whose content is written to the signing command's stdin.
     pub stdin_file: Option<String>,
     /// Environment variables passed to the signing command.
+    #[serde(default, deserialize_with = "deserialize_env_map")]
     pub env: Option<HashMap<String, String>>,
     /// Capture and log stdout/stderr of the docker signing command.
     pub output: Option<bool>,
@@ -4787,6 +4790,7 @@ pub struct PublisherConfig {
     /// Artifact type filter: only publish artifacts of these types (e.g., "archive", "binary").
     pub artifact_types: Option<Vec<String>>,
     /// Environment variables passed to the publish command.
+    #[serde(default, deserialize_with = "deserialize_env_map")]
     pub env: Option<HashMap<String, String>>,
     /// Working directory for the publisher command.
     pub dir: Option<String>,
@@ -4835,6 +4839,7 @@ pub struct StructuredHook {
     /// Working directory for the command (defaults to project root).
     pub dir: Option<String>,
     /// Environment variables for the command.
+    #[serde(default, deserialize_with = "deserialize_env_map")]
     pub env: Option<HashMap<String, String>>,
     /// When true, capture and log stdout/stderr of the command.
     pub output: Option<bool>,
@@ -9670,5 +9675,129 @@ npms:
             npm.if_condition.as_deref(),
             Some("{{ .IsSnapshot }}")
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // deserialize_env_map tests — map, list-of-strings, null/missing
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_docker_sign_env_map_format() {
+        let yaml = r#"
+project_name: test
+docker_signs:
+  - cmd: cosign
+    env:
+      COSIGN_PASSWORD: hunter2
+      COSIGN_KEY: /path/to/key
+"#;
+        let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let ds = &cfg.docker_signs.as_ref().unwrap()[0];
+        let env = ds.env.as_ref().expect("env should be Some");
+        assert_eq!(env.get("COSIGN_PASSWORD").unwrap(), "hunter2");
+        assert_eq!(env.get("COSIGN_KEY").unwrap(), "/path/to/key");
+    }
+
+    #[test]
+    fn test_docker_sign_env_list_format() {
+        let yaml = r#"
+project_name: test
+docker_signs:
+  - cmd: cosign
+    env:
+      - COSIGN_PASSWORD=hunter2
+      - COSIGN_KEY=/path/to/key
+"#;
+        let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let ds = &cfg.docker_signs.as_ref().unwrap()[0];
+        let env = ds.env.as_ref().expect("env should be Some");
+        assert_eq!(env.get("COSIGN_PASSWORD").unwrap(), "hunter2");
+        assert_eq!(env.get("COSIGN_KEY").unwrap(), "/path/to/key");
+    }
+
+    #[test]
+    fn test_docker_sign_env_list_split_on_first_equals() {
+        let yaml = r#"
+project_name: test
+docker_signs:
+  - cmd: cosign
+    env:
+      - FLAGS=--key=val --other=stuff
+"#;
+        let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let ds = &cfg.docker_signs.as_ref().unwrap()[0];
+        let env = ds.env.as_ref().expect("env should be Some");
+        assert_eq!(env.get("FLAGS").unwrap(), "--key=val --other=stuff");
+    }
+
+    #[test]
+    fn test_docker_sign_env_null() {
+        let yaml = r#"
+project_name: test
+docker_signs:
+  - cmd: cosign
+    env: ~
+"#;
+        let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let ds = &cfg.docker_signs.as_ref().unwrap()[0];
+        assert!(ds.env.is_none());
+    }
+
+    #[test]
+    fn test_docker_sign_env_missing() {
+        let yaml = r#"
+project_name: test
+docker_signs:
+  - cmd: cosign
+"#;
+        let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let ds = &cfg.docker_signs.as_ref().unwrap()[0];
+        assert!(ds.env.is_none());
+    }
+
+    #[test]
+    fn test_docker_sign_env_list_invalid_no_equals() {
+        let yaml = r#"
+project_name: test
+docker_signs:
+  - cmd: cosign
+    env:
+      - COSIGN_PASSWORD
+"#;
+        let result = serde_yaml_ng::from_str::<Config>(yaml);
+        assert!(result.is_err(), "entry without '=' should fail");
+    }
+
+    #[test]
+    fn test_sign_config_env_list_format() {
+        let yaml = r#"
+project_name: test
+signs:
+  - cmd: gpg
+    env:
+      - GPG_KEY=ABCDEF
+      - GPG_TTY=/dev/pts/0
+"#;
+        let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let s = &cfg.signs[0];
+        let env = s.env.as_ref().expect("env should be Some");
+        assert_eq!(env.get("GPG_KEY").unwrap(), "ABCDEF");
+        assert_eq!(env.get("GPG_TTY").unwrap(), "/dev/pts/0");
+    }
+
+    #[test]
+    fn test_publisher_env_list_format() {
+        let yaml = r#"
+project_name: test
+publishers:
+  - name: mypub
+    cmd: publish.sh
+    env:
+      - API_TOKEN=secret123
+"#;
+        let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let p = &cfg.publishers.as_ref().unwrap()[0];
+        let env = p.env.as_ref().expect("env should be Some");
+        assert_eq!(env.get("API_TOKEN").unwrap(), "secret123");
     }
 }
