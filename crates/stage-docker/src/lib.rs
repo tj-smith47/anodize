@@ -65,14 +65,10 @@ pub fn is_retriable_error(error_msg: &str) -> bool {
         "dial tcp",
         "connection refused",
         "connection reset",
-        "500 Internal Server Error",
-        "502 Bad Gateway",
-        "503 Service Unavailable",
-        "504 Gateway Timeout",
-        "500",
-        "502",
-        "503",
-        "504",
+        "received unexpected HTTP status: 500 Internal Server Error",
+        "received unexpected HTTP status: 502 Bad Gateway",
+        "received unexpected HTTP status: 503 Service Unavailable",
+        "received unexpected HTTP status: 504 Gateway Timeout",
         "EOF",
         "timeout",
         "TLS handshake",
@@ -81,6 +77,8 @@ pub fn is_retriable_error(error_msg: &str) -> bool {
         "no such host",
         "REFUSED_STREAM",
         "registry returned status",
+        // GoReleaser V2 retries on manifest verification failures
+        "manifest verification failed for digest",
     ];
     let lower = error_msg.to_lowercase();
     retriable_patterns
@@ -515,19 +513,9 @@ pub fn build_docker_v2_command(
         cmd.push("--load".to_string());
     }
 
-    // Auto-add --provenance=false for buildx builds when Docker supports it,
-    // but only if not already specified in flags and sbom is not explicitly set.
-    if docker_supports_provenance() {
-        let flags_str = flags.join(" ");
-        if !flags_str.contains("--provenance") {
-            cmd.push("--provenance=false".to_string());
-        }
-        // Only auto-add --sbom=false if sbom was not explicitly requested and
-        // not already in flags.
-        if !sbom && !flags_str.contains("--sbom") {
-            cmd.push("--sbom=false".to_string());
-        }
-    }
+    // NOTE: GoReleaser V2 does NOT auto-add --provenance=false or --sbom=false.
+    // Only the legacy docker pipe does that. V2 relies on explicit user flags
+    // or the --attest=type=sbom flag set above.
 
     // Build context directory (positional, last argument)
     cmd.push(staging_dir.to_string());
@@ -626,6 +614,8 @@ struct DockerBuildJob {
     use_backend: Option<String>,
     /// Dist directory (for writing digest files).
     dist: PathBuf,
+    /// Whether this is a V2 docker build (affects artifact type registration).
+    is_v2: bool,
 }
 
 /// Result of executing a single docker build job.
@@ -1060,7 +1050,15 @@ impl Stage for DockerStage {
                     "docker",
                 )?;
 
-                copy_dockerfile(&docker_cfg.dockerfile, &staging_dir, dry_run, &log, "docker")?;
+                // Default dockerfile to "Dockerfile" (matching GoReleaser) and template-render path.
+                let dockerfile_raw = if docker_cfg.dockerfile.is_empty() {
+                    "Dockerfile"
+                } else {
+                    &docker_cfg.dockerfile
+                };
+                let rendered_dockerfile = ctx.render_template(dockerfile_raw)
+                    .with_context(|| format!("docker: render dockerfile path '{}'", dockerfile_raw))?;
+                copy_dockerfile(&rendered_dockerfile, &staging_dir, dry_run, &log, "docker")?;
 
                 if let Some(ref extra_files) = docker_cfg.extra_files {
                     stage_extra_files(extra_files, &staging_dir, dry_run, &log, "docker")?;
@@ -1217,6 +1215,7 @@ impl Stage for DockerStage {
                         id: docker_cfg.id.clone(),
                         use_backend: docker_cfg.use_backend.clone(),
                         dist: dist.clone(),
+                        is_v2: false,
                     });
                 }
             }
@@ -1269,7 +1268,16 @@ impl Stage for DockerStage {
                     continue;
                 }
 
-                let platforms: Vec<String> = v2_cfg.platforms.clone().unwrap_or_default();
+                // Template-render platforms and filter empty results (GoReleaser's tpl.ApplySlice)
+                let platforms: Vec<String> = v2_cfg
+                    .platforms
+                    .clone()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|p| {
+                        ctx.render_template(&p).ok().filter(|r| !r.is_empty())
+                    })
+                    .collect();
 
                 // V2 always uses buildx
                 resolve_backend(Some("buildx"), platforms.len() > 1)?;
@@ -1344,23 +1352,29 @@ impl Stage for DockerStage {
                     rendered_images.push(rendered);
                 }
 
-                // For snapshot builds with a single platform, append the platform
-                // architecture as a tag suffix (e.g., "latest" → "latest-amd64").
-                // This matches GoReleaser v2 behavior which prevents tag collisions
-                // when building each platform separately during snapshots.
-                // NOTE: with default platforms (amd64 + arm64), platforms.len() == 2
-                // so this branch doesn't fire — the suffix only applies when the
-                // user explicitly configures a single platform per V2 config block.
-                if ctx.is_snapshot() && platforms.len() == 1 {
-                    let suffix = tag_suffix(&platforms[0]);
-                    for tag in &mut rendered_tags {
-                        tag.push('-');
-                        tag.push_str(&suffix);
+                // For snapshot builds, GoReleaser splits multi-platform configs
+                // into per-platform builds with --load (no push) and tag suffix.
+                // This builds each platform separately so images are available locally.
+                let snapshot_platforms: Vec<Vec<String>> = if ctx.is_snapshot() && platforms.len() > 1 {
+                    platforms.iter().map(|p| vec![p.clone()]).collect()
+                } else {
+                    vec![platforms.clone()]
+                };
+
+                for snapshot_plats in &snapshot_platforms {
+                    let mut per_plat_tags = rendered_tags.clone();
+
+                    // During snapshot, add platform arch suffix to each tag.
+                    if ctx.is_snapshot() && snapshot_plats.len() == 1 {
+                        let suffix = tag_suffix(&snapshot_plats[0]);
+                        for tag in &mut per_plat_tags {
+                            tag.push('-');
+                            tag.push_str(&suffix);
+                        }
                     }
-                }
 
                 // Generate image:tag combinations
-                let image_tags = generate_v2_image_tags(&rendered_images, &rendered_tags);
+                let image_tags = generate_v2_image_tags(&rendered_images, &per_plat_tags);
 
                 if image_tags.is_empty() {
                     log.warn(&format!(
@@ -1370,71 +1384,92 @@ impl Stage for DockerStage {
                     continue;
                 }
 
-                // Render build_args (template-aware values)
+                // Render build_args (template-aware keys and values, matching GoReleaser's tplMapFlags)
                 let mut rendered_build_args: Vec<(String, String)> = Vec::new();
                 if let Some(ref args_map) = v2_cfg.build_args {
-                    for (key, value_tmpl) in args_map {
-                        let rendered_value = ctx
-                            .render_template(value_tmpl)
-                            .with_context(|| {
-                                format!("docker_v2: render build_arg value for '{}'", key)
-                            })?;
-                        rendered_build_args.push((key.clone(), rendered_value));
+                    for (key_tmpl, value_tmpl) in args_map {
+                        let rendered_key = ctx.render_template(key_tmpl).with_context(|| {
+                            format!("docker_v2: render build_arg key '{}'", key_tmpl)
+                        })?;
+                        let rendered_value = ctx.render_template(value_tmpl).with_context(|| {
+                            format!("docker_v2: render build_arg value for '{}'", key_tmpl)
+                        })?;
+                        // Skip entries where key or value is empty after templating
+                        if !rendered_key.is_empty() && !rendered_value.is_empty() {
+                            rendered_build_args.push((rendered_key, rendered_value));
+                        }
                     }
                     rendered_build_args.sort_by(|a, b| a.0.cmp(&b.0));
                 }
 
-                // Render annotations (template-aware values)
+                // Render annotations (template-aware keys and values)
                 let mut rendered_annotations: Vec<(String, String)> = Vec::new();
                 if let Some(ref ann_map) = v2_cfg.annotations {
-                    for (key, value_tmpl) in ann_map {
-                        let rendered_value = ctx
-                            .render_template(value_tmpl)
-                            .with_context(|| {
-                                format!("docker_v2: render annotation value for '{}'", key)
-                            })?;
-                        rendered_annotations.push((key.clone(), rendered_value));
+                    for (key_tmpl, value_tmpl) in ann_map {
+                        let rendered_key = ctx.render_template(key_tmpl).with_context(|| {
+                            format!("docker_v2: render annotation key '{}'", key_tmpl)
+                        })?;
+                        let rendered_value = ctx.render_template(value_tmpl).with_context(|| {
+                            format!("docker_v2: render annotation value for '{}'", key_tmpl)
+                        })?;
+                        if !rendered_key.is_empty() && !rendered_value.is_empty() {
+                            rendered_annotations.push((rendered_key, rendered_value));
+                        }
                     }
                     rendered_annotations.sort_by(|a, b| a.0.cmp(&b.0));
                 }
 
-                // Render labels (template-aware values)
+                // Render labels (template-aware keys and values)
                 let mut rendered_labels: Vec<(String, String)> = Vec::new();
                 if let Some(ref label_map) = v2_cfg.labels {
-                    for (key, value_tmpl) in label_map {
-                        let rendered_value = ctx
-                            .render_template(value_tmpl)
-                            .with_context(|| {
-                                format!("docker_v2: render label value for '{}'", key)
-                            })?;
-                        rendered_labels.push((key.clone(), rendered_value));
+                    for (key_tmpl, value_tmpl) in label_map {
+                        let rendered_key = ctx.render_template(key_tmpl).with_context(|| {
+                            format!("docker_v2: render label key '{}'", key_tmpl)
+                        })?;
+                        let rendered_value = ctx.render_template(value_tmpl).with_context(|| {
+                            format!("docker_v2: render label value for '{}'", key_tmpl)
+                        })?;
+                        if !rendered_key.is_empty() && !rendered_value.is_empty() {
+                            rendered_labels.push((rendered_key, rendered_value));
+                        }
                     }
                     rendered_labels.sort_by(|a, b| a.0.cmp(&b.0));
                 }
 
-                // Render flags (template-aware)
+                // Render flags (template-aware, filter empty results)
                 let mut rendered_flags: Vec<String> = Vec::new();
                 if let Some(ref flag_list) = v2_cfg.flags {
                     for flag_tmpl in flag_list {
                         let rendered = ctx.render_template(flag_tmpl).with_context(|| {
                             format!("docker_v2: render flag '{}'", flag_tmpl)
                         })?;
-                        rendered_flags.push(rendered);
+                        if !rendered.is_empty() {
+                            rendered_flags.push(rendered);
+                        }
                     }
                 }
 
-                // Evaluate sbom
-                let sbom_enabled = is_docker_v2_sbom_enabled(&v2_cfg.sbom, ctx);
+                // Evaluate sbom — GoReleaser only adds SBOM in the Publish path (not snapshot).
+                let sbom_enabled = if ctx.is_snapshot() {
+                    false
+                } else {
+                    is_docker_v2_sbom_enabled(&v2_cfg.sbom, ctx)
+                };
 
-                let platform_refs: Vec<&str> = platforms.iter().map(|s| s.as_str()).collect();
+                let platform_refs: Vec<&str> = snapshot_plats.iter().map(|s| s.as_str()).collect();
                 let staging_str = staging_dir.to_string_lossy().into_owned();
 
-                // Check skip_push — template-aware, same pattern as disable
-                let v2_skip_push = match &v2_cfg.skip_push {
-                    None => false,
-                    Some(s) => s.evaluates_to_true(|tmpl| ctx.render_template(tmpl)),
+                // Snapshot builds never push (GoReleaser uses --load per-platform).
+                // Non-snapshot: push unless skip_push is set.
+                let should_push = if ctx.is_snapshot() {
+                    false
+                } else {
+                    let v2_skip_push = match &v2_cfg.skip_push {
+                        None => false,
+                        Some(s) => s.evaluates_to_true(|tmpl| ctx.render_template(tmpl)),
+                    };
+                    !dry_run && !v2_skip_push
                 };
-                let should_push = !dry_run && !v2_skip_push;
 
                 let cmd_args = build_docker_v2_command(
                     &staging_str,
@@ -1474,16 +1509,16 @@ impl Stage for DockerStage {
                     for tag in &image_tags {
                         let mut meta = HashMap::new();
                         meta.insert("tag".to_string(), tag.clone());
-                        meta.insert("platforms".to_string(), platforms.join(","));
+                        meta.insert("platforms".to_string(), snapshot_plats.join(","));
                         meta.insert("api".to_string(), "v2".to_string());
                         meta.insert("use".to_string(), "buildx".to_string());
                         if let Some(ref id) = v2_cfg.id {
                             meta.insert("id".to_string(), id.clone());
                         }
                         new_artifacts.push(Artifact {
-                            kind: ArtifactKind::DockerImage,
-                            name: String::new(),
-                            path: staging_dir.clone(),
+                            kind: ArtifactKind::DockerImageV2,
+                            name: tag.clone(),
+                            path: PathBuf::from(tag),
                             target: None,
                             crate_name: krate.name.clone(),
                             metadata: meta,
@@ -1501,13 +1536,15 @@ impl Stage for DockerStage {
                         max_delay,
                         should_push,
                         rendered_tags: image_tags,
-                        platforms_str: platforms.join(","),
+                        platforms_str: snapshot_plats.join(","),
                         staging_dir: staging_dir.clone(),
                         id: v2_cfg.id.clone(),
                         use_backend: Some("buildx".to_string()),
                         dist: dist.clone(),
+                        is_v2: true,
                     });
                 }
+                } // end for snapshot_plats
             }
         }
 
@@ -1586,10 +1623,11 @@ impl Stage for DockerStage {
                     if let Some(d) = build_result.tag_digests.get(tag) {
                         meta.insert("digest".to_string(), d.clone());
                     }
+                    // V2 builds register as DockerImageV2; legacy as DockerImage.
                     new_artifacts.push(Artifact {
-                        kind: ArtifactKind::DockerImage,
-                        name: String::new(),
-                        path: job.staging_dir.clone(),
+                        kind: if job.is_v2 { ArtifactKind::DockerImageV2 } else { ArtifactKind::DockerImage },
+                        name: tag.clone(),
+                        path: PathBuf::from(tag),
                         target: None,
                         crate_name: job.crate_name.clone(),
                         metadata: meta,
@@ -4276,7 +4314,7 @@ sbom: "true"
         let stage = DockerStage;
         stage.run(&mut ctx).unwrap();
 
-        let images = ctx.artifacts.by_kind(ArtifactKind::DockerImage);
+        let images = ctx.artifacts.by_kind(ArtifactKind::DockerImageV2);
         // images x tags = 1 x 2 = 2
         assert_eq!(images.len(), 2);
 
@@ -4345,7 +4383,7 @@ sbom: "true"
         stage.run(&mut ctx).unwrap();
 
         // 2 images x 3 tags = 6 artifacts
-        let images = ctx.artifacts.by_kind(ArtifactKind::DockerImage);
+        let images = ctx.artifacts.by_kind(ArtifactKind::DockerImageV2);
         assert_eq!(images.len(), 6);
 
         let tags: Vec<&str> = images
@@ -4741,7 +4779,7 @@ crates:
         stage.run(&mut ctx).unwrap();
 
         // The stage ran in dry-run mode, so it registered artifacts
-        let images = ctx.artifacts.by_kind(ArtifactKind::DockerImage);
+        let images = ctx.artifacts.by_kind(ArtifactKind::DockerImageV2);
         assert_eq!(images.len(), 1);
         assert_eq!(
             images[0].metadata.get("tag").unwrap(),
@@ -4800,16 +4838,16 @@ crates:
         let stage = DockerStage;
         stage.run(&mut ctx).unwrap();
 
-        let images = ctx.artifacts.by_kind(ArtifactKind::DockerImage);
+        let legacy_images = ctx.artifacts.by_kind(ArtifactKind::DockerImage);
+        let v2_images = ctx.artifacts.by_kind(ArtifactKind::DockerImageV2);
         // 1 from legacy + 1 from v2
-        assert_eq!(images.len(), 2);
+        assert_eq!(legacy_images.len(), 1);
+        assert_eq!(v2_images.len(), 1);
 
-        let tags: Vec<&str> = images
-            .iter()
-            .map(|a| a.metadata.get("tag").unwrap().as_str())
-            .collect();
-        assert!(tags.contains(&"ghcr.io/owner/app:legacy"));
-        assert!(tags.contains(&"ghcr.io/owner/app:v2"));
+        let legacy_tag = legacy_images[0].metadata.get("tag").unwrap().as_str();
+        assert_eq!(legacy_tag, "ghcr.io/owner/app:legacy");
+        let v2_tag = v2_images[0].metadata.get("tag").unwrap().as_str();
+        assert_eq!(v2_tag, "ghcr.io/owner/app:v2");
     }
 
     #[test]
