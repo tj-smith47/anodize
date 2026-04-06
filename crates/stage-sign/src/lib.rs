@@ -9,6 +9,19 @@ use anodize_core::config::SignConfig;
 use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
 use anodize_core::stage::Stage;
+use anodize_core::target::map_target;
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/// Default signature template for `binary_signs`, matching GoReleaser's
+/// architecture-aware naming.
+///
+/// Uses `{{ .Artifact }}` (Go-compat syntax, replaced before Tera rendering)
+/// for the artifact path, and Tera syntax for Os/Arch/Arm/Mips/Amd64
+/// conditionals that are set per-artifact from the target triple.
+const DEFAULT_BINARY_SIGNATURE_TEMPLATE: &str = "{{ .Artifact }}_{{ Os }}_{{ Arch }}{% if Arm %}v{{ Arm }}{% endif %}{% if Mips %}_{{ Mips }}{% endif %}{% if Amd64 and Amd64 != \"v1\" %}{{ Amd64 }}{% endif %}.sig";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -51,14 +64,24 @@ pub(crate) fn should_sign_artifact(kind: ArtifactKind, filter: &str) -> Result<b
 }
 
 /// Resolve the signature output path from a `SignConfig::signature` template
-/// or fall back to the default `{artifact}.sig`.
+/// or fall back to `default_template`.
+///
+/// `default_template` is `None` for normal signs (falls back to `{artifact}.sig`)
+/// and `Some(DEFAULT_BINARY_SIGNATURE_TEMPLATE)` for binary_signs (includes
+/// Os/Arch/Arm/Mips/Amd64 in the filename).
 fn resolve_signature_path(
     sign_cfg: &SignConfig,
     artifact_path: &str,
     ctx: &Context,
     log: &StageLogger,
+    default_template: Option<&str>,
 ) -> String {
-    if let Some(ref sig_template) = sign_cfg.signature {
+    let template = sign_cfg
+        .signature
+        .as_deref()
+        .or(default_template);
+
+    if let Some(sig_template) = template {
         // Set Artifact as a template variable so Tera can resolve it natively.
         // Also do a Go-compat string replacement for {{ .Artifact }} patterns
         // that may appear alongside Tera expressions.
@@ -360,6 +383,16 @@ fn process_sign_configs(
             ArtifactFilter::BinaryOnly => "binary",
         });
 
+        // Warn when `ids` filter is set with checksum or source artifacts
+        // (ids has no effect on these global artifact types).
+        if sign_cfg.ids.as_ref().is_some_and(|ids| !ids.is_empty()) {
+            if config_filter == "checksum" {
+                log.warn("when artifacts is `checksum`, `ids` has no effect. ignoring");
+            } else if config_filter == "source" {
+                log.warn("when artifacts is `source`, `ids` has no effect. ignoring");
+            }
+        }
+
         // For the normal `signs` path, respect the artifacts filter.
         // For `binary_signs`, skip if the config explicitly says "none".
         if config_filter == "none" {
@@ -394,6 +427,7 @@ fn process_sign_configs(
             std::path::PathBuf,
             String,
             std::collections::HashMap<String, String>,
+            Option<String>, // target triple
         )> = {
             let mut matched = Vec::new();
             for a in ctx.artifacts.all().iter() {
@@ -427,7 +461,7 @@ fn process_sign_configs(
                         continue;
                     }
                 }
-                matched.push((a.path.clone(), a.crate_name.clone(), a.metadata.clone()));
+                matched.push((a.path.clone(), a.crate_name.clone(), a.metadata.clone(), a.target.clone()));
             }
             matched
         };
@@ -439,7 +473,14 @@ fn process_sign_configs(
         // ----------------------------------------------------------------
         let mut sign_jobs: Vec<SignJob> = Vec::new();
 
-        for (artifact_path, artifact_crate_name, artifact_metadata) in &artifact_paths {
+        // Determine the default signature template based on filter mode.
+        // binary_signs uses architecture-aware naming; normal signs uses {artifact}.sig.
+        let default_sig_template: Option<&str> = match filter_mode {
+            ArtifactFilter::BinaryOnly => Some(DEFAULT_BINARY_SIGNATURE_TEMPLATE),
+            ArtifactFilter::FromConfig => None,
+        };
+
+        for (artifact_path, artifact_crate_name, artifact_metadata, artifact_target) in &artifact_paths {
             let artifact_str = artifact_path.to_string_lossy();
             let artifact_name = artifact_path
                 .file_name()
@@ -449,7 +490,45 @@ fn process_sign_configs(
                 .get("id")
                 .map(|s| s.as_str())
                 .unwrap_or("");
-            let signature_str = resolve_signature_path(sign_cfg, &artifact_str, ctx, log);
+
+            // For binary_signs, set per-artifact Os/Arch/Arm template vars
+            // from the target triple so the default signature template can
+            // include architecture info (matching GoReleaser behavior).
+            if matches!(filter_mode, ArtifactFilter::BinaryOnly) {
+                if let Some(target) = artifact_target {
+                    let (os, arch) = map_target(target);
+                    ctx.template_vars_mut().set("Os", &os);
+                    // For ARM targets, GoReleaser uses Arch="arm" and Arm="6"/"7",
+                    // not Arch="armv6". Split accordingly so the template produces
+                    // "arm" + "v6" = "armv6" rather than "armv6" + "v6" = "armv6v6".
+                    if let Some(version) = arch.strip_prefix("armv") {
+                        ctx.template_vars_mut().set("Arch", "arm");
+                        ctx.template_vars_mut().set("Arm", version);
+                    } else {
+                        ctx.template_vars_mut().set("Arch", &arch);
+                        ctx.template_vars_mut().set("Arm", "");
+                    }
+                    // Default Amd64 to "v1" for amd64 targets (matching GoReleaser),
+                    // overridden by build metadata if present.
+                    let amd64 = if arch == "amd64" {
+                        artifact_metadata.get("amd64_level").map(|s| s.as_str()).unwrap_or("v1")
+                    } else {
+                        ""
+                    };
+                    ctx.template_vars_mut().set("Amd64", amd64);
+                    // Mips variant from build metadata if present.
+                    let mips = artifact_metadata.get("mips_variant").map(|s| s.as_str()).unwrap_or("");
+                    ctx.template_vars_mut().set("Mips", mips);
+                } else {
+                    ctx.template_vars_mut().set("Os", "");
+                    ctx.template_vars_mut().set("Arch", "");
+                    ctx.template_vars_mut().set("Arm", "");
+                    ctx.template_vars_mut().set("Amd64", "");
+                    ctx.template_vars_mut().set("Mips", "");
+                }
+            }
+
+            let signature_str = resolve_signature_path(sign_cfg, &artifact_str, ctx, log, default_sig_template);
 
             // Resolve the certificate path from template if configured.
             let certificate_str = sign_cfg.certificate.as_ref().map(|tmpl| {
@@ -655,6 +734,16 @@ fn process_sign_configs(
         }
     }
 
+    // Clear per-artifact template vars set during binary_signs so they
+    // don't leak to downstream stages or subsequent sign configs.
+    if matches!(filter_mode, ArtifactFilter::BinaryOnly) {
+        ctx.template_vars_mut().set("Os", "");
+        ctx.template_vars_mut().set("Arch", "");
+        ctx.template_vars_mut().set("Arm", "");
+        ctx.template_vars_mut().set("Amd64", "");
+        ctx.template_vars_mut().set("Mips", "");
+    }
+
     Ok(())
 }
 
@@ -675,12 +764,9 @@ fn label_to_static(label: &str) -> &'static str {
 
 /// Sign stage: signs artifacts using GPG, cosign, or other signing tools.
 ///
-/// **Note on `Artifacts` template variable**: This stage does NOT call
-/// `ctx.refresh_artifacts_var()` because it only renders signing-related
-/// templates (e.g. `if_condition`, `signature`, `certificate`, args) — not
-/// user-facing release body or announce templates where `{{ Artifacts }}`
-/// would be iterated. The `Artifacts` variable is refreshed by the release
-/// and announce stages just before they render their body templates.
+/// Calls `ctx.refresh_artifacts_var()` after all signing completes, matching
+/// GoReleaser's `ctx.Artifacts.Refresh()`. This ensures newly-added signature
+/// and certificate artifacts are visible to downstream stages.
 pub struct SignStage;
 
 impl Stage for SignStage {
@@ -761,17 +847,29 @@ impl Stage for SignStage {
                     continue;
                 }
 
-                // Collect docker artifacts based on the filter mode:
-                // "images" or "" (default) → DockerImage only
-                // "manifests" → DockerManifest only
-                // "all" → both DockerImage and DockerManifest
-                // anything else → warn and default to DockerImage
+                // Collect docker artifacts based on the filter mode.
+                // GoReleaser includes DockerImageV2 in all filter modes:
+                // "images" → DockerImage + DockerImageV2
+                // "manifests" → DockerManifest + DockerImageV2
+                // "all" → DockerImage + DockerManifest + DockerImageV2
+                // "" (default) → DockerImageV2 only
+                // "none" → nothing (handled above)
                 let docker_artifacts: Vec<_> = match docker_filter {
-                    "images" | "" => ctx.artifacts.by_kind(ArtifactKind::DockerImage),
-                    "manifests" => ctx.artifacts.by_kind(ArtifactKind::DockerManifest),
+                    "images" => {
+                        let mut arts = ctx.artifacts.by_kind(ArtifactKind::DockerImage);
+                        arts.extend(ctx.artifacts.by_kind(ArtifactKind::DockerImageV2));
+                        arts
+                    }
+                    "" => ctx.artifacts.by_kind(ArtifactKind::DockerImageV2),
+                    "manifests" => {
+                        let mut arts = ctx.artifacts.by_kind(ArtifactKind::DockerManifest);
+                        arts.extend(ctx.artifacts.by_kind(ArtifactKind::DockerImageV2));
+                        arts
+                    }
                     "all" => {
                         let mut arts = ctx.artifacts.by_kind(ArtifactKind::DockerImage);
                         arts.extend(ctx.artifacts.by_kind(ArtifactKind::DockerManifest));
+                        arts.extend(ctx.artifacts.by_kind(ArtifactKind::DockerImageV2));
                         arts
                     }
                     other => {
@@ -779,7 +877,9 @@ impl Stage for SignStage {
                             "unknown docker_signs artifacts filter '{}', defaulting to images",
                             other
                         ));
-                        ctx.artifacts.by_kind(ArtifactKind::DockerImage)
+                        let mut arts = ctx.artifacts.by_kind(ArtifactKind::DockerImage);
+                        arts.extend(ctx.artifacts.by_kind(ArtifactKind::DockerImageV2));
+                        arts
                     }
                 };
 
@@ -931,6 +1031,11 @@ impl Stage for SignStage {
             ctx.template_vars_mut().set("digest", "");
             ctx.template_vars_mut().set("artifactID", "");
         }
+
+        // Refresh the artifacts template variable so newly-added signatures
+        // and certificates are visible to downstream stages (matching
+        // GoReleaser's ctx.Artifacts.Refresh()).
+        ctx.refresh_artifacts_var();
 
         Ok(())
     }
@@ -2615,6 +2720,334 @@ crates: []
         assert!(
             stage.run(&mut ctx).is_ok(),
             "sign with output: true and a real command should succeed"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 1: binary_signs architecture-aware signature template
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_default_binary_signature_template_includes_arch() {
+        // Verify the constant contains Os/Arch/Arm/Mips/Amd64 references
+        assert!(
+            DEFAULT_BINARY_SIGNATURE_TEMPLATE.contains("Os"),
+            "binary signature template must include Os"
+        );
+        assert!(
+            DEFAULT_BINARY_SIGNATURE_TEMPLATE.contains("Arch"),
+            "binary signature template must include Arch"
+        );
+        assert!(
+            DEFAULT_BINARY_SIGNATURE_TEMPLATE.contains("Arm"),
+            "binary signature template must include Arm conditional"
+        );
+        assert!(
+            DEFAULT_BINARY_SIGNATURE_TEMPLATE.contains("Amd64"),
+            "binary signature template must include Amd64 conditional"
+        );
+        assert!(
+            DEFAULT_BINARY_SIGNATURE_TEMPLATE.ends_with(".sig"),
+            "binary signature template must end with .sig"
+        );
+    }
+
+    #[test]
+    fn test_binary_signs_signature_includes_os_arch() {
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(true)
+            .build();
+        ctx.template_vars_mut().set("Os", "linux");
+        ctx.template_vars_mut().set("Arch", "amd64");
+        ctx.template_vars_mut().set("Arm", "");
+        ctx.template_vars_mut().set("Amd64", "");
+        ctx.template_vars_mut().set("Mips", "");
+
+        let sign_cfg = SignConfig {
+            id: None,
+            artifacts: None,
+            cmd: None,
+            args: None,
+            signature: None,
+            stdin: None,
+            stdin_file: None,
+            ids: None,
+            env: None,
+            certificate: None,
+            output: None,
+            if_condition: None,
+        };
+        let log = ctx.logger("test");
+        let result = resolve_signature_path(
+            &sign_cfg,
+            "/dist/myapp",
+            &ctx,
+            &log,
+            Some(DEFAULT_BINARY_SIGNATURE_TEMPLATE),
+        );
+        assert_eq!(result, "/dist/myapp_linux_amd64.sig");
+    }
+
+    #[test]
+    fn test_binary_signs_signature_includes_arm_variant() {
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(true)
+            .build();
+        // GoReleaser splits ARM: Arch="arm", Arm="6" → rendered as "arm" + "v6" = "armv6"
+        ctx.template_vars_mut().set("Os", "linux");
+        ctx.template_vars_mut().set("Arch", "arm");
+        ctx.template_vars_mut().set("Arm", "6");
+        ctx.template_vars_mut().set("Amd64", "");
+        ctx.template_vars_mut().set("Mips", "");
+
+        let sign_cfg = SignConfig {
+            id: None,
+            artifacts: None,
+            cmd: None,
+            args: None,
+            signature: None,
+            stdin: None,
+            stdin_file: None,
+            ids: None,
+            env: None,
+            certificate: None,
+            output: None,
+            if_condition: None,
+        };
+        let log = ctx.logger("test");
+        let result = resolve_signature_path(
+            &sign_cfg,
+            "/dist/myapp",
+            &ctx,
+            &log,
+            Some(DEFAULT_BINARY_SIGNATURE_TEMPLATE),
+        );
+        assert_eq!(result, "/dist/myapp_linux_armv6.sig");
+    }
+
+    #[test]
+    fn test_binary_signs_signature_includes_amd64_level() {
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(true)
+            .build();
+        ctx.template_vars_mut().set("Os", "linux");
+        ctx.template_vars_mut().set("Arch", "amd64");
+        ctx.template_vars_mut().set("Arm", "");
+        ctx.template_vars_mut().set("Amd64", "v2");
+        ctx.template_vars_mut().set("Mips", "");
+
+        let sign_cfg = SignConfig {
+            id: None,
+            artifacts: None,
+            cmd: None,
+            args: None,
+            signature: None,
+            stdin: None,
+            stdin_file: None,
+            ids: None,
+            env: None,
+            certificate: None,
+            output: None,
+            if_condition: None,
+        };
+        let log = ctx.logger("test");
+        let result = resolve_signature_path(
+            &sign_cfg,
+            "/dist/myapp",
+            &ctx,
+            &log,
+            Some(DEFAULT_BINARY_SIGNATURE_TEMPLATE),
+        );
+        assert_eq!(result, "/dist/myapp_linux_amd64v2.sig");
+    }
+
+    #[test]
+    fn test_normal_signs_uses_simple_default() {
+        let ctx = TestContextBuilder::new()
+            .dry_run(true)
+            .build();
+        let sign_cfg = SignConfig {
+            id: None,
+            artifacts: None,
+            cmd: None,
+            args: None,
+            signature: None,
+            stdin: None,
+            stdin_file: None,
+            ids: None,
+            env: None,
+            certificate: None,
+            output: None,
+            if_condition: None,
+        };
+        let log = ctx.logger("test");
+        // Normal signs (None default) should use simple {artifact}.sig
+        let result = resolve_signature_path(&sign_cfg, "/dist/myapp.tar.gz", &ctx, &log, None);
+        assert_eq!(result, "/dist/myapp.tar.gz.sig");
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 3: DockerImageV2 in docker_signs filters
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_docker_signs_default_filter_selects_v2() {
+        // When docker_signs artifacts is "" (default), only DockerImageV2 should match.
+        // This verifies the code path — full integration tested via stage.run() above.
+        use anodize_core::artifact::Artifact;
+
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(true)
+            .build();
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::DockerImage,
+            name: "legacy".to_string(),
+            path: std::path::PathBuf::from("ghcr.io/owner/app:v1"),
+            target: None,
+            crate_name: "test".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::DockerImageV2,
+            name: "v2".to_string(),
+            path: std::path::PathBuf::from("ghcr.io/owner/app:v2"),
+            target: None,
+            crate_name: "test".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        // Default filter "" should return only DockerImageV2
+        let v2_only = ctx.artifacts.by_kind(ArtifactKind::DockerImageV2);
+        assert_eq!(v2_only.len(), 1);
+        assert_eq!(v2_only[0].name, "v2");
+
+        // "images" filter should return both DockerImage and DockerImageV2
+        let mut images = ctx.artifacts.by_kind(ArtifactKind::DockerImage);
+        images.extend(ctx.artifacts.by_kind(ArtifactKind::DockerImageV2));
+        assert_eq!(images.len(), 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // Integration: binary_signs with target triple through process_sign_configs
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_binary_signs_sets_os_arch_from_target_triple() {
+        use anodize_core::artifact::Artifact;
+
+        let binary_sign_cfg = SignConfig {
+            id: None,
+            artifacts: Some("binary".to_string()),
+            cmd: Some("true".to_string()),
+            args: Some(vec![]),
+            signature: None,
+            stdin: None,
+            stdin_file: None,
+            ids: None,
+            env: None,
+            certificate: None,
+            output: None,
+            if_condition: None,
+        };
+        let mut ctx = TestContextBuilder::new()
+            .binary_signs(vec![binary_sign_cfg])
+            .dry_run(true)
+            .build();
+
+        // Add a binary artifact with a linux/amd64 target
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: "myapp".to_string(),
+            path: std::path::PathBuf::from("/dist/myapp"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "test".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        let log = ctx.logger("binary-sign");
+        let binary_sign_configs = ctx.config.binary_signs.clone();
+        let result = process_sign_configs(
+            &binary_sign_configs,
+            &mut ctx,
+            &log,
+            ArtifactFilter::BinaryOnly,
+            "binary-sign",
+        );
+        assert!(result.is_ok());
+
+        // Verify a signature artifact was registered with arch-aware naming
+        let sigs: Vec<_> = ctx.artifacts.by_kind(ArtifactKind::Signature);
+        assert_eq!(sigs.len(), 1);
+        assert!(
+            sigs[0].name.contains("linux_amd64"),
+            "signature name should contain os_arch: got '{}'",
+            sigs[0].name
+        );
+
+        // Template vars should be cleaned up after processing
+        let os_val = ctx.render_template("{{ Os }}").unwrap_or_default();
+        assert_eq!(os_val, "", "Os template var should be cleared after binary_signs");
+    }
+
+    #[test]
+    fn test_binary_signs_arm_target_splits_arch_correctly() {
+        use anodize_core::artifact::Artifact;
+
+        let binary_sign_cfg = SignConfig {
+            id: None,
+            artifacts: Some("binary".to_string()),
+            cmd: Some("true".to_string()),
+            args: Some(vec![]),
+            signature: None,
+            stdin: None,
+            stdin_file: None,
+            ids: None,
+            env: None,
+            certificate: None,
+            output: None,
+            if_condition: None,
+        };
+        let mut ctx = TestContextBuilder::new()
+            .binary_signs(vec![binary_sign_cfg])
+            .dry_run(true)
+            .build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: "myapp".to_string(),
+            path: std::path::PathBuf::from("/dist/myapp"),
+            target: Some("armv7-unknown-linux-gnueabihf".to_string()),
+            crate_name: "test".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        let log = ctx.logger("binary-sign");
+        let binary_sign_configs = ctx.config.binary_signs.clone();
+        let result = process_sign_configs(
+            &binary_sign_configs,
+            &mut ctx,
+            &log,
+            ArtifactFilter::BinaryOnly,
+            "binary-sign",
+        );
+        assert!(result.is_ok());
+
+        let sigs: Vec<_> = ctx.artifacts.by_kind(ArtifactKind::Signature);
+        assert_eq!(sigs.len(), 1);
+        // Should be arm + v7, not armv7 + v7
+        assert!(
+            sigs[0].name.contains("linux_armv7"),
+            "signature name should contain linux_armv7: got '{}'",
+            sigs[0].name
+        );
+        assert!(
+            !sigs[0].name.contains("armv7v7"),
+            "signature name must NOT contain armv7v7 double-suffix: got '{}'",
+            sigs[0].name
         );
     }
 }

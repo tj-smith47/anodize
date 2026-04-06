@@ -120,6 +120,47 @@ fn docker_supports_provenance() -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// check_buildx_driver
+// ---------------------------------------------------------------------------
+
+/// Check the current buildx driver and warn if it is not one of the standard
+/// types ("docker-container" or "docker").
+///
+/// GoReleaser v2 validates the driver via `docker buildx inspect` and errors
+/// on invalid drivers. We warn rather than error to be lenient, but the
+/// check ensures users know their setup may not work for multi-platform builds.
+fn check_buildx_driver(log: &StageLogger) {
+    let output = Command::new("docker")
+        .args(["buildx", "inspect"])
+        .output();
+    match output {
+        Ok(o) => {
+            let stdout = String::from_utf8_lossy(&o.stdout);
+            // Parse the Driver line from `docker buildx inspect` output.
+            // Example: "Driver:           docker-container"
+            for line in stdout.lines() {
+                if let Some(driver) = line.strip_prefix("Driver:") {
+                    let driver = driver.trim();
+                    if driver != "docker-container" && driver != "docker" {
+                        log.warn(&format!(
+                            "buildx driver '{}' is not 'docker-container' or 'docker'; \
+                             multi-platform builds may not work correctly",
+                            driver
+                        ));
+                    }
+                    return;
+                }
+            }
+            // Driver line not found in output — warn about unknown driver
+            log.warn("could not determine buildx driver from 'docker buildx inspect' output");
+        }
+        Err(_) => {
+            // docker buildx not available — skip the check
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // platform_to_arch
 // ---------------------------------------------------------------------------
 
@@ -149,6 +190,20 @@ pub fn platform_to_arch(platform: &str) -> &str {
         [_, arch] => arch,
         _ => platform,
     }
+}
+
+// ---------------------------------------------------------------------------
+// tag_suffix
+// ---------------------------------------------------------------------------
+
+/// Extract the architecture portion of a platform string for use as a tag suffix.
+///
+/// Delegates to [`platform_to_arch`] since the logic is identical:
+/// - `"linux/amd64"` → `"amd64"`
+/// - `"linux/arm64"` → `"arm64"`
+/// - `"linux/arm/v7"` → `"armv7"`
+fn tag_suffix(platform: &str) -> String {
+    platform_to_arch(platform).to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -419,9 +474,21 @@ pub fn build_docker_v2_command(
     }
 
     // --annotation KEY=VALUE
+    // For multi-platform builds, GoReleaser v2 prefixes annotation values with
+    // "index:" so they target the manifest index rather than individual platform images.
     for (key, value) in annotations {
         cmd.push("--annotation".to_string());
-        cmd.push(format!("{}={}", key, value));
+        if multi_platform {
+            // Add "index:" prefix, but avoid double-prefixing if already present
+            let prefixed_key = if key.starts_with("index:") {
+                key.clone()
+            } else {
+                format!("index:{}", key)
+            };
+            cmd.push(format!("{}={}", prefixed_key, value));
+        } else {
+            cmd.push(format!("{}={}", key, value));
+        }
     }
 
     // --label KEY=VALUE
@@ -435,9 +502,10 @@ pub fn build_docker_v2_command(
         cmd.push(flag.clone());
     }
 
-    // --sbom=true when explicitly requested
+    // Use --attest=type=sbom for proper OCI attestation (matching GoReleaser v2)
+    // rather than the older --sbom=true flag.
     if sbom {
-        cmd.push("--sbom=true".to_string());
+        cmd.push("--attest=type=sbom".to_string());
     }
 
     // --push / --load logic
@@ -481,7 +549,7 @@ pub fn is_docker_v2_disabled(disable: &Option<StringOrBool>, ctx: &Context) -> b
 /// Evaluate whether the sbom flag should be added for a Docker V2 config.
 ///
 /// The `sbom` field is a [`StringOrBool`]. When it evaluates to true, the
-/// `--sbom=true` flag should be added to the buildx command.
+/// `--attest=type=sbom` flag is added to the buildx command.
 pub fn is_docker_v2_sbom_enabled(sbom: &Option<StringOrBool>, ctx: &Context) -> bool {
     match sbom {
         None => false,
@@ -923,6 +991,11 @@ impl Stage for DockerStage {
             return Ok(());
         }
 
+        // Validate the buildx driver once if any V2 configs exist (V2 always uses buildx).
+        if !dry_run && crates.iter().any(|c| c.docker_v2.is_some()) {
+            check_buildx_driver(&log);
+        }
+
         let mut new_artifacts: Vec<Artifact> = Vec::new();
 
         // ==================================================================
@@ -1156,6 +1229,36 @@ impl Stage for DockerStage {
                 None => Vec::new(),
             };
 
+            // Apply GoReleaser-compatible defaults to V2 configs.
+            let docker_v2_configs: Vec<_> = docker_v2_configs
+                .into_iter()
+                .map(|mut cfg| {
+                    // ID defaults to project name
+                    if cfg.id.is_none() {
+                        cfg.id = Some(ctx.config.project_name.clone());
+                    }
+                    // Dockerfile defaults to "Dockerfile"
+                    if cfg.dockerfile.is_empty() {
+                        cfg.dockerfile = "Dockerfile".to_string();
+                    }
+                    // Tags default to ["{{ .Tag }}"]
+                    if cfg.tags.is_empty() {
+                        cfg.tags = vec!["{{ .Tag }}".to_string()];
+                    }
+                    // Platforms default to ["linux/amd64", "linux/arm64"]
+                    if cfg.platforms.is_none() {
+                        cfg.platforms =
+                            Some(vec!["linux/amd64".to_string(), "linux/arm64".to_string()]);
+                    }
+                    // SBOM defaults to true
+                    if cfg.sbom.is_none() {
+                        cfg.sbom = Some(StringOrBool::Bool(true));
+                    }
+                    // Retry defaults are already handled by resolve_retry_params (10 attempts, 10s, 5m)
+                    cfg
+                })
+                .collect();
+
             for (idx, v2_cfg) in docker_v2_configs.iter().enumerate() {
                 // Check disable — skip when template evaluates to true
                 if is_docker_v2_disabled(&v2_cfg.disable, ctx) {
@@ -1197,7 +1300,15 @@ impl Stage for DockerStage {
                     "docker_v2",
                 )?;
 
-                copy_dockerfile(&v2_cfg.dockerfile, &staging_dir, dry_run, &log, "docker_v2")?;
+                // Template-render the Dockerfile path (GoReleaser does this via tmpl.New(ctx).Apply)
+                let rendered_dockerfile = ctx.render_template(&v2_cfg.dockerfile)
+                    .with_context(|| {
+                        format!(
+                            "docker_v2: render dockerfile path '{}' for crate {}",
+                            v2_cfg.dockerfile, krate.name
+                        )
+                    })?;
+                copy_dockerfile(&rendered_dockerfile, &staging_dir, dry_run, &log, "docker_v2")?;
 
                 if let Some(ref extra_files) = v2_cfg.extra_files {
                     stage_extra_files(extra_files, &staging_dir, dry_run, &log, "docker_v2")?;
@@ -1231,6 +1342,21 @@ impl Stage for DockerStage {
                         continue;
                     }
                     rendered_images.push(rendered);
+                }
+
+                // For snapshot builds with a single platform, append the platform
+                // architecture as a tag suffix (e.g., "latest" → "latest-amd64").
+                // This matches GoReleaser v2 behavior which prevents tag collisions
+                // when building each platform separately during snapshots.
+                // NOTE: with default platforms (amd64 + arm64), platforms.len() == 2
+                // so this branch doesn't fire — the suffix only applies when the
+                // user explicitly configures a single platform per V2 config block.
+                if ctx.is_snapshot() && platforms.len() == 1 {
+                    let suffix = tag_suffix(&platforms[0]);
+                    for tag in &mut rendered_tags {
+                        tag.push('-');
+                        tag.push_str(&suffix);
+                    }
                 }
 
                 // Generate image:tag combinations
@@ -3806,7 +3932,7 @@ use: podman
         )
         .unwrap();
 
-        assert!(cmd.contains(&"--sbom=true".to_string()));
+        assert!(cmd.contains(&"--attest=type=sbom".to_string()));
         // When sbom is true, auto --sbom=false should NOT be added
         assert!(!cmd.contains(&"--sbom=false".to_string()));
     }
@@ -3941,11 +4067,12 @@ use: podman
         assert!(cmd.contains(&"--build-arg".to_string()));
         assert!(cmd.contains(&"VERSION=1.0.0".to_string()));
         assert!(cmd.contains(&"--annotation".to_string()));
-        assert!(cmd.contains(&"org.opencontainers.image.version=1.0.0".to_string()));
+        // Multi-platform annotations get "index:" prefix
+        assert!(cmd.contains(&"index:org.opencontainers.image.version=1.0.0".to_string()));
         assert!(cmd.contains(&"--label".to_string()));
         assert!(cmd.contains(&"maintainer=dev@example.com".to_string()));
         assert!(cmd.contains(&"--no-cache".to_string()));
-        assert!(cmd.contains(&"--sbom=true".to_string()));
+        assert!(cmd.contains(&"--attest=type=sbom".to_string()));
         assert!(cmd.contains(&"--push".to_string()));
         assert_eq!(cmd.last().unwrap(), "/tmp/ctx");
     }
@@ -4726,5 +4853,115 @@ crates:
         assert!(output_path.exists(), "templated file should exist in staging dir");
         let content = fs::read_to_string(&output_path).unwrap();
         assert_eq!(content, "app: myapp\nversion: 1.0.0");
+    }
+
+    // -----------------------------------------------------------------------
+    // Session J: New Docker behavioral gap tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_tag_suffix_amd64() {
+        assert_eq!(tag_suffix("linux/amd64"), "amd64");
+    }
+
+    #[test]
+    fn test_tag_suffix_arm64() {
+        assert_eq!(tag_suffix("linux/arm64"), "arm64");
+    }
+
+    #[test]
+    fn test_tag_suffix_arm_v7() {
+        assert_eq!(tag_suffix("linux/arm/v7"), "armv7");
+    }
+
+    #[test]
+    fn test_sbom_uses_attest_format() {
+        let cmd = build_docker_v2_command(
+            "/tmp/ctx",
+            &["linux/amd64"],
+            &["img:latest".to_string()],
+            &[],
+            &[],
+            &[],
+            &[],
+            true,
+            false,
+        )
+        .unwrap();
+        assert!(
+            cmd.contains(&"--attest=type=sbom".to_string()),
+            "SBOM should use --attest=type=sbom, not --sbom=true"
+        );
+        assert!(
+            !cmd.contains(&"--sbom=true".to_string()),
+            "should not contain old --sbom=true flag"
+        );
+    }
+
+    #[test]
+    fn test_annotations_no_prefix_single_platform() {
+        let annotations = vec![("foo".to_string(), "bar".to_string())];
+        let cmd = build_docker_v2_command(
+            "/tmp/ctx",
+            &["linux/amd64"],
+            &["img:latest".to_string()],
+            &[],
+            &annotations,
+            &[],
+            &[],
+            false,
+            false,
+        )
+        .unwrap();
+        assert!(
+            cmd.contains(&"foo=bar".to_string()),
+            "single-platform annotations should NOT get index: prefix"
+        );
+    }
+
+    #[test]
+    fn test_annotations_get_index_prefix_multi_platform() {
+        let annotations = vec![("foo".to_string(), "bar".to_string())];
+        let cmd = build_docker_v2_command(
+            "/tmp/ctx",
+            &["linux/amd64", "linux/arm64"],
+            &["img:latest".to_string()],
+            &[],
+            &annotations,
+            &[],
+            &[],
+            false,
+            true,
+        )
+        .unwrap();
+        assert!(
+            cmd.contains(&"index:foo=bar".to_string()),
+            "multi-platform annotations should get index: prefix"
+        );
+    }
+
+    #[test]
+    fn test_annotations_no_double_index_prefix() {
+        let annotations = vec![("index:foo".to_string(), "bar".to_string())];
+        let cmd = build_docker_v2_command(
+            "/tmp/ctx",
+            &["linux/amd64", "linux/arm64"],
+            &["img:latest".to_string()],
+            &[],
+            &annotations,
+            &[],
+            &[],
+            false,
+            true,
+        )
+        .unwrap();
+        assert!(
+            cmd.contains(&"index:foo=bar".to_string()),
+            "already-prefixed annotations should not get double prefix"
+        );
+        assert!(
+            !cmd.contains(&"index:index:foo=bar".to_string()),
+            "must not double-prefix"
+        );
     }
 }
