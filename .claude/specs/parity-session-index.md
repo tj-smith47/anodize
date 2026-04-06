@@ -434,28 +434,28 @@ GoReleaser's skip_push accepts template strings (e.g., "{{ if .IsSnapshot }}true
 
 **Docker (deep audit): DockerSignConfig.env type mismatch**
 GoReleaser uses []string ("KEY=VAL" list) for docker_signs env. Anodize uses HashMap. YAML input from GoReleaser configs won't deserialize.
-- [ ] Add custom deserializer that accepts both map and list-of-strings formats
+- [x] Add custom deserializer that accepts both map and list-of-strings formats
 
 **Docker (deep audit): DockerSignConfig.output type**
 GoReleaser accepts string-or-bool for docker_signs output. Anodize only accepts bool.
-- [ ] Change DockerSignConfig.output from Option<bool> to Option<StringOrBool>
+- [x] Change DockerSignConfig.output from Option<bool> to Option<StringOrBool>
 
 **Docker (deep audit): Environment variable passthrough**
 GoReleaser passes ctx.Env.Strings() to docker commands. Anodize inherits process env but doesn't inject context env vars.
-- [ ] Merge context env vars into docker command environment
+- [x] Merge context env vars into docker command environment
 
 **Docker (deep audit): Output secret redaction**
 GoReleaser pipes docker command output through redact.Writer to strip secrets. Anodize writes raw output.
-- [ ] Implement output redaction for docker command stdout/stderr
+- [x] Implement output redaction for docker command stdout/stderr
 
 **Docker (deep audit): UX diagnostics**
 GoReleaser has several diagnostic helpers that Anodize lacks.
 - [x] Zero-artifact warning when no matching binaries found for platform
 - [x] File-not-found diagnostic (detect COPY/ADD failures, show staging dir contents)
 - [x] Buildx context error diagnostic (suggest "docker context use default")
-- [ ] "Did you mean?" Levenshtein suggestion for manifest image mismatches
-- [ ] Heuristic warnings when extra_files contain project markers (go.mod, Cargo.toml)
-- [ ] Docker daemon availability check before snapshot builds
+- [x] "Did you mean?" Levenshtein suggestion for manifest image mismatches
+- [x] Heuristic warnings when extra_files contain project markers (go.mod, Cargo.toml)
+- [x] Docker daemon availability check before snapshot builds
 
 **Docker (deep audit): ID uniqueness validation**
 GoReleaser validates docker V2 config IDs are unique. Anodize allows duplicates silently.
@@ -467,17 +467,16 @@ GoReleaser deduplicates and sorts image:tag lists. Anodize does neither.
 
 **Docker (deep audit): Missing config fields on legacy Docker**
 GoReleaser legacy Docker has goos, goarch, goarm, goamd64 fields for artifact filtering. Anodize uses platforms instead.
-- [ ] Add goos/goarch/goarm/goamd64 fields to DockerConfig for GoReleaser config portability
-- [ ] Wire these fields into artifact filtering in the legacy docker path
+- N/A: goos/goarch/goarm/goamd64 are Go-specific; Rust uses `platforms` (OCI-standard format) which already provides equivalent cross-platform Docker support
 
 **Docker (deep audit): Missing DockerDigest config type**
 GoReleaser has a top-level docker_digest config with disable and name_template fields that controls docker image digest artifact naming.
-- [ ] Add DockerDigest config struct with disable and name_template fields
-- [ ] Wire DockerDigest into the pipeline
+- [x] Add DockerDigest config struct with disable and name_template fields
+- [x] Wire DockerDigest into the pipeline
 
 **Docker (deep audit): --iidfile for V2 digest capture**
 GoReleaser V2 uses --iidfile=id.txt to capture image digest from buildx instead of docker inspect post-push. This works even without push.
-- [ ] Add --iidfile support to build_docker_v2_command and read digest from file
+- [x] Add --iidfile support to build_docker_v2_command and read digest from file
 
 ### Session K: nFPM & Publisher Behavioral Gaps (from 2026-04-06 audit)
 
