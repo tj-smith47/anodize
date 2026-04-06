@@ -849,6 +849,100 @@ fn stage_binaries(
     Ok(())
 }
 
+/// Stage artifacts into docker build context using GoReleaser V2 layout.
+///
+/// V2 uses `<os>/<arch>/<name>` directory structure (matching `$TARGETPLATFORM`)
+/// and stages Binary, LinuxPackage, CArchive, CShared, and PyWheel artifacts.
+/// Artifacts with `goos == "all"` are copied into every platform directory.
+fn stage_artifacts_v2(
+    platforms: &[String],
+    staging_dir: &std::path::Path,
+    dry_run: bool,
+    ids_filter: Option<&Vec<String>>,
+    crate_name: &str,
+    ctx: &Context,
+    log: &StageLogger,
+) -> Result<()> {
+    let stageable_kinds = [
+        ArtifactKind::Binary,
+        ArtifactKind::LinuxPackage,
+        ArtifactKind::CArchive,
+        ArtifactKind::CShared,
+        ArtifactKind::PyWheel,
+    ];
+
+    for platform in platforms {
+        let parts: Vec<&str> = platform.split('/').collect();
+        // Use full platform path (e.g., "linux/amd64") as directory structure
+        let platform_dir = staging_dir.join(platform.replace('/', std::path::MAIN_SEPARATOR_STR));
+        if !dry_run {
+            fs::create_dir_all(&platform_dir).with_context(|| {
+                format!("docker_v2: create platform dir {}", platform_dir.display())
+            })?;
+        }
+
+        let arch = platform_to_arch(platform);
+        let os = parts.first().copied().unwrap_or("linux");
+
+        for kind in &stageable_kinds {
+            let artifacts: Vec<_> = ctx
+                .artifacts
+                .by_kind_and_crate(*kind, crate_name)
+                .into_iter()
+                .filter(|a| {
+                    // Match by architecture, or goos == "all" (cross-platform artifacts)
+                    if let Some(target) = a.target.as_deref() {
+                        let (a_os, a_arch) = map_target(target);
+                        (a_os == os && a_arch == arch) || a_os == "all"
+                    } else {
+                        // No target = universal artifact, include everywhere
+                        true
+                    }
+                })
+                .filter(|a| {
+                    if let Some(ids) = ids_filter {
+                        let artifact_id = a.metadata.get("id").map(|s| s.as_str()).unwrap_or("");
+                        ids.iter().any(|id| id == artifact_id)
+                    } else {
+                        true
+                    }
+                })
+                .collect();
+
+            for artifact in artifacts {
+                let file_name = artifact
+                    .path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("artifact");
+                let dest = platform_dir.join(file_name);
+
+                if dry_run {
+                    log.status(&format!(
+                        "(dry-run) would copy {} -> {}",
+                        artifact.path.display(),
+                        dest.display()
+                    ));
+                } else {
+                    log.status(&format!(
+                        "staging {} -> {}",
+                        artifact.path.display(),
+                        dest.display()
+                    ));
+                    fs::copy(&artifact.path, &dest).with_context(|| {
+                        format!(
+                            "docker_v2: copy {} to {}",
+                            artifact.path.display(),
+                            dest.display()
+                        )
+                    })?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Copy a Dockerfile into the staging directory.
 fn copy_dockerfile(
     dockerfile: &str,
@@ -1295,17 +1389,15 @@ impl Stage for DockerStage {
                     })?;
                 }
 
-                // Stage binaries, Dockerfile, and extra files
-                stage_binaries(
+                // Stage artifacts using V2 layout (os/arch/name, multiple artifact types)
+                stage_artifacts_v2(
                     &platforms,
                     &staging_dir,
                     dry_run,
                     v2_cfg.ids.as_ref(),
-                    None, // V2 has no binary name filter
                     &krate.name,
                     ctx,
                     &log,
-                    "docker_v2",
                 )?;
 
                 // Template-render the Dockerfile path (GoReleaser does this via tmpl.New(ctx).Apply)
@@ -1753,6 +1845,7 @@ impl Stage for DockerStage {
 
                     // Determine whether to push
                     let manifest_skip_push = resolve_skip_push(&manifest_cfg.skip_push, ctx);
+                    let mut manifest_digest: Option<String> = None;
 
                     if dry_run {
                         log.status(&format!(
@@ -1868,7 +1961,7 @@ impl Stage for DockerStage {
                             }
                         }
 
-                        // Push the manifest (with retry)
+                        // Push the manifest (with retry) and capture digest
                         if !manifest_skip_push {
                             let mut push_cmd: Vec<String> = vec![
                                 manifest_bin.to_string(),
@@ -1911,6 +2004,8 @@ impl Stage for DockerStage {
                                             krate.name, midx, attempt, manifest_max_attempts
                                         )
                                     })?;
+                                // Capture stdout for digest extraction before checking status
+                                let push_stdout = String::from_utf8_lossy(&output.stdout).to_string();
                                 match log.check_output(output, "docker manifest push") {
                                     Ok(_) => {
                                         if attempt > 1 {
@@ -1918,6 +2013,16 @@ impl Stage for DockerStage {
                                                 "docker manifest push succeeded on attempt {}/{}",
                                                 attempt, manifest_max_attempts
                                             ));
+                                        }
+                                        // Extract digest from push output (sha256:64hexchars)
+                                        if let Some(start) = push_stdout.find("sha256:") {
+                                            let candidate = &push_stdout[start..];
+                                            // sha256: (7 chars) + 64 hex chars = 71
+                                            if candidate.len() >= 71
+                                                && candidate[7..71].chars().all(|c| c.is_ascii_hexdigit())
+                                            {
+                                                manifest_digest = Some(candidate[..71].to_string());
+                                            }
                                         }
                                         last_err = None;
                                         break;
@@ -1947,11 +2052,14 @@ impl Stage for DockerStage {
                     if let Some(ref id) = manifest_cfg.id {
                         meta.insert("id".to_string(), id.clone());
                     }
+                    if let Some(ref digest) = manifest_digest {
+                        meta.insert("digest".to_string(), digest.clone());
+                    }
 
                     new_artifacts.push(Artifact {
                         kind: ArtifactKind::DockerManifest,
-                        name: String::new(),
-                        path: dist.clone(),
+                        name: manifest_name.clone(),
+                        path: PathBuf::from(&manifest_name),
                         target: None,
                         crate_name: krate.name.clone(),
                         metadata: meta,
