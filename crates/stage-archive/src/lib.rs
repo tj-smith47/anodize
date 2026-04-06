@@ -4884,4 +4884,77 @@ crates:
         assert_eq!(rendered.mode.as_deref(), Some("0755")); // mode not rendered
         assert_eq!(rendered.mtime.as_deref(), Some("1.2.3"));
     }
+
+    #[test]
+    fn test_archive_stage_binaries_filter() {
+        use anodize_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+
+        let bin_a = tmp.path().join("app-a");
+        let bin_b = tmp.path().join("app-b");
+        fs::write(&bin_a, b"binary-a").unwrap();
+        fs::write(&bin_b, b"binary-b").unwrap();
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                name_template: Some("filtered-archive".to_string()),
+                format: Some("tar.gz".to_string()),
+                binaries: Some(vec!["app-a".to_string()]),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = dist.clone();
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+        for (name, path) in [("app-a", &bin_a), ("app-b", &bin_b)] {
+            let mut metadata = HashMap::new();
+            metadata.insert("binary".to_string(), name.to_string());
+            ctx.artifacts.add(Artifact {
+                kind: ArtifactKind::Binary,
+                name: String::new(),
+                path: path.clone(),
+                target: Some("x86_64-unknown-linux-gnu".to_string()),
+                crate_name: "myapp".to_string(),
+                metadata,
+                size: None,
+            });
+        }
+
+        let stage = ArchiveStage;
+        stage.run(&mut ctx).unwrap();
+
+        let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+        assert_eq!(archives.len(), 1);
+
+        // Open archive and verify only app-a is inside, not app-b
+        let archive_path = &archives[0].path;
+        let file = File::open(archive_path).unwrap();
+        let dec = flate2::read::GzDecoder::new(file);
+        let found_files = read_tar_entries(tar::Archive::new(dec));
+
+        assert!(
+            found_files.keys().any(|n| n.contains("app-a")),
+            "should contain app-a: {:?}",
+            found_files.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            !found_files.keys().any(|n| n.contains("app-b")),
+            "should NOT contain app-b: {:?}",
+            found_files.keys().collect::<Vec<_>>()
+        );
+    }
 }
