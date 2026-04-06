@@ -98,6 +98,8 @@ pub fn is_retriable_error(error_msg: &str) -> bool {
         "received unexpected HTTP status: 502 Bad Gateway",
         "received unexpected HTTP status: 503 Service Unavailable",
         "received unexpected HTTP status: 504 Gateway Timeout",
+        "received unexpected HTTP status: 506 Variant Also Negotiates",
+        "received unexpected HTTP status: 510 Not Extended",
         "EOF",
         "timeout",
         "TLS handshake",
@@ -434,13 +436,18 @@ pub fn build_docker_command(
         }
     };
 
-    // --push in live mode (unless skip_push); when using buildx without
-    // --push, add --load so the image is available locally (otherwise the
-    // built image vanishes).  --load is incompatible with multi-platform
-    // builds, so only add it for single-platform buildx.
-    if push {
+    // --push in live mode (unless skip_push).  The --push flag is only valid
+    // for buildx; plain `docker build` and `podman build` do NOT support it.
+    // For non-buildx backends, push is handled separately after the build via
+    // `docker push` / `podman push` per tag.
+    //
+    // When using buildx without --push, add --load so the image is available
+    // locally (otherwise the built image vanishes).  --load is incompatible
+    // with multi-platform builds, so only add it for single-platform buildx.
+    if push && effective_backend == "buildx" {
         cmd.push("--push".to_string());
-        // Additional push flags
+        // Additional push flags (buildx only — these are build-time flags
+        // like --provenance that only make sense with buildx --push)
         for flag in push_flags {
             cmd.push(flag.clone());
         }
@@ -721,6 +728,9 @@ struct DockerBuildJob {
     /// Context environment variables to inject into docker commands.
     /// These come from .env files and config `env:` sections.
     env_vars: HashMap<String, String>,
+    /// Rendered push flags — passed to `docker push` for legacy (non-buildx)
+    /// builds. For buildx builds these are baked into cmd_args via --push.
+    push_flags: Vec<String>,
 }
 
 /// Result of executing a single docker build job.
@@ -861,7 +871,114 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
         });
     }
 
-    // Capture digests after successful build
+    // Legacy (non-buildx) push: `docker push` / `podman push` per tag.
+    // Plain `docker build` does NOT support --push; only buildx does.
+    // GoReleaser's legacy docker pipe builds first, then pushes each tag
+    // separately with `docker push <image>`.
+    if job.should_push && !job.is_v2 && job.backend_label != "buildx" {
+        let push_bin = if job.backend_label == "podman" { "podman" } else { "docker" };
+        for tag in &job.rendered_tags {
+            log.status(&format!("pushing {}", tag));
+
+            let mut push_last_err: Option<anyhow::Error> = None;
+            for attempt in 1..=job.max_attempts {
+                if attempt > 1 {
+                    let multiplier = 2u64.saturating_pow(attempt - 2);
+                    let delay_ms = job.base_delay.as_millis().saturating_mul(multiplier as u128);
+                    let mut delay = Duration::from_millis(delay_ms as u64);
+                    if let Some(cap) = job.max_delay
+                        && delay > cap
+                    {
+                        delay = cap;
+                    }
+                    log.warn(&format!(
+                        "push attempt {}/{} for {} failed, retrying in {:?}…",
+                        attempt - 1, job.max_attempts, tag, delay,
+                    ));
+                    std::thread::sleep(delay);
+                }
+
+                let mut push_cmd = Command::new(push_bin);
+                push_cmd.arg("push").arg(tag);
+                // Pass push_flags to the push command (not the build command)
+                for flag in &job.push_flags {
+                    push_cmd.arg(flag);
+                }
+                for (key, value) in &job.env_vars {
+                    push_cmd.env(key, value);
+                }
+                push_cmd
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped());
+
+                let push_output = push_cmd.output().with_context(|| {
+                    format!(
+                        "docker: push {} for crate {} index {} (attempt {}/{})",
+                        tag, job.crate_name, job.idx, attempt, job.max_attempts
+                    )
+                })?;
+
+                // Redact secrets from push output
+                let env_pairs: Vec<(String, String)> = job.env_vars
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .chain(std::env::vars())
+                    .collect();
+                let mut stdout_bytes = push_output.stdout;
+                let mut stderr_bytes = push_output.stderr;
+                if !stdout_bytes.is_empty() {
+                    let redacted = anodize_core::redact::redact_string(
+                        &String::from_utf8_lossy(&stdout_bytes), &env_pairs);
+                    stdout_bytes = redacted.into_bytes();
+                }
+                if !stderr_bytes.is_empty() {
+                    let redacted = anodize_core::redact::redact_string(
+                        &String::from_utf8_lossy(&stderr_bytes), &env_pairs);
+                    stderr_bytes = redacted.into_bytes();
+                }
+
+                {
+                    use std::io::Write;
+                    let _ = std::io::stdout().write_all(&stdout_bytes);
+                    let _ = std::io::stderr().write_all(&stderr_bytes);
+                }
+
+                if push_output.status.success() {
+                    if attempt > 1 {
+                        log.status(&format!(
+                            "docker push {} succeeded on attempt {}/{}",
+                            tag, attempt, job.max_attempts
+                        ));
+                    }
+                    push_last_err = None;
+                    break;
+                } else {
+                    let err_msg = String::from_utf8_lossy(&stderr_bytes).to_string();
+                    let err = anyhow::anyhow!("docker push {} failed: {}", tag, err_msg.trim());
+                    if attempt < job.max_attempts && is_retriable_error(&err_msg) {
+                        push_last_err = Some(err);
+                    } else {
+                        return Err(err).with_context(|| {
+                            format!(
+                                "docker: push failed for crate {} index {} tag {}",
+                                job.crate_name, job.idx, tag
+                            )
+                        });
+                    }
+                }
+            }
+            if let Some(e) = push_last_err {
+                return Err(e).with_context(|| {
+                    format!(
+                        "docker: all {} push attempts failed for crate {} index {} tag {}",
+                        job.max_attempts, job.crate_name, job.idx, tag
+                    )
+                });
+            }
+        }
+    }
+
+    // Capture digests after successful build (and push, for legacy)
     let mut tag_digests = HashMap::new();
     let mut digest_files = Vec::new();
 
@@ -1595,6 +1712,7 @@ impl Stage for DockerStage {
                         digest_disabled,
                         digest_name_template,
                         env_vars: ctx.template_vars().all_env().clone(),
+                        push_flags,
                     });
                 }
             }
@@ -1943,6 +2061,7 @@ impl Stage for DockerStage {
                         digest_disabled,
                         digest_name_template,
                         env_vars: ctx.template_vars().all_env().clone(),
+                        push_flags: Vec::new(), // V2 always uses buildx; push flags baked into cmd_args
                     });
                 }
                 } // end for snapshot_plats
@@ -2431,6 +2550,45 @@ impl Stage for DockerStage {
             }
         }
 
+        // Write combined digests file (GoReleaser DockerDigest format).
+        // Format: `<hex_digest>  <image_name>` per line, sorted,
+        // where hex_digest is the sha256 hash WITHOUT the `sha256:` prefix.
+        if !dry_run {
+            let mut digest_lines: Vec<String> = Vec::new();
+            for artifact in &new_artifacts {
+                if let Some(digest) = artifact.metadata.get("digest") {
+                    let hex = digest.strip_prefix("sha256:").unwrap_or(digest);
+                    let name = artifact
+                        .metadata
+                        .get("tag")
+                        .or(artifact.metadata.get("name"))
+                        .or(artifact.metadata.get("manifest"))
+                        .cloned()
+                        .unwrap_or_default();
+                    if !hex.is_empty() && !name.is_empty() {
+                        digest_lines.push(format!("{}  {}", hex, name));
+                    }
+                }
+            }
+            if !digest_lines.is_empty() {
+                digest_lines.sort();
+                digest_lines.dedup();
+                let digest_file = dist.join("digests.txt");
+                if let Err(e) = fs::write(&digest_file, digest_lines.join("\n") + "\n") {
+                    log.warn(&format!(
+                        "failed to write combined digest file {}: {}",
+                        digest_file.display(),
+                        e
+                    ));
+                } else {
+                    log.status(&format!(
+                        "wrote combined digest file: {}",
+                        digest_file.display()
+                    ));
+                }
+            }
+        }
+
         for artifact in new_artifacts {
             ctx.artifacts.add(artifact);
         }
@@ -2705,8 +2863,10 @@ push_flags:
         .unwrap();
         assert!(!cmd.contains(&"--push".to_string()));
 
-        // When push=true, --push should appear
-        let cmd_push = build_docker_command(
+        // When push=true with plain docker (single-platform, no backend),
+        // --push should NOT appear — plain `docker build` doesn't support it.
+        // Push is handled separately via `docker push` per tag.
+        let cmd_plain = build_docker_command(
             "/tmp/staging",
             &["linux/amd64"],
             &["ghcr.io/owner/app:v1.0.0"],
@@ -2714,10 +2874,24 @@ push_flags:
             true,
             &[],
             &[],
-            None,
+            None, // resolves to plain docker for single-platform
         )
         .unwrap();
-        assert!(cmd_push.contains(&"--push".to_string()));
+        assert!(!cmd_plain.contains(&"--push".to_string()));
+
+        // When push=true with buildx backend, --push SHOULD appear
+        let cmd_buildx = build_docker_command(
+            "/tmp/staging",
+            &["linux/amd64"],
+            &["ghcr.io/owner/app:v1.0.0"],
+            &[],
+            true,
+            &[],
+            &[],
+            Some("buildx"),
+        )
+        .unwrap();
+        assert!(cmd_buildx.contains(&"--push".to_string()));
     }
 
     #[test]
@@ -2726,6 +2900,7 @@ push_flags:
             "--cache-to=type=registry,ref=ghcr.io/owner/app:cache".to_string(),
             "--provenance=true".to_string(),
         ];
+        // push_flags are only baked into the build command for buildx backend
         let cmd = build_docker_command(
             "/tmp/staging",
             &["linux/amd64"],
@@ -2734,7 +2909,7 @@ push_flags:
             true,
             &push_flags,
             &[],
-            None,
+            Some("buildx"),
         )
         .unwrap();
         assert!(cmd.contains(&"--push".to_string()));
@@ -2750,11 +2925,27 @@ push_flags:
             false,
             &push_flags,
             &[],
-            None,
+            Some("buildx"),
         )
         .unwrap();
         assert!(!cmd_no_push.contains(&"--push".to_string()));
         assert!(!cmd_no_push.contains(&"--provenance=true".to_string()));
+
+        // For plain docker backend with push=true, push_flags should NOT
+        // appear in the build command (they go to `docker push` instead)
+        let cmd_plain = build_docker_command(
+            "/tmp/staging",
+            &["linux/amd64"],
+            &["ghcr.io/owner/app:v1.0.0"],
+            &[],
+            true,
+            &push_flags,
+            &[],
+            None,
+        )
+        .unwrap();
+        assert!(!cmd_plain.contains(&"--push".to_string()));
+        assert!(!cmd_plain.contains(&"--provenance=true".to_string()));
     }
 
     #[test]
@@ -2963,6 +3154,7 @@ dockerfile: Dockerfile
 
     #[test]
     fn test_push_flags_appended_to_command() {
+        // push_flags only appear in build command for buildx backend
         let push_flags = vec!["--provenance=true".to_string(), "--sbom=true".to_string()];
         let cmd = build_docker_command(
             "/tmp/staging",
@@ -2972,7 +3164,7 @@ dockerfile: Dockerfile
             true,
             &push_flags,
             &[],
-            None,
+            Some("buildx"),
         )
         .unwrap();
         assert!(cmd.contains(&"--push".to_string()));
@@ -5646,6 +5838,7 @@ disable: "{{ .IsSnapshot }}"
             digest_disabled: false,
             digest_name_template: None,
             env_vars: env,
+            push_flags: Vec::new(),
         };
 
         assert_eq!(job.env_vars.len(), 2);
@@ -5758,5 +5951,101 @@ disable: "{{ .IsSnapshot }}"
         )
         .unwrap();
         assert!(cmd.contains(&"--load".to_string()));
+    }
+
+    // -----------------------------------------------------------------------
+    // Gap A: Legacy push — plain docker/podman don't get --push
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_docker_command_plain_docker_no_push_flag() {
+        // Plain docker (use: docker) should never get --push in the build command
+        let cmd = build_docker_command(
+            "/tmp/staging",
+            &["linux/amd64"],
+            &["ghcr.io/owner/app:v1.0.0"],
+            &[],
+            true, // push requested
+            &[],
+            &[],
+            Some("docker"),
+        )
+        .unwrap();
+        assert!(!cmd.contains(&"--push".to_string()),
+            "plain docker backend should not have --push in build command");
+        // Should not have --load either (that's buildx-only)
+        assert!(!cmd.contains(&"--load".to_string()));
+    }
+
+    #[test]
+    fn test_build_docker_command_podman_no_push_flag() {
+        // Podman should never get --push in the build command
+        let cmd = build_docker_command(
+            "/tmp/staging",
+            &["linux/amd64"],
+            &["ghcr.io/owner/app:v1.0.0"],
+            &[],
+            true, // push requested
+            &[],
+            &[],
+            Some("podman"),
+        )
+        .unwrap();
+        assert!(!cmd.contains(&"--push".to_string()),
+            "podman backend should not have --push in build command");
+    }
+
+    #[test]
+    fn test_build_docker_command_buildx_gets_push_flag() {
+        // buildx SHOULD get --push in the build command
+        let cmd = build_docker_command(
+            "/tmp/staging",
+            &["linux/amd64"],
+            &["ghcr.io/owner/app:v1.0.0"],
+            &[],
+            true,
+            &[],
+            &[],
+            Some("buildx"),
+        )
+        .unwrap();
+        assert!(cmd.contains(&"--push".to_string()),
+            "buildx backend should have --push in build command");
+    }
+
+    #[test]
+    fn test_build_docker_command_multi_platform_implicit_buildx_gets_push() {
+        // Multi-platform with no explicit backend resolves to buildx
+        let cmd = build_docker_command(
+            "/tmp/staging",
+            &["linux/amd64", "linux/arm64"],
+            &["ghcr.io/owner/app:v1.0.0"],
+            &[],
+            true,
+            &[],
+            &[],
+            None,
+        )
+        .unwrap();
+        assert!(cmd.contains(&"--push".to_string()),
+            "implicit buildx (multi-platform) should have --push");
+    }
+
+    // -----------------------------------------------------------------------
+    // Gap C: Retry with HTTP 506 and 510
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_is_retriable_error_506() {
+        assert!(is_retriable_error(
+            "received unexpected HTTP status: 506 Variant Also Negotiates"
+        ));
+    }
+
+    #[test]
+    fn test_is_retriable_error_510() {
+        assert!(is_retriable_error(
+            "received unexpected HTTP status: 510 Not Extended"
+        ));
     }
 }

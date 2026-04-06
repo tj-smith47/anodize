@@ -36,7 +36,7 @@ pub fn redact_string(input: &str, env: &[(String, String)]) -> String {
         .filter(|(k, v)| is_secret(k, v))
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
-    secrets.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+    secrets.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(&b.0)));
 
     let mut result = input.to_string();
     for (key, value) in secrets {
@@ -123,5 +123,30 @@ mod tests {
         assert!(is_secret("ANYTHING", "dckr_pat_1234567890"));
         assert!(is_secret("ANYTHING", "glpat-1234567890"));
         assert!(!is_secret("ANYTHING", "regular_value1234"));
+    }
+
+    #[test]
+    fn test_redact_sort_stability_same_length() {
+        // When two secrets have the same value length, sort by key name
+        // for deterministic output regardless of HashMap iteration order.
+        let env = vec![
+            ("B_SECRET".to_string(), "same_length_val".to_string()),
+            ("A_SECRET".to_string(), "same_length_val".to_string()),
+        ];
+        // Both keys map to the same value, so whichever sorts first by
+        // key name should win — A_SECRET comes before B_SECRET.
+        let result = redact_string("found same_length_val here", &env);
+        assert_eq!(result, "found $A_SECRET here");
+    }
+
+    #[test]
+    fn test_redact_deterministic_with_different_lengths() {
+        // Longer values still replaced first, secondary sort by key is tiebreaker
+        let env = vec![
+            ("Z_TOKEN".to_string(), "short_secret_val".to_string()),
+            ("A_TOKEN".to_string(), "a_longer_secret_value_here".to_string()),
+        ];
+        let result = redact_string("prefix a_longer_secret_value_here suffix", &env);
+        assert_eq!(result, "prefix $A_TOKEN suffix");
     }
 }
