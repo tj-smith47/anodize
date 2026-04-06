@@ -517,6 +517,10 @@ pub fn build_docker_v2_command(
     // Only the legacy docker pipe does that. V2 relies on explicit user flags
     // or the --attest=type=sbom flag set above.
 
+    // Write image digest to file for capture (GoReleaser V2 behavior).
+    // This works even without --push (no daemon needed for digest capture).
+    cmd.push(format!("--iidfile={}/id.txt", staging_dir));
+
     // Build context directory (positional, last argument)
     cmd.push(staging_dir.to_string());
 
@@ -775,10 +779,40 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
         });
     }
 
-    // Capture digests after successful push
+    // Capture digests after successful build
     let mut tag_digests = HashMap::new();
     let mut digest_files = Vec::new();
-    if job.should_push {
+
+    if job.is_v2 {
+        // V2: read digest from --iidfile (works even without push)
+        let iidfile = job.staging_dir.join("id.txt");
+        if let Ok(digest_content) = fs::read_to_string(&iidfile) {
+            let digest = digest_content.trim().to_string();
+            if !digest.is_empty() {
+                for tag in &job.rendered_tags {
+                    tag_digests.insert(tag.clone(), digest.clone());
+                }
+                // Write per-tag digest files
+                if !job.digest_disabled {
+                    for tag in &job.rendered_tags {
+                        let safe_name = tag.replace(['/', ':'], "_");
+                        let digest_file = job.dist.join(format!("{}.digest", safe_name));
+                        if let Err(e) = fs::write(&digest_file, &digest) {
+                            log.warn(&format!(
+                                "failed to write digest file {}: {}",
+                                digest_file.display(),
+                                e
+                            ));
+                        } else {
+                            log.status(&format!("saved digest to {}", digest_file.display()));
+                            digest_files.push(digest_file);
+                        }
+                    }
+                }
+            }
+        }
+    } else if job.should_push {
+        // Legacy: capture digests via docker inspect after push
         for tag in &job.rendered_tags {
             let inspect_bin = if job.backend_label == "podman" {
                 "podman"
@@ -4376,6 +4410,39 @@ use: podman
         assert!(cmd.contains(&"--attest=type=sbom".to_string()));
         assert!(cmd.contains(&"--push".to_string()));
         assert_eq!(cmd.last().unwrap(), "/tmp/ctx");
+    }
+
+    #[test]
+    fn test_build_docker_v2_command_includes_iidfile() {
+        let cmd = build_docker_v2_command(
+            "/tmp/staging",
+            &["linux/amd64"],
+            &["img:latest".to_string()],
+            &[],
+            &[],
+            &[],
+            &[],
+            false,
+            false,
+        )
+        .unwrap();
+        assert!(
+            cmd.iter().any(|a| a.starts_with("--iidfile=")),
+            "V2 command should include --iidfile, got: {:?}",
+            cmd
+        );
+        // --iidfile should come before the staging dir (last arg)
+        let iidfile_pos = cmd.iter().position(|a| a.starts_with("--iidfile=")).unwrap();
+        assert_eq!(
+            iidfile_pos,
+            cmd.len() - 2,
+            "--iidfile should be second-to-last arg"
+        );
+        // Verify the iidfile path is within the staging dir
+        assert_eq!(
+            cmd[iidfile_pos], "--iidfile=/tmp/staging/id.txt",
+            "iidfile should be written to staging dir"
+        );
     }
 
     #[test]
