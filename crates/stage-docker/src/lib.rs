@@ -784,7 +784,11 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
     let mut digest_files = Vec::new();
 
     if job.is_v2 {
-        // V2: read digest from --iidfile (works even without push)
+        // V2: read digest from --iidfile (works even without push).
+        // For multi-platform --push builds, older buildx versions may not
+        // populate the iidfile; the `if let Ok(...)` handles this gracefully.
+        // When present, the iidfile contains a single sha256 digest shared
+        // across all tags (it's the manifest list digest for multi-platform).
         let iidfile = job.staging_dir.join("id.txt");
         if let Ok(digest_content) = fs::read_to_string(&iidfile) {
             let digest = digest_content.trim().to_string();
@@ -5428,5 +5432,33 @@ disable: "{{ .IsSnapshot }}"
 "#;
         let cfg: DockerDigestConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(cfg.disable.unwrap().is_template());
+    }
+
+    #[test]
+    fn test_v2_iidfile_digest_read() {
+        // Simulate the iidfile-based digest capture path:
+        // write an id.txt to a staging dir, then verify it's read correctly.
+        let tmp = TempDir::new().unwrap();
+        let staging_dir = tmp.path().join("staging");
+        fs::create_dir_all(&staging_dir).unwrap();
+
+        let digest = "sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
+        fs::write(staging_dir.join("id.txt"), digest).unwrap();
+
+        // Simulate the read logic from execute_docker_build
+        let iidfile = staging_dir.join("id.txt");
+        let digest_content = fs::read_to_string(&iidfile).unwrap();
+        let read_digest = digest_content.trim().to_string();
+        assert_eq!(read_digest, digest);
+
+        // Verify per-tag digests are populated correctly
+        let tags = vec!["img:latest".to_string(), "img:v1.0.0".to_string()];
+        let mut tag_digests = HashMap::new();
+        for tag in &tags {
+            tag_digests.insert(tag.clone(), read_digest.clone());
+        }
+        assert_eq!(tag_digests.len(), 2);
+        assert_eq!(tag_digests.get("img:latest").unwrap(), digest);
+        assert_eq!(tag_digests.get("img:v1.0.0").unwrap(), digest);
     }
 }
