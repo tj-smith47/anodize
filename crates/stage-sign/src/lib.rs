@@ -5,7 +5,7 @@ use std::process::{Command, Stdio};
 use anyhow::{Context as _, Result};
 
 use anodize_core::artifact::ArtifactKind;
-use anodize_core::config::{SignConfig, StringOrBool};
+use anodize_core::config::SignConfig;
 use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
 use anodize_core::stage::Stage;
@@ -2706,7 +2706,7 @@ crates: []
             stdin_file: None,
             env: None,
             certificate: None,
-            output: Some(StringOrBool::Bool(true)),
+            output: Some(anodize_core::config::StringOrBool::Bool(true)),
             if_condition: None,
         }];
 
