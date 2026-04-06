@@ -3776,8 +3776,12 @@ pub struct SbomConfig {
     pub id: Option<String>,
     /// Command to run for SBOM generation (default: "syft").
     pub cmd: Option<String>,
-    /// Environment variables to pass to the command (KEY=VALUE format).
-    pub env: Option<Vec<String>>,
+    /// Environment variables to pass to the command.
+    ///
+    /// Accepts both map form (`KEY: value`) and GoReleaser list form
+    /// (`- KEY=value`). Values are template-rendered before being set.
+    #[serde(default, deserialize_with = "deserialize_env_map")]
+    pub env: Option<HashMap<String, String>>,
     /// Command-line arguments (supports templates and $artifact, $document vars).
     pub args: Option<Vec<String>>,
     /// Output document path templates (supports templates).
@@ -9799,5 +9803,196 @@ publishers:
         let p = &cfg.publishers.as_ref().unwrap()[0];
         let env = p.env.as_ref().expect("env should be Some");
         assert_eq!(env.get("API_TOKEN").unwrap(), "secret123");
+    }
+
+    // -----------------------------------------------------------------------
+    // BuildOverride.env — list and map format tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_build_override_env_list_format() {
+        let yaml = r#"
+project_name: test
+defaults:
+  targets:
+    - x86_64-unknown-linux-gnu
+  overrides:
+    - targets:
+        - "x86_64-*"
+      env:
+        - CC=gcc-12
+        - CFLAGS=-O2 -Wall
+crates: []
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let overrides = config.defaults.unwrap().overrides.unwrap();
+        let env = overrides[0].env.as_ref().expect("env should be Some");
+        assert_eq!(env.get("CC").unwrap(), "gcc-12");
+        assert_eq!(env.get("CFLAGS").unwrap(), "-O2 -Wall");
+    }
+
+    #[test]
+    fn test_build_override_env_map_format() {
+        let yaml = r#"
+project_name: test
+defaults:
+  targets:
+    - x86_64-unknown-linux-gnu
+  overrides:
+    - targets:
+        - "x86_64-*"
+      env:
+        CC: gcc-12
+        CFLAGS: "-O2 -Wall"
+crates: []
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let overrides = config.defaults.unwrap().overrides.unwrap();
+        let env = overrides[0].env.as_ref().expect("env should be Some");
+        assert_eq!(env.get("CC").unwrap(), "gcc-12");
+        assert_eq!(env.get("CFLAGS").unwrap(), "-O2 -Wall");
+    }
+
+    // -----------------------------------------------------------------------
+    // StructuredHook.env — list and map format tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_structured_hook_env_list_format() {
+        let yaml = r#"
+project_name: test
+before:
+  hooks:
+    - cmd: echo hello
+      env:
+        - MY_VAR=foo
+        - OTHER=bar=baz
+"#;
+        let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let hooks = cfg.before.as_ref().unwrap().pre.as_ref().unwrap();
+        match &hooks[0] {
+            HookEntry::Structured(h) => {
+                let env = h.env.as_ref().expect("env should be Some");
+                assert_eq!(env.get("MY_VAR").unwrap(), "foo");
+                assert_eq!(env.get("OTHER").unwrap(), "bar=baz");
+            }
+            HookEntry::Simple(_) => panic!("expected Structured hook"),
+        }
+    }
+
+    #[test]
+    fn test_structured_hook_env_map_format() {
+        let yaml = r#"
+project_name: test
+before:
+  hooks:
+    - cmd: echo hello
+      env:
+        MY_VAR: foo
+        OTHER: "bar=baz"
+"#;
+        let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let hooks = cfg.before.as_ref().unwrap().pre.as_ref().unwrap();
+        match &hooks[0] {
+            HookEntry::Structured(h) => {
+                let env = h.env.as_ref().expect("env should be Some");
+                assert_eq!(env.get("MY_VAR").unwrap(), "foo");
+                assert_eq!(env.get("OTHER").unwrap(), "bar=baz");
+            }
+            HookEntry::Simple(_) => panic!("expected Structured hook"),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // SignConfig.env — map format test (list already covered above)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sign_config_env_map_format() {
+        let yaml = r#"
+project_name: test
+signs:
+  - cmd: gpg
+    env:
+      GPG_KEY: ABCDEF
+      GPG_TTY: /dev/pts/0
+"#;
+        let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let s = &cfg.signs[0];
+        let env = s.env.as_ref().expect("env should be Some");
+        assert_eq!(env.get("GPG_KEY").unwrap(), "ABCDEF");
+        assert_eq!(env.get("GPG_TTY").unwrap(), "/dev/pts/0");
+    }
+
+    // -----------------------------------------------------------------------
+    // PublisherConfig.env — map format test (list already covered above)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_publisher_env_map_format() {
+        let yaml = r#"
+project_name: test
+publishers:
+  - name: mypub
+    cmd: publish.sh
+    env:
+      API_TOKEN: secret123
+      DEPLOY_ENV: staging
+"#;
+        let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let p = &cfg.publishers.as_ref().unwrap()[0];
+        let env = p.env.as_ref().expect("env should be Some");
+        assert_eq!(env.get("API_TOKEN").unwrap(), "secret123");
+        assert_eq!(env.get("DEPLOY_ENV").unwrap(), "staging");
+    }
+
+    // -----------------------------------------------------------------------
+    // SbomConfig.env — list and map format tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sbom_config_env_map_format() {
+        let yaml = r#"
+project_name: test
+sboms:
+  - cmd: syft
+    env:
+      SYFT_FILE_METADATA_CATALOGER_ENABLED: "true"
+      SYFT_SCOPE: all-layers
+"#;
+        let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let s = &cfg.sboms[0];
+        let env = s.env.as_ref().expect("env should be Some");
+        assert_eq!(env.get("SYFT_FILE_METADATA_CATALOGER_ENABLED").unwrap(), "true");
+        assert_eq!(env.get("SYFT_SCOPE").unwrap(), "all-layers");
+    }
+
+    #[test]
+    fn test_sbom_config_env_list_format() {
+        let yaml = r#"
+project_name: test
+sboms:
+  - cmd: syft
+    env:
+      - SYFT_FILE_METADATA_CATALOGER_ENABLED=true
+      - SYFT_SCOPE=all-layers
+"#;
+        let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let s = &cfg.sboms[0];
+        let env = s.env.as_ref().expect("env should be Some");
+        assert_eq!(env.get("SYFT_FILE_METADATA_CATALOGER_ENABLED").unwrap(), "true");
+        assert_eq!(env.get("SYFT_SCOPE").unwrap(), "all-layers");
+    }
+
+    #[test]
+    fn test_sbom_config_env_missing() {
+        let yaml = r#"
+project_name: test
+sboms:
+  - cmd: syft
+"#;
+        let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let s = &cfg.sboms[0];
+        assert!(s.env.is_none());
     }
 }

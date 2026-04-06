@@ -643,11 +643,13 @@ impl SourceStage {
         });
 
         // Default env for syft with source/archive
-        let env_vars = sbom_cfg.env.clone().unwrap_or_else(|| {
+        let env_vars: HashMap<String, String> = sbom_cfg.env.clone().unwrap_or_else(|| {
             if cmd == "syft" && matches!(artifacts_type, "source" | "archive") {
-                vec!["SYFT_FILE_METADATA_CATALOGER_ENABLED=true".to_string()]
+                let mut m = HashMap::new();
+                m.insert("SYFT_FILE_METADATA_CATALOGER_ENABLED".to_string(), "true".to_string());
+                m
             } else {
-                vec![]
+                HashMap::new()
             }
         });
 
@@ -801,12 +803,10 @@ impl SourceStage {
 
             // Render env vars
             let mut rendered_env: Vec<(String, String)> = Vec::with_capacity(env_vars.len());
-            for e in &env_vars {
-                let rendered = ctx.render_template(e)
-                    .with_context(|| format!("sbom[{}]: failed to render env template '{}'", id, e))?;
-                if let Some((k, v)) = rendered.split_once('=') {
-                    rendered_env.push((k.to_string(), v.to_string()));
-                }
+            for (k, v) in &env_vars {
+                let rendered_val = ctx.render_template(v)
+                    .with_context(|| format!("sbom[{}]: failed to render env template '{}'", id, v))?;
+                rendered_env.push((k.clone(), rendered_val));
             }
 
             log.status(&format!(
@@ -1960,7 +1960,6 @@ dependencies = [
     fn test_source_extra_files_with_info() {
         use anodize_core::config::{SourceFileEntry, SourceFileInfo};
         use anodize_core::test_helpers::{create_test_project, init_git_repo};
-        use std::io::Read as _;
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
