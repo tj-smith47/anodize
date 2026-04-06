@@ -5,7 +5,7 @@ use std::process::{Command, Stdio};
 use anyhow::{Context as _, Result};
 
 use anodize_core::artifact::ArtifactKind;
-use anodize_core::config::SignConfig;
+use anodize_core::config::{SignConfig, StringOrBool};
 use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
 use anodize_core::stage::Stage;
@@ -676,7 +676,10 @@ fn process_sign_configs(
                 id_label: sign_cfg.id.as_deref().unwrap_or("default").to_string(),
                 artifact_display: artifact_str.to_string(),
                 signature_display: signature_str.clone(),
-                output_flag: sign_cfg.output.unwrap_or(false),
+                output_flag: sign_cfg.output
+                    .as_ref()
+                    .map(|s| s.evaluates_to_true(|tmpl| ctx.render_template(tmpl)))
+                    .unwrap_or(false),
                 new_artifacts: job_artifacts,
             });
         }
@@ -1014,7 +1017,7 @@ impl Stage for SignStage {
 
                     let show_output = docker_sign_cfg.output
                         .as_ref()
-                        .map(|s| s.as_bool())
+                        .map(|s| s.evaluates_to_true(|tmpl| ctx.render_template(tmpl)))
                         .unwrap_or(true);
                     if show_output {
                         if !stdout_str.is_empty() {
@@ -2192,7 +2195,7 @@ cmd: "gpg"
 output: true
 "#;
         let cfg: SignConfig = serde_yaml_ng::from_str(yaml).unwrap();
-        assert_eq!(cfg.output, Some(true));
+        assert!(cfg.output.unwrap().as_bool());
     }
 
     #[test]
@@ -2214,7 +2217,7 @@ if: "{{ IsSnapshot }}"
 artifacts: all
 "#;
         let cfg: SignConfig = serde_yaml_ng::from_str(yaml).unwrap();
-        assert_eq!(cfg.output, Some(true));
+        assert!(cfg.output.unwrap().as_bool());
         assert_eq!(cfg.if_condition.as_deref(), Some("{{ IsSnapshot }}"));
         assert_eq!(cfg.artifacts.as_deref(), Some("all"));
     }
@@ -2700,7 +2703,7 @@ crates: []
             stdin_file: None,
             env: None,
             certificate: None,
-            output: Some(true),
+            output: Some(StringOrBool::Bool(true)),
             if_condition: None,
         }];
 

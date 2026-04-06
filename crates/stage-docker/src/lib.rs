@@ -5219,4 +5219,35 @@ cmd: cosign
         let cfg: DockerSignConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(cfg.output.is_none());
     }
+
+    #[test]
+    fn test_docker_sign_config_output_template_string() {
+        use anodize_core::config::DockerSignConfig;
+        let yaml = r#"
+cmd: cosign
+output: "{{ .IsSnapshot }}"
+"#;
+        let cfg: DockerSignConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let output = cfg.output.unwrap();
+        // Should be recognized as a template string, not a literal bool
+        assert!(output.is_template());
+    }
+
+    #[test]
+    fn test_sign_config_output_string_or_bool() {
+        use anodize_core::config::SignConfig;
+        let yaml_bool = r#"
+cmd: gpg
+output: true
+"#;
+        let cfg: SignConfig = serde_yaml_ng::from_str(yaml_bool).unwrap();
+        assert!(cfg.output.unwrap().as_bool());
+
+        let yaml_str = r#"
+cmd: gpg
+output: "false"
+"#;
+        let cfg2: SignConfig = serde_yaml_ng::from_str(yaml_str).unwrap();
+        assert!(!cfg2.output.unwrap().as_bool());
+    }
 }
