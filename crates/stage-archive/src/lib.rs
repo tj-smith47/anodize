@@ -883,10 +883,18 @@ impl Stage for ArchiveStage {
         let mut new_artifacts: Vec<Artifact> = Vec::new();
 
         for (crate_name, archive_cfgs) in &work {
-            // Collect Binary artifacts for this crate
+            // Archive all build artifact types, matching GoReleaser
+            // (Binary, UniversalBinary, Header, CArchive, CShared).
+            let archivable_kinds = [
+                ArtifactKind::Binary,
+                ArtifactKind::UniversalBinary,
+                ArtifactKind::Header,
+                ArtifactKind::CArchive,
+                ArtifactKind::CShared,
+            ];
             let all_binaries: Vec<Artifact> = ctx
                 .artifacts
-                .by_kind_and_crate(ArtifactKind::Binary, crate_name)
+                .by_kinds_and_crate(&archivable_kinds, crate_name)
                 .into_iter()
                 .cloned()
                 .collect();

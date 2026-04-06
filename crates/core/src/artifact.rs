@@ -271,6 +271,13 @@ impl ArtifactRegistry {
             .collect()
     }
 
+    pub fn by_kinds_and_crate(&self, kinds: &[ArtifactKind], crate_name: &str) -> Vec<&Artifact> {
+        self.artifacts
+            .iter()
+            .filter(|a| kinds.contains(&a.kind) && a.crate_name == crate_name)
+            .collect()
+    }
+
     pub fn all(&self) -> &[Artifact] {
         &self.artifacts
     }
@@ -465,6 +472,48 @@ mod tests {
     fn test_empty_query() {
         let registry = ArtifactRegistry::new();
         assert!(registry.by_kind(ArtifactKind::Binary).is_empty());
+    }
+
+    #[test]
+    fn test_by_kinds_and_crate() {
+        let mut registry = ArtifactRegistry::new();
+        registry.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: "bin".to_string(),
+            path: PathBuf::from("bin"),
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+        registry.add(Artifact {
+            kind: ArtifactKind::UniversalBinary,
+            name: "ubin".to_string(),
+            path: PathBuf::from("ubin"),
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+        registry.add(Artifact {
+            kind: ArtifactKind::Header,
+            name: "hdr".to_string(),
+            path: PathBuf::from("hdr"),
+            target: None,
+            crate_name: "other".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        let results = registry.by_kinds_and_crate(
+            &[ArtifactKind::Binary, ArtifactKind::UniversalBinary],
+            "app",
+        );
+        assert_eq!(results.len(), 2);
+
+        // Header belongs to "other" crate, not "app"
+        let results = registry.by_kinds_and_crate(&[ArtifactKind::Header], "app");
+        assert_eq!(results.len(), 0);
     }
 
     #[test]
