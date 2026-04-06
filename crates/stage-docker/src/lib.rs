@@ -5187,4 +5187,36 @@ crates:
             "must not double-prefix"
         );
     }
+
+    #[test]
+    fn test_docker_sign_config_output_bool() {
+        use anodize_core::config::DockerSignConfig;
+        let yaml = r#"
+cmd: cosign
+output: true
+"#;
+        let cfg: DockerSignConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(cfg.output.unwrap().as_bool());
+    }
+
+    #[test]
+    fn test_docker_sign_config_output_string() {
+        use anodize_core::config::DockerSignConfig;
+        let yaml = r#"
+cmd: cosign
+output: "false"
+"#;
+        let cfg: DockerSignConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(!cfg.output.unwrap().as_bool());
+    }
+
+    #[test]
+    fn test_docker_sign_config_output_missing() {
+        use anodize_core::config::DockerSignConfig;
+        let yaml = r#"
+cmd: cosign
+"#;
+        let cfg: DockerSignConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(cfg.output.is_none());
+    }
 }

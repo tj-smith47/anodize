@@ -4067,7 +4067,8 @@ pub struct DockerSignConfig {
     #[serde(default, deserialize_with = "deserialize_env_map")]
     pub env: Option<HashMap<String, String>>,
     /// Capture and log stdout/stderr of the docker signing command.
-    pub output: Option<bool>,
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub output: Option<StringOrBool>,
     /// Template-conditional: skip this docker sign config if rendered result is "false" or empty.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,

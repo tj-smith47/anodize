@@ -1012,7 +1012,11 @@ impl Stage for SignStage {
                     let stdout_str = String::from_utf8_lossy(&output.stdout).to_string();
                     let stderr_str = String::from_utf8_lossy(&output.stderr).to_string();
 
-                    if docker_sign_cfg.output.unwrap_or(true) {
+                    let show_output = docker_sign_cfg.output
+                        .as_ref()
+                        .map(|s| s.as_bool())
+                        .unwrap_or(true);
+                    if show_output {
                         if !stdout_str.is_empty() {
                             log.status(&format!("[docker-sign stdout] {}", stdout_str.trim()));
                         }
