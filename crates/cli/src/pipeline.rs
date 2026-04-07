@@ -506,6 +506,7 @@ impl Pipeline {
             "build",
             "upx",
             "archive",
+            "makeself",
             "nfpm",
             "snapcraft",
             "snapcraft-publish",
@@ -517,6 +518,7 @@ impl Pipeline {
             "flatpak",
             "notarize",
             "source",
+            "srpm",
             "templatefiles",
             "changelog",
             "checksum",
@@ -592,6 +594,8 @@ pub fn build_release_pipeline() -> Pipeline {
     use anodize_stage_flatpak::FlatpakStage;
     use anodize_stage_notarize::NotarizeStage;
     use anodize_stage_templatefiles::TemplateFilesStage;
+    use anodize_stage_makeself::MakeselfStage;
+    use anodize_stage_srpm::SrpmStage;
 
     let mut p = Pipeline::new();
     p.add(Box::new(BuildStage));
@@ -599,6 +603,8 @@ pub fn build_release_pipeline() -> Pipeline {
     // Changelog runs before archive so release notes are available for archive naming.
     p.add(Box::new(ChangelogStage));
     p.add(Box::new(ArchiveStage));
+    // Makeself runs after archive (it packages binaries into self-extracting archives).
+    p.add(Box::new(MakeselfStage));
     p.add(Box::new(NfpmStage));
     p.add(Box::new(SnapcraftStage));
     // AppBundle must run before DMG so signed bundles can be packaged into disk images.
@@ -611,6 +617,8 @@ pub fn build_release_pipeline() -> Pipeline {
     // Notarize runs after AppBundle, DMG, and PKG stages but before checksum/sign.
     p.add(Box::new(NotarizeStage));
     p.add(Box::new(SourceStage));
+    // SRPM runs after source (it requires a source archive).
+    p.add(Box::new(SrpmStage));
     // Template files run after source but before checksum so they are checksummed and signed.
     p.add(Box::new(TemplateFilesStage));
     p.add(Box::new(ChecksumStage));
@@ -681,11 +689,14 @@ pub fn build_merge_pipeline() -> Pipeline {
     use anodize_stage_flatpak::FlatpakStage;
     use anodize_stage_notarize::NotarizeStage;
     use anodize_stage_templatefiles::TemplateFilesStage;
+    use anodize_stage_makeself::MakeselfStage;
+    use anodize_stage_srpm::SrpmStage;
 
     let mut p = Pipeline::new();
     // Changelog runs before archive so release notes are available for archive naming.
     p.add(Box::new(ChangelogStage));
     p.add(Box::new(ArchiveStage));
+    p.add(Box::new(MakeselfStage));
     p.add(Box::new(NfpmStage));
     p.add(Box::new(SnapcraftStage));
     // AppBundle must run before DMG so signed bundles can be packaged into disk images.
@@ -698,6 +709,7 @@ pub fn build_merge_pipeline() -> Pipeline {
     // Notarize runs after AppBundle, DMG, and PKG stages but before checksum/sign.
     p.add(Box::new(NotarizeStage));
     p.add(Box::new(SourceStage));
+    p.add(Box::new(SrpmStage));
     // Template files run after source but before checksum so they are checksummed and signed.
     p.add(Box::new(TemplateFilesStage));
     p.add(Box::new(ChecksumStage));

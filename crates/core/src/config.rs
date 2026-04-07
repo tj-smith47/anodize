@@ -172,6 +172,18 @@ pub struct Config {
     /// When configured, tag discovery filters by tag_prefix and the working
     /// directory is scoped to dir.
     pub monorepo: Option<MonorepoConfig>,
+    /// Makeself self-extracting archive configurations.
+    #[serde(default, alias = "makeself", deserialize_with = "deserialize_makeselfs")]
+    #[schemars(schema_with = "makeselfs_schema")]
+    pub makeselfs: Vec<MakeselfConfig>,
+    /// Source RPM configuration.
+    pub srpm: Option<SrpmConfig>,
+    /// Milestone closing configurations.
+    pub milestones: Option<Vec<MilestoneConfig>>,
+    /// Generic HTTP upload configurations.
+    pub uploads: Option<Vec<UploadConfig>>,
+    /// AUR source package publishing configurations (source-only PKGBUILD, not -bin).
+    pub aur_sources: Option<Vec<AurSourceConfig>>,
 }
 
 /// Helper schema function for the signs field (accepts object or array).
@@ -254,6 +266,11 @@ impl Default for Config {
             metadata: None,
             template_files: None,
             monorepo: None,
+            makeselfs: Vec::new(),
+            srpm: None,
+            milestones: None,
+            uploads: None,
+            aur_sources: None,
         }
     }
 }
@@ -1758,8 +1775,10 @@ pub struct PublishConfig {
     pub chocolatey: Option<ChocolateyConfig>,
     /// WinGet manifest publishing configuration.
     pub winget: Option<WingetConfig>,
-    /// AUR (Arch User Repository) package publishing configuration.
+    /// AUR (Arch User Repository) binary package publishing configuration.
     pub aur: Option<AurConfig>,
+    /// AUR source package publishing configuration (source-only PKGBUILD, not -bin).
+    pub aur_source: Option<AurSourceConfig>,
     /// Krew (kubectl plugin manager) manifest publishing configuration.
     pub krew: Option<KrewConfig>,
     /// Nix derivation publishing configuration.
@@ -3129,8 +3148,11 @@ pub struct SnapcraftConfig {
     pub channel_templates: Option<Vec<String>>,
     /// Security confinement level: strict, devmode, classic.
     pub confinement: Option<String>,
-    /// Required interface permissions (e.g. home, network, personal-files).
-    pub plugs: Option<Vec<String>>,
+    /// Top-level snap plug definitions (structured map).
+    /// Keys are plug names, values are either `null` (simple plug) or an object
+    /// with `interface` and optional attributes (e.g. `{ interface: "content", target: "$SNAP/shared" }`).
+    /// GoReleaser uses `map[string]any` for this field.
+    pub plugs: Option<HashMap<String, serde_json::Value>>,
     /// Shared code/data interface slots for other snaps.
     pub slots: Option<Vec<String>>,
     /// Required snapd features/versions.
@@ -5313,6 +5335,320 @@ where
     }
 
     deserializer.deserialize_any(SpaceSepOrVecVisitor)
+}
+
+// ---------------------------------------------------------------------------
+// MakeselfConfig
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct MakeselfConfig {
+    /// Unique identifier for this makeself config (default: "default").
+    pub id: Option<String>,
+    /// Build IDs filter: only include artifacts whose `id` is in this list.
+    pub ids: Option<Vec<String>>,
+    /// Output filename template (default includes project, version, os, arch).
+    pub name_template: Option<String>,
+    /// Display name embedded in the self-extracting archive.
+    pub name: Option<String>,
+    /// Startup script to run when the archive is extracted and executed.
+    /// Required — the archive will not be created without this.
+    pub script: Option<String>,
+    /// Description for LSM metadata.
+    pub description: Option<String>,
+    /// Maintainer for LSM metadata.
+    pub maintainer: Option<String>,
+    /// Keywords for LSM metadata.
+    pub keywords: Option<Vec<String>>,
+    /// Homepage URL for LSM metadata.
+    pub homepage: Option<String>,
+    /// License for LSM metadata.
+    pub license: Option<String>,
+    /// Compression algorithm: gzip, bzip2, xz, lzo, compress, or none.
+    pub compression: Option<String>,
+    /// Extra arguments passed to the makeself command.
+    pub extra_args: Option<Vec<String>>,
+    /// Additional files to include in the archive.
+    pub files: Option<Vec<MakeselfFile>>,
+    /// Target OS filter (default: ["linux", "darwin"]).
+    pub goos: Option<Vec<String>>,
+    /// Target architecture filter.
+    pub goarch: Option<Vec<String>>,
+    /// Disable this config. Accepts bool or template string.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub disable: Option<StringOrBool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct MakeselfFile {
+    /// Source file path (relative to project root).
+    #[serde(alias = "src")]
+    pub source: String,
+    /// Destination path inside the archive.
+    #[serde(alias = "dst")]
+    pub destination: Option<String>,
+    /// Strip the parent directory from the source path.
+    pub strip_parent: Option<bool>,
+}
+
+/// Deserialize makeselfs: single object → vec of one, array → vec of many.
+fn deserialize_makeselfs<'de, D>(deserializer: D) -> Result<Vec<MakeselfConfig>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::{self, Visitor};
+
+    struct MakeselfVisitor;
+
+    impl<'de> Visitor<'de> for MakeselfVisitor {
+        type Value = Vec<MakeselfConfig>;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a makeself config object or an array of makeself config objects")
+        }
+
+        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut configs = Vec::new();
+            while let Some(item) = seq.next_element::<MakeselfConfig>()? {
+                configs.push(item);
+            }
+            Ok(configs)
+        }
+
+        fn visit_map<M: de::MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
+            let config =
+                MakeselfConfig::deserialize(de::value::MapAccessDeserializer::new(map))?;
+            Ok(vec![config])
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+    }
+
+    deserializer.deserialize_any(MakeselfVisitor)
+}
+
+fn makeselfs_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
+    let mut schema = generator.subschema_for::<Vec<MakeselfConfig>>();
+    if let schemars::schema::Schema::Object(ref mut obj) = schema {
+        obj.metadata().description =
+            Some("Makeself self-extracting archive configurations. Accepts a single object or array.".to_owned());
+    }
+    schema
+}
+
+// ---------------------------------------------------------------------------
+// SrpmConfig
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct SrpmConfig {
+    /// Enable source RPM generation. Default: false.
+    pub enabled: Option<bool>,
+    /// Package name (default: project_name).
+    pub package_name: Option<String>,
+    /// Output filename template.
+    pub file_name_template: Option<String>,
+    /// Path to the RPM spec file template.
+    pub spec_file: Option<String>,
+    /// RPM epoch.
+    pub epoch: Option<String>,
+    /// RPM section.
+    pub section: Option<String>,
+    /// Package maintainer.
+    pub maintainer: Option<String>,
+    /// Package vendor.
+    pub vendor: Option<String>,
+    /// Summary line.
+    pub summary: Option<String>,
+    /// RPM group.
+    pub group: Option<String>,
+    /// Package description.
+    pub description: Option<String>,
+    /// License identifier.
+    pub license: Option<String>,
+    /// License file name to include.
+    pub license_file_name: Option<String>,
+    /// Homepage URL.
+    pub url: Option<String>,
+    /// RPM packager field.
+    pub packager: Option<String>,
+    /// Compression algorithm (gzip, xz, zstd, none).
+    pub compression: Option<String>,
+    /// Documentation files to include.
+    pub docs: Option<Vec<String>>,
+    /// Additional contents to include in the source RPM.
+    pub contents: Option<Vec<NfpmContentConfig>>,
+    /// RPM signature configuration.
+    pub signature: Option<SrpmSignatureConfig>,
+    /// Disable this config. Accepts bool or template string.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub disable: Option<StringOrBool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct SrpmSignatureConfig {
+    /// Path to the GPG key file for signing.
+    pub key_file: Option<String>,
+}
+
+/// NfpmContentConfig is reused for SRPM contents (shared shape with nFPM).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct NfpmContentConfig {
+    /// Source file path.
+    #[serde(alias = "src")]
+    pub source: Option<String>,
+    /// Destination path in the package.
+    #[serde(alias = "dst")]
+    pub destination: String,
+    /// Content type: symlink, ghost, config, dir, tree.
+    #[serde(rename = "type")]
+    pub type_: Option<String>,
+    /// Target packager (e.g., "rpm", "deb").
+    pub packager: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// MilestoneConfig
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct MilestoneConfig {
+    /// Repository owner/name. Auto-detected from git remote if not set.
+    pub repo: Option<ScmRepoConfig>,
+    /// Close the milestone on release. Default: false.
+    pub close: Option<bool>,
+    /// Fail the pipeline if milestone close fails. Default: false.
+    pub fail_on_error: Option<bool>,
+    /// Milestone name template (default: "{{ .Tag }}").
+    pub name_template: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// UploadConfig (generic HTTP upload)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct UploadConfig {
+    /// Human-readable name for this upload config.
+    pub name: Option<String>,
+    /// Build IDs filter: only upload artifacts whose `id` is in this list.
+    pub ids: Option<Vec<String>>,
+    /// File extension filter: only upload artifacts with these extensions.
+    pub exts: Option<Vec<String>>,
+    /// Target URL template (supports template variables like {{ .ProjectName }}, {{ .Version }}).
+    pub target: String,
+    /// Username for HTTP basic auth (or env var template).
+    pub username: Option<String>,
+    /// Password for HTTP basic auth (env var template recommended).
+    pub password: Option<String>,
+    /// HTTP method: PUT or POST (default: PUT).
+    pub method: Option<String>,
+    /// Upload mode: "archive" (default) or "binary".
+    pub mode: Option<String>,
+    /// Header name for the SHA256 checksum of the artifact.
+    pub checksum_header: Option<String>,
+    /// Path to PEM-encoded trusted CA certificates.
+    pub trusted_certificates: Option<String>,
+    /// Path to PEM-encoded client X.509 certificate for mTLS.
+    pub client_x509_cert: Option<String>,
+    /// Path to PEM-encoded client X.509 key for mTLS.
+    pub client_x509_key: Option<String>,
+    /// Include checksums in uploaded artifacts.
+    pub checksum: Option<bool>,
+    /// Include signatures in uploaded artifacts.
+    pub signature: Option<bool>,
+    /// Include metadata artifacts in uploaded artifacts.
+    pub meta: Option<bool>,
+    /// Custom HTTP headers (each value is template-expanded).
+    pub custom_headers: Option<HashMap<String, String>>,
+    /// When true, use the artifact name as-is (don't append to target URL).
+    pub custom_artifact_name: Option<bool>,
+    /// Extra files to include in uploading.
+    pub extra_files: Option<Vec<ExtraFile>>,
+    /// Upload only extra files, skip normal artifacts.
+    pub extra_files_only: Option<bool>,
+    /// Skip condition template (if rendered to "true", skip this upload).
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub disable: Option<StringOrBool>,
+}
+
+// ---------------------------------------------------------------------------
+// AurSourceConfig
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default)]
+pub struct AurSourceConfig {
+    /// Override the package name (default: crate name, no -bin suffix).
+    #[serde(alias = "package_name")]
+    pub name: Option<String>,
+    /// Build IDs filter.
+    pub ids: Option<Vec<String>>,
+    /// Commit author with optional signing.
+    pub commit_author: Option<CommitAuthorConfig>,
+    /// Custom commit message template.
+    pub commit_msg_template: Option<String>,
+    /// Short description of the package.
+    pub description: Option<String>,
+    /// Project homepage URL.
+    pub homepage: Option<String>,
+    /// SPDX license identifier.
+    pub license: Option<String>,
+    /// Skip publishing. `"true"` always skips; `"auto"` skips for prereleases.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub skip_upload: Option<StringOrBool>,
+    /// Custom URL template for download URLs.
+    pub url_template: Option<String>,
+    /// PKGBUILD maintainer entries.
+    pub maintainers: Option<Vec<String>>,
+    /// Contributors listed in PKGBUILD comments.
+    pub contributors: Option<Vec<String>>,
+    /// Packages this PKGBUILD provides.
+    pub provides: Option<Vec<String>>,
+    /// Packages this PKGBUILD conflicts with.
+    pub conflicts: Option<Vec<String>>,
+    /// Runtime dependencies.
+    pub depends: Option<Vec<String>>,
+    /// Optional dependencies.
+    pub optdepends: Option<Vec<String>>,
+    /// Build-time dependencies (source packages need these).
+    pub makedepends: Option<Vec<String>>,
+    /// Backup files to preserve on upgrade.
+    pub backup: Option<Vec<String>>,
+    /// Package release number (default: "1").
+    pub rel: Option<String>,
+    /// Custom `prepare()` function body for PKGBUILD.
+    pub prepare: Option<String>,
+    /// Custom `build()` function body for PKGBUILD.
+    pub build: Option<String>,
+    /// Custom `package()` function body for PKGBUILD.
+    pub package: Option<String>,
+    /// AUR SSH git URL.
+    pub git_url: Option<String>,
+    /// Custom SSH command for git operations.
+    pub git_ssh_command: Option<String>,
+    /// Path to SSH private key file.
+    pub private_key: Option<String>,
+    /// Subdirectory in the git repo for committed files.
+    pub directory: Option<String>,
+    /// Disable this config.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub disable: Option<StringOrBool>,
+    /// Explicit architecture list (default: auto-detect from artifacts).
+    pub arches: Option<Vec<String>>,
 }
 
 // ---------------------------------------------------------------------------

@@ -41,6 +41,7 @@ dependencies = [
  "anodize-stage-dmg",
  "anodize-stage-docker",
  "anodize-stage-flatpak",
+ "anodize-stage-makeself",
  "anodize-stage-msi",
  "anodize-stage-nfpm",
  "anodize-stage-notarize",
@@ -51,6 +52,7 @@ dependencies = [
  "anodize-stage-sign",
  "anodize-stage-snapcraft",
  "anodize-stage-source",
+ "anodize-stage-srpm",
  "anodize-stage-templatefiles",
  "anodize-stage-upx",
  "anyhow",
@@ -68,6 +70,7 @@ dependencies = [
  "serde_yaml_ng",
  "serial_test",
  "tempfile",
+ "tokio",
  "toml",
 ]
 
@@ -241,6 +244,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "anodize-stage-makeself"
+version = "0.1.0"
+dependencies = [
+ "anodize-core",
+ "anyhow",
+ "serde_yaml_ng",
+]
+
+[[package]]
 name = "anodize-stage-msi"
 version = "0.1.0"
 dependencies = [
@@ -368,6 +380,17 @@ dependencies = [
  "tar",
  "tempfile",
  "toml",
+]
+
+[[package]]
+name = "anodize-stage-srpm"
+version = "0.1.0"
+dependencies = [
+ "anodize-core",
+ "anyhow",
+ "chrono",
+ "glob",
+ "serde_yaml_ng",
 ]
 
 [[package]]

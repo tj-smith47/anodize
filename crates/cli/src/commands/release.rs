@@ -474,6 +474,11 @@ fn run_post_pipeline(
         )?;
     }
 
+    // Close milestones
+    if let Some(ref milestones) = config.milestones {
+        close_milestones(milestones, ctx, dry_run, log)?;
+    }
+
     // Run after hooks
     if let Some(after) = &config.after
         && let Some(ref hooks) = after.post
@@ -482,6 +487,257 @@ fn run_post_pipeline(
     }
 
     Ok(())
+}
+
+/// Close milestones on the VCS provider after a release.
+///
+/// For each milestone config with `close: true`, renders the name template,
+/// resolves the repo owner/name, and calls the GitHub/GitLab/Gitea API to
+/// close the milestone. Errors are logged as warnings unless `fail_on_error` is set.
+fn close_milestones(
+    milestones: &[anodize_core::config::MilestoneConfig],
+    ctx: &mut Context,
+    dry_run: bool,
+    log: &StageLogger,
+) -> Result<()> {
+    let token = ctx.options.token.clone().unwrap_or_default();
+
+    for milestone_cfg in milestones {
+        if !milestone_cfg.close.unwrap_or(false) {
+            continue;
+        }
+
+        let name_template = milestone_cfg
+            .name_template
+            .as_deref()
+            .unwrap_or("{{ Tag }}");
+        let milestone_name = ctx
+            .render_template(name_template)
+            .context("milestone: render name_template")?;
+
+        if milestone_name.is_empty() {
+            log.verbose("milestone: skipping empty name");
+            continue;
+        }
+
+        // Determine repo owner/name from milestone config or release config
+        let (owner, repo_name) = resolve_milestone_repo(milestone_cfg, &ctx.config);
+
+        if owner.is_empty() || repo_name.is_empty() {
+            if milestone_cfg.fail_on_error.unwrap_or(false) {
+                anyhow::bail!("milestone: repo owner/name not configured");
+            }
+            log.warn("milestone: skipping — repo owner/name not configured");
+            continue;
+        }
+
+        if dry_run {
+            log.status(&format!(
+                "(dry-run) would close milestone '{}' on {}/{}",
+                milestone_name, owner, repo_name
+            ));
+            continue;
+        }
+
+        log.status(&format!(
+            "closing milestone '{}' on {}/{}",
+            milestone_name, owner, repo_name
+        ));
+
+        // Determine provider type — only GitHub is currently supported.
+        let provider = resolve_milestone_provider(milestone_cfg, &ctx.config);
+        if provider != "github" {
+            let msg = format!(
+                "milestone: closing milestones on '{}' is not yet supported (only GitHub)",
+                provider
+            );
+            if milestone_cfg.fail_on_error.unwrap_or(false) {
+                anyhow::bail!("{}", msg);
+            }
+            log.warn(&msg);
+            continue;
+        }
+
+        // Close the milestone via GitHub API
+        match close_milestone_github(&token, &owner, &repo_name, &milestone_name) {
+            Ok(()) => {
+                log.status(&format!("milestone '{}' closed", milestone_name));
+            }
+            Err(e) => {
+                if milestone_cfg.fail_on_error.unwrap_or(false) {
+                    return Err(e.context(format!(
+                        "milestone: failed to close '{}'",
+                        milestone_name
+                    )));
+                }
+                log.warn(&format!(
+                    "milestone: could not close '{}': {}",
+                    milestone_name, e
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn resolve_milestone_repo(
+    milestone_cfg: &anodize_core::config::MilestoneConfig,
+    config: &Config,
+) -> (String, String) {
+    if let Some(ref repo_cfg) = milestone_cfg.repo {
+        if !repo_cfg.owner.is_empty() && !repo_cfg.name.is_empty() {
+            return (repo_cfg.owner.clone(), repo_cfg.name.clone());
+        }
+    }
+
+    // Fall back to the first crate's release config
+    for crate_cfg in &config.crates {
+        if let Some(ref release_cfg) = crate_cfg.release {
+            if let Some(ref gh) = release_cfg.github {
+                return (gh.owner.clone(), gh.name.clone());
+            }
+            if let Some(ref gl) = release_cfg.gitlab {
+                return (gl.owner.clone(), gl.name.clone());
+            }
+            if let Some(ref gt) = release_cfg.gitea {
+                return (gt.owner.clone(), gt.name.clone());
+            }
+        }
+    }
+
+    (String::new(), String::new())
+}
+
+/// Determine the SCM provider type for milestone operations.
+/// Returns "github", "gitlab", "gitea", or "unknown".
+fn resolve_milestone_provider(
+    milestone_cfg: &anodize_core::config::MilestoneConfig,
+    config: &Config,
+) -> String {
+    // If the milestone config specifies a repo, check what provider type the
+    // first crate's release config uses (since MilestoneConfig.repo doesn't
+    // have a provider field).
+    let _ = milestone_cfg;
+    for crate_cfg in &config.crates {
+        if let Some(ref release_cfg) = crate_cfg.release {
+            if release_cfg.github.is_some() {
+                return "github".to_string();
+            }
+            if release_cfg.gitlab.is_some() {
+                return "gitlab".to_string();
+            }
+            if release_cfg.gitea.is_some() {
+                return "gitea".to_string();
+            }
+        }
+    }
+    "unknown".to_string()
+}
+
+/// Close a GitHub milestone by name using the REST API.
+fn close_milestone_github(
+    token: &str,
+    owner: &str,
+    repo: &str,
+    milestone_name: &str,
+) -> Result<()> {
+    if token.is_empty() {
+        anyhow::bail!("no authentication token available for milestone close");
+    }
+
+    let rt = tokio::runtime::Runtime::new().context("milestone: create tokio runtime")?;
+    rt.block_on(async {
+        let client = reqwest::Client::new();
+
+        // List milestones with pagination to find the one with the matching title.
+        // GitHub returns at most 100 per page.
+        let mut page = 1u32;
+        let mut milestone_number: Option<u64> = None;
+
+        loop {
+            let url = format!(
+                "https://api.github.com/repos/{}/{}/milestones?state=open&per_page=100&page={}",
+                owner, repo, page
+            );
+            let resp = client
+                .get(&url)
+                .header("Authorization", format!("Bearer {}", token))
+                .header("Accept", "application/vnd.github+json")
+                .header("User-Agent", "anodize")
+                .send()
+                .await
+                .context("milestone: list milestones request failed")?;
+
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let body = resp.text().await.unwrap_or_default();
+                anyhow::bail!(
+                    "milestone: list milestones failed (HTTP {}): {}",
+                    status,
+                    body
+                );
+            }
+
+            let milestones: Vec<serde_json::Value> = resp
+                .json()
+                .await
+                .context("milestone: parse milestones response")?;
+
+            if milestones.is_empty() {
+                break;
+            }
+
+            if let Some(m) = milestones.iter().find(|m| {
+                m.get("title")
+                    .and_then(|t| t.as_str())
+                    .is_some_and(|t| t == milestone_name)
+            }) {
+                milestone_number = m.get("number").and_then(|n| n.as_u64());
+                break;
+            }
+
+            // If we got fewer than 100 results, there are no more pages.
+            if milestones.len() < 100 {
+                break;
+            }
+            page += 1;
+        }
+
+        let milestone_number = match milestone_number {
+            Some(n) => n,
+            None => {
+                // Milestone not found -- treat as success (may have been closed already)
+                return Ok(());
+            }
+        };
+
+        // Close the milestone
+        let close_url = format!(
+            "https://api.github.com/repos/{}/{}/milestones/{}",
+            owner, repo, milestone_number
+        );
+        let resp = client
+            .patch(&close_url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "anodize")
+            .json(&serde_json::json!({ "state": "closed" }))
+            .send()
+            .await
+            .context("milestone: close milestone request failed")?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!(
+                "milestone: close failed (HTTP {}): {}",
+                status,
+                body
+            );
+        }
+
+        Ok(())
+    })
 }
 
 /// Detect which crates have changes since their last tag.

@@ -70,7 +70,7 @@ fn artifact_kinds_for_mode(mode: &str) -> Vec<ArtifactKind> {
 
 /// Collect artifacts matching mode, optional ID filter, and optional extension filter.
 /// Also collects checksum/signature/metadata artifacts and extra files when configured.
-fn collect_upload_artifacts<'a>(
+pub fn collect_upload_artifacts<'a>(
     ctx: &'a Context,
     mode: &str,
     ids: Option<&[String]>,
@@ -150,7 +150,7 @@ fn collect_upload_artifacts<'a>(
 // ---------------------------------------------------------------------------
 
 /// Build a reqwest blocking client with optional mTLS and trusted CA certs.
-fn build_reqwest_client(
+pub fn build_reqwest_client(
     client_cert_path: Option<&str>,
     client_key_path: Option<&str>,
     trusted_certs_pem: Option<&str>,
@@ -233,7 +233,7 @@ fn render_artifact_url(
 // ---------------------------------------------------------------------------
 
 /// Upload a single artifact to the target URL.
-fn upload_single_artifact(
+pub fn upload_single_artifact(
     client: &reqwest::blocking::Client,
     method: &str,
     url: &str,

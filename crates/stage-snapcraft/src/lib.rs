@@ -41,8 +41,8 @@ struct SnapcraftYaml {
     architectures: Vec<String>,
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     apps: HashMap<String, SnapcraftYamlApp>,
-    #[serde(skip_serializing_if = "is_empty_vec")]
-    plugs: Vec<String>,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    plugs: HashMap<String, serde_json::Value>,
     #[serde(skip_serializing_if = "is_empty_vec")]
     slots: Vec<String>,
     #[serde(skip_serializing_if = "HashMap::is_empty")]
@@ -362,7 +362,7 @@ pub fn generate_snapcraft_yaml(
         summary,
         description,
         base,
-        grade: config.grade.clone(),
+        grade: Some(config.grade.clone().unwrap_or_else(|| "stable".to_string())),
         confinement,
         license: config.license.clone(),
         title: config.title.clone(),
@@ -370,7 +370,7 @@ pub fn generate_snapcraft_yaml(
         assumes: config.assumes.clone().unwrap_or_default(),
         architectures,
         apps,
-        plugs: config.plugs.clone().unwrap_or_default(),
+        plugs: config.plugs.clone().unwrap_or_default(),  // structured map (HashMap<String, Value>)
         slots: config.slots.clone().unwrap_or_default(),
         layouts,
         hooks: config.hooks.clone().unwrap_or_default(),
@@ -416,6 +416,38 @@ pub fn snapcraft_upload_command(snap_path: &str, channels: Option<&[String]>) ->
     }
 
     args
+}
+
+// ---------------------------------------------------------------------------
+// Channel auto-population based on grade
+// ---------------------------------------------------------------------------
+
+/// Resolve effective channels for snapcraft upload.
+///
+/// If `channel_templates` is non-empty, returns it as-is. Otherwise,
+/// auto-populates channels based on the `grade` setting:
+/// - `"devel"` -> `["edge", "beta"]`
+/// - `"stable"` (default) -> `["edge", "beta", "candidate", "stable"]`
+///
+/// This matches GoReleaser's behavior.
+pub fn resolve_effective_channels(
+    channel_templates: Option<&[String]>,
+    grade: Option<&str>,
+) -> Option<Vec<String>> {
+    if channel_templates.is_some_and(|v| !v.is_empty()) {
+        return channel_templates.map(|v| v.to_vec());
+    }
+    let grade = grade.unwrap_or("stable");
+    Some(if grade == "devel" {
+        vec!["edge".to_string(), "beta".to_string()]
+    } else {
+        vec![
+            "edge".to_string(),
+            "beta".to_string(),
+            "candidate".to_string(),
+            "stable".to_string(),
+        ]
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -899,16 +931,20 @@ impl Stage for SnapcraftPublishStage {
                 for artifact in &matching {
                     let snap_path = artifact.path.to_string_lossy();
 
+                    let effective_channels = resolve_effective_channels(
+                        snap_cfg.channel_templates.as_deref(),
+                        snap_cfg.grade.as_deref(),
+                    );
+                    let upload_args =
+                        snapcraft_upload_command(&snap_path, effective_channels.as_deref());
+
                     if dry_run {
                         log.status(&format!(
-                            "(dry-run) would run: snapcraft upload {}",
-                            snap_path,
+                            "(dry-run) would run: {}",
+                            upload_args.join(" "),
                         ));
                         continue;
                     }
-
-                    let upload_args =
-                        snapcraft_upload_command(&snap_path, snap_cfg.channel_templates.as_deref());
                     log.status(&format!("running: {}", upload_args.join(" ")));
                     let upload_output = Command::new(&upload_args[0])
                         .args(&upload_args[1..])
@@ -1043,23 +1079,31 @@ mod tests {
 
     #[test]
     fn test_generate_snapcraft_yaml_with_plugs_slots() {
+        let mut plugs = HashMap::new();
+        plugs.insert("network".to_string(), serde_json::Value::Null);
+        plugs.insert("home".to_string(), serde_json::Value::Null);
+        plugs.insert(
+            "personal-files".to_string(),
+            serde_json::json!({ "interface": "personal-files", "read": ["/etc/myapp"] }),
+        );
+
         let cfg = SnapcraftConfig {
             name: Some("mysnap".to_string()),
-            plugs: Some(vec![
-                "network".to_string(),
-                "home".to_string(),
-                "personal-files".to_string(),
-            ]),
+            plugs: Some(plugs),
             slots: Some(vec!["dbus-slot".to_string()]),
             ..Default::default()
         };
         let yaml = generate_snapcraft_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
         assert!(yaml.contains("plugs:"), "missing plugs section");
-        assert!(yaml.contains("- network"), "missing network plug");
-        assert!(yaml.contains("- home"), "missing home plug");
+        assert!(yaml.contains("network:"), "missing network plug");
+        assert!(yaml.contains("home:"), "missing home plug");
         assert!(
-            yaml.contains("- personal-files"),
+            yaml.contains("personal-files:"),
             "missing personal-files plug"
+        );
+        assert!(
+            yaml.contains("interface: personal-files"),
+            "missing interface attribute in personal-files plug"
         );
         assert!(yaml.contains("slots:"), "missing slots section");
         assert!(yaml.contains("- dbus-slot"), "missing dbus-slot slot");
@@ -1207,6 +1251,60 @@ mod tests {
         assert_eq!(cmd[2], "/tmp/out.snap");
         assert_eq!(cmd[3], "--release=edge,beta");
         assert_eq!(cmd.len(), 4);
+    }
+
+    // -----------------------------------------------------------------------
+    // Channel auto-population tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_resolve_effective_channels_devel_grade() {
+        let channels = resolve_effective_channels(None, Some("devel"));
+        assert_eq!(
+            channels.unwrap(),
+            vec!["edge", "beta"],
+        );
+    }
+
+    #[test]
+    fn test_resolve_effective_channels_stable_grade() {
+        let channels = resolve_effective_channels(None, Some("stable"));
+        assert_eq!(
+            channels.unwrap(),
+            vec!["edge", "beta", "candidate", "stable"],
+        );
+    }
+
+    #[test]
+    fn test_resolve_effective_channels_default_grade_is_stable() {
+        // When grade is None, default is "stable"
+        let channels = resolve_effective_channels(None, None);
+        assert_eq!(
+            channels.unwrap(),
+            vec!["edge", "beta", "candidate", "stable"],
+        );
+    }
+
+    #[test]
+    fn test_resolve_effective_channels_explicit_overrides_grade() {
+        let explicit = vec!["edge".to_string()];
+        let channels = resolve_effective_channels(Some(&explicit), Some("stable"));
+        assert_eq!(
+            channels.unwrap(),
+            vec!["edge"],
+            "explicit channel_templates should override grade-based defaults"
+        );
+    }
+
+    #[test]
+    fn test_resolve_effective_channels_empty_explicit_falls_through() {
+        let empty: Vec<String> = Vec::new();
+        let channels = resolve_effective_channels(Some(&empty), Some("devel"));
+        assert_eq!(
+            channels.unwrap(),
+            vec!["edge", "beta"],
+            "empty channel_templates should fall through to grade-based defaults"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1692,8 +1790,8 @@ crates:
           - beta
         confinement: devmode
         plugs:
-          - network
-          - home
+          network: null
+          home: null
         slots:
           - dbus-svc
         assumes:
@@ -1736,7 +1834,9 @@ crates:
         assert_eq!(snap.publish, Some(true));
         assert_eq!(snap.channel_templates.as_ref().unwrap(), &["edge", "beta"]);
         assert_eq!(snap.confinement.as_deref(), Some("devmode"));
-        assert_eq!(snap.plugs.as_ref().unwrap(), &["network", "home"]);
+        let plugs = snap.plugs.as_ref().unwrap();
+        assert!(plugs.contains_key("network"), "missing network plug");
+        assert!(plugs.contains_key("home"), "missing home plug");
         assert_eq!(snap.slots.as_ref().unwrap(), &["dbus-svc"]);
         assert_eq!(snap.assumes.as_ref().unwrap(), &["snapd2.39"]);
 

@@ -164,6 +164,9 @@ pub fn run_publishers(
                     cmd.current_dir(rendered_dir);
                 }
 
+                // System environment (HOME, USER, PATH, TMPDIR, etc.) is inherited
+                // automatically by Command — no env_clear() is used.
+                // Publisher-configured env vars are added on top.
                 if let Some(ref env_map) = publisher.env {
                     for (k, v) in env_map {
                         cmd.env(k, v);
@@ -305,6 +308,19 @@ pub fn build_publisher_command(
         "ArtifactID",
         artifact.metadata.get("id").map(|s| s.as_str()).unwrap_or(""),
     );
+
+    // Expose per-artifact Os, Arch, and Target template variables
+    // (GoReleaser parity: custom publishers can reference {{ .Os }}, {{ .Arch }}, {{ .Target }})
+    if let Some(ref target) = artifact.target {
+        let (os, arch) = anodize_core::target::map_target(target);
+        vars.set("Os", &os);
+        vars.set("Arch", &arch);
+        vars.set("Target", target);
+    } else {
+        vars.set("Os", "");
+        vars.set("Arch", "");
+        vars.set("Target", "");
+    }
 
     // Also expose artifact metadata entries as template vars under the same key
     for (k, v) in &artifact.metadata {
@@ -522,6 +538,26 @@ mod tests {
         .unwrap();
 
         assert_eq!(cmd, "upload --project myapp --version 1.0.0 /dist/myapp");
+    }
+
+    #[test]
+    fn test_build_command_renders_os_arch_target_vars() {
+        let vars = base_vars();
+        let artifact = make_artifact(ArtifactKind::Archive, "/dist/myapp.tar.gz", None);
+        // make_artifact sets target to "x86_64-unknown-linux-gnu"
+
+        let (cmd, _) = build_publisher_command(
+            "deploy --os {{ Os }} --arch {{ Arch }} --target {{ Target }}",
+            None,
+            &artifact,
+            &vars,
+        )
+        .unwrap();
+
+        assert_eq!(
+            cmd,
+            "deploy --os linux --arch amd64 --target x86_64-unknown-linux-gnu"
+        );
     }
 
     #[test]

@@ -112,6 +112,7 @@ pub trait GitHubClient {
 
     /// Delete a release by ID.
     fn delete_release(&self, params: &DeleteReleaseParams) -> anyhow::Result<()>;
+
 }
 
 // ---------------------------------------------------------------------------

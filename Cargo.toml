@@ -24,6 +24,8 @@ members = [
     "crates/stage-flatpak",
     "crates/stage-notarize",
     "crates/stage-templatefiles",
+    "crates/stage-makeself",
+    "crates/stage-srpm",
     "crates/cli",
     "crates/xtask",
 ]
@@ -61,6 +63,8 @@ anodize-stage-appbundle = { path = "crates/stage-appbundle", version = "0.1.0" }
 anodize-stage-flatpak = { path = "crates/stage-flatpak", version = "0.1.0" }
 anodize-stage-notarize = { path = "crates/stage-notarize", version = "0.1.0" }
 anodize-stage-templatefiles = { path = "crates/stage-templatefiles", version = "0.1.0" }
+anodize-stage-makeself = { path = "crates/stage-makeself", version = "0.1.0" }
+anodize-stage-srpm = { path = "crates/stage-srpm", version = "0.1.0" }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"

@@ -1,5 +1,6 @@
 pub mod artifactory;
 pub mod aur;
+pub mod aur_source;
 pub mod chocolatey;
 pub mod cloudsmith;
 pub mod crates_io;
@@ -10,6 +11,7 @@ pub mod krew;
 pub mod nix;
 pub mod npm;
 pub mod scoop;
+pub mod upload;
 pub(crate) mod util;
 pub mod winget;
 
@@ -20,6 +22,8 @@ use anyhow::Result;
 
 use artifactory::publish_to_artifactory;
 use aur::publish_to_aur;
+use aur_source::publish_to_aur_source;
+use upload::publish_to_upload;
 use chocolatey::publish_to_chocolatey;
 use cloudsmith::publish_to_cloudsmith;
 use crates_io::publish_to_crates_io;
@@ -113,6 +117,14 @@ impl Stage for PublishStage {
 
         // 14. Homebrew Casks — top-level publisher (GoReleaser parity).
         publish_top_level_homebrew_casks(ctx, &log)?;
+
+        // 15. Generic HTTP upload — top-level publisher.
+        publish_to_upload(ctx, &log)?;
+
+        // 16. AUR source packages — per-crate publisher.
+        for crate_name in &crates_with_publisher(ctx, &selected, |p| p.aur_source.is_some()) {
+            publish_to_aur_source(ctx, crate_name, &log)?;
+        }
 
         Ok(())
     }
@@ -712,6 +724,7 @@ mod tests {
                     ..Default::default()
                 }),
                 nix: None,
+                aur_source: None,
             }),
             ..Default::default()
         }];
