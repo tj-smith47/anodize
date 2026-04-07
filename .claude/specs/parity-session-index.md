@@ -528,38 +528,32 @@ GoReleaser adds PackageIdentifier to commit message template context and falls b
 GoReleaser templates the `directory` field. Anodize does not.
 - [x] Template-render directory field for AUR publisher
 
-### Session L: Config/Defaults & Announce Gaps (from 2026-04-06 audit)
+### Session L: Config/Defaults & Announce Gaps (from 2026-04-06 audit) — DONE
 
 **Defaults: missing default values matching GoReleaser**
-GoReleaser's defaults pipe sets many values that anodize does not:
-- [ ] Default `snapshot.version_template` to `"{{ .Version }}-SNAPSHOT-{{ .ShortCommit }}"`
-- [ ] Default `release.name_template` to `"{{ .Tag }}"`
-- [ ] Default `checksum.algorithm` to `"sha256"`
-- [ ] Default `git.tag_sort` to `"-version:refname"` when not set
-- [ ] Default archive `files` to include license/readme/changelog patterns (like GoReleaser)
+- [x] Default `snapshot.version_template` to `"{{ Version }}-SNAPSHOT-{{ ShortCommit }}"` (with empty-string fallback)
+- [x] Default `release.name_template` to `"{{ Tag }}"` (renders via template engine)
+- [x] Default `checksum.algorithm` to `"sha256"`
+- [x] Default `git.tag_sort` to `"-version:refname"` when not set
+- [x] Default archive `files` to include license/readme/changelog patterns
 
 **Token file path defaults**
-GoReleaser defaults token files to `~/.config/goreleaser/{github,gitlab,gitea}_token`. Anodize has no defaults.
-- [ ] Set default token file paths in env_files when not configured
+- [x] Set default token file paths in env_files when not configured (with ~ expansion)
 
 **force_token environment variable override**
-GoReleaser supports `GORELEASER_FORCE_TOKEN` env var. Anodize only supports config field.
-- [ ] Read `GORELEASER_FORCE_TOKEN` (or `ANODIZE_FORCE_TOKEN`) env var as fallback
+- [x] Read `ANODIZE_FORCE_TOKEN` (primary) and `GORELEASER_FORCE_TOKEN` (compat) env vars as fallback (6 new tests)
 
 **Announce: missing default values for providers**
-GoReleaser sets default username/author/icon for several providers. Anodize does not.
-- [ ] Slack: default username to "anodize"
-- [ ] Discord: default author to "anodize", default color to 3888754
-- [ ] Teams: default icon_url
-- [ ] Mattermost: align default username
+- [x] Slack: default username to "anodize"
+- [x] Discord: default author to "anodize", default color to 3888754
+- [x] Teams: default icon_url — GoReleaser uses their avatar; documented why anodize omits (no hosted avatar exists)
+- [x] Mattermost: default username "anodize"
 
 **Announce: webhook Content-Type charset**
-GoReleaser defaults to `"application/json; charset=utf-8"`. Anodize uses `"application/json"`.
-- [ ] Add `; charset=utf-8` to webhook default Content-Type
+- [x] Default to `"application/json; charset=utf-8"` (with starts_with JSON detection fix)
 
 **Announce: Mattermost top-level text with attachments**
-GoReleaser sets top-level `text` field when using attachments. Anodize intentionally omits it.
-- [ ] Verify Mattermost behavior: add top-level `text` when attachments present (match GoReleaser)
+- [x] Include `"text": ""` at top level when attachments present (matching GoReleaser's Go struct serialization)
 
 ### Session M: Missing Stages & Cross-Cutting (from 2026-04-06 audit)
 

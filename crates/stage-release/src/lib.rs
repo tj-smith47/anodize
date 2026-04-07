@@ -782,17 +782,17 @@ impl Stage for ReleaseStage {
                 &crate_cfg.name,
             )?;
 
-            // Resolve release name.
-            let release_name = if let Some(tmpl) = &release_cfg.name_template {
-                ctx.render_template(tmpl).with_context(|| {
-                    format!(
-                        "release: render name_template for crate '{}'",
-                        crate_cfg.name
-                    )
-                })?
-            } else {
-                tag.clone()
-            };
+            // Resolve release name (GoReleaser defaults to "{{.Tag}}").
+            let name_tmpl = release_cfg
+                .name_template
+                .as_deref()
+                .unwrap_or("{{ Tag }}");
+            let release_name = ctx.render_template(name_tmpl).with_context(|| {
+                format!(
+                    "release: render name_template for crate '{}'",
+                    crate_cfg.name
+                )
+            })?;
 
             let draft = release_cfg.draft.unwrap_or(false);
             let prerelease = should_mark_prerelease(&release_cfg.prerelease, &tag);
@@ -2909,6 +2909,22 @@ mod tests {
         assert_eq!(
             calls[0].name, "MyApp 2.0.0",
             "rendered name_template should be passed as the release name"
+        );
+    }
+
+    #[test]
+    fn test_release_name_template_default_tag() {
+        // When name_template is None, the default "{{ Tag }}" should render to the tag value.
+        let ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .tag("v3.1.0")
+            .build();
+
+        let default_tmpl = "{{ Tag }}";
+        let rendered = ctx.render_template(default_tmpl).unwrap();
+        assert_eq!(
+            rendered, "v3.1.0",
+            "default name_template '{{ Tag }}' should render to the tag"
         );
     }
 

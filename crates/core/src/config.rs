@@ -4431,7 +4431,7 @@ pub struct DiscordAnnounce {
     pub message_template: Option<String>,
     /// Author name displayed in the embed.
     pub author: Option<String>,
-    /// Embed color as a decimal integer (default: 3553599, GoReleaser blue).
+    /// Embed color as a decimal integer (default: 3888754, GoReleaser blue).
     pub color: Option<u32>,
     /// Icon URL for the embed footer.
     pub icon_url: Option<String>,

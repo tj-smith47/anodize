@@ -11,7 +11,8 @@ use anyhow::Result;
 /// JSON, wraps the message in a `{"message": ...}` JSON object.  For all other
 /// content types the raw message is returned as-is.
 pub(crate) fn webhook_body(message: &str, content_type: &str) -> String {
-    if content_type == "application/json" {
+    // Match "application/json" with or without parameters (e.g. "; charset=utf-8").
+    if content_type.starts_with("application/json") {
         // If the message is already valid JSON, send it verbatim.
         if serde_json::from_str::<serde_json::Value>(message).is_ok() {
             return message.to_string();
@@ -59,7 +60,7 @@ pub fn send_webhook(
 ) -> Result<()> {
     let body = webhook_body(message, content_type);
     let effective_ct = if content_type.is_empty() {
-        "application/json"
+        "application/json; charset=utf-8"
     } else {
         content_type
     };
@@ -134,5 +135,20 @@ mod tests {
         // text/plain returns the message as-is
         let body = webhook_body("hello world", "text/plain");
         assert_eq!(body, "hello world");
+    }
+
+    #[test]
+    fn test_webhook_body_json_with_charset() {
+        // "application/json; charset=utf-8" (the default) should still trigger JSON handling.
+        let body = webhook_body(
+            r#"{"tag":"v1.0"}"#,
+            "application/json; charset=utf-8",
+        );
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["tag"], "v1.0");
+
+        let body2 = webhook_body("plain text", "application/json; charset=utf-8");
+        let json2: serde_json::Value = serde_json::from_str(&body2).unwrap();
+        assert_eq!(json2["message"], "plain text");
     }
 }

@@ -1,5 +1,5 @@
 use anodize_core::artifact::{Artifact, ArtifactKind};
-use anodize_core::config::{Config, GitHubConfig, WorkspaceConfig};
+use anodize_core::config::{Config, ForceTokenKind, GitHubConfig, WorkspaceConfig};
 use anodize_core::context::Context;
 use anodize_core::git;
 use anodize_core::log::StageLogger;
@@ -332,10 +332,12 @@ pub fn auto_detect_github(config: &mut Config, log: &StageLogger) {
 
 /// Resolve the SCM token type and token value from config and environment.
 ///
-/// This sets `ctx.token_type` based on priority:
+/// This sets `ctx.token_type` based on priority (highest first):
 /// 1. `config.force_token` — explicit user config (`force_token: gitlab`)
-/// 2. Environment variable presence — `GITLAB_TOKEN` → GitLab, `GITEA_TOKEN` → Gitea
-/// 3. Default — GitHub
+/// 2. `ANODIZE_FORCE_TOKEN` env var — e.g. `github`, `gitlab`, `gitea`
+/// 3. `GORELEASER_FORCE_TOKEN` env var — GoReleaser compat fallback
+/// 4. Environment variable presence — `GITLAB_TOKEN` → GitLab, `GITEA_TOKEN` → Gitea
+/// 5. Default — GitHub
 ///
 /// It also resolves the token value into `ctx.options.token` (if not already
 /// set by a CLI flag) from the appropriate environment variable:
@@ -352,7 +354,22 @@ pub fn resolve_scm_token_type(ctx: &mut Context, config: &Config) {
         None
     };
 
-    ctx.token_type = scm::resolve_token_type(config.force_token.as_ref(), env_hint);
+    // GoReleaser supports GORELEASER_FORCE_TOKEN env var as a fallback for the
+    // config-level force_token field.  We support ANODIZE_FORCE_TOKEN (primary)
+    // and GORELEASER_FORCE_TOKEN (compat).
+    let force_token = config.force_token.as_ref().cloned().or_else(|| {
+        let env_val = std::env::var("ANODIZE_FORCE_TOKEN")
+            .ok()
+            .or_else(|| std::env::var("GORELEASER_FORCE_TOKEN").ok())?;
+        match env_val.to_lowercase().as_str() {
+            "github" => Some(ForceTokenKind::GitHub),
+            "gitlab" => Some(ForceTokenKind::GitLab),
+            "gitea" => Some(ForceTokenKind::Gitea),
+            _ => None,
+        }
+    });
+
+    ctx.token_type = scm::resolve_token_type(force_token.as_ref(), env_hint);
 
     // Resolve the token value if not already provided via CLI flag.
     if ctx.options.token.is_none() {
@@ -417,7 +434,7 @@ pub fn load_artifacts_from_dist(ctx: &mut Context, dist: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anodize_core::config::{ChangelogConfig, CrateConfig, ForceTokenKind, SignConfig};
+    use anodize_core::config::{ChangelogConfig, CrateConfig, SignConfig};
     use anodize_core::context::ContextOptions;
     use anodize_core::scm::ScmTokenType;
 
@@ -735,6 +752,8 @@ mod tests {
             "GITEA_TOKEN",
             "ANODIZE_GITHUB_TOKEN",
             "GITHUB_TOKEN",
+            "ANODIZE_FORCE_TOKEN",
+            "GORELEASER_FORCE_TOKEN",
         ]
         .iter()
         .map(|&k| (k, std::env::var(k).ok()))
@@ -930,6 +949,132 @@ mod tests {
                 "GITLAB_TOKEN should be checked before GITEA_TOKEN"
             );
             assert_eq!(ctx.options.token.as_deref(), Some("gl-tok"));
+        });
+    }
+
+    #[test]
+    fn test_resolve_scm_token_type_anodize_force_token_env_gitlab() {
+        with_clean_token_env(|| {
+            // ANODIZE_FORCE_TOKEN env var should override env-based detection.
+            unsafe { std::env::set_var("ANODIZE_FORCE_TOKEN", "gitlab") };
+            unsafe { std::env::set_var("GITLAB_TOKEN", "glpat-env") };
+
+            let config = Config::default();
+            let mut ctx = Context::new(config.clone(), ContextOptions::default());
+            resolve_scm_token_type(&mut ctx, &config);
+
+            assert_eq!(
+                ctx.token_type,
+                ScmTokenType::GitLab,
+                "ANODIZE_FORCE_TOKEN=gitlab should force GitLab"
+            );
+            assert_eq!(ctx.options.token.as_deref(), Some("glpat-env"));
+        });
+    }
+
+    #[test]
+    fn test_resolve_scm_token_type_anodize_force_token_env_github() {
+        with_clean_token_env(|| {
+            // Force GitHub even though GITLAB_TOKEN is present.
+            unsafe { std::env::set_var("ANODIZE_FORCE_TOKEN", "github") };
+            unsafe { std::env::set_var("GITLAB_TOKEN", "glpat-ignored") };
+            unsafe { std::env::set_var("GITHUB_TOKEN", "ghp-forced") };
+
+            let config = Config::default();
+            let mut ctx = Context::new(config.clone(), ContextOptions::default());
+            resolve_scm_token_type(&mut ctx, &config);
+
+            assert_eq!(
+                ctx.token_type,
+                ScmTokenType::GitHub,
+                "ANODIZE_FORCE_TOKEN=github should override GITLAB_TOKEN detection"
+            );
+            assert_eq!(ctx.options.token.as_deref(), Some("ghp-forced"));
+        });
+    }
+
+    #[test]
+    fn test_resolve_scm_token_type_goreleaser_force_token_compat() {
+        with_clean_token_env(|| {
+            // GORELEASER_FORCE_TOKEN is the compat fallback when ANODIZE_ is not set.
+            unsafe { std::env::set_var("GORELEASER_FORCE_TOKEN", "gitea") };
+            unsafe { std::env::set_var("GITEA_TOKEN", "gitea-compat") };
+
+            let config = Config::default();
+            let mut ctx = Context::new(config.clone(), ContextOptions::default());
+            resolve_scm_token_type(&mut ctx, &config);
+
+            assert_eq!(
+                ctx.token_type,
+                ScmTokenType::Gitea,
+                "GORELEASER_FORCE_TOKEN should work as compat fallback"
+            );
+            assert_eq!(ctx.options.token.as_deref(), Some("gitea-compat"));
+        });
+    }
+
+    #[test]
+    fn test_resolve_scm_token_type_anodize_force_token_overrides_goreleaser() {
+        with_clean_token_env(|| {
+            // When both env vars are set, ANODIZE_FORCE_TOKEN takes precedence.
+            unsafe { std::env::set_var("ANODIZE_FORCE_TOKEN", "github") };
+            unsafe { std::env::set_var("GORELEASER_FORCE_TOKEN", "gitlab") };
+            unsafe { std::env::set_var("GITHUB_TOKEN", "ghp-wins") };
+            unsafe { std::env::set_var("GITLAB_TOKEN", "glpat-loses") };
+
+            let config = Config::default();
+            let mut ctx = Context::new(config.clone(), ContextOptions::default());
+            resolve_scm_token_type(&mut ctx, &config);
+
+            assert_eq!(
+                ctx.token_type,
+                ScmTokenType::GitHub,
+                "ANODIZE_FORCE_TOKEN should take precedence over GORELEASER_FORCE_TOKEN"
+            );
+            assert_eq!(ctx.options.token.as_deref(), Some("ghp-wins"));
+        });
+    }
+
+    #[test]
+    fn test_resolve_scm_token_type_config_force_token_overrides_env() {
+        with_clean_token_env(|| {
+            // Config-level force_token should override env var.
+            unsafe { std::env::set_var("ANODIZE_FORCE_TOKEN", "gitlab") };
+            unsafe { std::env::set_var("GITHUB_TOKEN", "ghp-config") };
+
+            let config = Config {
+                force_token: Some(ForceTokenKind::GitHub),
+                ..Default::default()
+            };
+            let mut ctx = Context::new(config.clone(), ContextOptions::default());
+            resolve_scm_token_type(&mut ctx, &config);
+
+            assert_eq!(
+                ctx.token_type,
+                ScmTokenType::GitHub,
+                "config.force_token should override ANODIZE_FORCE_TOKEN env var"
+            );
+            assert_eq!(ctx.options.token.as_deref(), Some("ghp-config"));
+        });
+    }
+
+    #[test]
+    fn test_resolve_scm_token_type_invalid_force_token_env_ignored() {
+        with_clean_token_env(|| {
+            // Invalid value should be ignored, falling back to env-based detection.
+            unsafe { std::env::set_var("ANODIZE_FORCE_TOKEN", "invalid") };
+            unsafe { std::env::set_var("GITLAB_TOKEN", "glpat-detected") };
+
+            let config = Config::default();
+            let mut ctx = Context::new(config.clone(), ContextOptions::default());
+            resolve_scm_token_type(&mut ctx, &config);
+
+            assert_eq!(
+                ctx.token_type,
+                ScmTokenType::GitLab,
+                "invalid ANODIZE_FORCE_TOKEN should fall back to env detection"
+            );
+            assert_eq!(ctx.options.token.as_deref(), Some("glpat-detected"));
         });
     }
 }

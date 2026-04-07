@@ -149,7 +149,8 @@ impl Stage for AnnounceStage {
                     }
                 };
                 let message = render_message(ctx, cfg.message_template.as_deref())?;
-                let author = render_optional(ctx, cfg.author.as_deref())?;
+                // Default author to "anodize" (GoReleaser defaults to "GoReleaser").
+                let author = render_optional(ctx, cfg.author.as_deref().or(Some("anodize")))?;
                 let color = cfg.color;
                 let icon_url = render_optional(ctx, cfg.icon_url.as_deref())?;
                 let opts = discord::DiscordOptions {
@@ -227,7 +228,9 @@ impl Stage for AnnounceStage {
                 };
                 let message = render_message(ctx, cfg.message_template.as_deref())?;
                 let channel = render_optional(ctx, cfg.channel.as_deref())?;
-                let username = render_optional(ctx, cfg.username.as_deref())?;
+                // Default username to "anodize" (GoReleaser defaults to "GoReleaser").
+                let username =
+                    render_optional(ctx, cfg.username.as_deref().or(Some("anodize")))?;
                 let icon_emoji = cfg.icon_emoji.clone();
                 let icon_url = cfg.icon_url.clone();
                 // Convert typed blocks/attachments to serde_json::Value for template rendering
@@ -296,10 +299,11 @@ impl Stage for AnnounceStage {
                     .entry("User-Agent".to_string())
                     .or_insert_with(|| "anodize/1.0".to_string());
 
+                // GoReleaser defaults to "application/json; charset=utf-8".
                 let content_type = cfg
                     .content_type
                     .clone()
-                    .unwrap_or_else(|| "application/json".to_string());
+                    .unwrap_or_else(|| "application/json; charset=utf-8".to_string());
 
                 let skip_tls = cfg.skip_tls_verify.unwrap_or(false);
                 let expected_codes = if cfg.expected_status_codes.is_empty() {
@@ -395,7 +399,10 @@ impl Stage for AnnounceStage {
                     .as_deref()
                     .unwrap_or("{{ ProjectName }} {{ Tag }} is out!");
                 let title = Some(ctx.render_template(title_template)?);
-                // Default color to "#2D313E" (GoReleaser default). Skip icon (no anodize avatar URL yet).
+                // Default color to "#2D313E" (GoReleaser default).
+                // GoReleaser defaults icon_url to "https://goreleaser.com/static/avatar.png".
+                // We omit icon_url until anodize has its own hosted avatar — a 404 URL would
+                // be worse than no icon.  Teams Adaptive Cards work fine without an icon.
                 let color_val = cfg.color.clone().unwrap_or_else(|| "#2D313E".to_string());
                 let icon_url = render_optional(ctx, cfg.icon_url.as_deref())?;
                 let opts = teams::TeamsOptions {

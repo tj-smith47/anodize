@@ -24,10 +24,12 @@ pub struct MattermostOptions<'a> {
 pub(crate) fn mattermost_payload(message: &str, opts: &MattermostOptions<'_>) -> String {
     let use_attachments = opts.color.is_some() || opts.title.is_some();
 
+    // GoReleaser always includes top-level `text` (empty string when using
+    // attachments, because the Go struct serialises the zero-value without
+    // `omitempty`).  We match that behaviour: Mattermost treats absent and
+    // empty-string `text` identically, but strict JSON parity avoids surprises.
     let mut payload = if use_attachments {
-        // When using attachments, do NOT include top-level `text` — message goes
-        // in the attachment only.  This matches GoReleaser behaviour.
-        json!({})
+        json!({ "text": "" })
     } else {
         json!({ "text": message })
     };
@@ -116,8 +118,8 @@ mod tests {
         };
         let payload = mattermost_payload("myapp v1.0.0 released!", &opts);
         let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
-        // When using attachments, top-level text must NOT be present
-        assert!(json.get("text").is_none());
+        // GoReleaser includes top-level "text": "" when using attachments.
+        assert_eq!(json["text"], "");
         assert_eq!(json["channel"], "town-square");
         assert_eq!(json["username"], "release-bot");
         assert_eq!(json["icon_url"], "https://example.com/icon.png");
@@ -171,8 +173,8 @@ mod tests {
         };
         let payload = mattermost_payload("alert!", &opts);
         let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
-        // When using attachments, top-level text must NOT be present
-        assert!(json.get("text").is_none());
+        // GoReleaser includes top-level "text": "" when using attachments.
+        assert_eq!(json["text"], "");
         let attachments = json["attachments"].as_array().unwrap();
         assert_eq!(attachments.len(), 1);
         assert_eq!(attachments[0]["color"], "#FF0000");
@@ -191,8 +193,8 @@ mod tests {
         };
         let payload = mattermost_payload("Check the release notes.", &opts);
         let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
-        // When using attachments, top-level text must NOT be present
-        assert!(json.get("text").is_none());
+        // GoReleaser includes top-level "text": "" when using attachments.
+        assert_eq!(json["text"], "");
         let attachments = json["attachments"].as_array().unwrap();
         assert_eq!(attachments[0]["title"], "myapp v2.0 is out!");
         assert_eq!(attachments[0]["text"], "Check the release notes.");
@@ -210,8 +212,8 @@ mod tests {
         };
         let payload = mattermost_payload("New features!", &opts);
         let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
-        // When using attachments, top-level text must NOT be present
-        assert!(json.get("text").is_none());
+        // GoReleaser includes top-level "text": "" when using attachments.
+        assert_eq!(json["text"], "");
         let attachments = json["attachments"].as_array().unwrap();
         assert_eq!(attachments[0]["title"], "Release v3.0");
         assert_eq!(attachments[0]["color"], "#36a64f");

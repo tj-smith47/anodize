@@ -294,6 +294,7 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
             .snapshot
             .as_ref()
             .map(|s| s.name_template.as_str())
+            .filter(|s| !s.trim().is_empty())
             .unwrap_or("{{ Version }}-SNAPSHOT-{{ ShortCommit }}");
         let rendered_name =
             template::render(snapshot_tmpl, ctx.template_vars()).with_context(|| {
