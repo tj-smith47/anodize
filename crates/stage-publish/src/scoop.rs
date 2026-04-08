@@ -153,41 +153,6 @@ pub fn generate_manifest_with_opts(
         "architecture": arch_obj
     });
 
-    // Only include checkver + autoupdate when a valid GitHub slug (owner/repo) is
-    // available.  Without a slug the URL would be broken (bare crate name used as
-    // the GitHub path component), so we omit both fields entirely.
-    if let Some(slug) = opts.github_slug.as_deref() {
-        let obj = manifest.as_object_mut().expect("manifest is an object");
-        obj.insert("checkver".to_string(), serde_json::json!("github"));
-
-        // Build autoupdate architecture block mirroring the main architecture entries.
-        let mut auto_arch = serde_json::Map::new();
-        for entry in arch_entries {
-            let arch_suffix = match entry.scoop_arch.as_str() {
-                "64bit" => "amd64",
-                "32bit" => "386",
-                "arm64" => "arm64",
-                other => other,
-            };
-            auto_arch.insert(
-                entry.scoop_arch.clone(),
-                serde_json::json!({
-                    "url": format!(
-                        "https://github.com/{}/releases/download/v$version/{}-$version-windows-{}.zip",
-                        slug, name, arch_suffix
-                    )
-                }),
-            );
-        }
-
-        obj.insert(
-            "autoupdate".to_string(),
-            serde_json::json!({
-                "architecture": auto_arch
-            }),
-        );
-    }
-
     // Add optional array fields when present.
     let obj = manifest.as_object_mut().expect("manifest is an object");
 
@@ -276,6 +241,9 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
 
     let arch_entries: Vec<ArchEntry> = all_artifacts
         .into_iter()
+        // OnlyReplacingUnibins: exclude universal binaries that didn't replace
+        // single-arch variants (GoReleaser parity).
+        .filter(|a| a.only_replacing_unibins())
         .filter(|a| {
             // Only windows artifacts.
             a.target
@@ -302,11 +270,10 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         .filter(|a| {
             let target = a.target.as_deref().unwrap_or("");
             let (_, arch) = anodize_core::target::map_target(target);
-            if arch == "amd64" {
-                if let Some(want) = goamd64 {
-                    return a.metadata.get("goamd64").map_or(true, |v| v == want);
+            if arch == "amd64"
+                && let Some(want) = goamd64 {
+                    return a.metadata.get("goamd64").is_none_or(|v| v == want);
                 }
-            }
             true
         })
         .map(|a| {
@@ -348,6 +315,22 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
             "scoop: no Windows archive artifact found for crate '{}'",
             crate_name
         );
+    }
+
+    // GoReleaser parity: validate only one archive exists per platform.
+    // Multiple archives for the same architecture produces a broken manifest.
+    {
+        let mut seen_archs = std::collections::HashSet::new();
+        for entry in &arch_entries {
+            if !seen_archs.insert(&entry.scoop_arch) {
+                anyhow::bail!(
+                    "scoop: found multiple artifacts for platform '{}' in crate '{}'; \
+                     only one archive per platform is supported",
+                    entry.scoop_arch,
+                    crate_name
+                );
+            }
+        }
     }
 
     // Collect binary names from artifact metadata.  The archive stage stores
@@ -640,25 +623,14 @@ mod tests {
         assert_eq!(arch_64["hash"], "aabbccdd1122334455667788");
         assert_eq!(arch_64["bin"], "anodize.exe");
 
-        // Verify checkver field
-        assert_eq!(json["checkver"], "github");
-
-        // Verify autoupdate structure
-        let autoupdate = &json["autoupdate"];
-        assert!(autoupdate.is_object(), "autoupdate should be an object");
-        let auto_64 = &autoupdate["architecture"]["64bit"];
+        // GoReleaser parity: checkver and autoupdate are NOT emitted.
         assert!(
-            auto_64.is_object(),
-            "autoupdate.architecture.64bit should be an object"
-        );
-        let auto_url = auto_64["url"].as_str().unwrap();
-        assert!(
-            auto_url.contains("anodize"),
-            "autoupdate URL should contain the app name"
+            json.get("checkver").is_none(),
+            "should NOT have checkver key (GoReleaser parity)"
         );
         assert!(
-            auto_url.contains("$version"),
-            "autoupdate URL should contain $version placeholder"
+            json.get("autoupdate").is_none(),
+            "should NOT have autoupdate key (GoReleaser parity)"
         );
     }
 
@@ -754,7 +726,8 @@ mod tests {
     }
 
     #[test]
-    fn test_integration_manifest_autoupdate_url_format() {
+    fn test_manifest_no_autoupdate_even_with_slug() {
+        // GoReleaser parity: checkver/autoupdate are never emitted.
         let opts = ManifestOptions {
             github_slug: Some("myorg/release-tool".to_string()),
             ..Default::default()
@@ -767,18 +740,14 @@ mod tests {
             generate_manifest_with_opts("release-tool", "5.0.0", &entries, "desc", "MIT", &opts);
 
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
-        let auto_url = json["autoupdate"]["architecture"]["64bit"]["url"]
-            .as_str()
-            .unwrap();
-
-        // The autoupdate URL should follow the pattern:
-        // https://github.com/<owner>/<repo>/releases/download/v$version/<name>-$version-windows-amd64.zip
         assert!(
-            auto_url
-                .starts_with("https://github.com/myorg/release-tool/releases/download/v$version/")
+            json.get("checkver").is_none(),
+            "should NOT have checkver key"
         );
-        assert!(auto_url.ends_with("-windows-amd64.zip"));
-        assert!(auto_url.contains("release-tool-$version-"));
+        assert!(
+            json.get("autoupdate").is_none(),
+            "should NOT have autoupdate key"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -809,7 +778,8 @@ mod tests {
     }
 
     #[test]
-    fn test_scoop_manifest_checkver_and_autoupdate_with_slug() {
+    fn test_scoop_manifest_no_checkver_autoupdate_with_slug() {
+        // GoReleaser parity: checkver/autoupdate are never emitted, even with a slug.
         let opts = ManifestOptions {
             github_slug: Some("myorg/mytool".to_string()),
             ..Default::default()
@@ -819,13 +789,13 @@ mod tests {
             generate_manifest_with_opts("mytool", "2.0.0", &entries, "desc", "MIT", &opts);
 
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
-        assert_eq!(json["checkver"], "github");
-        assert!(json["autoupdate"].is_object());
         assert!(
-            json["autoupdate"]["architecture"]["64bit"]["url"]
-                .as_str()
-                .unwrap()
-                .contains("$version")
+            json.get("checkver").is_none(),
+            "should NOT have checkver key (GoReleaser parity)"
+        );
+        assert!(
+            json.get("autoupdate").is_none(),
+            "should NOT have autoupdate key (GoReleaser parity)"
         );
     }
 
@@ -841,7 +811,6 @@ mod tests {
         );
 
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
-        // Without github_slug, checkver and autoupdate should be absent
         assert!(
             json.get("checkver").is_none(),
             "checkver should be absent without github_slug"
@@ -1096,27 +1065,14 @@ mod tests {
         assert_eq!(arch["arm64"]["hash"], "hash_arm64");
         assert_eq!(arch["arm64"]["bin"], "app.exe");
 
-        // Verify autoupdate has all three architectures
-        let auto = &json["autoupdate"]["architecture"];
-        assert!(auto["64bit"].is_object(), "autoupdate.64bit should exist");
-        assert!(auto["32bit"].is_object(), "autoupdate.32bit should exist");
-        assert!(auto["arm64"].is_object(), "autoupdate.arm64 should exist");
-
-        // Verify autoupdate URLs use correct arch suffixes
-        let auto_64_url = auto["64bit"]["url"].as_str().unwrap();
+        // GoReleaser parity: checkver/autoupdate are never emitted.
         assert!(
-            auto_64_url.contains("amd64"),
-            "autoupdate 64bit should use amd64 suffix"
+            json.get("checkver").is_none(),
+            "should NOT have checkver key (GoReleaser parity)"
         );
-        let auto_32_url = auto["32bit"]["url"].as_str().unwrap();
         assert!(
-            auto_32_url.contains("386"),
-            "autoupdate 32bit should use 386 suffix"
-        );
-        let auto_arm_url = auto["arm64"]["url"].as_str().unwrap();
-        assert!(
-            auto_arm_url.contains("arm64"),
-            "autoupdate arm64 should use arm64 suffix"
+            json.get("autoupdate").is_none(),
+            "should NOT have autoupdate key (GoReleaser parity)"
         );
     }
 

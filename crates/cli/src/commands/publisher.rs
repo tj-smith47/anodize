@@ -7,6 +7,39 @@ use anodize_core::log::StageLogger;
 use anodize_core::template::{self, TemplateVars};
 use anyhow::{Context as _, Result};
 
+/// Split a command string into arguments, respecting single and double quotes.
+/// Matches Go's `shellwords.Parse()` behavior.
+fn split_shellwords(s: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escape_next = false;
+
+    for ch in s.chars() {
+        if escape_next {
+            current.push(ch);
+            escape_next = false;
+            continue;
+        }
+        match ch {
+            '\\' if !in_single => escape_next = true,
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            ' ' | '\t' if !in_single && !in_double => {
+                if !current.is_empty() {
+                    args.push(std::mem::take(&mut current));
+                }
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.is_empty() {
+        args.push(current);
+    }
+    args
+}
+
 /// Run all configured publishers against matching artifacts.
 ///
 /// For each publisher, filter the artifact set by `ids` and `artifact_types`,
@@ -27,15 +60,14 @@ pub fn run_publishers(
         let label = publisher.name.as_deref().unwrap_or(&default_label);
 
         // Check template-conditional disable
-        if let Some(ref d) = publisher.disable {
-            if d.is_disabled(|tmpl| template::render(tmpl, base_vars)) {
+        if let Some(ref d) = publisher.disable
+            && d.is_disabled(|tmpl| template::render(tmpl, base_vars)) {
                 log.verbose(&format!(
                     "[publisher] skipping {} -- disabled by template",
                     label
                 ));
                 continue;
             }
-        }
 
         if publisher.cmd.is_empty() {
             log.verbose(&format!("[publisher] skipping {} -- empty cmd", label));
@@ -152,11 +184,15 @@ pub fn run_publishers(
                     label,
                     artifact.path.display()
                 ));
-                let mut cmd = Command::new("sh");
-                cmd.arg("-c");
-
+                // GoReleaser parity (exec.go): parse command with shellwords
+                // and exec directly instead of wrapping with `sh -c`.
                 let full_cmd = format_command_line(&rendered_cmd, &rendered_args);
-                cmd.arg(&full_cmd);
+                let shell_args = split_shellwords(&full_cmd);
+                if shell_args.is_empty() {
+                    anyhow::bail!("publisher: empty command after parsing: {}", full_cmd);
+                }
+                let mut cmd = Command::new(&shell_args[0]);
+                cmd.args(&shell_args[1..]);
 
                 if let Some(ref dir) = publisher.dir {
                     let rendered_dir =
@@ -164,9 +200,23 @@ pub fn run_publishers(
                     cmd.current_dir(rendered_dir);
                 }
 
-                // System environment (HOME, USER, PATH, TMPDIR, etc.) is inherited
-                // automatically by Command — no env_clear() is used.
-                // Publisher-configured env vars are added on top.
+                // GoReleaser parity (exec.go): restrict environment to a small
+                // whitelist to prevent accidental leakage of tokens/credentials.
+                cmd.env_clear();
+                for key in &[
+                    "HOME",
+                    "USER",
+                    "USERPROFILE",
+                    "TMPDIR",
+                    "TMP",
+                    "TEMP",
+                    "PATH",
+                    "SYSTEMROOT",
+                ] {
+                    if let Ok(val) = std::env::var(key) {
+                        cmd.env(key, val);
+                    }
+                }
                 if let Some(ref env_map) = publisher.env {
                     for (k, v) in env_map {
                         cmd.env(k, v);

@@ -1,4 +1,5 @@
 use anodize_cli::{Cli, Commands, detect_host_target};
+use anodize_core::context::{VALID_BUILD_SKIPS, VALID_RELEASE_SKIPS, validate_skip_values};
 
 use clap::Parser;
 use colored::Colorize;
@@ -67,7 +68,9 @@ fn main() {
             workspace,
             draft,
             release_header,
+            release_header_tmpl,
             release_footer,
+            release_footer_tmpl,
             release_notes_tmpl,
             fail_fast,
             split,
@@ -88,6 +91,11 @@ fn main() {
                 };
 
             let resolved_single_target = resolve_single_target(single_target);
+
+            if let Err(msg) = validate_skip_values(&skip, VALID_RELEASE_SKIPS) {
+                eprintln!("{} {}", "Error:".red().bold(), msg);
+                std::process::exit(1);
+            }
 
             timeout::run_with_timeout(duration, || {
                 commands::release::run(commands::release::ReleaseOpts {
@@ -111,7 +119,9 @@ fn main() {
                     workspace,
                     draft,
                     release_header,
+                    release_header_tmpl,
                     release_footer,
+                    release_footer_tmpl,
                     fail_fast,
                     split,
                     merge,
@@ -125,6 +135,7 @@ fn main() {
             single_target,
             workspace,
             output,
+            skip,
         } => {
             let duration = parse_timeout_or_exit(&timeout);
             let config_override = cli.config.clone();
@@ -132,6 +143,11 @@ fn main() {
             let verbose = cli.verbose;
             let debug = cli.debug;
             let quiet = cli.quiet;
+
+            if let Err(msg) = validate_skip_values(&skip, VALID_BUILD_SKIPS) {
+                eprintln!("{} {}", "Error:".red().bold(), msg);
+                std::process::exit(1);
+            }
 
             timeout::run_with_timeout(duration, move || {
                 commands::build::run(commands::build::BuildOpts {
@@ -144,6 +160,7 @@ fn main() {
                     single_target: resolved_single_target,
                     workspace,
                     output,
+                    skip,
                 })
             })
         }

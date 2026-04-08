@@ -1,20 +1,154 @@
 use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
 use anyhow::{Context as _, Result};
-use base64::Engine as _;
 
 use crate::util;
+
+// ---------------------------------------------------------------------------
+// ELF dynamic linking detection
+// ---------------------------------------------------------------------------
+
+/// Check if a binary is dynamically linked by looking for ELF PT_INTERP header.
+/// Returns false for non-ELF files (macOS Mach-O, Windows PE).
+fn is_dynamically_linked(path: &std::path::Path) -> bool {
+    use std::io::Read;
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+    // Read ELF header: magic (4 bytes), class (1), data (1), version (1),
+    // osabi (1), padding (8), type (2), machine (2), version (4), then
+    // entry/phoff/shoff vary by class.
+    let mut header = [0u8; 64]; // Enough for 64-bit ELF header
+    if file.read(&mut header).unwrap_or(0) < 52 {
+        return false;
+    }
+    // Check ELF magic
+    if &header[0..4] != b"\x7fELF" {
+        return false;
+    }
+    let is_64bit = header[4] == 2;
+    let is_little_endian = header[5] == 1;
+
+    // Parse program header offset and count
+    let (phoff, phentsize, phnum) = if is_64bit {
+        let phoff = if is_little_endian {
+            u64::from_le_bytes(header[32..40].try_into().unwrap())
+        } else {
+            u64::from_be_bytes(header[32..40].try_into().unwrap())
+        };
+        let phentsize = if is_little_endian {
+            u16::from_le_bytes(header[54..56].try_into().unwrap())
+        } else {
+            u16::from_be_bytes(header[54..56].try_into().unwrap())
+        };
+        let phnum = if is_little_endian {
+            u16::from_le_bytes(header[56..58].try_into().unwrap())
+        } else {
+            u16::from_be_bytes(header[56..58].try_into().unwrap())
+        };
+        (phoff, phentsize, phnum)
+    } else {
+        let phoff = if is_little_endian {
+            u32::from_le_bytes(header[28..32].try_into().unwrap()) as u64
+        } else {
+            u32::from_be_bytes(header[28..32].try_into().unwrap()) as u64
+        };
+        let phentsize = if is_little_endian {
+            u16::from_le_bytes(header[42..44].try_into().unwrap())
+        } else {
+            u16::from_be_bytes(header[42..44].try_into().unwrap())
+        };
+        let phnum = if is_little_endian {
+            u16::from_le_bytes(header[44..46].try_into().unwrap())
+        } else {
+            u16::from_be_bytes(header[44..46].try_into().unwrap())
+        };
+        (phoff, phentsize, phnum)
+    };
+
+    // Read program headers and look for PT_INTERP (type 3)
+    use std::io::Seek;
+    if file.seek(std::io::SeekFrom::Start(phoff)).is_err() {
+        return false;
+    }
+    let mut phdr_buf = vec![0u8; phentsize as usize];
+    for _ in 0..phnum {
+        if file.read_exact(&mut phdr_buf).is_err() {
+            return false;
+        }
+        let p_type = if is_little_endian {
+            u32::from_le_bytes(phdr_buf[0..4].try_into().unwrap())
+        } else {
+            u32::from_be_bytes(phdr_buf[0..4].try_into().unwrap())
+        };
+        if p_type == 3 {
+            // PT_INTERP
+            return true;
+        }
+    }
+    false
+}
 
 // ---------------------------------------------------------------------------
 // SRI hash conversion
 // ---------------------------------------------------------------------------
 
+/// Convert a hex-encoded SHA256 hash to nix-native base32 format.
+///
+/// GoReleaser converts hashes using `nix-hash --type sha256 --flat --base32`.
+/// Nix uses a non-standard base32 encoding with the alphabet
+/// `0123456789abcdfghijklmnpqrsvwxyz` (32 chars, omitting e/o/t/u).
+/// Bytes are processed in reverse order.
+pub fn hex_sha256_to_nix_base32(hex: &str) -> Result<String> {
+    let bytes = hex_to_bytes(hex)?;
+    if bytes.len() != 32 {
+        anyhow::bail!(
+            "nix: expected 32 bytes for SHA256 hash, got {} (hex: '{}')",
+            bytes.len(),
+            hex
+        );
+    }
+    Ok(nix_base32_encode(&bytes))
+}
+
+/// Nix base32 alphabet (omits e, o, t, u from standard base32).
+const NIX_BASE32_CHARS: &[u8] = b"0123456789abcdfghijklmnpqrsvwxyz";
+
+/// Encode raw bytes into nix-native base32 format.
+///
+/// This is a faithful port of Nix's `printHash32()` from
+/// `src/libutil/hash.cc`.  The algorithm reads bits from the raw hash
+/// bytes starting at the highest bit positions and emits characters
+/// from left to right.
+fn nix_base32_encode(bytes: &[u8]) -> String {
+    let hash_size = bytes.len();
+    let len = hash_size * 8 / 5 + usize::from(!(hash_size * 8).is_multiple_of(5));
+    let mut out = vec![b'0'; len];
+
+    let mut n = len;
+    while n > 0 {
+        n -= 1;
+        let b = n * 5;
+        let i = b / 8;
+        let j = b % 8;
+        let c = if i >= hash_size - 1 {
+            (bytes[i] as u16) >> j
+        } else {
+            ((bytes[i] as u16) >> j) | ((bytes[i + 1] as u16) << (8 - j))
+        } as u8;
+        out[len - 1 - n] = NIX_BASE32_CHARS[(c & 0x1f) as usize];
+    }
+
+    String::from_utf8(out).expect("nix base32 chars are valid UTF-8")
+}
+
 /// Convert a hex-encoded SHA256 hash to SRI format (`sha256-{base64}`).
 ///
-/// Nix's `fetchurl` expects SRI hashes, not raw hex.  GoReleaser converts
-/// hashes using `nix-hash --type sha256 --flat --base32`; the modern
-/// equivalent is the SRI format that Nix also accepts.
+/// Alternative to nix-native base32; SRI is accepted by Nix 2.4+.
+#[cfg(test)]
 pub fn hex_sha256_to_sri(hex: &str) -> Result<String> {
+    use base64::Engine as _;
     let bytes = hex_to_bytes(hex)?;
     if bytes.len() != 32 {
         anyhow::bail!(
@@ -50,6 +184,8 @@ const NIX_TEMPLATE: &str = r#"{ lib
 , fetchurl
 {% if needs_unzip %}, unzip
 {% endif %}{% if needs_make_wrapper %}, makeWrapper
+{% endif %}{% if dynamically_linked %}, stdenv
+, autoPatchelfHook
 {% endif %}, installShellFiles
 {% for dep in dep_args %}, {{ dep }}
 {% endfor %}}:
@@ -62,7 +198,10 @@ let
   shaMap = {
 {% for key, archive in archives %}    {{ key }} = "{{ archive.sha }}";
 {% endfor %}  };
-in
+{% if source_root_map %}  sourceRootMap = {
+{% for entry in source_root_map %}    {{ entry.system }} = "{{ entry.root }}";
+{% endfor %}  };
+{% endif %}in
 stdenvNoCC.mkDerivation {
   pname = "{{ name }}";
   version = "{{ version }}";
@@ -72,15 +211,20 @@ stdenvNoCC.mkDerivation {
     sha256 = selectSystem shaMap;
   };
 
-  sourceRoot = "{{ source_root }}";
-
+{% if source_root %}  sourceRoot = "{{ source_root }}";
+{% elif source_root_map %}  sourceRoot = selectSystem sourceRootMap;
+{% endif %}
   nativeBuildInputs = [
     installShellFiles
 {% if needs_make_wrapper %}    makeWrapper
 {% endif %}{% if needs_unzip %}    unzip
 {% endif %}{% for dep in dep_args %}    {{ dep }}
-{% endfor %}  ];
-
+{% endfor %}  ]{% if dynamically_linked %} ++ lib.optionals stdenvNoCC.isLinux [ autoPatchelfHook ]{% endif %};
+{% if dynamically_linked %}
+  buildInputs = lib.optionals stdenvNoCC.isLinux [
+    stdenv.cc.cc.lib
+  ];
+{% endif %}
   installPhase = ''
 {% for line in install_lines %}    {{ line }}
 {% endfor %}  '';
@@ -103,6 +247,14 @@ stdenvNoCC.mkDerivation {
 // NixParams
 // ---------------------------------------------------------------------------
 
+/// Per-platform sourceRoot entry for when different archives have different
+/// `wrap_in_directory` values.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SourceRootEntry {
+    pub system: String,
+    pub root: String,
+}
+
 /// Parameters for generating a Nix expression.
 pub struct NixParams<'a> {
     pub name: &'a str,
@@ -122,8 +274,14 @@ pub struct NixParams<'a> {
     pub needs_make_wrapper: bool,
     /// Dependency package names to add as function arguments in the derivation.
     pub dep_args: &'a [String],
-    /// Value for `sourceRoot` in the derivation. Defaults to `"."`.
-    pub source_root: &'a str,
+    /// Value for `sourceRoot` in the derivation. `None` when per-platform
+    /// sourceRoots differ — use `source_root_map` instead.
+    pub source_root: Option<&'a str>,
+    /// Per-platform sourceRoot map, used when different archives have different
+    /// `wrap_in_directory` values.
+    pub source_root_map: Option<&'a [SourceRootEntry]>,
+    /// Whether any binary in the release is dynamically linked (ELF with PT_INTERP).
+    pub dynamically_linked: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -143,9 +301,15 @@ pub fn generate_nix_expression(params: &NixParams<'_>) -> String {
     ctx.insert("description", params.description);
     ctx.insert("homepage", params.homepage);
     ctx.insert("license", params.license);
-    ctx.insert("source_root", params.source_root);
+    if let Some(sr) = params.source_root {
+        ctx.insert("source_root", sr);
+    }
+    if let Some(srm) = params.source_root_map {
+        ctx.insert("source_root_map", srm);
+    }
     ctx.insert("needs_unzip", &params.needs_unzip);
     ctx.insert("needs_make_wrapper", &params.needs_make_wrapper);
+    ctx.insert("dynamically_linked", &params.dynamically_linked);
     ctx.insert("dep_args", &params.dep_args);
 
     // Archives map
@@ -594,22 +758,23 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
             } else {
                 a.url.clone()
             };
-            // Convert hex SHA256 to SRI format for Nix's fetchurl.
-            let sri_hash = if a.sha256.is_empty() {
+            // GoReleaser parity: convert hex SHA256 to nix-native base32 format
+            // (the same output as `nix-hash --type sha256 --flat --base32`).
+            let nix_hash = if a.sha256.is_empty() {
                 a.sha256.clone()
             } else {
-                match hex_sha256_to_sri(&a.sha256) {
-                    Ok(sri) => sri,
+                match hex_sha256_to_nix_base32(&a.sha256) {
+                    Ok(h) => h,
                     Err(e) => {
                         log.warn(&format!(
-                            "nix: failed to convert SHA256 to SRI for {}: {}; using raw hex",
+                            "nix: failed to convert SHA256 to nix base32 for {}: {}; using raw hex",
                             a.url, e
                         ));
                         a.sha256.clone()
                     }
                 }
             };
-            Some((system, download_url, sri_hash))
+            Some((system, download_url, nix_hash))
         })
         .collect();
 
@@ -645,7 +810,32 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         lines
     } else {
         let mut lines = vec!["mkdir -p $out/bin".to_string()];
-        lines.push(format!("cp -vr ./{name} $out/bin/{name}"));
+        // GoReleaser parity: install ALL binaries from the archive, not just
+        // the package name.  Collect binary names from build configs; fall back
+        // to the crate/derivation name when no builds are configured.
+        let bin_names: Vec<String> = {
+            let mut names: Vec<String> = _crate_cfg
+                .builds
+                .as_ref()
+                .map(|builds| {
+                    builds
+                        .iter()
+                        .map(|b| b.binary.clone())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            // Deduplicate while preserving order.
+            let mut seen = std::collections::HashSet::new();
+            names.retain(|n| seen.insert(n.clone()));
+            if names.is_empty() {
+                names.push(name.to_string());
+            }
+            names
+        };
+        for bin in &bin_names {
+            lines.push(format!("cp -vr ./{bin} $out/bin/{bin}"));
+            lines.push(format!("chmod +x $out/bin/{bin}"));
+        }
         if let Some(ref extra) = nix_cfg.extra_install {
             lines.extend(extra.lines().map(|l| l.to_string()));
         }
@@ -716,16 +906,85 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     // extraction root.  We use a placeholder default name since the exact
     // archive stem is not available here; the template in wrap_in_directory
     // is typically a string like "myapp-1.0.0".
-    let source_root = {
-        let wrap_dir = match &_crate_cfg.archives {
-            anodize_core::config::ArchivesConfig::Configs(cfgs) => cfgs.first().and_then(|c| {
-                c.wrap_in_directory
-                    .as_ref()
-                    .and_then(|w| w.directory_name(&format!("{}-{}", name, version)))
-            }),
-            anodize_core::config::ArchivesConfig::Disabled => None,
+    //
+    // GoReleaser supports per-platform sourceRoots when different archive
+    // configs have different `WrappedIn` values.  We build a per-system map
+    // and collapse to a single value when all are the same.
+    let (source_root, source_root_map) = {
+        let default_stem = format!("{}-{}", name, version);
+        let archive_cfgs = match &_crate_cfg.archives {
+            anodize_core::config::ArchivesConfig::Configs(cfgs) => cfgs.clone(),
+            anodize_core::config::ArchivesConfig::Disabled => vec![],
         };
-        wrap_dir.unwrap_or_else(|| ".".to_string())
+
+        // Build a map: nix_system -> sourceRoot by matching artifact IDs to
+        // archive config IDs.
+        let mut per_system: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for art in &all_artifacts {
+            if let Some(system) = nix_system(&art.os, &art.arch) {
+                // Find the archive config that produced this artifact.
+                let wrap_dir = archive_cfgs
+                    .iter()
+                    .find(|cfg| {
+                        // Match by ID when both the artifact and config have one.
+                        match (&art.id, &cfg.id) {
+                            (Some(aid), Some(cid)) => aid == cid,
+                            // When there's only one archive config with no ID,
+                            // it applies to all artifacts.
+                            (_, None) if archive_cfgs.len() == 1 => true,
+                            _ => false,
+                        }
+                    })
+                    .or_else(|| archive_cfgs.first())
+                    .and_then(|cfg| {
+                        cfg.wrap_in_directory
+                            .as_ref()
+                            .and_then(|w| w.directory_name(&default_stem))
+                    })
+                    .unwrap_or_else(|| ".".to_string());
+                per_system.insert(system, wrap_dir);
+            }
+        }
+
+        // Check if all values are the same.
+        let unique_roots: std::collections::HashSet<&str> =
+            per_system.values().map(|s| s.as_str()).collect();
+
+        if unique_roots.len() <= 1 {
+            // All the same (or empty): use a single source_root.
+            let single = per_system
+                .values()
+                .next()
+                .cloned()
+                .unwrap_or_else(|| ".".to_string());
+            (Some(single), None)
+        } else {
+            // Different per platform: build source_root_map entries.
+            let mut entries: Vec<SourceRootEntry> = per_system
+                .into_iter()
+                .map(|(system, root)| SourceRootEntry { system, root })
+                .collect();
+            entries.sort_by(|a, b| a.system.cmp(&b.system));
+            (None, Some(entries))
+        }
+    };
+
+    // Detect dynamically-linked binaries (GoReleaser parity: check artifact
+    // metadata `dynamically_linked` set by the build stage first, then fall
+    // back to inspecting actual binary files on disk for non-build artifacts).
+    let dynamically_linked = {
+        let binary_artifacts = ctx
+            .artifacts
+            .by_kind_and_crate(anodize_core::artifact::ArtifactKind::Binary, crate_name);
+        binary_artifacts.iter().any(|a| {
+            // Check metadata first (set by build stage, avoids redundant disk I/O)
+            if let Some(v) = a.metadata.get("DynamicallyLinked") {
+                return v == "true";
+            }
+            // Fall back to direct ELF inspection
+            is_dynamically_linked(&a.path)
+        })
     };
 
     let nix_expr = generate_nix_expression(&NixParams {
@@ -740,7 +999,9 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         needs_unzip,
         needs_make_wrapper,
         dep_args: &dep_args,
-        source_root: &source_root,
+        source_root: source_root.as_deref(),
+        source_root_map: source_root_map.as_deref(),
+        dynamically_linked,
     });
 
     // Optionally format with alejandra or nixfmt
@@ -804,11 +1065,17 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
 
     log.status(&format!("wrote Nix expression: {}", nix_file.display()));
 
-    let commit_msg = crate::homebrew::render_commit_msg(
+    let previous_tag = ctx
+        .template_vars()
+        .get("PreviousTag")
+        .cloned()
+        .unwrap_or_default();
+    let commit_msg = crate::homebrew::render_commit_msg_with_prev(
         nix_cfg.commit_msg_template.as_deref(),
         name,
         &version,
-        "package",
+        &previous_tag,
+        "nix",
     );
     let commit_opts = util::resolve_commit_opts(nix_cfg.commit_author.as_ref(), None, None);
     let branch = util::resolve_branch(nix_cfg.repository.as_ref());
@@ -906,7 +1173,9 @@ mod tests {
             needs_unzip: false,
             needs_make_wrapper: false,
             dep_args: &[],
-            source_root: ".",
+            source_root: Some("."),
+            source_root_map: None,
+            dynamically_linked: false,
         });
 
         assert!(expr.contains("pname = \"mytool\""));
@@ -942,7 +1211,9 @@ mod tests {
             needs_unzip: true,
             needs_make_wrapper: false,
             dep_args: &[],
-            source_root: ".",
+            source_root: Some("."),
+            source_root_map: None,
+            dynamically_linked: false,
         });
 
         assert!(expr.contains(", unzip"));
@@ -970,7 +1241,9 @@ mod tests {
             needs_unzip: false,
             needs_make_wrapper: false,
             dep_args: &[],
-            source_root: ".",
+            source_root: Some("."),
+            source_root_map: None,
+            dynamically_linked: false,
         });
 
         assert!(expr.contains("postInstall"));
@@ -1015,7 +1288,9 @@ mod tests {
             needs_unzip: false,
             needs_make_wrapper: true,
             dep_args: &dep_args,
-            source_root: ".",
+            source_root: Some("."),
+            source_root_map: None,
+            dynamically_linked: false,
         });
 
         // Verify lib.makeBinPath pattern is used (not lib.getBin)
@@ -1053,7 +1328,9 @@ mod tests {
             needs_unzip: false,
             needs_make_wrapper: true,
             dep_args: &dep_args,
-            source_root: ".",
+            source_root: Some("."),
+            source_root_map: None,
+            dynamically_linked: false,
         });
 
         // Verify dep_args appear in nativeBuildInputs
@@ -1101,7 +1378,9 @@ mod tests {
             needs_unzip: false,
             needs_make_wrapper: false,
             dep_args: &[],
-            source_root: ".",
+            source_root: Some("."),
+            source_root_map: None,
+            dynamically_linked: false,
         });
 
         assert!(
@@ -1153,27 +1432,49 @@ mod tests {
     }
 
     #[test]
+    fn test_hex_sha256_to_nix_base32_valid() {
+        // SHA256 of empty string = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+        // nix base32 is 52 chars for SHA256 (256 bits / 5 bits per char = 52)
+        let hash = hex_sha256_to_nix_base32(
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        )
+        .unwrap();
+        assert_eq!(hash.len(), 52, "nix base32 of SHA256 must be 52 chars");
+        // Verify only valid nix base32 characters are used
+        assert!(
+            hash.chars()
+                .all(|c| "0123456789abcdfghijklmnpqrsvwxyz".contains(c)),
+            "output must use nix base32 alphabet"
+        );
+        // Cross-check: both conversions come from the same 32-byte hash
+        let sri = hex_sha256_to_sri(
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        )
+        .unwrap();
+        assert_eq!(sri, "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=");
+        // Both encode the same underlying hash, just in different formats
+        assert_eq!(
+            hash,
+            "0mdqa9w1p6cmli6976v4wi0sw9r4p5prkj7lzfd1877wk11c9c73"
+        );
+    }
+
+    #[test]
+    fn test_hex_sha256_to_nix_base32_invalid_hex() {
+        assert!(hex_sha256_to_nix_base32("not-valid-hex").is_err());
+    }
+
+    #[test]
+    fn test_hex_sha256_to_nix_base32_wrong_length() {
+        assert!(hex_sha256_to_nix_base32("abcd").is_err());
+    }
+
+    #[test]
     fn test_hex_sha256_to_sri_valid() {
-        // SHA256 of empty string: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
         let sri =
             hex_sha256_to_sri("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
                 .unwrap();
-        assert!(
-            sri.starts_with("sha256-"),
-            "SRI hash should start with 'sha256-'"
-        );
         assert_eq!(sri, "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=");
-    }
-
-    #[test]
-    fn test_hex_sha256_to_sri_invalid_hex() {
-        assert!(hex_sha256_to_sri("not-valid-hex").is_err());
-    }
-
-    #[test]
-    fn test_hex_sha256_to_sri_wrong_length() {
-        // Valid hex but not 32 bytes
-        assert!(hex_sha256_to_sri("abcd").is_err());
     }
 
     #[test]

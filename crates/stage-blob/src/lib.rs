@@ -1,7 +1,9 @@
+use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{Context as _, Result};
+use anyhow::{bail, Context as _, Result};
+use base64::Engine as _;
 
 use anodize_core::artifact::{Artifact, ArtifactKind};
 use anodize_core::config::{BlobConfig, ExtraFile, StringOrBool};
@@ -41,6 +43,204 @@ impl Provider {
             Provider::S3 => "s3",
             Provider::Gcs => "gs",
             Provider::AzBlob => "azblob",
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// KMS provider detection and client-side encryption
+// ---------------------------------------------------------------------------
+
+/// Identifies how the KMS key should be used for encryption.
+///
+/// GoReleaser supports `awskms://`, `gcpkms://`, and `azurekeyvault://` URL
+/// schemes via gocloud.dev/secrets for **client-side** encryption of blob data
+/// before upload. A plain key ARN/ID (no scheme) means server-side encryption
+/// (SSE-KMS on S3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KmsProvider {
+    /// `awskms://key-id` or `awskms:///arn:aws:kms:...` — client-side via AWS CLI
+    Aws,
+    /// `gcpkms://projects/.../cryptKeys/...` — client-side via gcloud CLI
+    Gcp,
+    /// `azurekeyvault://vault-name/keys/key-name[/version]` — client-side via az CLI
+    Azure,
+    /// Plain key ARN/ID without URL scheme — server-side SSE-KMS (S3 only)
+    ServerSide,
+}
+
+fn parse_kms_provider(kms_key: &str) -> KmsProvider {
+    if kms_key.starts_with("awskms://") {
+        KmsProvider::Aws
+    } else if kms_key.starts_with("gcpkms://") {
+        KmsProvider::Gcp
+    } else if kms_key.starts_with("azurekeyvault://") {
+        KmsProvider::Azure
+    } else {
+        KmsProvider::ServerSide
+    }
+}
+
+/// Encrypt `data` client-side using the appropriate cloud CLI tool.
+///
+/// Returns the encrypted ciphertext bytes. For `ServerSide`, returns the data
+/// unchanged — the S3 builder handles SSE-KMS configuration at the transport
+/// level.
+fn encrypt_with_kms(data: &[u8], kms_key: &str, provider: KmsProvider) -> Result<Vec<u8>> {
+    match provider {
+        KmsProvider::Aws => {
+            // awskms://key-id  or  awskms:///arn:aws:kms:region:account:key/id
+            let key_id = kms_key
+                .strip_prefix("awskms://")
+                .unwrap()
+                .trim_start_matches('/');
+
+            let mut child = std::process::Command::new("aws")
+                .args([
+                    "kms",
+                    "encrypt",
+                    "--key-id",
+                    key_id,
+                    "--plaintext",
+                    "fileb:///dev/stdin",
+                    "--output",
+                    "json",
+                ])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .context("failed to run 'aws' CLI — is it installed?")?;
+
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(data)
+                .context("blobs: failed to write plaintext to aws kms stdin")?;
+
+            let output = child
+                .wait_with_output()
+                .context("blobs: failed to wait for aws kms encrypt")?;
+
+            if !output.status.success() {
+                bail!(
+                    "aws kms encrypt failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+
+            let resp: serde_json::Value = serde_json::from_slice(&output.stdout)
+                .context("blobs: failed to parse aws kms encrypt JSON response")?;
+            let b64 = resp["CiphertextBlob"]
+                .as_str()
+                .context("missing CiphertextBlob in aws kms encrypt response")?;
+
+            base64::engine::general_purpose::STANDARD
+                .decode(b64)
+                .context("blobs: failed to decode CiphertextBlob base64")
+        }
+
+        KmsProvider::Gcp => {
+            // gcpkms://projects/PROJECT/locations/LOC/keyRings/KR/cryptKeys/KEY
+            let resource = kms_key.strip_prefix("gcpkms://").unwrap();
+
+            let mut child = std::process::Command::new("gcloud")
+                .args([
+                    "kms",
+                    "encrypt",
+                    "--key",
+                    resource,
+                    "--plaintext-file",
+                    "-",
+                    "--ciphertext-file",
+                    "-",
+                ])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .context("failed to run 'gcloud' CLI — is it installed?")?;
+
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(data)
+                .context("blobs: failed to write plaintext to gcloud kms stdin")?;
+
+            let output = child
+                .wait_with_output()
+                .context("blobs: failed to wait for gcloud kms encrypt")?;
+
+            if !output.status.success() {
+                bail!(
+                    "gcloud kms encrypt failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+
+            // gcloud outputs raw ciphertext bytes to stdout
+            Ok(output.stdout)
+        }
+
+        KmsProvider::Azure => {
+            // azurekeyvault://vault-name/keys/key-name[/version]
+            let path = kms_key.strip_prefix("azurekeyvault://").unwrap();
+            let parts: Vec<&str> = path.splitn(3, '/').collect();
+            let vault_name = parts
+                .first()
+                .context("missing vault name in azurekeyvault:// URL")?;
+            // parts[1] is "keys", parts[2] is "key-name[/version]"
+            let key_name = parts
+                .get(2)
+                .context("missing key name in azurekeyvault:// URL (expected vault/keys/name)")?;
+
+            let b64_data = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(data);
+
+            let output = std::process::Command::new("az")
+                .args([
+                    "keyvault",
+                    "key",
+                    "encrypt",
+                    "--vault-name",
+                    vault_name,
+                    "--name",
+                    key_name,
+                    "--algorithm",
+                    "RSA-OAEP-256",
+                    "--value",
+                    &b64_data,
+                    "--output",
+                    "json",
+                ])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .output()
+                .context("failed to run 'az' CLI — is it installed?")?;
+
+            if !output.status.success() {
+                bail!(
+                    "az keyvault key encrypt failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+
+            let resp: serde_json::Value = serde_json::from_slice(&output.stdout)
+                .context("blobs: failed to parse az keyvault encrypt JSON response")?;
+            let result = resp["result"]
+                .as_str()
+                .context("missing 'result' field in az keyvault encrypt response")?;
+
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(result)
+                .context("blobs: failed to decode az keyvault encryption result")
+        }
+
+        KmsProvider::ServerSide => {
+            // Not client-side encryption — return data unchanged.
+            // The S3 builder handles SSE-KMS at the transport level.
+            Ok(data.to_vec())
         }
     }
 }
@@ -96,10 +296,14 @@ fn build_s3_store(
         builder = builder.with_allow_http(true);
     }
 
-    // KMS server-side encryption
-    if let Some(ref kms_key) = config.kms_key {
-        builder = builder.with_sse_kms_encryption(kms_key);
-    }
+    // KMS server-side encryption: only set SSE-KMS on the S3 builder when the
+    // key is a plain ARN/ID (ServerSide). URL-schemed keys (awskms://, gcpkms://,
+    // azurekeyvault://) use client-side encryption — the data is encrypted before
+    // upload, so we must NOT also request server-side encryption.
+    if let Some(ref kms_key) = config.kms_key
+        && parse_kms_provider(kms_key) == KmsProvider::ServerSide {
+            builder = builder.with_sse_kms_encryption(kms_key);
+        }
 
     // S3 canned ACL via x-amz-acl header.
     // We set it as a default header on the client — since each blob config
@@ -291,6 +495,8 @@ fn collect_artifacts<'a>(
         return vec![];
     }
 
+    // GoReleaser parity: blob upload includes Signature, Certificate,
+    // Flatpak, and SourceRpm artifact types alongside the standard set.
     let uploadable_kinds = if config.include_meta.unwrap_or(false) {
         vec![
             ArtifactKind::Binary,
@@ -303,6 +509,10 @@ fn collect_artifacts<'a>(
             ArtifactKind::DiskImage,
             ArtifactKind::Installer,
             ArtifactKind::MacOsPackage,
+            ArtifactKind::Signature,
+            ArtifactKind::Certificate,
+            ArtifactKind::Flatpak,
+            ArtifactKind::SourceRpm,
             ArtifactKind::Metadata,
         ]
     } else {
@@ -317,6 +527,10 @@ fn collect_artifacts<'a>(
             ArtifactKind::DiskImage,
             ArtifactKind::Installer,
             ArtifactKind::MacOsPackage,
+            ArtifactKind::Signature,
+            ArtifactKind::Certificate,
+            ArtifactKind::Flatpak,
+            ArtifactKind::SourceRpm,
         ]
     };
 
@@ -355,6 +569,9 @@ struct UploadParams<'a> {
     directory: &'a str,
     config: &'a BlobConfig,
     ctx: &'a Context,
+    /// When set, the KMS key URL and parsed provider for client-side encryption.
+    /// `None` means no client-side encryption is configured.
+    client_kms: Option<(&'a str, KmsProvider)>,
 }
 
 fn upload_files(params: &UploadParams<'_>) -> Result<()> {
@@ -388,6 +605,7 @@ fn upload_files(params: &UploadParams<'_>) -> Result<()> {
             let path_display = local_path.display().to_string();
             let local = local_path.clone();
             let key_display = object_key.clone();
+            let client_kms = params.client_kms.map(|(k, p)| (k.to_string(), p));
 
             handles.push(tokio::spawn(async move {
                 let _permit = sem
@@ -398,8 +616,22 @@ fn upload_files(params: &UploadParams<'_>) -> Result<()> {
                 let data = tokio::fs::read(&local).await.map_err(|e| {
                     anyhow::anyhow!("blobs: read file for upload: {}: {}", path_display, e)
                 })?;
+
+                // Client-side KMS encryption: encrypt the data before upload.
+                // This runs the CLI tool in a blocking spawn to avoid blocking
+                // the async runtime.
+                let upload_data = if let Some((kms_key, provider)) = client_kms {
+                    tokio::task::spawn_blocking(move || {
+                        encrypt_with_kms(&data, &kms_key, provider)
+                    })
+                    .await
+                    .map_err(|e| anyhow::anyhow!("KMS encryption task panicked: {}", e))??
+                } else {
+                    data
+                };
+
                 store
-                    .put_opts(&object_path, data.into(), put_opts)
+                    .put_opts(&object_path, upload_data.into(), put_opts)
                     .await
                     .map_err(|e| handle_upload_error(e, &path_display, &key_display))?;
                 Ok::<(), anyhow::Error>(())
@@ -581,8 +813,8 @@ impl Stage for BlobStage {
                 // NOTE: Rendered files are written to the shared dist directory. If multiple
                 // blob configs use the same dst name, later writes will overwrite earlier
                 // ones. Users should ensure dst names are unique across configs.
-                if let Some(ref tpl_specs) = blob_cfg.templated_extra_files {
-                    if !tpl_specs.is_empty() {
+                if let Some(ref tpl_specs) = blob_cfg.templated_extra_files
+                    && !tpl_specs.is_empty() {
                         let rendered =
                             anodize_core::templated_files::process_templated_extra_files(
                                 tpl_specs,
@@ -592,7 +824,6 @@ impl Stage for BlobStage {
                             )?;
                         upload_items.extend(rendered);
                     }
-                }
 
                 // Note: metadata files are already handled by collect_artifacts()
                 // when include_meta is true — it includes ArtifactKind::Metadata
@@ -635,12 +866,23 @@ impl Stage for BlobStage {
 
                     let store: Arc<dyn ObjectStore> =
                         Arc::from(build_store(provider, blob_cfg, &rendered_bucket, ctx)?);
+
+                    // Determine if client-side KMS encryption is needed
+                    let client_kms = blob_cfg.kms_key.as_deref().and_then(|key| {
+                        let kms_provider = parse_kms_provider(key);
+                        match kms_provider {
+                            KmsProvider::ServerSide => None,
+                            _ => Some((key, kms_provider)),
+                        }
+                    });
+
                     let params = UploadParams {
                         store,
                         items: &upload_items,
                         directory: &rendered_directory,
                         config: blob_cfg,
                         ctx,
+                        client_kms,
                     };
                     upload_files(&params)?;
                 }
@@ -907,6 +1149,71 @@ mod tests {
     fn test_format_remote_path_trims_slashes() {
         let path = format_remote_path(Provider::S3, "b", "/dir/", "file.tar.gz");
         assert_eq!(path, "s3://b/dir/file.tar.gz");
+    }
+
+    // -----------------------------------------------------------------------
+    // KMS provider detection tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_parse_kms_provider_aws() {
+        assert_eq!(
+            parse_kms_provider("awskms://alias/my-key"),
+            KmsProvider::Aws
+        );
+        assert_eq!(
+            parse_kms_provider("awskms:///arn:aws:kms:us-east-1:123456:key/abc-def"),
+            KmsProvider::Aws
+        );
+    }
+
+    #[test]
+    fn test_parse_kms_provider_gcp() {
+        assert_eq!(
+            parse_kms_provider(
+                "gcpkms://projects/my-proj/locations/global/keyRings/kr/cryptKeys/key"
+            ),
+            KmsProvider::Gcp
+        );
+    }
+
+    #[test]
+    fn test_parse_kms_provider_azure() {
+        assert_eq!(
+            parse_kms_provider("azurekeyvault://my-vault/keys/my-key"),
+            KmsProvider::Azure
+        );
+        assert_eq!(
+            parse_kms_provider("azurekeyvault://my-vault/keys/my-key/version1"),
+            KmsProvider::Azure
+        );
+    }
+
+    #[test]
+    fn test_parse_kms_provider_server_side() {
+        // Plain ARN — no URL scheme
+        assert_eq!(
+            parse_kms_provider("arn:aws:kms:us-east-1:123456:key/abc-def"),
+            KmsProvider::ServerSide
+        );
+        // Plain key ID
+        assert_eq!(
+            parse_kms_provider("1234abcd-12ab-34cd-56ef-1234567890ab"),
+            KmsProvider::ServerSide
+        );
+        // Alias without scheme
+        assert_eq!(
+            parse_kms_provider("alias/my-key"),
+            KmsProvider::ServerSide
+        );
+    }
+
+    #[test]
+    fn test_encrypt_with_kms_server_side_passthrough() {
+        // ServerSide should return data unchanged
+        let data = b"hello world";
+        let result = encrypt_with_kms(data, "some-key-arn", KmsProvider::ServerSide).unwrap();
+        assert_eq!(result, data);
     }
 
     // -----------------------------------------------------------------------
@@ -1626,6 +1933,7 @@ partial:
             directory: "myproject/v1.0.0",
             config: &config,
             ctx: &ctx,
+            client_kms: None,
         };
         let result = upload_files(&params);
         assert!(result.is_ok(), "upload failed: {:?}", result.err());
@@ -1670,6 +1978,7 @@ partial:
             directory: "",
             config: &config,
             ctx: &ctx,
+            client_kms: None,
         };
         let result = upload_files(&params);
         assert!(result.is_ok());
@@ -1708,6 +2017,7 @@ partial:
             directory: "dir",
             config: &config,
             ctx: &ctx,
+            client_kms: None,
         };
         let result = upload_files(&params);
         assert!(result.is_ok());

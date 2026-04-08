@@ -207,6 +207,7 @@ const SRCINFO_TEMPLATE: &str = r#"pkgbase = {{ name }}
 {% endfor %}{% for o in optdepends %}	optdepends = {{ o }}
 {% endfor %}{% for c in conflicts %}	conflicts = {{ c }}
 {% endfor %}{% for p in provides %}	provides = {{ p }}
+{% endfor %}{% for b in backup %}	backup = {{ b }}
 {% endfor %}{% for s in sources %}	arch = {{ s.arch }}
 	source_{{ s.arch }} = {{ s.url }}
 	sha256sums_{{ s.arch }} = {{ s.hash }}
@@ -232,6 +233,7 @@ pub fn generate_srcinfo(params: &PkgbuildParams<'_>) -> String {
     ctx.insert("optdepends", params.optdepends);
     ctx.insert("conflicts", params.conflicts);
     ctx.insert("provides", params.provides);
+    ctx.insert("backup", params.backup);
 
     let source_data: Vec<(String, String, String, String)> = params
         .sources
@@ -276,12 +278,11 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         .ok_or_else(|| anyhow::anyhow!("aur: no aur config for '{}'", crate_name))?;
 
     // Check disable before doing any work.
-    if let Some(ref d) = aur_cfg.disable {
-        if d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
+    if let Some(ref d) = aur_cfg.disable
+        && d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
             log.status(&format!("aur: disabled for '{}'", crate_name));
             return Ok(());
         }
-    }
 
     // Check skip_upload before doing any work.
     if crate::homebrew::should_skip_upload(aur_cfg.skip_upload.as_ref(), ctx) {

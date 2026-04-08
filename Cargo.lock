@@ -49,6 +49,7 @@ dependencies = [
  "anodize-stage-pkg",
  "anodize-stage-publish",
  "anodize-stage-release",
+ "anodize-stage-sbom",
  "anodize-stage-sign",
  "anodize-stage-snapcraft",
  "anodize-stage-source",
@@ -72,6 +73,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
+ "toml_edit",
 ]
 
 [[package]]
@@ -153,6 +155,7 @@ version = "0.1.0"
 dependencies = [
  "anodize-core",
  "anyhow",
+ "base64",
  "glob",
  "object_store",
  "reqwest",
@@ -345,6 +348,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "anodize-stage-sbom"
+version = "0.1.0"
+dependencies = [
+ "anodize-core",
+ "anyhow",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
 name = "anodize-stage-sign"
 version = "0.1.0"
 dependencies = [
@@ -380,6 +396,7 @@ dependencies = [
  "tar",
  "tempfile",
  "toml",
+ "zip",
 ]
 
 [[package]]

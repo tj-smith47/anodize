@@ -11,6 +11,8 @@ pub fn map_target(triple: &str) -> (String, String) {
     // so check android before linux.
     let os = if triple.contains("android") {
         "android"
+    } else if triple.contains("ios") {
+        "ios"
     } else if triple.contains("linux") {
         "linux"
     } else if triple.contains("darwin") || triple.contains("apple") {
@@ -23,6 +25,8 @@ pub fn map_target(triple: &str) -> (String, String) {
         "netbsd"
     } else if triple.contains("openbsd") {
         "openbsd"
+    } else if triple.contains("aix") {
+        "aix"
     } else {
         "unknown"
     };
@@ -69,6 +73,27 @@ pub fn is_linux(triple: &str) -> bool {
 /// Returns `true` if the target triple represents a Windows target.
 pub fn is_windows(triple: &str) -> bool {
     triple.contains("windows")
+}
+
+/// Returns `true` if the target triple represents an iOS target.
+pub fn is_ios(triple: &str) -> bool {
+    triple.contains("ios")
+}
+
+/// Returns `true` if the target triple represents an AIX target.
+pub fn is_aix(triple: &str) -> bool {
+    triple.contains("aix")
+}
+
+/// Returns `true` if the target triple is eligible for nfpm packaging.
+///
+/// GoReleaser parity (nfpm.go:144): nfpm filters artifacts by
+/// `ByGooses("linux", "ios", "android", "aix")`.
+pub fn is_nfpm_target(triple: &str) -> bool {
+    is_linux(triple)
+        || is_ios(triple)
+        || triple.contains("android")
+        || is_aix(triple)
 }
 
 #[cfg(test)]
@@ -157,5 +182,30 @@ mod tests {
         let (os, arch) = map_target("wasm32-unknown-unknown");
         assert_eq!(os, "unknown");
         assert_eq!(arch, "wasm32");
+    }
+
+    #[test]
+    fn test_ios() {
+        let (os, arch) = map_target("aarch64-apple-ios");
+        assert_eq!(os, "ios");
+        assert_eq!(arch, "arm64");
+    }
+
+    #[test]
+    fn test_aix() {
+        let (os, arch) = map_target("powerpc64-ibm-aix");
+        assert_eq!(os, "aix");
+        assert_eq!(arch, "ppc64");
+    }
+
+    #[test]
+    fn test_is_nfpm_target() {
+        assert!(is_nfpm_target("x86_64-unknown-linux-gnu"));
+        assert!(is_nfpm_target("aarch64-linux-android"));
+        assert!(is_nfpm_target("aarch64-apple-ios"));
+        assert!(is_nfpm_target("powerpc64-ibm-aix"));
+        assert!(!is_nfpm_target("x86_64-apple-darwin"));
+        assert!(!is_nfpm_target("x86_64-pc-windows-msvc"));
+        assert!(!is_nfpm_target("x86_64-unknown-freebsd"));
     }
 }

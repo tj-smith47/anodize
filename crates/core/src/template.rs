@@ -1093,6 +1093,48 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
         },
     );
 
+    // index(map={...}, key="k") — access a map by key or array by index.
+    // Go template: {{ index .Map "key" }} → access map by key.
+    // Go template: {{ index .Slice 0 }} → access array by index.
+    // Returns empty string if key/index not found (matches GoReleaser behavior).
+    tera.register_function(
+        "index",
+        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+            let collection = args
+                .get("collection")
+                .ok_or_else(|| tera::Error::msg("index requires `collection` argument"))?;
+            let key = args
+                .get("key")
+                .ok_or_else(|| tera::Error::msg("index requires `key` argument"))?;
+
+            match collection {
+                Value::Object(map) => {
+                    let key_str = value_to_string(key);
+                    Ok(map
+                        .get(key_str.as_ref())
+                        .cloned()
+                        .unwrap_or(Value::String(String::new())))
+                }
+                Value::Array(arr) => {
+                    if let Some(idx) = key.as_u64() {
+                        Ok(arr
+                            .get(idx as usize)
+                            .cloned()
+                            .unwrap_or(Value::String(String::new())))
+                    } else {
+                        Err(tera::Error::msg(
+                            "index: array index must be a number",
+                        ))
+                    }
+                }
+                _ => {
+                    // For non-collection types, return empty string (graceful)
+                    Ok(Value::String(String::new()))
+                }
+            }
+        },
+    );
+
     // in — filter form: {{ myList | in(value="x") }}
     // Checks whether the piped array contains the given value (string comparison).
     tera.register_filter(
@@ -1211,6 +1253,47 @@ impl Default for TemplateVars {
 /// correctly. Without this, they would be strings and `"1" != 1`.
 const NUMERIC_FIELDS: &[&str] = &["Major", "Minor", "Patch", "Timestamp", "CommitTimestamp"];
 
+/// Regex matching `Env.VARNAME` references in a preprocessed template.
+/// Used to discover env var keys referenced by the template so they can be
+/// pre-populated with empty strings (GoReleaser returns "" for missing env vars).
+static ENV_REF_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"Env\.([A-Za-z_][A-Za-z0-9_]*)").unwrap());
+
+/// Build a `tera::Context` from `TemplateVars`, pre-populating missing env var
+/// keys referenced in the template with empty strings.
+///
+/// GoReleaser returns empty string for `{{ .Env.NONEXISTENT }}` rather than
+/// erroring. Tera's strict mode would error on a missing map key, so we scan
+/// the preprocessed template for `Env.VARNAME` references and ensure every
+/// referenced key exists in the env map (defaulting to "").
+fn build_tera_context_for_template(vars: &TemplateVars, preprocessed: &str) -> tera::Context {
+    // Discover all Env.VARNAME references in the template.
+    let referenced_env_keys: Vec<String> = ENV_REF_RE
+        .captures_iter(preprocessed)
+        .map(|cap| cap[1].to_string())
+        .collect();
+
+    // Build an env map that includes all referenced keys, defaulting missing ones to "".
+    let mut env_with_defaults = HashMap::new();
+    for key in &referenced_env_keys {
+        if !vars.env.contains_key(key.as_str()) {
+            // Check process env as fallback before defaulting to "".
+            let value = std::env::var(key).unwrap_or_default();
+            env_with_defaults.insert(key.clone(), value);
+        }
+    }
+    // Overlay with the actual env vars from TemplateVars.
+    for (k, v) in &vars.env {
+        env_with_defaults.insert(k.clone(), v.clone());
+    }
+
+    let mut augmented_vars = vars.clone();
+    // Replace the env map with our augmented one.
+    augmented_vars.env = env_with_defaults;
+
+    build_tera_context(&augmented_vars)
+}
+
 /// Build a `tera::Context` from `TemplateVars`.
 /// - Regular vars are inserted at the top level: `ProjectName`, `Version`, etc.
 /// - Env vars are nested under an `Env` key as a HashMap, so `{{ Env.GITHUB_TOKEN }}` works.
@@ -1282,7 +1365,7 @@ fn build_tera_context(vars: &TemplateVars) -> tera::Context {
 /// - `trimsuffix(suffix=".exe")` — strip a suffix from a string
 pub fn render(template: &str, vars: &TemplateVars) -> Result<String> {
     let preprocessed = preprocess(template);
-    let ctx = build_tera_context(vars);
+    let ctx = build_tera_context_for_template(vars, &preprocessed);
 
     // Clone the base instance (cheap — filters carry over, no templates to clone)
     let mut tera = BASE_TERA.clone();
@@ -1740,20 +1823,13 @@ mod tests {
     }
 
     #[test]
-    fn test_deeply_nested_undefined_variable_error() {
+    fn test_missing_env_var_returns_empty_string() {
+        // GoReleaser returns empty string for missing env vars.
+        // Anodize scans the template for Env.X references and pre-populates
+        // missing keys with "" so Tera doesn't error.
         let vars = test_vars();
-        let result = render("{{ Env.NONEXISTENT_VAR_12345 }}", &vars);
-        // Env is defined but NONEXISTENT_VAR_12345 is not a key in it.
-        // Tera treats this as an undefined variable and returns an error.
-        assert!(
-            result.is_err(),
-            "accessing a missing key in a map should produce an error"
-        );
-        let err = result.unwrap_err().to_string();
-        assert!(
-            err.contains("NONEXISTENT_VAR_12345") || err.contains("Env"),
-            "error should reference the undefined variable, got: {err}"
-        );
+        let result = render("{{ Env.NONEXISTENT_VAR_12345 }}", &vars).unwrap();
+        assert_eq!(result, "", "missing env var should return empty string");
     }
 
     #[test]
@@ -3233,5 +3309,179 @@ mod tests {
             result.len() == 10 && result.chars().nth(4) == Some('-'),
             "expected date in YYYY-MM-DD format, got: {result}"
         );
+    }
+
+    // ---- comparison function preprocessing end-to-end tests ----
+
+    #[test]
+    fn test_eq_comparison_end_to_end() {
+        let vars = test_vars();
+        // Go-style: {{ if eq .Os "linux" }}yes{{ end }}
+        let result = render("{{ if eq .Os \"linux\" }}yes{{ end }}", &vars).unwrap();
+        assert_eq!(result, "yes");
+    }
+
+    #[test]
+    fn test_ne_comparison_end_to_end() {
+        let vars = test_vars();
+        let result = render("{{ if ne .Os \"windows\" }}not-win{{ end }}", &vars).unwrap();
+        assert_eq!(result, "not-win");
+    }
+
+    #[test]
+    fn test_gt_comparison_end_to_end() {
+        let vars = test_vars();
+        // Major is 1
+        let result = render(
+            "{{ if gt .Major 0 }}positive{{ else }}zero{{ end }}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "positive");
+    }
+
+    #[test]
+    fn test_lt_comparison_end_to_end() {
+        let vars = test_vars();
+        // Patch is 3
+        let result = render(
+            "{{ if lt .Patch 5 }}small{{ else }}big{{ end }}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "small");
+    }
+
+    #[test]
+    fn test_eq_with_not_parenthesized() {
+        let mut vars = test_vars();
+        vars.set("Amd64", "v2");
+        let result = render(
+            "{{ if not (eq .Amd64 \"v1\") }}not-v1{{ end }}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "not-v1");
+    }
+
+    #[test]
+    fn test_or_and_comparison_end_to_end() {
+        let vars = test_vars();
+        // or (eq .Os "linux") (eq .Os "darwin") -- Os is "linux"
+        let result = render(
+            "{{ if or (eq .Os \"linux\") (eq .Os \"darwin\") }}unix{{ else }}other{{ end }}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "unix");
+    }
+
+    #[test]
+    fn test_and_comparison_end_to_end() {
+        let vars = test_vars();
+        // and (eq .Os "linux") (eq .Arch "amd64")
+        let result = render(
+            "{{ if and (eq .Os \"linux\") (eq .Arch \"amd64\") }}match{{ else }}no{{ end }}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "match");
+    }
+
+    // ---- index function tests ----
+
+    #[test]
+    fn test_index_map_access() {
+        let mut vars = test_vars();
+        let map = serde_json::json!({"key1": "val1", "key2": "val2"});
+        vars.set_structured("mymap", map);
+        let result = render(
+            "{{ index(collection=mymap, key=\"key1\") }}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "val1");
+    }
+
+    #[test]
+    fn test_index_map_missing_key() {
+        let mut vars = test_vars();
+        let map = serde_json::json!({"key1": "val1"});
+        vars.set_structured("mymap", map);
+        let result = render(
+            "{{ index(collection=mymap, key=\"missing\") }}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "", "missing key should return empty string");
+    }
+
+    #[test]
+    fn test_index_array_access() {
+        let mut vars = test_vars();
+        let arr = serde_json::json!(["first", "second", "third"]);
+        vars.set_structured("myarr", arr);
+        let result = render(
+            "{{ index(collection=myarr, key=1) }}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "second");
+    }
+
+    // ---- missing env var graceful handling tests ----
+
+    #[test]
+    fn test_missing_env_var_in_conditional() {
+        let vars = test_vars();
+        // {{ if .Env.NONEXISTENT }} should evaluate to false (empty string is falsy)
+        let result = render(
+            "{{ if .Env.TOTALLY_MISSING_VAR_XYZ }}set{{ else }}unset{{ end }}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "unset");
+    }
+
+    #[test]
+    fn test_missing_env_var_renders_empty() {
+        let vars = test_vars();
+        let result =
+            render("prefix-{{ .Env.NONEXISTENT_ABC_123 }}-suffix", &vars).unwrap();
+        assert_eq!(result, "prefix--suffix");
+    }
+
+    #[test]
+    fn test_existing_env_var_still_works() {
+        let vars = test_vars();
+        // GITHUB_TOKEN is set in test_vars()
+        let result = render("{{ .Env.GITHUB_TOKEN }}", &vars).unwrap();
+        assert_eq!(result, "tok123");
+    }
+
+    // ---- map + index end-to-end test ----
+
+    #[test]
+    fn test_map_and_index_go_style() {
+        // Full Go-style pipeline:
+        // {{ $m := map "a" "1" "b" "2" }}{{ index $m "a" }}
+        let vars = test_vars();
+        let result = render(
+            "{{ $m := map \"a\" \"1\" \"b\" \"2\" }}{{ index $m \"a\" }}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "1");
+    }
+
+    #[test]
+    fn test_map_and_index_missing_key_returns_empty() {
+        let vars = test_vars();
+        let result = render(
+            "{{ $m := map \"a\" \"1\" }}{{ index $m \"missing\" }}",
+            &vars,
+        )
+        .unwrap();
+        assert_eq!(result, "");
     }
 }

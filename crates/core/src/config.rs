@@ -53,8 +53,10 @@ pub struct IncludeUrlConfig {
 // Top-level config
 // ---------------------------------------------------------------------------
 
+/// GoReleaser parity: `deny_unknown_fields` rejects typos and unknown config
+/// fields at parse time, matching GoReleaser's `yaml.UnmarshalStrict`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct Config {
     /// Schema version. Currently supports 1 (implicit default) and 2.
     pub version: Option<u32>,
@@ -309,17 +311,17 @@ pub fn validate_version(config: &Config) -> Result<(), String> {
 ///
 /// Returns an error for unrecognized values.
 pub fn validate_tag_sort(config: &Config) -> Result<(), String> {
-    if let Some(ref git) = config.git {
-        if let Some(ref sort) = git.tag_sort {
-            match sort.as_str() {
-                "-version:refname" | "-version:creatordate" => {}
-                other => {
-                    return Err(format!(
-                        "unsupported git.tag_sort value: \"{}\". \
-                         Accepted values: \"-version:refname\", \"-version:creatordate\".",
-                        other
-                    ));
-                }
+    if let Some(ref git) = config.git
+        && let Some(ref sort) = git.tag_sort
+    {
+        match sort.as_str() {
+            "-version:refname" | "-version:creatordate" => {}
+            other => {
+                return Err(format!(
+                    "unsupported git.tag_sort value: \"{}\". \
+                     Accepted values: \"-version:refname\", \"-version:creatordate\".",
+                    other
+                ));
             }
         }
     }
@@ -515,8 +517,19 @@ pub fn load_env_files(
 ) -> Result<std::collections::HashMap<String, String>, String> {
     let mut vars = std::collections::HashMap::new();
     for file_path in files {
-        let content = std::fs::read_to_string(file_path)
-            .map_err(|e| format!("failed to read env file '{}': {}", file_path, e))?;
+        let content = match std::fs::read_to_string(file_path) {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                log.warn(&format!(
+                    "env file '{}' not found, skipping",
+                    file_path
+                ));
+                continue;
+            }
+            Err(e) => {
+                return Err(format!("failed to read env file '{}': {}", file_path, e));
+            }
+        };
         for line in content.lines() {
             let trimmed = line.trim();
             if trimmed.is_empty() || trimmed.starts_with('#') {
@@ -779,9 +792,10 @@ pub struct CrateConfig {
     pub version_sync: Option<VersionSyncConfig>,
     /// macOS universal binary (fat binary) configurations for this crate.
     pub universal_binaries: Option<Vec<UniversalBinaryConfig>>,
-    /// When true, all build outputs are placed in a flat `dist/` directory
-    /// instead of `dist/{target}/`.
-    pub no_unique_dist_dir: Option<bool>,
+    /// When true (or template evaluating to "true"), all build outputs are
+    /// placed in a flat `dist/` directory instead of `dist/{target}/`.
+    #[serde(default, deserialize_with = "deserialize_string_or_bool_opt")]
+    pub no_unique_dist_dir: Option<StringOrBool>,
 }
 
 /// Helper schema function for archives (accepts false or array).
@@ -857,8 +871,9 @@ pub struct BuildConfig {
     pub id: Option<String>,
     /// Binary name to build (must match a Cargo binary target in the crate).
     pub binary: String,
-    /// When true, skip this build entirely.
-    pub skip: Option<bool>,
+    /// When true (or template evaluating to "true"), skip this build entirely.
+    #[serde(default, deserialize_with = "deserialize_string_or_bool_opt")]
+    pub skip: Option<StringOrBool>,
     /// Target triples to build for (overrides defaults.targets for this build).
     pub targets: Option<Vec<String>>,
     /// Cargo features to enable for this build.
@@ -887,6 +902,13 @@ pub struct BuildConfig {
     /// Override the modification timestamp of built binaries for reproducible builds.
     /// Template string (e.g. `"{{ .CommitTimestamp }}"`) or unix timestamp.
     pub mod_timestamp: Option<String>,
+    /// Override the cargo subcommand (default: auto-detected "build" or "zigbuild").
+    /// Enables e.g. `cargo auditable build` by setting `command: "auditable build"`.
+    pub command: Option<String>,
+    /// When true (or template evaluating to "true"), place binaries in flat dist/
+    /// instead of dist/{target}/. Overrides the crate-level setting.
+    #[serde(default, deserialize_with = "deserialize_string_or_bool_opt")]
+    pub no_unique_dist_dir: Option<StringOrBool>,
 }
 
 /// Pre/post hook configuration shared across multiple stages. Despite the
@@ -1988,6 +2010,22 @@ pub struct HomebrewCaskConfig {
     pub zap: Option<Vec<String>>,
     /// Uninstall stanza directives.
     pub uninstall: Option<Vec<String>>,
+    /// Arbitrary Ruby code inserted into the cask block.
+    pub custom_block: Option<String>,
+    /// Homebrew service definition.
+    pub service: Option<String>,
+    /// License identifier (SPDX).
+    pub license: Option<String>,
+    /// Manual page references to install.
+    pub manpages: Option<Vec<String>>,
+    /// Shell completion definitions.
+    pub completions: Option<HomebrewCaskCompletions>,
+    /// Cask dependencies (other casks or formulae).
+    pub dependencies: Option<Vec<HomebrewCaskDependencyEntry>>,
+    /// Conflicting casks or formulae.
+    pub conflicts: Option<Vec<HomebrewCaskConflictEntry>>,
+    /// Pre/post install/uninstall hooks.
+    pub hooks: Option<HomebrewCaskHooks>,
 }
 
 // ---------------------------------------------------------------------------
@@ -4042,18 +4080,18 @@ pub enum ResolvedPromptSource {
 impl ChangelogAiPromptSource {
     /// Resolve the prompt source applying priority: from_file overrides from_url.
     pub fn resolve(&self) -> ResolvedPromptSource {
-        if let Some(ref file) = self.from_file {
-            if let Some(ref path) = file.path {
-                return ResolvedPromptSource::File(path.clone());
-            }
+        if let Some(ref file) = self.from_file
+            && let Some(ref path) = file.path
+        {
+            return ResolvedPromptSource::File(path.clone());
         }
-        if let Some(ref url_cfg) = self.from_url {
-            if let Some(ref url) = url_cfg.url {
-                return ResolvedPromptSource::Url {
-                    url: url.clone(),
-                    headers: url_cfg.headers.clone(),
-                };
-            }
+        if let Some(ref url_cfg) = self.from_url
+            && let Some(ref url) = url_cfg.url
+        {
+            return ResolvedPromptSource::Url {
+                url: url.clone(),
+                headers: url_cfg.headers.clone(),
+            };
         }
         ResolvedPromptSource::None
     }
@@ -4179,8 +4217,10 @@ pub struct UpxConfig {
     pub id: Option<String>,
     /// Build IDs filter: only compress binaries from builds whose `id` is in this list.
     pub ids: Option<Vec<String>>,
-    /// When true, compress binaries with UPX (default: true).
-    pub enabled: bool,
+    /// Whether to compress binaries with UPX.
+    /// Accepts bool or template string (GoReleaser parity: `tmpl.Bool(upx.Enabled)`).
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub enabled: Option<StringOrBool>,
     /// UPX executable path or name (default: "upx").
     pub binary: String,
     /// Extra arguments passed to UPX (e.g., ["-9", "--brute"]).
@@ -4202,7 +4242,7 @@ impl Default for UpxConfig {
         UpxConfig {
             id: None,
             ids: None,
-            enabled: false,
+            enabled: None,
             binary: "upx".to_string(),
             args: Vec::new(),
             required: false,
@@ -4375,8 +4415,9 @@ pub struct AnnounceConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct BlueskyAnnounce {
-    /// Enable Bluesky announcements.
-    pub enabled: Option<bool>,
+    /// Enable Bluesky announcements (supports template expressions).
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub enabled: Option<StringOrBool>,
     /// Bluesky handle/username (e.g. "user.bsky.social").
     pub username: Option<String>,
     /// Message template for the post. Default: "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
@@ -4386,8 +4427,9 @@ pub struct BlueskyAnnounce {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct DiscourseAnnounce {
-    /// Enable Discourse announcements.
-    pub enabled: Option<bool>,
+    /// Enable Discourse announcements (supports template expressions).
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub enabled: Option<StringOrBool>,
     /// Discourse forum URL (e.g. "https://forum.example.com").
     pub server: Option<String>,
     /// Category ID to post in (required, must be non-zero).
@@ -4403,8 +4445,9 @@ pub struct DiscourseAnnounce {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct LinkedInAnnounce {
-    /// Enable LinkedIn announcements. Requires LINKEDIN_ACCESS_TOKEN env var.
-    pub enabled: Option<bool>,
+    /// Enable LinkedIn announcements. Requires LINKEDIN_ACCESS_TOKEN env var (supports template expressions).
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub enabled: Option<StringOrBool>,
     /// Message template for the LinkedIn share post. Default: "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
     pub message_template: Option<String>,
 }
@@ -4412,8 +4455,9 @@ pub struct LinkedInAnnounce {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct OpenCollectiveAnnounce {
-    /// Enable OpenCollective announcements. Requires OPENCOLLECTIVE_TOKEN env var.
-    pub enabled: Option<bool>,
+    /// Enable OpenCollective announcements. Requires OPENCOLLECTIVE_TOKEN env var (supports template expressions).
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub enabled: Option<StringOrBool>,
     /// Collective slug (e.g. "my-project").
     pub slug: Option<String>,
     /// Title template for the update. Default: "{{ .Tag }}"
@@ -4425,8 +4469,9 @@ pub struct OpenCollectiveAnnounce {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct TwitterAnnounce {
-    /// Enable Twitter/X announcements. Requires TWITTER_CONSUMER_KEY, TWITTER_CONSUMER_SECRET, TWITTER_ACCESS_TOKEN, TWITTER_ACCESS_TOKEN_SECRET env vars.
-    pub enabled: Option<bool>,
+    /// Enable Twitter/X announcements. Requires TWITTER_CONSUMER_KEY, TWITTER_CONSUMER_SECRET, TWITTER_ACCESS_TOKEN, TWITTER_ACCESS_TOKEN_SECRET env vars (supports template expressions).
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub enabled: Option<StringOrBool>,
     /// Tweet message template. Default: "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
     pub message_template: Option<String>,
 }
@@ -4434,8 +4479,9 @@ pub struct TwitterAnnounce {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct MastodonAnnounce {
-    /// Enable Mastodon announcements. Requires MASTODON_CLIENT_ID, MASTODON_CLIENT_SECRET, MASTODON_ACCESS_TOKEN env vars.
-    pub enabled: Option<bool>,
+    /// Enable Mastodon announcements. Requires MASTODON_CLIENT_ID, MASTODON_CLIENT_SECRET, MASTODON_ACCESS_TOKEN env vars (supports template expressions).
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub enabled: Option<StringOrBool>,
     /// Mastodon instance URL (e.g. "https://mastodon.social").
     pub server: Option<String>,
     /// Toot message template. Default: "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
@@ -4445,16 +4491,18 @@ pub struct MastodonAnnounce {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct DiscordAnnounce {
-    /// Enable Discord announcements.
-    pub enabled: Option<bool>,
+    /// Enable Discord announcements (supports template expressions).
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub enabled: Option<StringOrBool>,
     /// Discord webhook URL. Use templates like `{{ Env.DISCORD_WEBHOOK_ID }}` to reference environment variables.
     pub webhook_url: Option<String>,
     /// Message template for the Discord embed. Default: "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
     pub message_template: Option<String>,
     /// Author name displayed in the embed.
     pub author: Option<String>,
-    /// Embed color as a decimal integer (default: 3888754, GoReleaser blue).
-    pub color: Option<u32>,
+    /// Embed color as a decimal integer string (default: "3888754", GoReleaser blue).
+    /// Parsed to u32 at runtime. Supports template expressions.
+    pub color: Option<String>,
     /// Icon URL for the embed footer.
     pub icon_url: Option<String>,
 }
@@ -4462,8 +4510,9 @@ pub struct DiscordAnnounce {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct WebhookConfig {
-    /// Enable generic webhook announcements.
-    pub enabled: Option<bool>,
+    /// Enable generic webhook announcements (supports template expressions).
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub enabled: Option<StringOrBool>,
     /// Webhook endpoint URL (supports template variables).
     pub endpoint_url: Option<String>,
     /// Custom HTTP headers to include in the request.
@@ -4482,8 +4531,9 @@ pub struct WebhookConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct TelegramAnnounce {
-    /// Enable Telegram announcements. Requires bot_token and chat_id.
-    pub enabled: Option<bool>,
+    /// Enable Telegram announcements. Requires bot_token and chat_id (supports template expressions).
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub enabled: Option<StringOrBool>,
     /// Telegram Bot API token. Get one from @BotFather.
     pub bot_token: Option<String>,
     /// Telegram chat ID to send the message to (supports template variables).
@@ -4493,14 +4543,16 @@ pub struct TelegramAnnounce {
     /// Parse mode: "MarkdownV2" or "HTML" (defaults to "MarkdownV2").
     pub parse_mode: Option<String>,
     /// Message thread ID for sending to a specific topic in a forum group.
-    pub message_thread_id: Option<i64>,
+    /// Supports template expressions; parsed to i64 at runtime.
+    pub message_thread_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct TeamsAnnounce {
-    /// Enable Microsoft Teams announcements.
-    pub enabled: Option<bool>,
+    /// Enable Microsoft Teams announcements (supports template expressions).
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub enabled: Option<StringOrBool>,
     /// Teams incoming webhook URL.
     pub webhook_url: Option<String>,
     /// Message template for the Adaptive Card body. Default: "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
@@ -4516,8 +4568,9 @@ pub struct TeamsAnnounce {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct MattermostAnnounce {
-    /// Enable Mattermost announcements.
-    pub enabled: Option<bool>,
+    /// Enable Mattermost announcements (supports template expressions).
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub enabled: Option<StringOrBool>,
     /// Mattermost incoming webhook URL.
     pub webhook_url: Option<String>,
     /// Channel override (e.g. "town-square").
@@ -4539,8 +4592,9 @@ pub struct MattermostAnnounce {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct EmailAnnounce {
-    /// Enable email announcements.
-    pub enabled: Option<bool>,
+    /// Enable email announcements (supports template expressions).
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub enabled: Option<StringOrBool>,
     /// SMTP server hostname. When set, uses SMTP transport.
     /// When absent, falls back to sendmail/msmtp.
     pub host: Option<String>,
@@ -4553,9 +4607,10 @@ pub struct EmailAnnounce {
     /// Recipient email addresses.
     #[serde(default)]
     pub to: Vec<String>,
-    /// Email subject template. Default: "{{ .ProjectName }} {{ .Tag }} released"
+    /// Email subject template. Default: "{{ .ProjectName }} {{ .Tag }} is out!"
     pub subject_template: Option<String>,
     /// Body template (called body_template in GoReleaser, message_template here for consistency).
+    #[serde(alias = "body_template")]
     pub message_template: Option<String>,
     /// Skip TLS certificate verification (default: false).
     pub insecure_skip_verify: Option<bool>,
@@ -4564,8 +4619,9 @@ pub struct EmailAnnounce {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct RedditAnnounce {
-    /// Enable Reddit announcements. Requires REDDIT_SECRET and REDDIT_PASSWORD env vars.
-    pub enabled: Option<bool>,
+    /// Enable Reddit announcements. Requires REDDIT_SECRET and REDDIT_PASSWORD env vars (supports template expressions).
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub enabled: Option<StringOrBool>,
     /// Reddit application (OAuth client) ID.
     pub application_id: Option<String>,
     /// Reddit username for posting.
@@ -4581,8 +4637,9 @@ pub struct RedditAnnounce {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct SlackAnnounce {
-    /// Enable Slack announcements.
-    pub enabled: Option<bool>,
+    /// Enable Slack announcements (supports template expressions).
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub enabled: Option<StringOrBool>,
     /// Slack incoming webhook URL. Use template `{{ Env.SLACK_WEBHOOK }}` to reference an environment variable.
     pub webhook_url: Option<String>,
     /// Message template for the Slack post. Default: "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
@@ -5499,6 +5556,8 @@ pub struct SrpmConfig {
 pub struct SrpmSignatureConfig {
     /// Path to the GPG key file for signing.
     pub key_file: Option<String>,
+    /// Passphrase for the GPG key. Falls back to `SRPM_PASSPHRASE` env var.
+    pub passphrase: Option<String>,
 }
 
 /// NfpmContentConfig is reused for SRPM contents (shared shape with nFPM).
@@ -7309,20 +7368,25 @@ mode = "tag"
     // ---- Unknown fields tests ----
 
     #[test]
-    fn test_unknown_top_level_fields_ignored() {
-        // serde(default) without deny_unknown_fields should silently ignore extras
+    fn test_unknown_top_level_fields_rejected() {
+        // GoReleaser parity: strict YAML parsing rejects unknown fields
         let yaml = r#"
 project_name: test
-unknown_top_level_field: "this should be ignored"
-another_mystery: 42
+unknown_top_level_field: "this should be rejected"
 crates:
   - name: a
     path: "."
     tag_template: "v{{ .Version }}"
 "#;
-        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        assert_eq!(config.project_name, "test");
-        assert_eq!(config.crates.len(), 1);
+        let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
+        assert!(
+            result.is_err(),
+            "unknown top-level fields should be rejected"
+        );
+        assert!(
+            result.unwrap_err().to_string().contains("unknown field"),
+            "error should mention unknown field"
+        );
     }
 
     #[test]
@@ -8442,14 +8506,15 @@ crates: []
     }
 
     #[test]
-    fn test_load_env_files_nonexistent_returns_error() {
+    fn test_load_env_files_nonexistent_skips_with_warning() {
         let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Normal);
         let result = load_env_files(
             &["/tmp/nonexistent_anodize_env_file_12345".to_string()],
             &log,
         );
-        assert!(result.is_err());
-        assert!(result.unwrap_err().contains("failed to read env file"));
+        // Missing env files should be skipped (not an error), returning empty vars.
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_empty());
     }
 
     // ---- env_files TOML tests ----

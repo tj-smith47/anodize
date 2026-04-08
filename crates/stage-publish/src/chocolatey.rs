@@ -225,12 +225,11 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
     let choco_cfg = publish.chocolatey.as_ref()
         .ok_or_else(|| anyhow::anyhow!("chocolatey: no chocolatey config for '{}'", crate_name))?;
 
-    if let Some(ref d) = choco_cfg.disable {
-        if d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
+    if let Some(ref d) = choco_cfg.disable
+        && d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
             log.status(&format!("chocolatey: disabled for '{}'", crate_name));
             return Ok(());
         }
-    }
 
     let project_repo = choco_cfg.project_repo.as_ref().ok_or_else(|| {
         anyhow::anyhow!("chocolatey: no project_repo config for '{}'", crate_name)
@@ -280,11 +279,10 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
     .filter(|a| {
         let target = a.target.as_deref().unwrap_or("");
         let (_, arch) = anodize_core::target::map_target(target);
-        if arch == "amd64" {
-            if let Some(want) = goamd64 {
-                return a.metadata.get("goamd64").map_or(true, |v| v == want);
+        if arch == "amd64"
+            && let Some(want) = goamd64 {
+                return a.metadata.get("goamd64").is_none_or(|v| v == want);
             }
-        }
         true
     })
     .collect();

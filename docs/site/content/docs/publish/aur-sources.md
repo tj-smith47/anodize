@@ -1,0 +1,76 @@
++++
+title = "AUR Sources"
+description = "Publish source-based AUR packages that build from source via cargo"
+weight = 81
+template = "docs.html"
++++
+
+Anodize can generate and publish source-based AUR packages that build your project from source using `cargo build`. This is separate from the [AUR binary packages](/docs/publish/aur/) which distribute pre-built binaries.
+
+## Minimal config
+
+```yaml
+aur_sources:
+  - git_url: "ssh://aur@aur.archlinux.org/myapp.git"
+```
+
+## AUR source config fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | string | crate name | Package name (alias: `package_name`) |
+| `ids` | list | none | Filter by build IDs |
+| `description` | string | crate name | Package description |
+| `homepage` | string | `""` | Project homepage URL |
+| `license` | string | `MIT` | License identifier |
+| `maintainers` | list | `[]` | Package maintainers |
+| `contributors` | list | `[]` | Package contributors |
+| `provides` | list | `[{name}]` | Packages this provides |
+| `conflicts` | list | `["{name}-bin"]` | Conflicting packages |
+| `depends` | list | `[]` | Runtime dependencies |
+| `optdepends` | list | `[]` | Optional dependencies |
+| `makedepends` | list | `["rust", "cargo"]` | Build dependencies |
+| `backup` | list | `[]` | Files to back up on upgrade |
+| `rel` | string | `1` | Package release number |
+| `prepare` | string | none | Custom `prepare()` function body |
+| `build` | string | `cargo build --release --locked` | Custom `build()` function body |
+| `package` | string | auto-generated | Custom `package()` function body |
+| `url_template` | string | auto-derived from git URL | Source archive download URL (template) |
+| `git_url` | string | none | AUR git repository URL (for pushing) |
+| `git_ssh_command` | string | none | Custom `GIT_SSH_COMMAND` |
+| `private_key` | string | none | SSH private key path |
+| `directory` | string | repo root | Subdirectory in the git repo |
+| `skip_upload` | string/bool | none | Skip git push (`"auto"` skips for prereleases) |
+| `commit_author` | object | none | Git commit author (`name`, `email`) |
+| `commit_msg_template` | string | none | Custom commit message (template) |
+| `arches` | list | none | Architecture filter |
+| `disable` | string/bool | none | Disable this config |
+
+## Behavior
+
+- Generates PKGBUILD and .SRCINFO files for source-based installation
+- Default source URL points to the GitHub release source archive
+- Version dashes are replaced with underscores for PKGBUILD compatibility
+- Architectures are hardcoded to `x86_64` and `aarch64`
+- When `git_url` is set, clones the AUR repo, commits the generated files, and pushes
+
+## Full example
+
+```yaml
+aur_sources:
+  - name: myapp
+    description: "A fast CLI tool"
+    homepage: "https://example.com/myapp"
+    license: Apache-2.0
+    maintainers:
+      - "Alice <alice@example.com>"
+    depends:
+      - openssl
+    makedepends:
+      - rust
+      - cargo
+    git_url: "ssh://aur@aur.archlinux.org/myapp.git"
+    commit_author:
+      name: "Bot"
+      email: "bot@example.com"
+```

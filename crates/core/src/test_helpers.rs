@@ -73,6 +73,7 @@ pub struct TestContextBuilder {
     defaults: Option<Defaults>,
     source: Option<crate::config::SourceConfig>,
     sboms: Vec<crate::config::SbomConfig>,
+    project_root: Option<PathBuf>,
 }
 
 impl Default for TestContextBuilder {
@@ -112,6 +113,7 @@ impl Default for TestContextBuilder {
             defaults: None,
             source: None,
             sboms: Vec::new(),
+            project_root: None,
         }
     }
 }
@@ -278,6 +280,12 @@ impl TestContextBuilder {
         self
     }
 
+    /// Set explicit project root directory (avoids process-wide CWD mutation in tests).
+    pub fn project_root(mut self, root: PathBuf) -> Self {
+        self.project_root = Some(root);
+        self
+    }
+
     /// Build the [`Context`] with the configured values.
     #[allow(clippy::field_reassign_with_default)]
     pub fn build(self) -> Context {
@@ -310,6 +318,7 @@ impl TestContextBuilder {
             fail_fast: false,
             partial_target: None,
             merge: false,
+            project_root: self.project_root,
         };
 
         let mut ctx = Context::new(config, options);

@@ -212,6 +212,29 @@ impl Artifact {
     pub fn goarch(&self) -> Option<String> {
         self.target.as_ref().map(|t| crate::target::map_target(t).1)
     }
+
+    /// Check if this artifact replaces single-arch variants (universal binary dedup).
+    /// GoReleaser parity: `OnlyReplacingUnibins` — when a universal binary has
+    /// `replaces=true`, it supersedes the per-arch binaries for publisher consumption.
+    /// Artifacts without the `replaces` metadata key default to `true` (included).
+    pub fn only_replacing_unibins(&self) -> bool {
+        self.metadata
+            .get("replaces")
+            .is_none_or(|v| v != "false")
+    }
+
+    /// Return the list of extra binary names bundled in this archive artifact.
+    pub fn extra_binaries(&self) -> Vec<String> {
+        self.metadata
+            .get("extra_binaries")
+            .map(|v| v.split(',').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Return the single binary name for an uploadable binary artifact.
+    pub fn extra_binary(&self) -> Option<String> {
+        self.metadata.get("binary").cloned()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -289,14 +312,30 @@ impl ArtifactRegistry {
         &mut self.artifacts
     }
 
+    /// Filter artifacts by a predicate, returning matching references.
+    pub fn filter<F: Fn(&Artifact) -> bool>(&self, predicate: F) -> Vec<&Artifact> {
+        self.artifacts.iter().filter(|a| predicate(a)).collect()
+    }
+
     /// Remove all artifacts whose path matches one of the given paths.
     pub fn remove_by_paths(&mut self, paths: &[std::path::PathBuf]) {
         self.artifacts.retain(|a| !paths.contains(&a.path));
     }
 
     /// Serialize all artifacts to a JSON value suitable for writing to artifacts.json.
+    /// Normalizes all artifact paths to use forward slashes for cross-platform
+    /// consistency (GoReleaser always writes forward slashes).
     pub fn to_artifacts_json(&self) -> anyhow::Result<serde_json::Value> {
-        Ok(serde_json::to_value(&self.artifacts)?)
+        let mut val = serde_json::to_value(&self.artifacts)?;
+        // Normalize backslashes in path fields to forward slashes.
+        if let Some(arr) = val.as_array_mut() {
+            for entry in arr {
+                if let Some(path) = entry.get("path").and_then(|p| p.as_str()).map(|s| s.replace('\\', "/")) {
+                    entry["path"] = serde_json::Value::String(path);
+                }
+            }
+        }
+        Ok(val)
     }
 }
 

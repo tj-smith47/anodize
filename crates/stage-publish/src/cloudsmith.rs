@@ -57,12 +57,11 @@ pub fn publish_to_cloudsmith(ctx: &Context, log: &StageLogger) -> Result<()> {
 
     for entry in entries {
         // Check skip flag.
-        if let Some(ref s) = entry.skip {
-            if s.is_disabled(|tmpl| ctx.render_template(tmpl)) {
+        if let Some(ref s) = entry.skip
+            && s.is_disabled(|tmpl| ctx.render_template(tmpl)) {
                 log.status("cloudsmith: entry skipped");
                 continue;
             }
-        }
 
         // Organization is required — bail before dry-run so config errors
         // surface even in dry-run mode.

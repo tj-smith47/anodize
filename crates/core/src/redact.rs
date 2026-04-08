@@ -36,7 +36,7 @@ pub fn redact_string(input: &str, env: &[(String, String)]) -> String {
         .filter(|(k, v)| is_secret(k, v))
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
-    secrets.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(&b.0)));
+    secrets.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(b.0)));
 
     let mut result = input.to_string();
     for (key, value) in secrets {

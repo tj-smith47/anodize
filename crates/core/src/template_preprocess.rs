@@ -26,6 +26,11 @@ static GO_BLOCK_RE: LazyLock<Regex> =
 ///         to Tera block syntax (`{% if %}`, `{% for %}`, `{% endif %}`, etc.).
 /// Pass 1: strip Go-style leading dots (`{{ .Field }}` → `{{ Field }}`).
 /// Pass 2: rewrite Go-style `(list ...)` subexpressions to Tera array literals.
+/// Pass 2b: rewrite Go comparison functions (`eq`, `ne`, `gt`, `lt`, `ge`, `le`)
+///          to Tera infix operators, `and`/`or` prefix functions to infix, and
+///          `len .X` to `X | length`.
+/// Pass 2c: rewrite Go-style `map "k1" "v1" ...` variadic positional to
+///          `map(pairs=["k1", "v1", ...])` named-arg syntax.
 /// Pass 3: convert positional function syntax to named-arg syntax.
 /// Pass 4: rewrite Go-style `.Now.Format "..."` method calls to Tera filter syntax.
 pub fn preprocess(template: &str) -> String {
@@ -35,8 +40,12 @@ pub fn preprocess(template: &str) -> String {
     let dot_stripped = preprocess_strip_dots(&block_converted);
     // Pass 2: rewrite `(list "a" "b")` → `["a", "b"]`.
     let list_rewritten = preprocess_list_subexpr(&dot_stripped);
+    // Pass 2b: rewrite Go comparison/logical/len functions.
+    let comparison_rewritten = preprocess_go_builtins(&list_rewritten);
+    // Pass 2c: rewrite Go-style `map "k1" "v1" ...` to `map(pairs=[...])`.
+    let map_rewritten = preprocess_map_syntax(&comparison_rewritten);
     // Pass 3: convert positional function syntax to named-arg syntax.
-    let positional_rewritten = preprocess_positional_syntax(&list_rewritten);
+    let positional_rewritten = preprocess_positional_syntax(&map_rewritten);
     // Pass 4: rewrite `Now.Format "..."` → `Now | now_format(format="...")`.
     preprocess_method_calls(&positional_rewritten)
 }
@@ -402,6 +411,296 @@ fn preprocess_list_subexpr(template: &str) -> String {
                     format!("[{}]", items.join(", "))
                 })
                 .to_string()
+        })
+        .to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Pass 2b: Go comparison functions, logical operators, and len → Tera syntax
+// ---------------------------------------------------------------------------
+
+/// Known Go comparison functions and their Tera infix operator equivalents.
+const COMPARISON_OPS: &[(&str, &str)] = &[
+    ("eq", "=="),
+    ("ne", "!="),
+    ("gt", ">"),
+    ("lt", "<"),
+    ("ge", ">="),
+    ("le", "<="),
+];
+
+/// Rewrite Go-style comparison functions (`eq X Y` → `X == Y`), logical
+/// functions (`and X Y` → `X and Y`, `or X Y` → `X or Y`), and `len`
+/// (`len X` → `X | length`) inside `{% %}` and `{{ }}` blocks.
+///
+/// This runs after dot-stripping and list subexpr rewriting, so arguments
+/// are already in Tera-native form (no leading dots, list subexprs already
+/// converted to array literals).
+fn preprocess_go_builtins(template: &str) -> String {
+    GO_BLOCK_RE
+        .replace_all(template, |caps: &regex::Captures| {
+            let block = &caps[0];
+            let (open, inner, close) = extract_block_parts(block);
+
+            // Quick check: does this block contain any Go builtin we care about?
+            let needs_rewrite = COMPARISON_OPS.iter().any(|(name, _)| {
+                // Check for function name followed by whitespace (avoid matching
+                // substrings like "request" containing "eq").
+                let with_space = format!("{} ", name);
+                inner.contains(&*with_space)
+            }) || inner.contains("and ")
+                || inner.contains("or ")
+                || inner.contains("len ");
+
+            if !needs_rewrite {
+                return block.to_string();
+            }
+
+            let rewritten = rewrite_go_builtins_in_expr(inner);
+            format!("{}{}{}", open, rewritten, close)
+        })
+        .to_string()
+}
+
+/// Rewrite Go builtin functions in an expression string.
+///
+/// Strategy: handle specific patterns in priority order:
+/// 1. `and/or` with parenthesized comparison args (most complex)
+/// 2. `not` with parenthesized comparison arg
+/// 3. Simple top-level comparisons (`eq X Y`)
+/// 4. Simple top-level `and`/`or` with bare args
+/// 5. `len X` → `X | length`
+///
+/// Tera doesn't support comparison operators (`==`, `!=`, etc.) inside
+/// parentheses, so all comparison-containing parens are stripped.
+fn rewrite_go_builtins_in_expr(expr: &str) -> String {
+    let mut result = expr.to_string();
+
+    // Phase 1: Rewrite `and`/`or` with parenthesized args.
+    // Pattern: `and/or (EXPR1) (EXPR2)` where EXPR can contain `eq`/`ne`/etc.
+    // We process the inner expressions first, then combine with the logical op.
+    result = rewrite_logical_with_paren_args(&result);
+
+    // Phase 2: Rewrite `not (COMPARISON_FUNC X Y)` → `not X OP Y`
+    result = rewrite_not_with_paren_comparison(&result);
+
+    // Phase 3: Rewrite top-level comparison functions: `eq X Y` → `X == Y`
+    for (func_name, operator) in COMPARISON_OPS {
+        result = rewrite_prefix_to_infix(&result, func_name, operator);
+    }
+
+    // Phase 4: Rewrite top-level logical functions: `and X Y` → `X and Y`
+    result = rewrite_prefix_to_infix(&result, "and", "and");
+    result = rewrite_prefix_to_infix(&result, "or", "or");
+
+    // Phase 5: Rewrite `len X` → `X | length`
+    result = rewrite_len(&result);
+
+    result
+}
+
+/// Rewrite `and/or (EXPR1) (EXPR2)` patterns.
+/// Each parenthesized argument is individually rewritten and then combined
+/// with the logical operator (without parens, since Tera doesn't allow
+/// comparisons inside parens).
+fn rewrite_logical_with_paren_args(expr: &str) -> String {
+    // Match: (and|or) (EXPR1) (EXPR2)
+    // where EXPR can contain nested parens, quotes, etc.
+    static LOGICAL_PAREN_RE: LazyLock<Regex> = LazyLock::new(|| {
+        // Match `and` or `or` followed by two parenthesized groups.
+        // The paren groups can contain anything except unbalanced parens.
+        let paren_group = r#"\(([^()]*(?:\([^()]*\)[^()]*)*)\)"#;
+        let pattern = format!(
+            r"(?:^|(?P<pre>[^a-zA-Z0-9_]))(?P<op>and|or)\s+{}\s+{}",
+            paren_group, paren_group
+        );
+        Regex::new(&pattern).unwrap()
+    });
+
+    LOGICAL_PAREN_RE
+        .replace_all(expr, |caps: &regex::Captures| {
+            let pre = caps.name("pre").map_or("", |m| m.as_str());
+            let logical_op = caps.name("op").unwrap().as_str();
+            let inner1 = &caps[3]; // first paren group content
+            let inner2 = &caps[4]; // second paren group content
+
+            // Rewrite each inner expression (e.g., `eq Os "linux"` → `Os == "linux"`)
+            let rewritten1 = rewrite_comparison_expr(inner1);
+            let rewritten2 = rewrite_comparison_expr(inner2);
+
+            format!("{}{} {} {}", pre, rewritten1, logical_op, rewritten2)
+        })
+        .to_string()
+}
+
+/// Rewrite `not (COMPARISON_FUNC X Y)` → `not X OP Y`.
+fn rewrite_not_with_paren_comparison(expr: &str) -> String {
+    static NOT_PAREN_RE: LazyLock<Regex> = LazyLock::new(|| {
+        let paren_group = r#"\(([^()]*)\)"#;
+        Regex::new(&format!(r"not\s+{}", paren_group)).unwrap()
+    });
+
+    NOT_PAREN_RE
+        .replace_all(expr, |caps: &regex::Captures| {
+            let inner = &caps[1];
+            let rewritten = rewrite_comparison_expr(inner);
+            if rewritten != inner {
+                // Comparison was rewritten — strip parens
+                format!("not {}", rewritten)
+            } else {
+                // No rewrite needed — keep original
+                caps[0].to_string()
+            }
+        })
+        .to_string()
+}
+
+/// Rewrite a simple comparison expression: `eq X Y` → `X == Y`.
+/// Also handles `len X` → `X | length`.
+fn rewrite_comparison_expr(expr: &str) -> String {
+    let mut result = expr.to_string();
+    for (func_name, operator) in COMPARISON_OPS {
+        result = rewrite_prefix_to_infix(&result, func_name, operator);
+    }
+    result = rewrite_len(&result);
+    result
+}
+
+/// Rewrite a Go-style prefix function call with two or more arguments to infix form.
+/// Matches: `funcname ARG1 ARG2 [ARG3 ...]` where `funcname` is at a word boundary.
+///
+/// Go's `eq` is variadic: `eq X Y Z` means `X == Y || X == Z`.
+/// This function handles: `eq X Y` → `X == Y`, `eq X Y Z` → `X == Y or X == Z`.
+///
+/// Args can be: quoted strings, numbers, identifiers/dotted paths, or `(parens)`.
+fn rewrite_prefix_to_infix(expr: &str, func_name: &str, operator: &str) -> String {
+    // Cache compiled regexes per function name to avoid recompilation.
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    static REGEX_CACHE: LazyLock<Mutex<HashMap<String, Regex>>> =
+        LazyLock::new(|| Mutex::new(HashMap::new()));
+
+    let arg_pattern = r#"(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\((?:[^()]*(?:\([^()]*\))*[^()]*)\)|[a-zA-Z_][a-zA-Z0-9_.]*|\d+)"#;
+
+    // Build regex that captures the first arg and ALL remaining args as a tail.
+    let pattern = format!(
+        r"(?:^|(?P<pre>[^a-zA-Z0-9_])){}\s+(?P<a1>{})\s+(?P<tail>{}(?:\s+{})*)",
+        regex::escape(func_name),
+        arg_pattern,
+        arg_pattern,
+        arg_pattern
+    );
+
+    let re = {
+        let mut cache = REGEX_CACHE.lock().unwrap();
+        cache
+            .entry(func_name.to_string())
+            .or_insert_with(|| Regex::new(&pattern).unwrap())
+            .clone()
+    };
+
+    // Regex to split the tail into individual args.
+    let split_re = {
+        static SPLIT_RE: LazyLock<Regex> = LazyLock::new(|| {
+            let arg = r#"(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\((?:[^()]*(?:\([^()]*\))*[^()]*)\)|[a-zA-Z_][a-zA-Z0-9_.]*|\d+)"#;
+            Regex::new(arg).unwrap()
+        });
+        &*SPLIT_RE
+    };
+
+    re.replace_all(expr, |caps: &regex::Captures| {
+        let pre = caps.name("pre").map_or("", |m| m.as_str());
+        let arg1 = caps.name("a1").unwrap().as_str();
+        let tail = caps.name("tail").unwrap().as_str();
+        let rest_args: Vec<&str> = split_re.find_iter(tail).map(|m| m.as_str()).collect();
+
+        if rest_args.len() == 1 {
+            // Simple binary: eq X Y → X == Y
+            format!("{}{} {} {}", pre, arg1, operator, rest_args[0])
+        } else {
+            // Variadic: eq X Y Z → X == Y or X == Z
+            let parts: Vec<String> = rest_args
+                .iter()
+                .map(|a| format!("{} {} {}", arg1, operator, a))
+                .collect();
+            format!("{}{}", pre, parts.join(" or "))
+        }
+    })
+    .to_string()
+}
+
+/// Rewrite `len X` → `X | length`.
+/// X can be a quoted string, identifier/dotted path, or parenthesized expression.
+fn rewrite_len(expr: &str) -> String {
+    static LEN_RE: LazyLock<Regex> = LazyLock::new(|| {
+        let arg_pattern = r#"(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\([^()]*\)|[a-zA-Z_][a-zA-Z0-9_.]*)"#;
+        // Use a capture group for the preceding character instead of look-behind.
+        let pattern = format!(r"(?:^|(?P<pre>[^a-zA-Z0-9_]))len\s+(?P<arg>{})", arg_pattern);
+        Regex::new(&pattern).unwrap()
+    });
+
+    LEN_RE
+        .replace_all(expr, |caps: &regex::Captures| {
+            let pre = caps.name("pre").map_or("", |m| m.as_str());
+            let arg = caps.name("arg").unwrap().as_str();
+            format!("{}{} | length", pre, arg)
+        })
+        .to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Pass 2c: Go-style `map "k1" "v1" ...` → `map(pairs=["k1", "v1", ...])`.
+// ---------------------------------------------------------------------------
+
+/// Regex matching Go-style variadic `map "k1" "v1" "k2" "v2" ...` calls.
+/// Each item can be a quoted string or a bare identifier.
+static MAP_POSITIONAL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    // Match `map` followed by 2+ space-separated args (quoted strings or identifiers).
+    let item = r#"(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[a-zA-Z_][a-zA-Z0-9_.]*)"#;
+    // Require at least two args (one key-value pair).
+    // Use a capture group for the preceding character instead of look-behind.
+    // No look-ahead needed; the greedy match of args handles the boundary
+    // naturally, and we only apply this inside template blocks anyway.
+    let pattern =
+        format!(r"(?:^|(?P<pre>[^a-zA-Z0-9_]))map\s+(?P<args>{item}(?:\s+{item})+)");
+    Regex::new(&pattern).unwrap()
+});
+
+/// Rewrite Go-style `map "k1" "v1" "k2" "v2"` to `map(pairs=["k1", "v1", "k2", "v2"])`.
+fn preprocess_map_syntax(template: &str) -> String {
+    GO_BLOCK_RE
+        .replace_all(template, |caps: &regex::Captures| {
+            let block = &caps[0];
+            // Fast path: skip blocks that don't contain `map `.
+            if !block.contains("map ") {
+                return block.to_string();
+            }
+            // Skip blocks that already have named-arg syntax for map.
+            if block.contains("map(") {
+                return block.to_string();
+            }
+
+            let (open, inner, close) = extract_block_parts(block);
+
+            let rewritten = MAP_POSITIONAL_RE
+                .replace_all(inner, |mcaps: &regex::Captures| {
+                    let pre = mcaps.name("pre").map_or("", |m| m.as_str());
+                    let args_str = mcaps.name("args").unwrap().as_str();
+                    // Tokenize the arguments.
+                    static ITEM_RE: LazyLock<Regex> = LazyLock::new(|| {
+                        Regex::new(
+                            r#""(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[a-zA-Z_][a-zA-Z0-9_.]*"#,
+                        )
+                        .unwrap()
+                    });
+                    let items: Vec<&str> =
+                        ITEM_RE.find_iter(args_str).map(|m| m.as_str()).collect();
+                    let array_literal = format!("[{}]", items.join(", "));
+                    format!("{}map(pairs={})", pre, array_literal)
+                })
+                .to_string();
+
+            format!("{}{}{}", open, rewritten, close)
         })
         .to_string()
 }
@@ -774,7 +1073,12 @@ static POSITIONAL_FUNCTIONS: &[PositionalSyntax] = &[
         standalone_params: &["path"],
         piped_params: &[],
     },
-    // map takes variadic key-value pairs; rewritten to array form by subexpr handling
+    PositionalSyntax {
+        name: "index",
+        arity: 2,
+        standalone_params: &["collection", "key"],
+        piped_params: &["key"],
+    },
 ];
 
 /// Look up a function name in the positional syntax table.
@@ -1432,9 +1736,10 @@ mod tests {
     fn test_go_if_else_if_end() {
         let input = "{{ if eq .Os \"windows\" }}win{{ else if eq .Os \"darwin\" }}mac{{ else }}linux{{ end }}";
         let result = preprocess(input);
+        // `eq Os "windows"` is rewritten to `Os == "windows"` by Pass 2b
         assert_eq!(
             result,
-            "{% if eq Os \"windows\" %}win{% elif eq Os \"darwin\" %}mac{% else %}linux{% endif %}"
+            "{% if Os == \"windows\" %}win{% elif Os == \"darwin\" %}mac{% else %}linux{% endif %}"
         );
     }
 
@@ -1477,9 +1782,11 @@ mod tests {
     fn test_go_var_assignment() {
         let input = "{{ $m := map \"a\" \"1\" }}{{ index $m \"a\" }}";
         let result = preprocess(input);
+        // Pass 2c rewrites `map "a" "1"` to `map(pairs=["a", "1"])`
+        // Pass 3 rewrites `index m "a"` to `index(collection=m, key="a")`
         assert_eq!(
             result,
-            "{% set m = map \"a\" \"1\" %}{{ index m \"a\" }}"
+            "{% set m = map(pairs=[\"a\", \"1\"]) %}{{ index(collection=m, key=\"a\") }}"
         );
     }
 
@@ -1513,9 +1820,290 @@ mod tests {
         // Real-world GoReleaser template: nfpm default name_template
         let input = "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ with .Arm }}v{{ . }}{{ end }}{{ if not (eq .Amd64 \"v1\") }}{{ .Amd64 }}{{ end }}";
         let result = preprocess(input);
+        // `(eq Amd64 "v1")` is rewritten to `Amd64 == "v1"` by Pass 2b
+        // Parens are stripped because Tera doesn't support comparisons inside parens.
         assert_eq!(
             result,
-            "{{ ProjectName }}_{{ Version }}_{{ Os }}_{{ Arch }}{% if Arm %}v{{ Arm }}{% endif %}{% if not (eq Amd64 \"v1\") %}{{ Amd64 }}{% endif %}"
+            "{{ ProjectName }}_{{ Version }}_{{ Os }}_{{ Arch }}{% if Arm %}v{{ Arm }}{% endif %}{% if not Amd64 == \"v1\" %}{{ Amd64 }}{% endif %}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Pass 2b: comparison functions (eq/ne/gt/lt/ge/le), and/or, len
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_eq_in_if_block() {
+        let input = "{% if eq Os \"windows\" %}win{% endif %}";
+        let result = preprocess(input);
+        assert_eq!(result, "{% if Os == \"windows\" %}win{% endif %}");
+    }
+
+    #[test]
+    fn test_eq_variadic_three_args() {
+        // Go's eq is variadic: eq X Y Z means X == Y || X == Z
+        let input = r#"{% if eq Os "linux" "darwin" %}unix{% endif %}"#;
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            r#"{% if Os == "linux" or Os == "darwin" %}unix{% endif %}"#
+        );
+    }
+
+    #[test]
+    fn test_eq_variadic_four_args() {
+        let input = r#"{% if eq Arch "amd64" "arm64" "386" %}supported{% endif %}"#;
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            r#"{% if Arch == "amd64" or Arch == "arm64" or Arch == "386" %}supported{% endif %}"#
+        );
+    }
+
+    #[test]
+    fn test_ne_in_if_block() {
+        let input = "{% if ne Os \"windows\" %}not-win{% endif %}";
+        let result = preprocess(input);
+        assert_eq!(result, "{% if Os != \"windows\" %}not-win{% endif %}");
+    }
+
+    #[test]
+    fn test_gt_in_if_block() {
+        let input = "{% if gt Major 1 %}gt1{% endif %}";
+        let result = preprocess(input);
+        assert_eq!(result, "{% if Major > 1 %}gt1{% endif %}");
+    }
+
+    #[test]
+    fn test_lt_in_if_block() {
+        let input = "{% if lt Minor 5 %}lt5{% endif %}";
+        let result = preprocess(input);
+        assert_eq!(result, "{% if Minor < 5 %}lt5{% endif %}");
+    }
+
+    #[test]
+    fn test_ge_in_if_block() {
+        let input = "{% if ge Patch 3 %}ge3{% endif %}";
+        let result = preprocess(input);
+        assert_eq!(result, "{% if Patch >= 3 %}ge3{% endif %}");
+    }
+
+    #[test]
+    fn test_le_in_if_block() {
+        let input = "{% if le Patch 3 %}le3{% endif %}";
+        let result = preprocess(input);
+        assert_eq!(result, "{% if Patch <= 3 %}le3{% endif %}");
+    }
+
+    #[test]
+    fn test_eq_with_string_literal() {
+        let input = "{% if eq Arch \"amd64\" %}yes{% endif %}";
+        let result = preprocess(input);
+        assert_eq!(result, "{% if Arch == \"amd64\" %}yes{% endif %}");
+    }
+
+    #[test]
+    fn test_eq_with_numeric_literal() {
+        let input = "{% if eq Major 1 %}v1{% endif %}";
+        let result = preprocess(input);
+        assert_eq!(result, "{% if Major == 1 %}v1{% endif %}");
+    }
+
+    #[test]
+    fn test_eq_parenthesized_not() {
+        // not (eq .Os "windows") → not Os == "windows"
+        // Tera doesn't support comparison operators inside parens, so parens are stripped.
+        let input = "{% if not (eq Os \"windows\") %}yes{% endif %}";
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            "{% if not Os == \"windows\" %}yes{% endif %}"
+        );
+    }
+
+    #[test]
+    fn test_eq_in_elif_block() {
+        let input = "{% if eq Os \"linux\" %}lin{% elif eq Os \"darwin\" %}mac{% endif %}";
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            "{% if Os == \"linux\" %}lin{% elif Os == \"darwin\" %}mac{% endif %}"
+        );
+    }
+
+    #[test]
+    fn test_eq_in_expression_block() {
+        // eq can also appear in {{ }} expression blocks
+        let input = "{{ eq Os \"linux\" }}";
+        let result = preprocess(input);
+        assert_eq!(result, "{{ Os == \"linux\" }}");
+    }
+
+    #[test]
+    fn test_eq_with_already_stripped_dot_var() {
+        // After dot stripping: eq Os "windows"
+        let input = "{% if eq Os \"windows\" %}win{% endif %}";
+        let result = preprocess(input);
+        assert_eq!(result, "{% if Os == \"windows\" %}win{% endif %}");
+    }
+
+    #[test]
+    fn test_eq_with_dotted_path() {
+        // eq Env.FOO "bar"
+        let input = "{% if eq Env.FOO \"bar\" %}yes{% endif %}";
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            "{% if Env.FOO == \"bar\" %}yes{% endif %}"
+        );
+    }
+
+    // --- and/or prefix to infix ---
+
+    #[test]
+    fn test_and_prefix_to_infix() {
+        let input = "{% if and A B %}yes{% endif %}";
+        let result = preprocess(input);
+        assert_eq!(result, "{% if A and B %}yes{% endif %}");
+    }
+
+    #[test]
+    fn test_or_prefix_to_infix() {
+        let input = "{% if or A B %}yes{% endif %}";
+        let result = preprocess(input);
+        assert_eq!(result, "{% if A or B %}yes{% endif %}");
+    }
+
+    #[test]
+    fn test_and_with_parenthesized_or() {
+        // and .A (or .B .C) → A and (B or C)
+        let input = "{% if and A (or B C) %}yes{% endif %}";
+        let result = preprocess(input);
+        assert_eq!(result, "{% if A and (B or C) %}yes{% endif %}");
+    }
+
+    #[test]
+    fn test_or_with_parenthesized_eq() {
+        // or (eq Os "linux") (eq Os "darwin") → Os == "linux" or Os == "darwin"
+        // Tera doesn't support comparisons inside parens, so all parens are stripped.
+        let input = "{% if or (eq Os \"linux\") (eq Os \"darwin\") %}yes{% endif %}";
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            "{% if Os == \"linux\" or Os == \"darwin\" %}yes{% endif %}"
+        );
+    }
+
+    // --- len function ---
+
+    #[test]
+    fn test_len_in_expression() {
+        let input = "{{ len Items }}";
+        let result = preprocess(input);
+        assert_eq!(result, "{{ Items | length }}");
+    }
+
+    #[test]
+    fn test_len_in_if_block() {
+        let input = "{% if len Items %}has items{% endif %}";
+        let result = preprocess(input);
+        assert_eq!(result, "{% if Items | length %}has items{% endif %}");
+    }
+
+    #[test]
+    fn test_len_with_dotted_path() {
+        let input = "{{ len Env.PATH }}";
+        let result = preprocess(input);
+        assert_eq!(result, "{{ Env.PATH | length }}");
+    }
+
+    #[test]
+    fn test_len_does_not_match_partial_word() {
+        // "length" should not be rewritten
+        let input = "{{ Items | length }}";
+        let result = preprocess(input);
+        assert_eq!(result, "{{ Items | length }}");
+    }
+
+    // --- map positional syntax ---
+
+    #[test]
+    fn test_map_positional_two_args() {
+        let input = "{{ map \"a\" \"1\" }}";
+        let result = preprocess(input);
+        assert_eq!(result, "{{ map(pairs=[\"a\", \"1\"]) }}");
+    }
+
+    #[test]
+    fn test_map_positional_four_args() {
+        let input = "{{ map \"a\" \"1\" \"b\" \"2\" }}";
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            "{{ map(pairs=[\"a\", \"1\", \"b\", \"2\"]) }}"
+        );
+    }
+
+    #[test]
+    fn test_map_named_args_unchanged() {
+        let input = "{{ map(pairs=[\"a\", \"1\"]) }}";
+        let result = preprocess(input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_map_in_set_block() {
+        let input = "{% set m = map \"x\" \"y\" %}";
+        let result = preprocess(input);
+        assert_eq!(result, "{% set m = map(pairs=[\"x\", \"y\"]) %}");
+    }
+
+    // --- index positional syntax ---
+
+    #[test]
+    fn test_index_positional_two_args() {
+        let input = "{{ index myMap \"key\" }}";
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            "{{ index(collection=myMap, key=\"key\") }}"
+        );
+    }
+
+    #[test]
+    fn test_index_named_args_unchanged() {
+        let input = "{{ index(collection=myMap, key=\"key\") }}";
+        let result = preprocess(input);
+        assert_eq!(result, input);
+    }
+
+    #[test]
+    fn test_index_in_control_block() {
+        let input = "{% if index myMap \"key\" %}yes{% endif %}";
+        let result = preprocess(input);
+        assert_eq!(
+            result,
+            "{% if index(collection=myMap, key=\"key\") %}yes{% endif %}"
+        );
+    }
+
+    // --- Combined pass tests ---
+
+    #[test]
+    fn test_go_style_full_pipeline_eq_and_map() {
+        // Full Go-style pipeline:
+        // {{ $m := map "a" "1" }}{{ if eq (index $m "a") "1" }}yes{{ end }}
+        let input =
+            "{{ $m := map \"a\" \"1\" }}{{ if eq (index $m \"a\") \"1\" }}yes{{ end }}";
+        let result = preprocess(input);
+        // Pass 2b rewrites `eq (index m "a") "1"` to `(index m "a") == "1"`.
+        // Parens around `index m "a"` are kept (no comparison operator inside).
+        // Pass 2c rewrites `map "a" "1"` to `map(pairs=["a", "1"])`.
+        // Note: `index m "a"` inside parens is NOT rewritten by Pass 3
+        // (positional rewriter only handles top-level standalone/piped forms).
+        assert_eq!(
+            result,
+            "{% set m = map(pairs=[\"a\", \"1\"]) %}{% if (index m \"a\") == \"1\" %}yes{% endif %}"
         );
     }
 }

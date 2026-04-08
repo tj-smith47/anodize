@@ -27,7 +27,7 @@ crates:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `package_name` | string | — | Package name |
-| `formats` | list | — | Package formats: `deb`, `rpm`, `apk` |
+| `formats` | list | — | Package formats: `deb`, `rpm`, `apk`, `archlinux`, `ipk` |
 | `vendor` | string | none | Package vendor |
 | `homepage` | string | none | Homepage URL |
 | `maintainer` | string | none | Maintainer email |

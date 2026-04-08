@@ -1,0 +1,154 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
+          - os: macos-latest
+            targets: x86_64-apple-darwin,aarch64-apple-darwin
+          - os: windows-latest
+            targets: x86_64-pc-windows-msvc,aarch64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.targets }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.os }}
+
+      # Cross-compilation tools (Linux aarch64)
+      - name: Install cross-compilation tools
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq gcc-aarch64-linux-gnu
+
+      # UPX (matches .anodize.yaml upx.targets)
+      - name: Install UPX (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -yq upx
+
+      - name: Install UPX (macOS x86_64)
+        if: runner.os == 'macOS'
+        run: brew install upx
+
+      - name: Install UPX (Windows x86_64)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: choco install upx -y
+
+      # Bootstrap anodize from source
+      - name: Build anodize
+        shell: bash
+        run: cargo build --release -p anodize
+
+      # Run split build — anodize auto-detects host OS and builds matching targets
+      - name: Run anodize release --split
+        shell: bash
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        run: ./target/release/anodize release --split --clean
+
+      - name: Upload split artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ runner.os }}
+          path: dist/
+
+  release:
+    name: Publish Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # nFPM for deb/rpm/apk packaging
+      - name: Install nFPM
+        run: |
+          echo 'deb [trusted=yes] https://repo.goreleaser.com/apt/ /' | sudo tee /etc/apt/sources.list.d/goreleaser.list
+          sudo apt-get update -q
+          sudo apt-get install -yq nfpm
+
+      # Bootstrap anodize from source
+      - name: Build anodize
+        run: cargo build --release -p anodize
+
+      # Download all split artifacts into dist/
+      - name: Download split artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          pattern: dist-*
+          merge-multiple: true
+
+      - name: Verify split artifacts
+        run: |
+          echo "Split contexts found:"
+          find dist -name context.json -type f
+          COUNT=$(find dist -name context.json -type f | wc -l)
+          if [ "$COUNT" -eq 0 ]; then
+            echo "::error::No split context files found in dist/"
+            exit 1
+          fi
+          echo "Found $COUNT split context(s)"
+
+      # Import GPG key for checksum signing (skipped if secret not configured)
+      - name: Import GPG key
+        if: ${{ secrets.GPG_PRIVATE_KEY != '' }}
+        run: echo "$GPG_PRIVATE_KEY" | gpg --batch --import
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+
+      # Install cosign for binary/docker signing
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      # Install makeself for self-extracting archives
+      - name: Install makeself
+        run: sudo apt-get install -yq makeself
+
+      # Merge artifacts and run post-build pipeline:
+      # archive → nfpm → changelog → source → sbom → checksum → sign →
+      # release (GitHub) → publish (crates.io, homebrew, scoop, etc.) → announce
+      - name: Run anodize release --merge
+        run: ./target/release/anodize release --merge
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
+          CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
+          COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}

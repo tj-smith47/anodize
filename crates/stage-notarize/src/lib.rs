@@ -162,6 +162,67 @@ fn redact_args(args: &[String]) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
+// Helper: parse notarize output for status differentiation
+// ---------------------------------------------------------------------------
+
+/// Check notarization subprocess output, differentiating between rejected,
+/// invalid, timeout, and accepted statuses (GoReleaser parity: macos.go
+/// differentiates AcceptedStatus, InvalidStatus, RejectedStatus, TimeoutStatus).
+fn check_notarize_output(
+    output: &std::process::Output,
+    label: &str,
+    log: &anodize_core::log::StageLogger,
+) -> Result<()> {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{}{}", stdout, stderr);
+    let combined_lower = combined.to_lowercase();
+
+    if output.status.success() {
+        // Even on success, check for status keywords to provide accurate logging
+        if combined_lower.contains("status: accepted") || combined_lower.contains("status: success")
+        {
+            log.status(&format!("notarize: {} succeeded (accepted)", label));
+        } else if combined_lower.contains("timeout") {
+            // GoReleaser treats timeout as non-fatal (logs info, no error)
+            log.warn(&format!(
+                "notarize: {} timed out (submission may still be processing)",
+                label
+            ));
+        }
+        return Ok(());
+    }
+
+    // Non-zero exit: differentiate error type from output
+    if combined_lower.contains("status: invalid") || combined_lower.contains("invalid submission") {
+        bail!("notarize: {}: invalid — the submitted artifact did not pass Apple's checks", label);
+    }
+    if combined_lower.contains("status: rejected") || combined_lower.contains("submission rejected")
+    {
+        bail!(
+            "notarize: {}: rejected — Apple rejected the notarization request",
+            label
+        );
+    }
+    if combined_lower.contains("timeout") || combined_lower.contains("timed out") {
+        // GoReleaser treats timeout as non-fatal (info log, not error)
+        log.warn(&format!(
+            "notarize: {} timed out waiting for Apple response (submission may still be processing)",
+            label
+        ));
+        return Ok(());
+    }
+
+    // Generic failure
+    bail!(
+        "notarize: {} failed (exit code: {:?})\n{}",
+        label,
+        output.status.code(),
+        combined.trim()
+    );
+}
+
+// ---------------------------------------------------------------------------
 // NotarizeStage
 // ---------------------------------------------------------------------------
 
@@ -375,22 +436,20 @@ fn run_cross_platform(
                     redact_args(&notarize_args).join(" ")
                 ));
             } else {
-                let status = Command::new(&notarize_args[0])
+                let output = Command::new(&notarize_args[0])
                     .args(&notarize_args[1..])
-                    .status()
+                    .output()
                     .with_context(|| {
                         format!(
                             "notarize: failed to execute rcodesign notary-submit for {}",
                             artifact.name()
                         )
                     })?;
-                if !status.success() {
-                    bail!(
-                        "notarize: rcodesign notary-submit failed for {} (exit code: {:?})",
-                        artifact.name(),
-                        status.code()
-                    );
-                }
+                check_notarize_output(
+                    &output,
+                    &format!("rcodesign notary-submit for {}", artifact.name()),
+                    log,
+                )?;
             }
         }
     }
@@ -656,22 +715,20 @@ fn run_native_dmg(
                 notarize_args.join(" ")
             ));
         } else {
-            let status = Command::new(&notarize_args[0])
+            let output = Command::new(&notarize_args[0])
                 .args(&notarize_args[1..])
-                .status()
+                .output()
                 .with_context(|| {
                     format!(
                         "notarize: failed to execute xcrun notarytool for {}",
                         dmg.name()
                     )
                 })?;
-            if !status.success() {
-                bail!(
-                    "notarize: xcrun notarytool submit failed for {} (exit code: {:?})",
-                    dmg.name(),
-                    status.code()
-                );
-            }
+            check_notarize_output(
+                &output,
+                &format!("xcrun notarytool submit for {}", dmg.name()),
+                log,
+            )?;
 
             // Staple if wait was enabled
             if params.wait {
@@ -825,22 +882,20 @@ fn run_native_pkg(
                 notarize_args.join(" ")
             ));
         } else {
-            let status = Command::new(&notarize_args[0])
+            let output = Command::new(&notarize_args[0])
                 .args(&notarize_args[1..])
-                .status()
+                .output()
                 .with_context(|| {
                     format!(
                         "notarize: failed to execute xcrun notarytool for {}",
                         pkg.name()
                     )
                 })?;
-            if !status.success() {
-                bail!(
-                    "notarize: xcrun notarytool submit failed for {} (exit code: {:?})",
-                    pkg.name(),
-                    status.code()
-                );
-            }
+            check_notarize_output(
+                &output,
+                &format!("xcrun notarytool submit for {}", pkg.name()),
+                log,
+            )?;
 
             // Staple if wait was enabled
             if params.wait {

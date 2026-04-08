@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use anodize_core::artifact::ArtifactKind;
@@ -35,6 +36,260 @@ fn percent_encode_path(s: &str) -> String {
         .add(b'%')
         .add(b'/');
     percent_encoding::utf8_percent_encode(s, PATH_SEGMENT).to_string()
+}
+
+// ---------------------------------------------------------------------------
+// check_github_rate_limit — proactive rate limit checking
+// ---------------------------------------------------------------------------
+
+/// GoReleaser parity (github.go:checkRateLimit): proactively check GitHub API
+/// rate limits before making requests. If remaining calls are below the
+/// threshold, sleep until the reset time.
+async fn check_github_rate_limit(
+    client: &reqwest::Client,
+    token: &str,
+    threshold: u64,
+) {
+    let url = "https://api.github.com/rate_limit";
+    let resp = match client
+        .get(url)
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "anodize")
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(_) => return, // Can't check — continue and hope for the best
+    };
+
+    if !resp.status().is_success() {
+        return;
+    }
+
+    let body: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    let remaining = body
+        .pointer("/resources/core/remaining")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(u64::MAX);
+    let reset_epoch = body
+        .pointer("/resources/core/reset")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    if remaining > threshold {
+        return;
+    }
+
+    // Sleep until reset + small buffer
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let sleep_secs = if reset_epoch > now {
+        reset_epoch - now + 1
+    } else {
+        5 // Minimum 5 seconds if reset is in the past
+    };
+    eprintln!(
+        "rate limit almost reached ({} remaining), sleeping for {}s...",
+        remaining, sleep_secs
+    );
+    tokio::time::sleep(std::time::Duration::from_secs(sleep_secs)).await;
+}
+
+// ---------------------------------------------------------------------------
+// check_github_search_rate_limit — proactive search rate limit checking
+// ---------------------------------------------------------------------------
+
+/// Check GitHub Search API rate limits (separate from core rate limit).
+/// Returns `true` if enough quota remains to make a search request.
+#[allow(dead_code)]
+async fn check_github_search_rate_limit(
+    client: &reqwest::Client,
+    token: &str,
+    threshold: u64,
+) -> bool {
+    let url = "https://api.github.com/rate_limit";
+    let resp = match client
+        .get(url)
+        .header("Authorization", format!("Bearer {}", token))
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "anodize")
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(_) => return true, // Can't check — assume ok
+    };
+
+    if !resp.status().is_success() {
+        return true;
+    }
+
+    let body: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(_) => return true,
+    };
+
+    let remaining = body
+        .pointer("/resources/search/remaining")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(u64::MAX);
+
+    remaining > threshold
+}
+
+// ---------------------------------------------------------------------------
+// resolve_github_username — email → GitHub @mention resolution
+// ---------------------------------------------------------------------------
+
+/// Resolve a commit author's email to their GitHub username.
+///
+/// 1. Check for noreply emails: `ID+USERNAME@users.noreply.github.com` or
+///    `USERNAME@users.noreply.github.com`.
+/// 2. Check the in-memory cache for previously resolved emails.
+/// 3. Fall back to the GitHub Search Users API: `GET /search/users?q={email}+in:email`.
+///    If exactly 1 result, cache and return the login. Otherwise cache `None`.
+///
+/// The cache avoids repeated API calls (GitHub search limit is 30 req/min).
+/// Before making API calls, checks if the search rate limit has sufficient
+/// remaining quota (threshold of 5) and skips the search if not.
+#[allow(dead_code)]
+async fn resolve_github_username(
+    octocrab: &octocrab::Octocrab,
+    email: &str,
+    cache: &mut HashMap<String, Option<String>>,
+    rate_limit_client: Option<(&reqwest::Client, &str)>,
+) -> Option<String> {
+    // 1. Parse noreply email patterns.
+    if let Some(domain_start) = email.find("@users.noreply.github.com") {
+        let local = &email[..domain_start];
+        // Format: ID+USERNAME@users.noreply.github.com
+        if let Some(plus_pos) = local.find('+') {
+            let username = &local[plus_pos + 1..];
+            if !username.is_empty() {
+                let result = username.to_string();
+                cache.insert(email.to_string(), Some(result.clone()));
+                return Some(result);
+            }
+        }
+        // Format: USERNAME@users.noreply.github.com
+        if !local.is_empty() {
+            let result = local.to_string();
+            cache.insert(email.to_string(), Some(result.clone()));
+            return Some(result);
+        }
+    }
+
+    // 2. Check cache.
+    if let Some(cached) = cache.get(email) {
+        return cached.clone();
+    }
+
+    // 3. Check search rate limit before calling the API (30 req/min limit).
+    //    Skip the search if we're running low on quota.
+    if let Some((client, token)) = rate_limit_client
+        && !check_github_search_rate_limit(client, token, 5).await {
+            // Search rate limit too low — skip and cache None.
+            cache.insert(email.to_string(), None);
+            return None;
+        }
+
+    let query = format!("{}+in:email", email);
+    let route = format!("/search/users?q={}&per_page=1", percent_encode_path(&query));
+
+    let result: Option<String> = match octocrab
+        .get::<serde_json::Value, _, _>(route, None::<&()>)
+        .await
+    {
+        Ok(json) => {
+            let total = json
+                .get("total_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            if total == 1 {
+                json.get("items")
+                    .and_then(|items| items.as_array())
+                    .and_then(|arr| arr.first())
+                    .and_then(|user| user.get("login"))
+                    .and_then(|login| login.as_str())
+                    .map(|s| s.to_string())
+            } else {
+                None
+            }
+        }
+        Err(_) => None,
+    };
+
+    cache.insert(email.to_string(), result.clone());
+    result
+}
+
+// ---------------------------------------------------------------------------
+// delete_release_asset_by_name — paginated asset deletion for GitHub
+// ---------------------------------------------------------------------------
+
+/// Search through all pages of release assets to find and delete one by name.
+///
+/// GitHub's List Release Assets API defaults to 30 items per page. Releases
+/// with >30 assets require pagination to find a specific asset. This function
+/// fetches up to `per_page=100` assets at a time and continues through pages
+/// until the asset is found and deleted, or all pages are exhausted.
+///
+/// Returns `Ok(true)` if the asset was found and deleted, `Ok(false)` if not found.
+async fn delete_release_asset_by_name(
+    octo: &octocrab::Octocrab,
+    owner: &str,
+    repo: &str,
+    release_id: u64,
+    asset_name: &str,
+) -> Result<bool> {
+    const MAX_PAGES: u32 = 50; // 50 pages * 100 per page = 5000 assets max
+    let mut page: u32 = 1;
+    loop {
+        let route = format!(
+            "/repos/{}/{}/releases/{}/assets?per_page=100&page={}",
+            owner, repo, release_id, page
+        );
+        let assets: Vec<octocrab::models::repos::Asset> =
+            octo.get(route, None::<&()>).await.with_context(|| {
+                format!(
+                    "release: list assets for release {} on {}/{} (page {})",
+                    release_id, owner, repo, page
+                )
+            })?;
+
+        for asset in &assets {
+            if asset.name == asset_name {
+                octo.repos(owner, repo)
+                    .release_assets()
+                    .delete(asset.id.into_inner())
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "release: delete asset '{}' (id={}) from release {} on {}/{}",
+                            asset_name, asset.id, release_id, owner, repo
+                        )
+                    })?;
+                return Ok(true);
+            }
+        }
+
+        // If we got fewer than 100 results, there are no more pages.
+        if assets.len() < 100 {
+            break;
+        }
+        page += 1;
+        if page > MAX_PAGES {
+            break;
+        }
+    }
+    Ok(false)
 }
 
 // ---------------------------------------------------------------------------
@@ -166,7 +421,7 @@ pub(crate) fn build_release_body(
         parts.push(f);
     }
 
-    parts.join("\n\n")
+    parts.join("\n")
 }
 
 // ---------------------------------------------------------------------------
@@ -915,8 +1170,8 @@ impl Stage for ReleaseStage {
             // NOTE: Rendered files are written to the shared dist directory. If multiple
             // release configs use the same dst name, later writes will overwrite earlier
             // ones. Users should ensure dst names are unique across configs.
-            if let Some(ref tpl_specs) = release_cfg.templated_extra_files {
-                if !tpl_specs.is_empty() {
+            if let Some(ref tpl_specs) = release_cfg.templated_extra_files
+                && !tpl_specs.is_empty() {
                     let dist_dir = &ctx.config.dist;
                     let rendered = anodize_core::templated_files::process_templated_extra_files(
                         tpl_specs, ctx, dist_dir, "release",
@@ -925,7 +1180,6 @@ impl Stage for ReleaseStage {
                         artifact_entries.push((path, Some(dst_name)));
                     }
                 }
-            }
 
             // include_meta: upload metadata.json and artifacts.json from dist dir.
             if include_meta {
@@ -1042,7 +1296,18 @@ impl Stage for ReleaseStage {
                     ScmTokenType::Gitea => {
                         ctx.config.gitea_urls.as_ref()
                             .and_then(|u| u.download.clone())
-                            .unwrap_or_else(|| "https://gitea.com".to_string())
+                            .unwrap_or_else(|| {
+                                // Derive download URL from API URL by stripping
+                                // /api/v1 suffix (GoReleaser defaults.go:29-36).
+                                ctx.config.gitea_urls.as_ref()
+                                    .and_then(|u| u.api.as_deref())
+                                    .map(|api| {
+                                        api.trim_end_matches('/')
+                                            .trim_end_matches("/api/v1")
+                                            .to_string()
+                                    })
+                                    .unwrap_or_else(|| "https://gitea.com".to_string())
+                            })
                     }
                 };
                 let dry_owner = match ctx.token_type {
@@ -1481,6 +1746,7 @@ impl Stage for ReleaseStage {
                 // dedicated tokio runtime (the Stage trait is synchronous).
                 let url = rt.block_on(async {
                     let octo = build_octocrab_client(&token_str, &github_urls)?;
+                    let rate_limit_client = reqwest::Client::new();
 
                     // Helper: list all releases (with pagination) and find a draft
                     // matching the release name. GoReleaser searches by name (not tag).
@@ -1522,6 +1788,9 @@ impl Stage for ReleaseStage {
                         }
                         Ok(None)
                     }
+
+                    // Proactive rate limit check before draft search/release operations.
+                    check_github_rate_limit(&rate_limit_client, &token_str, 10).await;
 
                     // Handle replace_existing_draft: check if a draft release with
                     // the same NAME exists and delete it.
@@ -1579,6 +1848,7 @@ impl Stage for ReleaseStage {
                     } else {
                         // For new releases, check if a release exists for mode != "replace".
                         if release_mode != "replace" {
+                            check_github_rate_limit(&rate_limit_client, &token_str, 10).await;
                             match octo
                                 .repos(&github.owner, &github.name)
                                 .releases()
@@ -1626,6 +1896,9 @@ impl Stage for ReleaseStage {
                         &None,  // discussion_category_name deferred to publish PATCH
                         github_native_changelog,
                     );
+
+                    // Rate limit check before release create/update API call.
+                    check_github_rate_limit(&rate_limit_client, &token_str, 10).await;
 
                     let release = if let Some(ref existing) = existing_draft {
                         // Update the existing draft release via PATCH.
@@ -1701,7 +1974,6 @@ impl Stage for ReleaseStage {
                         );
                         let gh_owner = github.owner.clone();
                         let gh_name = github.name.clone();
-                        let release_assets = release.assets.clone();
                         let tag_for_upload = tag.clone();
 
                         // Prepare the list of uploadable entries (error on missing files).
@@ -1739,7 +2011,7 @@ impl Stage for ReleaseStage {
                             let gh_owner = gh_owner.clone();
                             let gh_name = gh_name.clone();
                             let tag_c = tag_for_upload.clone();
-                            let release_assets = release_assets.clone();
+                            let token_for_rate_limit = token_str.clone();
 
                             join_set.spawn(async move {
                                 let _permit = sem.acquire().await
@@ -1747,22 +2019,22 @@ impl Stage for ReleaseStage {
 
                                 // Handle replace_existing_artifacts: if an asset with the
                                 // same name already exists, delete it before uploading.
+                                // Uses paginated asset listing to handle releases with >30 assets.
                                 if replace_existing_artifacts {
-                                    for existing_asset in &release_assets {
-                                        if existing_asset.name == file_name {
-                                            octo.repos(&gh_owner, &gh_name)
-                                                .release_assets()
-                                                .delete(existing_asset.id.into_inner())
-                                                .await
-                                                .with_context(|| {
-                                                    format!(
-                                                        "release: delete existing artifact '{}' from release '{}'",
-                                                        file_name, tag_c
-                                                    )
-                                                })?;
-                                            break;
-                                        }
-                                    }
+                                    delete_release_asset_by_name(
+                                        &octo,
+                                        &gh_owner,
+                                        &gh_name,
+                                        release_id_raw,
+                                        &file_name,
+                                    )
+                                    .await
+                                    .with_context(|| {
+                                        format!(
+                                            "release: delete existing artifact '{}' from release '{}'",
+                                            file_name, tag_c
+                                        )
+                                    })?;
                                 }
 
                                 // Retry loop: up to 10 attempts with exponential backoff.
@@ -1803,33 +2075,22 @@ impl Stage for ReleaseStage {
                                             ) && err_str.contains("already_exists");
 
                                             if is_already_exists && replace_existing_artifacts {
-                                                // Delete the conflicting asset and retry.
-                                                let current_release = octo
-                                                    .repos(&gh_owner, &gh_name)
-                                                    .releases()
-                                                    .get(release_id_raw)
-                                                    .await
-                                                    .with_context(|| {
-                                                        format!(
-                                                            "release: fetch release to find duplicate asset '{}'",
-                                                            file_name
-                                                        )
-                                                    })?;
-                                                for asset in &current_release.assets {
-                                                    if asset.name == file_name {
-                                                        octo.repos(&gh_owner, &gh_name)
-                                                            .release_assets()
-                                                            .delete(asset.id.into_inner())
-                                                            .await
-                                                            .with_context(|| {
-                                                                format!(
-                                                                    "release: delete duplicate artifact '{}' from release '{}'",
-                                                                    file_name, tag_c
-                                                                )
-                                                            })?;
-                                                        break;
-                                                    }
-                                                }
+                                                // Delete the conflicting asset via paginated
+                                                // search and retry. Handles releases with >30 assets.
+                                                let _ = delete_release_asset_by_name(
+                                                    &octo,
+                                                    &gh_owner,
+                                                    &gh_name,
+                                                    release_id_raw,
+                                                    &file_name,
+                                                )
+                                                .await
+                                                .with_context(|| {
+                                                    format!(
+                                                        "release: delete duplicate artifact '{}' from release '{}'",
+                                                        file_name, tag_c
+                                                    )
+                                                })?;
                                                 last_err = Some(anyhow::anyhow!(err));
                                                 if attempt < MAX_UPLOAD_ATTEMPTS {
                                                     let delay = std::cmp::min(
@@ -1838,6 +2099,30 @@ impl Stage for ReleaseStage {
                                                     );
                                                     tokio::time::sleep(delay).await;
                                                 }
+                                                continue;
+                                            }
+
+                                            // GoReleaser parity: handle rate limiting
+                                            // (403/429) by sleeping and retrying.
+                                            let is_rate_limited = matches!(
+                                                &err,
+                                                octocrab::Error::GitHub { source, .. }
+                                                    if source.status_code.as_u16() == 403
+                                                        || source.status_code.as_u16() == 429
+                                            );
+
+                                            if is_rate_limited {
+                                                eprintln!(
+                                                    "rate limited on upload of '{}', checking rate limits...",
+                                                    file_name
+                                                );
+                                                check_github_rate_limit(
+                                                    &reqwest::Client::new(),
+                                                    &token_for_rate_limit,
+                                                    100,
+                                                )
+                                                .await;
+                                                last_err = Some(anyhow::anyhow!(err));
                                                 continue;
                                             } else if is_server_error
                                                 || matches!(&err, octocrab::Error::Hyper { .. })
@@ -1897,6 +2182,8 @@ impl Stage for ReleaseStage {
                     // Draft-then-publish: if the user's config has draft=false,
                     // un-draft the release now that all assets are uploaded.
                     if !user_wants_draft {
+                        // Rate limit check before publish (un-draft) PATCH.
+                        check_github_rate_limit(&rate_limit_client, &token_str, 10).await;
                         let publish_route = format!(
                             "/repos/{}/{}/releases/{}",
                             github.owner, github.name, release_id_raw
@@ -2270,22 +2557,23 @@ mod tests {
             Some("# Release v1.0"),
             Some("---\nPowered by anodize"),
         );
+        // GoReleaser parity: single newline separator between header, body, footer
         assert_eq!(
             body,
-            "# Release v1.0\n\n## Changes\n- Fixed a bug\n\n---\nPowered by anodize"
+            "# Release v1.0\n## Changes\n- Fixed a bug\n---\nPowered by anodize"
         );
     }
 
     #[test]
     fn test_build_release_body_header_only() {
         let body = build_release_body("changelog content", Some("HEADER"), None);
-        assert_eq!(body, "HEADER\n\nchangelog content");
+        assert_eq!(body, "HEADER\nchangelog content");
     }
 
     #[test]
     fn test_build_release_body_footer_only() {
         let body = build_release_body("changelog content", None, Some("FOOTER"));
-        assert_eq!(body, "changelog content\n\nFOOTER");
+        assert_eq!(body, "changelog content\nFOOTER");
     }
 
     #[test]
@@ -2297,7 +2585,7 @@ mod tests {
     #[test]
     fn test_build_release_body_empty_changelog() {
         let body = build_release_body("", Some("HEADER"), Some("FOOTER"));
-        assert_eq!(body, "HEADER\n\nFOOTER");
+        assert_eq!(body, "HEADER\nFOOTER");
     }
 
     #[test]
@@ -2761,7 +3049,7 @@ mod tests {
         let create_calls = mock.create_release_calls();
         assert_eq!(create_calls[0].owner, "testowner");
         assert_eq!(create_calls[0].tag_name, "v1.0.0");
-        assert_eq!(create_calls[0].body, "# v1.0.0\n\n- initial release");
+        assert_eq!(create_calls[0].body, "# v1.0.0\n- initial release");
         assert!(!create_calls[0].prerelease);
 
         let upload_calls = mock.upload_asset_calls();
@@ -2786,9 +3074,9 @@ mod tests {
         assert!(body.contains("- Added feature B"));
         assert!(body.ends_with("Thank you for using our tool!"));
 
-        // Parts should be separated by double newlines
-        assert!(body.contains("## Release v2.0\n\n- Fixed bug A"));
-        assert!(body.contains("Added feature B\n\n---"));
+        // GoReleaser parity: parts separated by single newline
+        assert!(body.contains("## Release v2.0\n- Fixed bug A"));
+        assert!(body.contains("Added feature B\n---"));
     }
 
     #[test]
@@ -4805,5 +5093,154 @@ draft: true
             err.contains("GITEA_TOKEN") || err.contains("--token"),
             "error should mention GITEA_TOKEN or --token, got: {err}"
         );
+    }
+
+    // ---- resolve_github_username tests ----
+
+    #[test]
+    fn test_resolve_github_username_noreply_with_id() {
+        // ID+USERNAME@users.noreply.github.com pattern
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        rt.block_on(async {
+            let octo = octocrab::Octocrab::builder()
+                .personal_token("fake-token".to_string())
+                .build()
+                .unwrap();
+            let mut cache = HashMap::new();
+            let result = resolve_github_username(
+                &octo,
+                "12345+octocat@users.noreply.github.com",
+                &mut cache,
+                None,
+            )
+            .await;
+            assert_eq!(result, Some("octocat".to_string()));
+            // Verify it was cached
+            assert_eq!(
+                cache.get("12345+octocat@users.noreply.github.com"),
+                Some(&Some("octocat".to_string()))
+            );
+        });
+    }
+
+    #[test]
+    fn test_resolve_github_username_noreply_without_id() {
+        // USERNAME@users.noreply.github.com pattern
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        rt.block_on(async {
+            let octo = octocrab::Octocrab::builder()
+                .personal_token("fake-token".to_string())
+                .build()
+                .unwrap();
+            let mut cache = HashMap::new();
+            let result = resolve_github_username(
+                &octo,
+                "octocat@users.noreply.github.com",
+                &mut cache,
+                None,
+            )
+            .await;
+            assert_eq!(result, Some("octocat".to_string()));
+        });
+    }
+
+    #[test]
+    fn test_resolve_github_username_cache_hit() {
+        // Pre-populate cache and verify it's used without API call
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        rt.block_on(async {
+            let octo = octocrab::Octocrab::builder()
+                .personal_token("fake-token".to_string())
+                .build()
+                .unwrap();
+            let mut cache = HashMap::new();
+            cache.insert(
+                "cached@example.com".to_string(),
+                Some("cached-user".to_string()),
+            );
+            let result = resolve_github_username(
+                &octo,
+                "cached@example.com",
+                &mut cache,
+                None,
+            )
+            .await;
+            assert_eq!(result, Some("cached-user".to_string()));
+        });
+    }
+
+    #[test]
+    fn test_resolve_github_username_cache_hit_none() {
+        // Pre-populate cache with None (previously unresolved)
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        rt.block_on(async {
+            let octo = octocrab::Octocrab::builder()
+                .personal_token("fake-token".to_string())
+                .build()
+                .unwrap();
+            let mut cache = HashMap::new();
+            cache.insert("unknown@example.com".to_string(), None);
+            let result = resolve_github_username(
+                &octo,
+                "unknown@example.com",
+                &mut cache,
+                None,
+            )
+            .await;
+            assert_eq!(result, None);
+        });
+    }
+
+    #[test]
+    fn test_resolve_github_username_noreply_numeric_id_plus_username() {
+        // Verify complex ID+USERNAME patterns work
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        rt.block_on(async {
+            let octo = octocrab::Octocrab::builder()
+                .personal_token("fake-token".to_string())
+                .build()
+                .unwrap();
+            let mut cache = HashMap::new();
+            let result = resolve_github_username(
+                &octo,
+                "987654321+my-username@users.noreply.github.com",
+                &mut cache,
+                None,
+            )
+            .await;
+            assert_eq!(result, Some("my-username".to_string()));
+        });
+    }
+
+    #[test]
+    fn test_resolve_github_username_regular_email_not_noreply() {
+        // Regular emails should NOT be parsed as noreply
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        rt.block_on(async {
+            let octo = octocrab::Octocrab::builder()
+                .personal_token("fake-token".to_string())
+                .build()
+                .unwrap();
+            let mut cache = HashMap::new();
+            // This will try the API and fail (no real token), so it should
+            // cache None and return None.
+            let result = resolve_github_username(
+                &octo,
+                "user@example.com",
+                &mut cache,
+                None,
+            )
+            .await;
+            // With a fake token, the API call will fail, resulting in None.
+            assert_eq!(result, None);
+            // Verify it was cached
+            assert!(cache.contains_key("user@example.com"));
+        });
     }
 }

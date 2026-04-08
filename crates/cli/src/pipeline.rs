@@ -136,8 +136,7 @@ fn load_yaml_config_with_includes(path: &Path, content: &str) -> Result<Config> 
 
     let include_entries: Vec<serde_yaml_ng::Value> = base
         .get("includes")
-        .and_then(|v| v.as_sequence())
-        .map(|seq| seq.clone())
+        .and_then(|v| v.as_sequence()).cloned()
         .unwrap_or_default();
 
     // Accumulate all included files into a merged defaults value.
@@ -325,8 +324,8 @@ fn fetch_url_as_yaml(
     }
 
     // Check Content-Length header if available to reject obviously oversized responses.
-    if let Some(content_length) = response.content_length() {
-        if content_length > MAX_INCLUDE_BODY_SIZE {
+    if let Some(content_length) = response.content_length()
+        && content_length > MAX_INCLUDE_BODY_SIZE {
             bail!(
                 "include URL '{}' response too large ({} bytes, max {} bytes) (referenced from {})",
                 url,
@@ -335,7 +334,6 @@ fn fetch_url_as_yaml(
                 config_path.display()
             );
         }
-    }
 
     let body = response.text().with_context(|| {
         format!(
@@ -589,6 +587,7 @@ pub fn build_release_pipeline() -> Pipeline {
     use anodize_stage_sign::SignStage;
     use anodize_stage_snapcraft::{SnapcraftPublishStage, SnapcraftStage};
     use anodize_stage_source::SourceStage;
+    use anodize_stage_sbom::SbomStage;
     use anodize_stage_upx::UpxStage;
     use anodize_stage_appbundle::AppBundleStage;
     use anodize_stage_flatpak::FlatpakStage;
@@ -617,6 +616,8 @@ pub fn build_release_pipeline() -> Pipeline {
     // Notarize runs after AppBundle, DMG, and PKG stages but before checksum/sign.
     p.add(Box::new(NotarizeStage));
     p.add(Box::new(SourceStage));
+    // SBOM runs after source/build (catalogs built/archived artifacts).
+    p.add(Box::new(SbomStage));
     // SRPM runs after source (it requires a source archive).
     p.add(Box::new(SrpmStage));
     // Template files run after source but before checksum so they are checksummed and signed.
@@ -685,6 +686,7 @@ pub fn build_merge_pipeline() -> Pipeline {
     use anodize_stage_sign::SignStage;
     use anodize_stage_snapcraft::{SnapcraftPublishStage, SnapcraftStage};
     use anodize_stage_source::SourceStage;
+    use anodize_stage_sbom::SbomStage;
     use anodize_stage_appbundle::AppBundleStage;
     use anodize_stage_flatpak::FlatpakStage;
     use anodize_stage_notarize::NotarizeStage;
@@ -709,6 +711,7 @@ pub fn build_merge_pipeline() -> Pipeline {
     // Notarize runs after AppBundle, DMG, and PKG stages but before checksum/sign.
     p.add(Box::new(NotarizeStage));
     p.add(Box::new(SourceStage));
+    p.add(Box::new(SbomStage));
     p.add(Box::new(SrpmStage));
     // Template files run after source but before checksum so they are checksummed and signed.
     p.add(Box::new(TemplateFilesStage));

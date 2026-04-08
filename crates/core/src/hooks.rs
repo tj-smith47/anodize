@@ -5,32 +5,14 @@ use anyhow::{Context as _, Result};
 use std::collections::HashMap;
 use std::process::Command;
 
-/// Redact known sensitive environment variable values from output strings.
+/// Redact sensitive environment variable values from output strings.
 ///
-/// Replaces the runtime value of each known secret env var with `***` so that
-/// hook stdout/stderr never leaks credentials to logs.
+/// Auto-discovers secret-looking env vars using the same heuristics as
+/// GoReleaser's `redact.go`: key suffix matching and value prefix matching.
+/// This catches both well-known and user-defined secrets.
 fn redact_secrets(output: &str) -> String {
-    let mut result = output.to_string();
-    let secret_vars = [
-        "ANODIZE_GITHUB_TOKEN",
-        "GITHUB_TOKEN",
-        "GITLAB_TOKEN",
-        "GITEA_TOKEN",
-        "DISCORD_WEBHOOK_TOKEN",
-        "TELEGRAM_TOKEN",
-        "SLACK_WEBHOOK",
-        "COSIGN_PASSWORD",
-        "GPG_PASSPHRASE",
-        "NFPM_PASSPHRASE",
-    ];
-    for var in &secret_vars {
-        if let Ok(val) = std::env::var(var)
-            && !val.is_empty()
-        {
-            result = result.replace(&val, "***");
-        }
-    }
-    result
+    let env: Vec<(String, String)> = std::env::vars().collect();
+    crate::redact::redact_string(output, &env)
 }
 
 /// Render a hook template string through the full Tera engine.

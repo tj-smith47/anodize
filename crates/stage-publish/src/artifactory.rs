@@ -70,6 +70,7 @@ fn artifact_kinds_for_mode(mode: &str) -> Vec<ArtifactKind> {
 
 /// Collect artifacts matching mode, optional ID filter, and optional extension filter.
 /// Also collects checksum/signature/metadata artifacts and extra files when configured.
+#[allow(clippy::too_many_arguments)]
 pub fn collect_upload_artifacts<'a>(
     ctx: &'a Context,
     mode: &str,
@@ -104,14 +105,13 @@ pub fn collect_upload_artifacts<'a>(
                 return false;
             }
             // Extension filter
-            if let Some(ext_list) = exts {
-                if !ext_list.is_empty() {
+            if let Some(ext_list) = exts
+                && !ext_list.is_empty() {
                     let name = a.name();
                     if !ext_list.iter().any(|ext| name.ends_with(&format!(".{}", ext))) {
                         return false;
                     }
                 }
-            }
             true
         })
         .collect();
@@ -233,6 +233,7 @@ fn render_artifact_url(
 // ---------------------------------------------------------------------------
 
 /// Upload a single artifact to the target URL.
+#[allow(clippy::too_many_arguments)]
 pub fn upload_single_artifact(
     client: &reqwest::blocking::Client,
     method: &str,
@@ -290,9 +291,25 @@ pub fn upload_single_artifact(
         req = req.header(checksum_header, &checksum);
     }
 
-    // Custom headers (template-rendered)
+    // Custom headers (template-rendered with artifact context)
+    // GoReleaser template-renders custom_headers values with artifact-specific
+    // variables (ArtifactName, Os, Arch, etc.), not just global template vars.
     for (k, v) in custom_headers {
-        let rendered_v = ctx.render_template(v).unwrap_or_else(|_| v.clone());
+        let rendered_v = {
+            let mut vars = ctx.template_vars().clone();
+            vars.set("ArtifactName", artifact.name());
+            vars.set(
+                "ArtifactExt",
+                anodize_core::template::extract_artifact_ext(artifact.name()),
+            );
+            if let Some(ref target) = artifact.target {
+                let (os, arch) = anodize_core::target::map_target(target);
+                vars.set("Os", &os);
+                vars.set("Arch", &arch);
+                vars.set("Target", target);
+            }
+            anodize_core::template::render(v, &vars).unwrap_or_else(|_| v.clone())
+        };
         req = req.header(k.as_str(), rendered_v);
     }
 
@@ -351,12 +368,11 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
 
     for entry in entries {
         // Check skip flag.
-        if let Some(ref s) = entry.skip {
-            if s.is_disabled(|tmpl| ctx.render_template(tmpl)) {
+        if let Some(ref s) = entry.skip
+            && s.is_disabled(|tmpl| ctx.render_template(tmpl)) {
                 log.status("artifactory: entry skipped");
                 continue;
             }
-        }
 
         // Name is required.
         let name = match entry.name {

@@ -71,8 +71,12 @@ pub enum Commands {
         draft: bool,
         #[arg(long, help = "Path to a file containing custom release header text")]
         release_header: Option<PathBuf>,
+        #[arg(long, help = "Path to a template file for release header (rendered with template variables)")]
+        release_header_tmpl: Option<PathBuf>,
         #[arg(long, help = "Path to a file containing custom release footer text")]
         release_footer: Option<PathBuf>,
+        #[arg(long, help = "Path to a template file for release footer (rendered with template variables)")]
+        release_footer_tmpl: Option<PathBuf>,
         #[arg(
             long,
             help = "Path to a template file for release notes (rendered with template variables, overrides --release-notes)"
@@ -115,6 +119,12 @@ pub enum Commands {
             help = "Copy the built binary to this path (requires --single-target and single crate)"
         )]
         output: Option<PathBuf>,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "Skip stages (comma-separated: pre-hooks, post-hooks, validate, before)"
+        )]
+        skip: Vec<String>,
     },
     /// Validate configuration
     Check {

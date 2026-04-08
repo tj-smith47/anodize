@@ -3,7 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-use anyhow::{Context as _, Result};
+use anyhow::{bail, Context as _, Result};
 use serde::Serialize;
 
 use anodize_core::artifact::{Artifact, ArtifactKind};
@@ -285,20 +285,40 @@ struct NfpmYamlIpkAlternative {
 // generate_nfpm_yaml
 // ---------------------------------------------------------------------------
 
+/// Paths to C library artifacts grouped by type.
+///
+/// GoReleaser parity (nfpm.go:137-142): nfpm includes Header, CArchive, and
+/// CShared artifact types alongside Binary.  These are routed to the
+/// directories specified in the `libdirs` configuration block.
+#[derive(Default)]
+pub struct NfpmLibraryPaths {
+    pub headers: Vec<String>,
+    pub c_archives: Vec<String>,
+    pub c_shared: Vec<String>,
+}
+
 /// Generate an nfpm YAML configuration string from the anodize nfpm config.
 ///
 /// `format` is the target packager format (e.g. "deb", "rpm") used to select
 /// format-specific dependencies from the `dependencies` HashMap.  Pass `None`
 /// to include deps for *all* formats.
+///
+/// `skip_sign` — when `true`, all signing/signature configuration is zeroed
+/// out in the YAML output (GoReleaser parity: nfpm.go skips.Sign).
+///
+/// `library_paths` — paths to C library artifacts (Header, CArchive, CShared)
+/// that should be routed to the appropriate libdirs directories.
 pub fn generate_nfpm_yaml(
     config: &NfpmConfig,
     version: &str,
-    binary_path: &str,
+    binary_paths: &[String],
     format: Option<&str>,
+    skip_sign: bool,
+    library_paths: &NfpmLibraryPaths,
 ) -> String {
     let is_meta = config.meta == Some(true);
 
-    // Build the binary content entry (skip for meta packages)
+    // Build binary content entries for ALL binaries on this platform (skip for meta packages)
     let raw_bindir = config.bindir.as_deref().unwrap_or("/usr/bin");
     // For termux.deb, rewrite bindir to the Termux filesystem prefix
     let bindir = if format == Some("termux.deb") && raw_bindir.starts_with("/usr") {
@@ -307,29 +327,36 @@ pub fn generate_nfpm_yaml(
         raw_bindir.to_string()
     };
     let bindir = bindir.as_str();
-    let binary_name = PathBuf::from(binary_path)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("binary")
-        .to_string();
 
     let mut contents = if is_meta {
         // Meta packages have no binary contents — only dependencies
         Vec::new()
     } else {
-        vec![NfpmYamlContent {
-            src: binary_path.to_string(),
-            dst: format!("{bindir}/{binary_name}"),
-            content_type: None,
-            file_info: Some(NfpmYamlFileInfo {
-                owner: None,
-                group: None,
-                mode: Some("0755".to_string()),
-                mtime: None,
-            }),
-            packager: None,
-            expand: None,
-        }]
+        // GoReleaser groups all binaries for the same platform into one package.
+        // Each binary gets its own content entry pointing to bindir.
+        binary_paths
+            .iter()
+            .map(|bp| {
+                let binary_name = PathBuf::from(bp)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("binary")
+                    .to_string();
+                NfpmYamlContent {
+                    src: bp.clone(),
+                    dst: format!("{bindir}/{binary_name}"),
+                    content_type: None,
+                    file_info: Some(NfpmYamlFileInfo {
+                        owner: None,
+                        group: None,
+                        mode: Some("0755".to_string()),
+                        mtime: None,
+                    }),
+                    packager: None,
+                    expand: None,
+                }
+            })
+            .collect()
     };
 
     // Extra contents from config
@@ -351,39 +378,92 @@ pub fn generate_nfpm_yaml(
         }
     }
 
-    // Libdirs: install CGo library outputs to the specified directories
-    if let Some(ref libdirs) = config.libdirs {
-        // Derive library file names from the binary path stem
-        let stem = PathBuf::from(binary_path)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("lib")
-            .to_string();
-        let src_dir = PathBuf::from(binary_path)
-            .parent()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|| ".".to_string());
+    // Libdirs: install CGo library outputs to the specified directories.
+    // GoReleaser defaults (nfpm.go:59-67):
+    //   Header    = "/usr/include"
+    //   CArchive  = "/usr/lib"
+    //   CShared   = "/usr/lib"
+    //
+    // When actual library artifacts are provided (from the artifact registry),
+    // use their paths directly. Otherwise, derive from the first binary stem
+    // for backward compatibility.
+    let has_library_artifacts = !library_paths.headers.is_empty()
+        || !library_paths.c_archives.is_empty()
+        || !library_paths.c_shared.is_empty();
+    if has_library_artifacts || config.libdirs.is_some() {
+        let libdirs = config.libdirs.as_ref();
 
-        let lib_entries: &[(&Option<String>, &str, &str)] = &[
-            (&libdirs.header, ".h", "0644"),
-            (&libdirs.carchive, ".a", "0644"),
-            (&libdirs.cshared, ".so", "0755"),
+        // Apply GoReleaser defaults when a libdirs block exists but individual
+        // directories are not explicitly set.
+        let header_dir = libdirs
+            .and_then(|l| l.header.clone())
+            .or_else(|| Some("/usr/include".to_string()));
+        let carchive_dir = libdirs
+            .and_then(|l| l.carchive.clone())
+            .or_else(|| Some("/usr/lib".to_string()));
+        let cshared_dir = libdirs
+            .and_then(|l| l.cshared.clone())
+            .or_else(|| Some("/usr/lib".to_string()));
+
+        // GoReleaser parity (nfpm.go:263-265): rewrite all libdirs for termux.deb
+        let (header_dir, carchive_dir, cshared_dir) = if format == Some("termux.deb") {
+            (
+                header_dir.map(|d| {
+                    if d.starts_with("/usr") || d.starts_with("/etc") {
+                        format!("/data/data/com.termux/files{d}")
+                    } else {
+                        d
+                    }
+                }),
+                carchive_dir.map(|d| {
+                    if d.starts_with("/usr") || d.starts_with("/etc") {
+                        format!("/data/data/com.termux/files{d}")
+                    } else {
+                        d
+                    }
+                }),
+                cshared_dir.map(|d| {
+                    if d.starts_with("/usr") || d.starts_with("/etc") {
+                        format!("/data/data/com.termux/files{d}")
+                    } else {
+                        d
+                    }
+                }),
+            )
+        } else {
+            (header_dir, carchive_dir, cshared_dir)
+        };
+
+        // GoReleaser parity: only add library content entries when actual
+        // library artifacts are present. The libdirs config specifies
+        // *destination directories* for actual artifacts, not synthetic paths.
+        let lib_groups: &[(&Option<String>, &[String], &str)] = &[
+            (&header_dir, &library_paths.headers, "0644"),
+            (&carchive_dir, &library_paths.c_archives, "0644"),
+            (&cshared_dir, &library_paths.c_shared, "0755"),
         ];
-        for (dir_opt, ext, mode) in lib_entries {
+        for (dir_opt, paths, mode) in lib_groups {
             if let Some(dir) = dir_opt {
-                contents.push(NfpmYamlContent {
-                    src: format!("{src_dir}/{stem}{ext}"),
-                    dst: format!("{dir}/{stem}{ext}"),
-                    content_type: None,
-                    file_info: Some(NfpmYamlFileInfo {
-                        owner: None,
-                        group: None,
-                        mode: Some(mode.to_string()),
-                        mtime: None,
-                    }),
-                    packager: None,
-                    expand: None,
-                });
+                for src_path in *paths {
+                    let filename = PathBuf::from(src_path)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("lib")
+                        .to_string();
+                    contents.push(NfpmYamlContent {
+                        src: src_path.clone(),
+                        dst: format!("{dir}/{filename}"),
+                        content_type: None,
+                        file_info: Some(NfpmYamlFileInfo {
+                            owner: None,
+                            group: None,
+                            mode: Some(mode.to_string()),
+                            mtime: None,
+                        }),
+                        packager: None,
+                        expand: None,
+                    });
+                }
             }
         }
     }
@@ -448,17 +528,17 @@ pub fn generate_nfpm_yaml(
         .rpm
         .as_ref()
         .filter(|r| !r.is_empty())
-        .map(|r| build_yaml_rpm(r, nfpm_id, format));
+        .map(|r| build_yaml_rpm(r, nfpm_id, format, skip_sign));
     let deb = config
         .deb
         .as_ref()
         .filter(|d| !d.is_empty())
-        .map(|d| build_yaml_deb(d, nfpm_id, format));
+        .map(|d| build_yaml_deb(d, nfpm_id, format, skip_sign));
     let apk = config
         .apk
         .as_ref()
         .filter(|a| !a.is_empty())
-        .map(|a| build_yaml_apk(a, nfpm_id, format));
+        .map(|a| build_yaml_apk(a, nfpm_id, format, skip_sign));
     let archlinux = config
         .archlinux
         .as_ref()
@@ -569,17 +649,20 @@ fn build_yaml_signature(
     }
 }
 
-fn build_yaml_rpm(rpm: &NfpmRpmConfig, nfpm_id: &str, format: Option<&str>) -> NfpmYamlRpm {
+fn build_yaml_rpm(rpm: &NfpmRpmConfig, nfpm_id: &str, format: Option<&str>, skip_sign: bool) -> NfpmYamlRpm {
     NfpmYamlRpm {
         summary: rpm.summary.clone(),
         compression: rpm.compression.clone(),
         group: rpm.group.clone(),
         packager: rpm.packager.clone(),
         prefixes: rpm.prefixes.clone(),
-        signature: rpm
-            .signature
-            .as_ref()
-            .map(|s| build_yaml_signature(s, nfpm_id, format)),
+        signature: if skip_sign {
+            None
+        } else {
+            rpm.signature
+                .as_ref()
+                .map(|s| build_yaml_signature(s, nfpm_id, format))
+        },
         scripts: rpm.scripts.as_ref().map(|s| NfpmYamlRpmScripts {
             pretrans: s.pretrans.clone(),
             posttrans: s.posttrans.clone(),
@@ -588,7 +671,7 @@ fn build_yaml_rpm(rpm: &NfpmRpmConfig, nfpm_id: &str, format: Option<&str>) -> N
     }
 }
 
-fn build_yaml_deb(deb: &NfpmDebConfig, nfpm_id: &str, format: Option<&str>) -> NfpmYamlDeb {
+fn build_yaml_deb(deb: &NfpmDebConfig, nfpm_id: &str, format: Option<&str>, skip_sign: bool) -> NfpmYamlDeb {
     NfpmYamlDeb {
         compression: deb.compression.clone(),
         predepends: deb.predepends.clone(),
@@ -602,10 +685,13 @@ fn build_yaml_deb(deb: &NfpmDebConfig, nfpm_id: &str, format: Option<&str>) -> N
         }),
         breaks: deb.breaks.clone(),
         lintian_overrides: deb.lintian_overrides.clone(),
-        signature: deb
-            .signature
-            .as_ref()
-            .map(|s| build_yaml_signature(s, nfpm_id, format)),
+        signature: if skip_sign {
+            None
+        } else {
+            deb.signature
+                .as_ref()
+                .map(|s| build_yaml_signature(s, nfpm_id, format))
+        },
         fields: deb.fields.clone(),
         scripts: deb.scripts.as_ref().map(|s| NfpmYamlDebScripts {
             rules: s.rules.clone(),
@@ -615,12 +701,15 @@ fn build_yaml_deb(deb: &NfpmDebConfig, nfpm_id: &str, format: Option<&str>) -> N
     }
 }
 
-fn build_yaml_apk(apk: &NfpmApkConfig, nfpm_id: &str, format: Option<&str>) -> NfpmYamlApk {
+fn build_yaml_apk(apk: &NfpmApkConfig, nfpm_id: &str, format: Option<&str>, skip_sign: bool) -> NfpmYamlApk {
     NfpmYamlApk {
-        signature: apk
-            .signature
-            .as_ref()
-            .map(|s| build_yaml_signature(s, nfpm_id, format)),
+        signature: if skip_sign {
+            None
+        } else {
+            apk.signature
+                .as_ref()
+                .map(|s| build_yaml_signature(s, nfpm_id, format))
+        },
         scripts: apk.scripts.as_ref().map(|s| NfpmYamlApkScripts {
             preupgrade: s.preupgrade.clone(),
             postupgrade: s.postupgrade.clone(),
@@ -767,36 +856,83 @@ impl Stage for NfpmStage {
             .cloned()
             .unwrap_or_else(|| "0.0.0".to_string());
 
+        // GoReleaser parity: when the global skip_sign is active, zero out
+        // all nFPM signature configuration in the generated YAML.
+        let skip_sign = ctx.should_skip("sign");
+
         let mut new_artifacts: Vec<Artifact> = Vec::new();
+
+        // Validate nfpm config ID uniqueness across all crates (GoReleaser parity)
+        {
+            let mut seen_ids = std::collections::HashSet::new();
+            for krate in &crates {
+                if let Some(ref nfpm_configs) = krate.nfpm {
+                    for cfg in nfpm_configs {
+                        let id = cfg.id.as_deref().unwrap_or("default");
+                        if !seen_ids.insert(id.to_string()) {
+                            bail!("nfpm: duplicate config ID '{}' (each nfpm config must have a unique ID)", id);
+                        }
+                    }
+                }
+            }
+        }
 
         for krate in &crates {
             let nfpm_configs = krate.nfpm.as_ref().unwrap();
 
-            // Collect all Linux binary artifacts for this crate
+            // Collect all nfpm-eligible artifacts for this crate.
+            // GoReleaser parity (nfpm.go:137-144): ByTypes(Binary, Header, CArchive, CShared)
+            // filtered by ByGooses("linux", "ios", "android", "aix").
+            let nfpm_artifact_kinds = &[
+                ArtifactKind::Binary,
+                ArtifactKind::Header,
+                ArtifactKind::CArchive,
+                ArtifactKind::CShared,
+            ];
             let linux_binaries: Vec<_> = ctx
                 .artifacts
-                .by_kind_and_crate(ArtifactKind::Binary, &krate.name)
+                .by_kinds_and_crate(nfpm_artifact_kinds, &krate.name)
                 .into_iter()
                 .filter(|b| {
                     b.target
                         .as_deref()
-                        .map(|t| t.contains("linux"))
+                        .map(anodize_core::target::is_nfpm_target)
                         .unwrap_or(false)
                 })
                 .cloned()
                 .collect();
 
             for nfpm_cfg in nfpm_configs {
+                // GoReleaser parity: warn and skip when no output formats configured
+                if nfpm_cfg.formats.is_empty() {
+                    let nfpm_id = nfpm_cfg.id.as_deref().unwrap_or("default");
+                    log.warn(&format!(
+                        "nfpm config '{}': no output formats configured, skipping",
+                        nfpm_id
+                    ));
+                    continue;
+                }
+
+                // GoReleaser parity: warn when maintainer is empty (required for deb)
+                let maintainer = nfpm_cfg.maintainer.as_deref().unwrap_or("");
+                if maintainer.is_empty() {
+                    let nfpm_id = nfpm_cfg.id.as_deref().unwrap_or("default");
+                    log.warn(&format!(
+                        "nfpm config '{}': maintainer is empty (required for deb packages)",
+                        nfpm_id
+                    ));
+                }
+
                 let is_meta = nfpm_cfg.meta == Some(true);
 
-                // Meta packages have no binary contents — use a synthetic entry
-                // so the loop below runs once per target (or once with no target).
-                let effective_binaries: Vec<(Option<String>, String)> = if is_meta {
-                    // For meta packages, produce one package per unique target
-                    // from all linux binaries (for arch), or a single default
-                    // entry if no binaries exist.
+                // GoReleaser groups all artifacts by platform and creates ONE
+                // package per platform containing ALL artifacts for that platform.
+                // The tuple contains: (target, binary_paths, library_paths).
+                let platform_groups: Vec<(Option<String>, Vec<String>, NfpmLibraryPaths)> = if is_meta {
+                    // Meta packages have no binary contents — use a synthetic entry
+                    // so the loop below runs once per target (or once with no target).
                     if linux_binaries.is_empty() {
-                        vec![(None, String::new())]
+                        vec![(None, Vec::new(), NfpmLibraryPaths::default())]
                     } else {
                         let mut seen = std::collections::HashSet::new();
                         linux_binaries
@@ -805,13 +941,13 @@ impl Stage for NfpmStage {
                                 let key = b.target.clone().unwrap_or_default();
                                 seen.insert(key)
                             })
-                            .map(|b| (b.target.clone(), String::new()))
+                            .map(|b| (b.target.clone(), Vec::new(), NfpmLibraryPaths::default()))
                             .collect()
                     }
                 } else {
                     // Apply ids filter: when the nfpm config specifies `ids`,
-                    // only include binaries whose metadata "id" is in the list.
-                    let filtered_binaries: Vec<_> = if let Some(ref ids) = nfpm_cfg.ids {
+                    // only include artifacts whose metadata "id" is in the list.
+                    let filtered: Vec<_> = if let Some(ref ids) = nfpm_cfg.ids {
                         linux_binaries
                             .iter()
                             .filter(|b| {
@@ -825,9 +961,9 @@ impl Stage for NfpmStage {
                         linux_binaries.iter().collect()
                     };
 
-                    // If the ids filter matched nothing but there ARE linux
-                    // binaries, warn and skip — the user likely misconfigured ids.
-                    if filtered_binaries.is_empty() && !linux_binaries.is_empty() {
+                    // If the ids filter matched nothing but there ARE artifacts,
+                    // warn and skip — the user likely misconfigured ids.
+                    if filtered.is_empty() && !linux_binaries.is_empty() {
                         let nfpm_id = nfpm_cfg.id.as_deref().unwrap_or("default");
                         log.warn(&format!(
                             "nfpm config '{}': ids filter matched no binaries, skipping",
@@ -836,21 +972,40 @@ impl Stage for NfpmStage {
                         continue;
                     }
 
-                    // If no linux binaries found at all, use a single synthetic
+                    // If no artifacts found at all, use a single synthetic
                     // entry with a default path.
-                    if filtered_binaries.is_empty() {
-                        vec![(None, format!("dist/{}", krate.name))]
+                    if filtered.is_empty() {
+                        vec![(None, vec![format!("dist/{}", krate.name)], NfpmLibraryPaths::default())]
                     } else {
-                        filtered_binaries
-                            .iter()
-                            .map(|b| (b.target.clone(), b.path.to_string_lossy().into_owned()))
-                            .collect()
+                        // Group by target: all artifacts for the same platform
+                        // go into one package (GoReleaser parity).
+                        // Split Binary artifacts from C library artifacts.
+                        struct PlatformArtifacts {
+                            binaries: Vec<String>,
+                            libs: NfpmLibraryPaths,
+                        }
+                        let mut groups: std::collections::BTreeMap<Option<String>, PlatformArtifacts> =
+                            std::collections::BTreeMap::new();
+                        for b in &filtered {
+                            let entry = groups.entry(b.target.clone()).or_insert_with(|| PlatformArtifacts {
+                                binaries: Vec::new(),
+                                libs: NfpmLibraryPaths::default(),
+                            });
+                            let path = b.path.to_string_lossy().into_owned();
+                            match b.kind {
+                                ArtifactKind::Header => entry.libs.headers.push(path),
+                                ArtifactKind::CArchive => entry.libs.c_archives.push(path),
+                                ArtifactKind::CShared => entry.libs.c_shared.push(path),
+                                _ => entry.binaries.push(path),
+                            }
+                        }
+                        groups.into_iter().map(|(t, pa)| (t, pa.binaries, pa.libs)).collect()
                     }
                 };
 
-                for (target, binary_path) in &effective_binaries {
+                for (target, binary_paths, lib_paths) in &platform_groups {
                     // Derive Os/Arch from the target triple for template rendering
-                    let (os, arch) = target
+                    let (base_os, base_arch) = target
                         .as_deref()
                         .map(anodize_core::target::map_target)
                         .unwrap_or_else(|| ("linux".to_string(), "amd64".to_string()));
@@ -858,6 +1013,41 @@ impl Stage for NfpmStage {
                     for format in &nfpm_cfg.formats {
                         validate_format(format)
                             .with_context(|| format!("nfpm config for crate {}", krate.name))?;
+
+                        // GoReleaser parity (nfpm.go:214-245): platform-format
+                        // restrictions for iOS and AIX.
+                        let (os, arch) = match base_os.as_str() {
+                            "ios" => {
+                                if format == "deb" {
+                                    ("iphoneos-arm64".to_string(), base_arch.clone())
+                                } else {
+                                    log.status(&format!(
+                                        "skipping ios for format '{}': only deb is supported",
+                                        format
+                                    ));
+                                    continue;
+                                }
+                            }
+                            "aix" => {
+                                if base_arch != "ppc64" {
+                                    log.status(&format!(
+                                        "skipping aix/{}: only ppc64 is supported",
+                                        base_arch
+                                    ));
+                                    continue;
+                                }
+                                if format == "rpm" {
+                                    ("aix7.2".to_string(), "ppc".to_string())
+                                } else {
+                                    log.status(&format!(
+                                        "skipping aix for format '{}': only rpm is supported",
+                                        format
+                                    ));
+                                    continue;
+                                }
+                            }
+                            _ => (base_os.clone(), base_arch.clone()),
+                        };
 
                         // Validate architecture compatibility per format
                         if let Some(triple) = target.as_deref()
@@ -920,22 +1110,18 @@ impl Stage for NfpmStage {
                             }
                         }
                         // Template-render signature key_file and key_name
-                        if let Some(ref mut deb) = rendered_cfg.deb {
-                            if let Some(ref mut sig) = deb.signature {
-                                if let Some(ref s) = sig.key_file {
+                        if let Some(ref mut deb) = rendered_cfg.deb
+                            && let Some(ref mut sig) = deb.signature
+                                && let Some(ref s) = sig.key_file {
                                     sig.key_file = Some(ctx.render_template(s)?);
                                 }
-                            }
-                        }
-                        if let Some(ref mut rpm) = rendered_cfg.rpm {
-                            if let Some(ref mut sig) = rpm.signature {
-                                if let Some(ref s) = sig.key_file {
+                        if let Some(ref mut rpm) = rendered_cfg.rpm
+                            && let Some(ref mut sig) = rpm.signature
+                                && let Some(ref s) = sig.key_file {
                                     sig.key_file = Some(ctx.render_template(s)?);
                                 }
-                            }
-                        }
-                        if let Some(ref mut apk) = rendered_cfg.apk {
-                            if let Some(ref mut sig) = apk.signature {
+                        if let Some(ref mut apk) = rendered_cfg.apk
+                            && let Some(ref mut sig) = apk.signature {
                                 if let Some(ref s) = sig.key_file {
                                     sig.key_file = Some(ctx.render_template(s)?);
                                 }
@@ -943,7 +1129,6 @@ impl Stage for NfpmStage {
                                     sig.key_name = Some(ctx.render_template(s)?);
                                 }
                             }
-                        }
                         // Template-render libdirs
                         if let Some(ref mut libdirs) = rendered_cfg.libdirs {
                             if let Some(ref s) = libdirs.header {
@@ -978,7 +1163,7 @@ impl Stage for NfpmStage {
 
                         // Generate YAML per format so format-specific deps are selected
                         let yaml_content =
-                            generate_nfpm_yaml(&rendered_cfg, &version, binary_path, Some(format));
+                            generate_nfpm_yaml(&rendered_cfg, &version, binary_paths, Some(format), skip_sign, lib_paths);
 
                         // Ensure output directory exists
                         let output_dir = dist.join("linux");
@@ -1154,11 +1339,45 @@ mod tests {
             bindir: Some("/usr/bin".to_string()),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/path/to/binary", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/path/to/binary".to_string()], None, false, &NfpmLibraryPaths::default());
         assert!(yaml.contains("name: myapp"));
         assert!(yaml.contains("version: 1.0.0"));
         assert!(yaml.contains("vendor: Test Vendor"));
         assert!(yaml.contains("/usr/bin/"));
+    }
+
+    #[test]
+    fn test_generate_nfpm_yaml_multi_binary() {
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            maintainer: Some("test@example.com".to_string()),
+            description: Some("A test app".to_string()),
+            license: Some("MIT".to_string()),
+            bindir: Some("/usr/bin".to_string()),
+            ..Default::default()
+        };
+        // GoReleaser groups all binaries for the same platform into one package
+        let yaml = generate_nfpm_yaml(
+            &nfpm_cfg,
+            "1.0.0",
+            &[
+                "/dist/myapp-server".to_string(),
+                "/dist/myapp-cli".to_string(),
+                "/dist/myapp-worker".to_string(),
+            ],
+            None,
+            false,
+            &NfpmLibraryPaths::default(),
+        );
+        // All three binaries should appear as contents entries
+        assert!(yaml.contains("/usr/bin/myapp-server"), "server binary in contents");
+        assert!(yaml.contains("/usr/bin/myapp-cli"), "cli binary in contents");
+        assert!(yaml.contains("/usr/bin/myapp-worker"), "worker binary in contents");
+        // The source paths should also appear
+        assert!(yaml.contains("/dist/myapp-server"), "server source path");
+        assert!(yaml.contains("/dist/myapp-cli"), "cli source path");
+        assert!(yaml.contains("/dist/myapp-worker"), "worker source path");
     }
 
     #[test]
@@ -1199,7 +1418,7 @@ mod tests {
             }]),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "2.0.0", "/dist/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "2.0.0", &["/dist/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
         assert!(yaml.contains("version: 2.0.0"));
         assert!(yaml.contains("/etc/myapp/config"));
         assert!(yaml.contains("/usr/bin/myapp"));
@@ -1287,7 +1506,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
         assert!(yaml.contains("scripts:"));
         assert!(yaml.contains("  preinstall: /scripts/preinstall.sh"));
         assert!(yaml.contains("  postinstall: /scripts/postinstall.sh"));
@@ -1307,7 +1526,7 @@ mod tests {
             provides: Some(vec!["myapp-bin".to_string()]),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
         assert!(yaml.contains("recommends:"));
         assert!(yaml.contains("- libfoo"));
         assert!(yaml.contains("- libbar"));
@@ -1341,7 +1560,7 @@ mod tests {
             }]),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
         assert!(yaml.contains("  type: config"));
         assert!(yaml.contains("  file_info:"));
         assert!(yaml.contains("    owner: root"));
@@ -1365,7 +1584,7 @@ mod tests {
             }]),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
         assert!(yaml.contains("  type: dir"));
         // The binary entry always has file_info with mode 0755, but the
         // extra "dir" content entry should NOT have file_info
@@ -1469,7 +1688,7 @@ crates:
             suggests: None,
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
         // Empty lists should not produce a section
         assert!(!yaml.contains("recommends:"));
         assert!(!yaml.contains("suggests:"));
@@ -1493,7 +1712,7 @@ crates:
             }),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
         assert!(yaml.contains("scripts:"));
         assert!(yaml.contains("  preinstall: /scripts/pre.sh"));
         assert!(yaml.contains("  postinstall: /scripts/post.sh"));
@@ -1513,7 +1732,7 @@ crates:
             provides: Some(vec!["myapp-bin".to_string()]),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
 
         // Each field should appear with its items
         assert!(yaml.contains("recommends:\n- libfoo\n- libbar"));
@@ -1554,7 +1773,7 @@ crates:
             ]),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "2.0.0", "/dist/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "2.0.0", &["/dist/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
 
         // First content entry with type and file_info
         assert!(yaml.contains("- src: /src/config.toml"));
@@ -1728,7 +1947,7 @@ crates:
             bindir: Some("/usr/local/bin".to_string()),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/build/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/build/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
 
         // Binary should appear in the contents section
         assert!(yaml.contains("contents:"));
@@ -1744,7 +1963,7 @@ crates:
             bindir: Some("/opt/myapp/bin".to_string()),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/build/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/build/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
         assert!(yaml.contains("dst: /opt/myapp/bin/myapp"));
     }
 
@@ -1811,7 +2030,7 @@ crates:
             formats: vec!["deb".to_string()],
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
         assert!(
             !yaml.contains("name:"),
             "no name: line should appear when package_name is None"
@@ -1826,7 +2045,7 @@ crates:
             formats: vec!["deb".to_string()],
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "0.1.0", "/bin/test", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "0.1.0", &["/bin/test".to_string()], None, false, &NfpmLibraryPaths::default());
         assert!(yaml.contains("version: 0.1.0"));
         assert!(yaml.contains("contents:"));
         assert!(yaml.contains("- src: /bin/test"));
@@ -2263,7 +2482,9 @@ crates:
         NfpmStage.run(&mut ctx).unwrap();
 
         let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
-        assert_eq!(pkgs.len(), 2, "two binaries should match the ids filter");
+        // GoReleaser groups all binaries for the same platform into one package.
+        // Two matching binaries on x86_64-linux → one package containing both.
+        assert_eq!(pkgs.len(), 1, "two binaries on same platform should produce one package");
     }
 
     #[test]
@@ -2281,7 +2502,7 @@ crates:
             }),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/usr/bin/myapp", Some("deb"));
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/usr/bin/myapp".to_string()], Some("deb"), false, &NfpmLibraryPaths::default());
         // The YAML key must be "depends" (what nfpm expects), not "dependencies"
         assert!(
             yaml.contains("depends:"),
@@ -2321,7 +2542,7 @@ crates:
         };
 
         // When generating for deb, only deb deps should appear
-        let yaml_deb = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/usr/bin/myapp", Some("deb"));
+        let yaml_deb = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/usr/bin/myapp".to_string()], Some("deb"), false, &NfpmLibraryPaths::default());
         assert!(
             yaml_deb.contains("- libc6"),
             "deb deps expected:\n{yaml_deb}"
@@ -2332,7 +2553,7 @@ crates:
         );
 
         // When generating for rpm, only rpm deps should appear
-        let yaml_rpm = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/usr/bin/myapp", Some("rpm"));
+        let yaml_rpm = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/usr/bin/myapp".to_string()], Some("rpm"), false, &NfpmLibraryPaths::default());
         assert!(
             yaml_rpm.contains("- glibc"),
             "rpm deps expected:\n{yaml_rpm}"
@@ -2358,7 +2579,7 @@ crates:
         };
 
         // When format is None, all deps should be merged
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/usr/bin/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/usr/bin/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
         assert!(yaml.contains("depends:"), "depends key expected:\n{yaml}");
         assert!(
             yaml.contains("- libc6") || yaml.contains("- glibc"),
@@ -2381,7 +2602,7 @@ crates:
             version_metadata: Some("git.abc123".to_string()),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
         assert!(
             yaml.contains("epoch: '1'"),
             "epoch missing from YAML:\n{yaml}"
@@ -2412,7 +2633,7 @@ crates:
             mtime: Some("2023-01-01T00:00:00Z".to_string()),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
         assert!(yaml.contains("section: utils"), "section missing:\n{yaml}");
         assert!(
             yaml.contains("priority: optional"),
@@ -2434,7 +2655,7 @@ crates:
             formats: vec!["deb".to_string()],
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
         assert!(!yaml.contains("epoch:"), "epoch should not appear:\n{yaml}");
         assert!(
             !yaml.contains("release:"),
@@ -2492,7 +2713,7 @@ crates:
             }]),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
         assert!(
             yaml.contains("file_info:"),
             "file_info block missing:\n{yaml}"
@@ -2525,7 +2746,7 @@ crates:
             }),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
         assert!(yaml.contains("rpm:"), "rpm section missing:\n{yaml}");
         assert!(
             yaml.contains("summary: My package summary"),
@@ -2568,7 +2789,7 @@ crates:
             }),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
         assert!(yaml.contains("prefixes:"), "rpm prefixes missing:\n{yaml}");
         assert!(yaml.contains("- /usr"), "rpm prefix /usr missing:\n{yaml}");
         assert!(yaml.contains("- /etc"), "rpm prefix /etc missing:\n{yaml}");
@@ -2604,7 +2825,7 @@ crates:
             }),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
         assert!(yaml.contains("deb:"), "deb section missing:\n{yaml}");
         assert!(yaml.contains("triggers:"), "deb triggers missing:\n{yaml}");
         assert!(
@@ -2663,7 +2884,7 @@ crates:
             }),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
         assert!(
             yaml.contains("compression: xz"),
             "deb compression missing:\n{yaml}"
@@ -2694,7 +2915,7 @@ crates:
             }),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
         assert!(yaml.contains("apk:"), "apk section missing:\n{yaml}");
         assert!(
             yaml.contains("signature:"),
@@ -2722,7 +2943,7 @@ crates:
             }),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
         assert!(
             yaml.contains("archlinux:"),
             "archlinux section missing:\n{yaml}"
@@ -2766,7 +2987,7 @@ crates:
             }),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
         assert!(
             yaml.contains("key_passphrase: secret123"),
             "key_passphrase missing from signature:\n{yaml}"
@@ -2792,7 +3013,7 @@ crates:
             }),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
         assert!(yaml.contains("interest:"), "interest missing:\n{yaml}");
         assert!(
             yaml.contains("interest_await:"),
@@ -3253,7 +3474,7 @@ crates:
             }),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "2.0.0", "/dist/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "2.0.0", &["/dist/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
 
         // Verify all sections present
         assert!(yaml.contains("epoch:"), "epoch missing:\n{yaml}");
@@ -3309,7 +3530,7 @@ crates:
             meta: Some(false),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
         assert!(
             yaml.contains("meta: false"),
             "meta: false should appear in YAML:\n{yaml}"
@@ -3324,7 +3545,7 @@ crates:
             meta: None,
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
         assert!(
             !yaml.contains("meta:"),
             "meta should not appear when None:\n{yaml}"
@@ -3778,7 +3999,7 @@ crates:
             }),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
         assert!(
             yaml.contains("key_name: mykey.rsa.pub"),
             "key_name missing from signature:\n{yaml}"
@@ -3805,7 +4026,7 @@ crates:
             }),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
         assert!(
             !yaml.contains("key_name:"),
             "key_name should not appear when None:\n{yaml}"
@@ -3838,7 +4059,7 @@ crates:
             }]),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
         assert!(
             yaml.contains("packager: deb"),
             "content packager missing from YAML:\n{yaml}"
@@ -3865,7 +4086,7 @@ crates:
             }]),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
         assert!(
             !yaml.contains("packager:"),
             "packager should not appear when None:\n{yaml}"
@@ -3895,7 +4116,7 @@ crates:
             }),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
         assert!(yaml.contains("apk:"), "apk section missing:\n{yaml}");
         assert!(
             yaml.contains("scripts:"),
@@ -3926,7 +4147,7 @@ crates:
             }),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
         assert!(
             yaml.contains("apk:"),
             "apk section should be present:\n{yaml}"
@@ -4230,7 +4451,11 @@ crates:
             }),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/mylib", None);
+        let lib_paths = NfpmLibraryPaths {
+            headers: vec!["/dist/mylib.h".to_string()],
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/mylib".to_string()], None, false, &lib_paths);
         assert!(
             yaml.contains("src: /dist/mylib.h"),
             "libdirs header src missing:\n{yaml}"
@@ -4258,7 +4483,11 @@ crates:
             }),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/mylib", None);
+        let lib_paths = NfpmLibraryPaths {
+            c_archives: vec!["/dist/mylib.a".to_string()],
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/mylib".to_string()], None, false, &lib_paths);
         assert!(
             yaml.contains("src: /dist/mylib.a"),
             "libdirs carchive src missing:\n{yaml}"
@@ -4282,7 +4511,11 @@ crates:
             }),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/mylib", None);
+        let lib_paths = NfpmLibraryPaths {
+            c_shared: vec!["/dist/mylib.so".to_string()],
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/mylib".to_string()], None, false, &lib_paths);
         assert!(
             yaml.contains("src: /dist/mylib.so"),
             "libdirs cshared src missing:\n{yaml}"
@@ -4310,7 +4543,12 @@ crates:
             }),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/mylib", None);
+        let lib_paths = NfpmLibraryPaths {
+            headers: vec!["/dist/mylib.h".to_string()],
+            c_archives: vec!["/dist/mylib.a".to_string()],
+            c_shared: vec!["/dist/mylib.so".to_string()],
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/mylib".to_string()], None, false, &lib_paths);
         // All three entries should appear
         assert!(
             yaml.contains("dst: /usr/include/mylib.h"),
@@ -4334,7 +4572,7 @@ crates:
             libdirs: None,
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
         // Should only have the main binary entry, no .h/.a/.so entries
         assert!(
             !yaml.contains(".h"),
@@ -4351,30 +4589,44 @@ crates:
     }
 
     #[test]
-    fn test_libdirs_empty_adds_no_extra_entries() {
+    fn test_libdirs_defaults_applied_when_block_present() {
         use anodize_core::config::NfpmLibdirs;
         let nfpm_cfg = NfpmConfig {
             package_name: Some("myapp".to_string()),
             formats: vec!["deb".to_string()],
             libdirs: Some(NfpmLibdirs {
-                header: None,
-                carchive: None,
-                cshared: None,
+                header: None,  // GoReleaser default: /usr/include
+                carchive: None, // GoReleaser default: /usr/lib
+                cshared: None,  // GoReleaser default: /usr/lib
             }),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        // Provide actual library artifacts to verify default dirs are applied
+        let lib_paths = NfpmLibraryPaths {
+            headers: vec!["/build/myapp.h".to_string()],
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/myapp".to_string()], None, false, &lib_paths);
+        // GoReleaser defaults: header=/usr/include
+        assert!(
+            yaml.contains("dst: /usr/include/myapp.h"),
+            "default header dir /usr/include expected:\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn test_libdirs_none_block_adds_no_entries() {
+        // When libdirs is not configured at all (None), no library entries are added.
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            libdirs: None,
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
         assert!(
             !yaml.contains(".h"),
-            "no .h entry expected when all libdirs fields are None:\n{yaml}"
-        );
-        assert!(
-            !yaml.contains(".a"),
-            "no .a entry expected when all libdirs fields are None:\n{yaml}"
-        );
-        assert!(
-            !yaml.contains(".so"),
-            "no .so entry expected when all libdirs fields are None:\n{yaml}"
+            "no .h entry expected when libdirs is None:\n{yaml}"
         );
     }
 
@@ -4410,7 +4662,7 @@ crates:
             changelog: Some("changelog.yaml".to_string()),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
         assert!(
             yaml.contains("changelog: changelog.yaml"),
             "changelog field missing from YAML:\n{yaml}"
@@ -4425,7 +4677,7 @@ crates:
             changelog: None,
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
         assert!(
             !yaml.contains("changelog:"),
             "changelog should not appear when None:\n{yaml}"
@@ -4535,7 +4787,7 @@ crates:
             }]),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
         assert!(
             yaml.contains("owner: root"),
             "static owner should appear in YAML:\n{yaml}"
@@ -4547,9 +4799,9 @@ crates:
     }
 
     #[test]
-    fn test_libdirs_with_nested_binary_path() {
+    fn test_libdirs_with_nested_library_path() {
         use anodize_core::config::NfpmLibdirs;
-        // When binary is at /build/output/mylib, source dir should be /build/output
+        // Actual library artifact at a nested path
         let nfpm_cfg = NfpmConfig {
             package_name: Some("mylib".to_string()),
             formats: vec!["deb".to_string()],
@@ -4560,10 +4812,14 @@ crates:
             }),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/build/output/mylib", None);
+        let lib_paths = NfpmLibraryPaths {
+            headers: vec!["/build/output/mylib.h".to_string()],
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/build/output/mylib".to_string()], None, false, &lib_paths);
         assert!(
             yaml.contains("src: /build/output/mylib.h"),
-            "src should use binary dir:\n{yaml}"
+            "src should use actual artifact path:\n{yaml}"
         );
         assert!(
             yaml.contains("dst: /usr/include/mylib.h"),
@@ -4579,7 +4835,7 @@ crates:
             changelog: Some("/path/to/changelog.yaml".to_string()),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", None);
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/myapp".to_string()], None, false, &NfpmLibraryPaths::default());
         assert!(
             yaml.contains("changelog: /path/to/changelog.yaml"),
             "absolute changelog path missing:\n{yaml}"
@@ -4587,10 +4843,10 @@ crates:
     }
 
     #[test]
-    fn test_libdirs_empty_binary_path_uses_lib_fallback() {
+    fn test_libdirs_no_artifacts_no_entries() {
         use anodize_core::config::NfpmLibdirs;
-        // Meta packages skip the binary content entry — libdirs should still
-        // generate entries because they might ship library files independently.
+        // When libdirs config exists but no library artifacts, no entries should be added.
+        // GoReleaser only adds library entries when actual artifacts exist.
         let nfpm_cfg = NfpmConfig {
             package_name: Some("mylib-dev".to_string()),
             formats: vec!["deb".to_string()],
@@ -4602,16 +4858,11 @@ crates:
             }),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "", None);
-        // With empty binary_path the stem would be empty, so we derive "lib"
-        // from the fallback. Verify the header entry still appears with full paths.
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["".to_string()], None, false, &NfpmLibraryPaths::default());
+        // No library artifacts = no library content entries
         assert!(
-            yaml.contains("dst: /usr/include/lib.h"),
-            "libdirs header dst should be /usr/include/lib.h:\n{yaml}"
-        );
-        assert!(
-            yaml.contains("src: ./lib.h"),
-            "libdirs header src should be ./lib.h:\n{yaml}"
+            !yaml.contains("/usr/include"),
+            "no library entries expected without actual artifacts:\n{yaml}"
         );
     }
 
@@ -4640,7 +4891,7 @@ crates:
             }),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "2.0.0", "/dist/myrouter", Some("ipk"));
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "2.0.0", &["/dist/myrouter".to_string()], Some("ipk"), false, &NfpmLibraryPaths::default());
         assert!(yaml.contains("ipk:"), "should have ipk section:\n{yaml}");
         assert!(yaml.contains("abi_version: '1.0'"), "should have abi_version:\n{yaml}");
         assert!(yaml.contains("auto_installed: true"), "should have auto_installed:\n{yaml}");
@@ -4662,7 +4913,7 @@ crates:
             ipk: Some(NfpmIpkConfig::default()),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", Some("ipk"));
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/myapp".to_string()], Some("ipk"), false, &NfpmLibraryPaths::default());
         assert!(!yaml.contains("ipk:"), "empty ipk config should be omitted:\n{yaml}");
     }
 
@@ -4841,7 +5092,7 @@ crates:
             }),
             ..Default::default()
         };
-        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", "/dist/myapp", Some("ipk"));
+        let yaml = generate_nfpm_yaml(&nfpm_cfg, "1.0.0", &["/dist/myapp".to_string()], Some("ipk"), false, &NfpmLibraryPaths::default());
         assert!(yaml.contains("ipk:"), "ipk section missing:\n{yaml}");
         assert!(
             yaml.contains("abi_version: '1.0'") || yaml.contains("abi_version: \"1.0\""),
@@ -4880,6 +5131,86 @@ crates:
         assert!(
             yaml.contains("Source: myapp-src"),
             "Source field missing:\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn test_library_paths_use_actual_artifact_paths() {
+        // When actual library artifact paths are provided, they should be used
+        // directly instead of deriving from the binary stem.
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("mylib".to_string()),
+            formats: vec!["deb".to_string()],
+            ..Default::default()
+        };
+        let lib_paths = NfpmLibraryPaths {
+            headers: vec!["/build/mylib.h".to_string()],
+            c_archives: vec!["/build/libmylib.a".to_string()],
+            c_shared: vec!["/build/libmylib.so".to_string()],
+        };
+        let yaml = generate_nfpm_yaml(
+            &nfpm_cfg,
+            "1.0.0",
+            &["/dist/myapp".to_string()],
+            None,
+            false,
+            &lib_paths,
+        );
+        // Actual header path should be used
+        assert!(
+            yaml.contains("src: /build/mylib.h"),
+            "actual header path missing:\n{yaml}"
+        );
+        assert!(
+            yaml.contains("dst: /usr/include/mylib.h"),
+            "header dest missing:\n{yaml}"
+        );
+        // Actual CArchive path
+        assert!(
+            yaml.contains("src: /build/libmylib.a"),
+            "actual carchive path missing:\n{yaml}"
+        );
+        assert!(
+            yaml.contains("dst: /usr/lib/libmylib.a"),
+            "carchive dest missing:\n{yaml}"
+        );
+        // Actual CShared path
+        assert!(
+            yaml.contains("src: /build/libmylib.so"),
+            "actual cshared path missing:\n{yaml}"
+        );
+        assert!(
+            yaml.contains("dst: /usr/lib/libmylib.so"),
+            "cshared dest missing:\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn test_library_paths_without_libdirs_config() {
+        // When library artifacts exist but no libdirs config is set,
+        // GoReleaser defaults should be used.
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("mylib".to_string()),
+            formats: vec!["deb".to_string()],
+            ..Default::default()
+        };
+        let lib_paths = NfpmLibraryPaths {
+            headers: vec!["/build/foo.h".to_string()],
+            c_archives: Vec::new(),
+            c_shared: Vec::new(),
+        };
+        let yaml = generate_nfpm_yaml(
+            &nfpm_cfg,
+            "1.0.0",
+            &["/dist/myapp".to_string()],
+            None,
+            false,
+            &lib_paths,
+        );
+        // Default header dir is /usr/include
+        assert!(
+            yaml.contains("dst: /usr/include/foo.h"),
+            "default header dir should be /usr/include:\n{yaml}"
         );
     }
 }

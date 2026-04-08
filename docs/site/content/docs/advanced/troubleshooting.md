@@ -92,7 +92,7 @@ This catches issues like:
 
 ### Timeout issues
 
-The default pipeline timeout is 30 minutes. If your release consistently times out:
+The default pipeline timeout is 60 minutes. If your release consistently times out:
 
 ```bash
 anodize release --timeout 1h

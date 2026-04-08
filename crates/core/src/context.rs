@@ -9,6 +9,72 @@ use chrono::Utc;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+/// Valid --skip values for the `release` command (matches GoReleaser).
+pub const VALID_RELEASE_SKIPS: &[&str] = &[
+    "publish",
+    "announce",
+    "sign",
+    "validate",
+    "sbom",
+    "docker",
+    "winget",
+    "chocolatey",
+    "snapcraft",
+    "scoop",
+    "homebrew",
+    "nix",
+    "aur",
+    "nfpm",
+    "makeself",
+    "flatpak",
+    "srpm",
+    "before",
+    "notarize",
+    "archive",
+    "source",
+    "build",
+    "changelog",
+    "release",
+    "checksum",
+    "upx",
+    "blob",
+    "templatefiles",
+    "dmg",
+    "msi",
+    "nsis",
+    "pkg",
+    "appbundle",
+];
+
+/// Valid --skip values for the `build` command.
+pub const VALID_BUILD_SKIPS: &[&str] = &[
+    "pre-hooks",
+    "post-hooks",
+    "validate",
+    "before",
+];
+
+/// Validate that all skip values are in the allowed set.
+///
+/// Returns `Ok(())` if all values are valid, or `Err` with a descriptive
+/// message listing the invalid value(s) and the full set of valid options.
+pub fn validate_skip_values(skip: &[String], valid: &[&str]) -> Result<(), String> {
+    let invalid: Vec<&str> = skip
+        .iter()
+        .map(|s| s.as_str())
+        .filter(|s| !valid.contains(s))
+        .collect();
+    if invalid.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "invalid --skip value(s): {}. Valid options: {}",
+            invalid.join(", "),
+            valid.join(", "),
+        ))
+    }
+}
+
 pub struct ContextOptions {
     pub snapshot: bool,
     pub nightly: bool,
@@ -32,6 +98,9 @@ pub struct ContextOptions {
     pub partial_target: Option<PartialTarget>,
     /// When true, running with `--merge` flag (merging artifacts from split builds).
     pub merge: bool,
+    /// Explicit project root directory. When set, stages use this instead of
+    /// discovering the repo root via `git rev-parse --show-toplevel`.
+    pub project_root: Option<PathBuf>,
 }
 
 impl Default for ContextOptions {
@@ -52,6 +121,7 @@ impl Default for ContextOptions {
             fail_fast: false,
             partial_target: None,
             merge: false,
+            project_root: None,
         }
     }
 }
@@ -68,6 +138,10 @@ pub struct Context {
     pub changelogs: HashMap<String, String>,
     /// The resolved SCM token type (GitHub, GitLab, or Gitea).
     pub token_type: ScmTokenType,
+    /// GoReleaser parity: set to true when any deprecated config field is used.
+    pub deprecated: bool,
+    /// Tracks which deprecation notices have already been shown (dedup).
+    notified_deprecations: std::collections::HashSet<String>,
 }
 
 impl Context {
@@ -83,7 +157,24 @@ impl Context {
             git_info: None,
             changelogs: HashMap::new(),
             token_type: ScmTokenType::GitHub,
+            deprecated: false,
+            notified_deprecations: std::collections::HashSet::new(),
         }
+    }
+
+    /// Log a deprecation warning for a config property.
+    /// Each property is only warned about once (GoReleaser parity: deprecate.go).
+    pub fn deprecate(&mut self, property: &str, message: &str) {
+        if self.notified_deprecations.contains(property) {
+            return;
+        }
+        self.notified_deprecations.insert(property.to_string());
+        self.deprecated = true;
+        eprintln!(
+            "DEPRECATED: {} — see https://anodize.dev/deprecations#{}",
+            message,
+            property.replace('.', "-").to_lowercase()
+        );
     }
 
     pub fn template_vars(&self) -> &TemplateVars {
@@ -100,6 +191,11 @@ impl Context {
 
     pub fn should_skip(&self, stage_name: &str) -> bool {
         self.options.skip_stages.iter().any(|s| s == stage_name)
+    }
+
+    /// Check whether "validate" is in the skip list.
+    pub fn skip_validate(&self) -> bool {
+        self.should_skip("validate")
     }
 
     pub fn is_dry_run(&self) -> bool {

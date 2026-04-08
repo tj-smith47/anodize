@@ -32,7 +32,11 @@ const DEFAULT_BINARY_SIGNATURE_TEMPLATE: &str = "{{ .Artifact }}_{{ Os }}_{{ Arc
 ///
 /// Filter values:
 /// - `"none"`          → nothing is signed
-/// - `"all"`           → every artifact kind is signed
+/// - `"all"` / `"any"` → release-uploadable artifact kinds (matching GoReleaser's
+///   sign.go filter which includes Archive, Binary, LinuxPackage,
+///   SourceArchive, Makeself, Flatpak, Sbom, Snap, MacOsPackage,
+///   Installer, DiskImage, Checksum, but NOT internal types like
+///   Signature, Certificate, DockerImage, BrewFormula, etc.)
 /// - `"source"`        → only `ArtifactKind::SourceArchive`
 /// - `"archive"`       → only `ArtifactKind::Archive`
 /// - `"binary"`        → only `ArtifactKind::Binary`
@@ -48,7 +52,7 @@ const DEFAULT_BINARY_SIGNATURE_TEMPLATE: &str = "{{ .Artifact }}_{{ Os }}_{{ Arc
 pub(crate) fn should_sign_artifact(kind: ArtifactKind, filter: &str) -> Result<bool> {
     match filter {
         "none" => Ok(false),
-        "all" => Ok(true),
+        "all" | "any" => Ok(is_release_uploadable(kind)),
         "source" => Ok(kind == ArtifactKind::SourceArchive),
         "archive" => Ok(kind == ArtifactKind::Archive),
         "binary" => Ok(kind == ArtifactKind::Binary),
@@ -61,6 +65,37 @@ pub(crate) fn should_sign_artifact(kind: ArtifactKind, filter: &str) -> Result<b
         "checksum" => Ok(kind == ArtifactKind::Checksum),
         other => anyhow::bail!("invalid sign artifacts filter: {other}"),
     }
+}
+
+/// Returns `true` if the given artifact kind is a release-uploadable type that
+/// GoReleaser's "all" sign filter includes.
+///
+/// This excludes internal/metadata types (Signature, Certificate, DockerImage,
+/// DockerManifest, BrewFormula, etc.) that are never meant to be signed by the
+/// generic sign stage.
+fn is_release_uploadable(kind: ArtifactKind) -> bool {
+    matches!(
+        kind,
+        ArtifactKind::Archive
+            | ArtifactKind::Binary
+            | ArtifactKind::UploadableBinary
+            | ArtifactKind::UniversalBinary
+            | ArtifactKind::LinuxPackage
+            | ArtifactKind::SourceArchive
+            | ArtifactKind::Makeself
+            | ArtifactKind::Flatpak
+            | ArtifactKind::SourceRpm
+            | ArtifactKind::Sbom
+            | ArtifactKind::Snap
+            | ArtifactKind::MacOsPackage
+            | ArtifactKind::Installer
+            | ArtifactKind::DiskImage
+            | ArtifactKind::Checksum
+            | ArtifactKind::UploadableFile
+            | ArtifactKind::Header
+            | ArtifactKind::CArchive
+            | ArtifactKind::CShared
+    )
 }
 
 /// Resolve the signature output path from a `SignConfig::signature` template
@@ -306,10 +341,20 @@ fn execute_sign_job(job: &SignJob, log: &StageLogger) -> Result<()> {
         )
     })?;
 
-    // Capture output BEFORE the error bail so stdout/stderr from a
-    // failed signing command is still logged when `output: true`.
-    let stdout_str = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr_str = String::from_utf8_lossy(&output.stderr).to_string();
+    // Redact secrets from stdout/stderr before any output or logging.
+    // Collect env vars: custom env from the job + process environment.
+    let env_pairs: Vec<(String, String)> = job
+        .env
+        .iter()
+        .flat_map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())))
+        .chain(std::env::vars())
+        .collect();
+
+    let stdout_raw = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr_raw = String::from_utf8_lossy(&output.stderr).to_string();
+
+    let stdout_str = anodize_core::redact::redact_string(&stdout_raw, &env_pairs);
+    let stderr_str = anodize_core::redact::redact_string(&stderr_raw, &env_pairs);
 
     if job.output_flag {
         if !stdout_str.is_empty() {
@@ -320,8 +365,14 @@ fn execute_sign_job(job: &SignJob, log: &StageLogger) -> Result<()> {
         }
     }
 
+    // Redact output bytes before passing to check_output so error messages
+    // from failed signing commands don't leak secrets either.
+    let mut redacted_output = output;
+    redacted_output.stdout = stdout_str.into_bytes();
+    redacted_output.stderr = stderr_str.into_bytes();
+
     // Now check exit status (bails on non-zero).
-    log.check_output(output, &job.cmd)?;
+    log.check_output(redacted_output, &job.cmd)?;
     Ok(())
 }
 
@@ -423,12 +474,13 @@ fn process_sign_configs(
 
         // Collect matching artifacts (avoid holding an immutable borrow
         // while we later add new ones, so clone paths up-front).
-        let artifact_paths: Vec<(
+        type ArtifactEntry = (
             std::path::PathBuf,
             String,
             std::collections::HashMap<String, String>,
             Option<String>, // target triple
-        )> = {
+        );
+        let artifact_paths: Vec<ArtifactEntry> = {
             let mut matched = Vec::new();
             for a in ctx.artifacts.all().iter() {
                 // Apply artifact kind filter.
@@ -667,11 +719,28 @@ fn process_sign_configs(
                 label,
             )?;
 
+            // Template-render each env value (GoReleaser sign.go:180-185, 310-320).
+            let rendered_env = sign_cfg.env.as_ref().map(|env_map| {
+                env_map
+                    .iter()
+                    .map(|(k, v)| {
+                        let rendered_val = ctx.render_template(v).unwrap_or_else(|e| {
+                            log.warn(&format!(
+                                "failed to render {} env '{}': {}, using raw value",
+                                label, k, e
+                            ));
+                            v.clone()
+                        });
+                        (k.clone(), rendered_val)
+                    })
+                    .collect::<HashMap<String, String>>()
+            });
+
             sign_jobs.push(SignJob {
                 cmd: cmd.clone(),
                 args: fully_resolved,
                 stdin_data,
-                env: sign_cfg.env.clone(),
+                env: rendered_env,
                 label: label.to_string(),
                 id_label: sign_cfg.id.as_deref().unwrap_or("default").to_string(),
                 artifact_display: artifact_str.to_string(),
@@ -780,6 +849,24 @@ impl Stage for SignStage {
     fn run(&self, ctx: &mut Context) -> Result<()> {
         let log = ctx.logger("sign");
 
+        // Validate sign config IDs are unique (GoReleaser ids.Validate()).
+        {
+            let mut seen = std::collections::HashSet::new();
+            for cfg in &ctx.config.signs {
+                let id = cfg.id.as_deref().unwrap_or("default");
+                if !seen.insert(id.to_string()) {
+                    anyhow::bail!("found 2 signs with the ID '{}'", id);
+                }
+            }
+            let mut seen_bin = std::collections::HashSet::new();
+            for cfg in &ctx.config.binary_signs {
+                let id = cfg.id.as_deref().unwrap_or("default");
+                if !seen_bin.insert(id.to_string()) {
+                    anyhow::bail!("found 2 binary_signs with the ID '{}'", id);
+                }
+            }
+        }
+
         // ----------------------------------------------------------------
         // GPG / generic signing via `signs` config (supports multiple)
         // ----------------------------------------------------------------
@@ -803,6 +890,17 @@ impl Stage for SignStage {
         // Docker image signing via `docker_signs` config
         // ----------------------------------------------------------------
         if let Some(docker_signs) = ctx.config.docker_signs.clone() {
+            // Validate docker_signs IDs are unique (GoReleaser ids.Validate()).
+            {
+                let mut seen_docker = std::collections::HashSet::new();
+                for cfg in &docker_signs {
+                    let id = cfg.id.as_deref().unwrap_or("default");
+                    if !seen_docker.insert(id.to_string()) {
+                        anyhow::bail!("found 2 docker_signs with the ID '{}'", id);
+                    }
+                }
+            }
+
             for docker_sign_cfg in &docker_signs {
                 // Default docker sign ID to "default" (matches GoReleaser).
                 let sign_id = docker_sign_cfg.id.as_deref().unwrap_or("default");
@@ -918,18 +1016,24 @@ impl Stage for SignStage {
                     let image_str = image_path.to_string_lossy();
 
                     // Set docker-specific template variables from artifact metadata.
-                    // `digest` — the docker image digest (e.g., sha256:abc123...)
-                    // `artifactID` — the artifact's id field from metadata
+                    // `Digest` — the docker image digest (e.g., sha256:abc123...)
+                    // `ArtifactID` — the artifact's id field from metadata
+                    //
+                    // These use PascalCase because Go-style template references like
+                    // `{{ .Digest }}` are preprocessed by stripping the leading dot,
+                    // resulting in `{{ Digest }}`. The Tera template engine is case-
+                    // sensitive, so the variable name must match.
+                    //
                     // Always set (even to empty) to avoid stale values from a
                     // previous iteration leaking to this image.
-                    ctx.template_vars_mut().set(
-                        "digest",
-                        metadata.get("digest").map(|s| s.as_str()).unwrap_or(""),
-                    );
-                    ctx.template_vars_mut().set(
-                        "artifactID",
-                        metadata.get("id").map(|s| s.as_str()).unwrap_or(""),
-                    );
+                    let digest_val = metadata.get("digest").map(|s| s.as_str()).unwrap_or("");
+                    let artifact_id_val = metadata.get("id").map(|s| s.as_str()).unwrap_or("");
+                    ctx.template_vars_mut().set("Digest", digest_val);
+                    // Also set lowercase for direct Tera usage ({{ digest }}).
+                    ctx.template_vars_mut().set("digest", digest_val);
+                    ctx.template_vars_mut().set("ArtifactID", artifact_id_val);
+                    // Also set camelCase for direct Tera usage ({{ artifactID }}).
+                    ctx.template_vars_mut().set("artifactID", artifact_id_val);
 
                     // For Docker images the "signature" concept is embedded;
                     // use a placeholder `.sig` path to satisfy the template
@@ -977,9 +1081,22 @@ impl Stage for SignStage {
                         .stdout(Stdio::piped())
                         .stderr(Stdio::piped());
 
-                    // Merge custom env vars if configured on docker sign.
+                    // Template-render and merge custom env vars if configured on docker sign.
                     if let Some(ref env_vars) = docker_sign_cfg.env {
-                        command.envs(env_vars);
+                        let rendered_docker_env: HashMap<String, String> = env_vars
+                            .iter()
+                            .map(|(k, v)| {
+                                let rendered_val = ctx.render_template(v).unwrap_or_else(|e| {
+                                    log.warn(&format!(
+                                        "failed to render docker-sign env '{}': {}, using raw value",
+                                        k, e
+                                    ));
+                                    v.clone()
+                                });
+                                (k.clone(), rendered_val)
+                            })
+                            .collect();
+                        command.envs(&rendered_docker_env);
                     }
 
                     let mut child = command.spawn().with_context(|| {
@@ -1013,10 +1130,19 @@ impl Stage for SignStage {
                         )
                     })?;
 
-                    // Capture output BEFORE the error bail so stdout/stderr from
-                    // a failed docker signing command is still logged.
-                    let stdout_str = String::from_utf8_lossy(&output.stdout).to_string();
-                    let stderr_str = String::from_utf8_lossy(&output.stderr).to_string();
+                    // Redact secrets from stdout/stderr before any output or logging.
+                    let docker_env_pairs: Vec<(String, String)> = docker_sign_cfg
+                        .env
+                        .iter()
+                        .flat_map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())))
+                        .chain(std::env::vars())
+                        .collect();
+
+                    let stdout_raw = String::from_utf8_lossy(&output.stdout).to_string();
+                    let stderr_raw = String::from_utf8_lossy(&output.stderr).to_string();
+
+                    let stdout_str = anodize_core::redact::redact_string(&stdout_raw, &docker_env_pairs);
+                    let stderr_str = anodize_core::redact::redact_string(&stderr_raw, &docker_env_pairs);
 
                     let show_output = docker_sign_cfg.output
                         .as_ref()
@@ -1031,14 +1157,22 @@ impl Stage for SignStage {
                         }
                     }
 
+                    // Redact output bytes before passing to check_output so error
+                    // messages from failed docker signing commands don't leak secrets.
+                    let mut redacted_output = output;
+                    redacted_output.stdout = stdout_str.into_bytes();
+                    redacted_output.stderr = stderr_str.into_bytes();
+
                     // Now check exit status (bails on non-zero).
-                    log.check_output(output, &cmd)?;
+                    log.check_output(redacted_output, &cmd)?;
                 }
             }
 
             // Clear docker-specific template vars so they don't leak to
             // downstream stages that may inspect the template context.
+            ctx.template_vars_mut().set("Digest", "");
             ctx.template_vars_mut().set("digest", "");
+            ctx.template_vars_mut().set("ArtifactID", "");
             ctx.template_vars_mut().set("artifactID", "");
         }
 
@@ -1082,9 +1216,36 @@ mod tests {
 
     #[test]
     fn test_filter_artifacts_all() {
+        // "all" matches release-uploadable types
         assert!(should_sign_artifact(ArtifactKind::Checksum, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::Archive, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::Binary, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::LinuxPackage, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::SourceArchive, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::Makeself, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::Flatpak, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::Sbom, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::Snap, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::MacOsPackage, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::Installer, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::DiskImage, "all").unwrap());
+
+        // "all" does NOT match internal/metadata types
+        assert!(!should_sign_artifact(ArtifactKind::Signature, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Certificate, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::DockerImage, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::DockerManifest, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::BrewFormula, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Metadata, "all").unwrap());
+    }
+
+    #[test]
+    fn test_filter_artifacts_any_alias() {
+        // "any" is an alias for "all"
+        assert!(should_sign_artifact(ArtifactKind::Archive, "any").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::Binary, "any").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Signature, "any").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::DockerImage, "any").unwrap());
     }
 
     #[test]
@@ -1253,7 +1414,7 @@ mod tests {
 
     #[test]
     fn test_artifacts_filter_selects_correct_kinds() {
-        // "all" matches everything
+        // "all" matches release-uploadable types
         assert!(should_sign_artifact(ArtifactKind::Archive, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::Binary, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::Checksum, "all").unwrap());
@@ -1263,6 +1424,16 @@ mod tests {
         assert!(should_sign_artifact(ArtifactKind::Sbom, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::Snap, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::MacOsPackage, "all").unwrap());
+
+        // "all" does NOT match internal/non-uploadable types
+        assert!(!should_sign_artifact(ArtifactKind::Signature, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Certificate, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::DockerImage, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::DockerManifest, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::BrewFormula, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Metadata, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::ScoopManifest, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::KrewPluginManifest, "all").unwrap());
 
         // "none" matches nothing
         assert!(!should_sign_artifact(ArtifactKind::Archive, "none").unwrap());
@@ -3149,5 +3320,213 @@ crates: []
 
         let sign_id = cfg.id.as_deref().unwrap_or("default");
         assert_eq!(sign_id, "default");
+    }
+
+    // -----------------------------------------------------------------------
+    // Bug 1: "all" filter only matches release-uploadable types
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_all_filter_excludes_internal_types() {
+        // Internal types that should NOT be signed by the "all" filter
+        assert!(!should_sign_artifact(ArtifactKind::Signature, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Certificate, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::DockerImage, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::DockerImageV2, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::DockerManifest, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::BrewFormula, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::ScoopManifest, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Metadata, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::Nixpkg, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::KrewPluginManifest, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::WingetInstaller, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::PkgBuild, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::PublishableSnapcraft, "all").unwrap());
+        assert!(!should_sign_artifact(ArtifactKind::PublishableDockerImage, "all").unwrap());
+    }
+
+    #[test]
+    fn test_all_filter_includes_release_uploadable_types() {
+        // Release-uploadable types that SHOULD be signed by the "all" filter
+        assert!(should_sign_artifact(ArtifactKind::Archive, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::Binary, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::UploadableBinary, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::UniversalBinary, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::LinuxPackage, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::SourceArchive, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::Makeself, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::Flatpak, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::SourceRpm, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::Sbom, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::Snap, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::MacOsPackage, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::Installer, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::DiskImage, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::Checksum, "all").unwrap());
+        assert!(should_sign_artifact(ArtifactKind::UploadableFile, "all").unwrap());
+    }
+
+    // -----------------------------------------------------------------------
+    // Bug 4: Docker sign IDs must be unique
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_docker_sign_duplicate_ids_rejected() {
+        use anodize_core::config::DockerSignConfig;
+
+        let docker_signs = vec![
+            DockerSignConfig {
+                id: Some("signer".to_string()),
+                cmd: Some("echo".to_string()),
+                args: Some(vec!["sign".to_string()]),
+                artifacts: Some("all".to_string()),
+                ids: None,
+                stdin: None,
+                stdin_file: None,
+                env: None,
+                output: None,
+                if_condition: None,
+                signature: None,
+                certificate: None,
+            },
+            DockerSignConfig {
+                id: Some("signer".to_string()), // duplicate!
+                cmd: Some("echo".to_string()),
+                args: Some(vec!["sign".to_string()]),
+                artifacts: Some("all".to_string()),
+                ids: None,
+                stdin: None,
+                stdin_file: None,
+                env: None,
+                output: None,
+                if_condition: None,
+                signature: None,
+                certificate: None,
+            },
+        ];
+
+        let mut ctx = TestContextBuilder::new().dry_run(true).build();
+        ctx.config.docker_signs = Some(docker_signs);
+
+        let stage = SignStage;
+        let result = stage.run(&mut ctx);
+        assert!(result.is_err(), "duplicate docker_signs IDs should be rejected");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("docker_signs") && err.contains("signer"),
+            "error should mention docker_signs and the duplicate ID, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_docker_sign_duplicate_default_ids_rejected() {
+        use anodize_core::config::DockerSignConfig;
+
+        // Two configs with no explicit id — both default to "default"
+        let docker_signs = vec![
+            DockerSignConfig {
+                id: None,
+                cmd: Some("echo".to_string()),
+                args: Some(vec!["sign".to_string()]),
+                artifacts: Some("all".to_string()),
+                ids: None,
+                stdin: None,
+                stdin_file: None,
+                env: None,
+                output: None,
+                if_condition: None,
+                signature: None,
+                certificate: None,
+            },
+            DockerSignConfig {
+                id: None,
+                cmd: Some("echo".to_string()),
+                args: Some(vec!["sign".to_string()]),
+                artifacts: Some("all".to_string()),
+                ids: None,
+                stdin: None,
+                stdin_file: None,
+                env: None,
+                output: None,
+                if_condition: None,
+                signature: None,
+                certificate: None,
+            },
+        ];
+
+        let mut ctx = TestContextBuilder::new().dry_run(true).build();
+        ctx.config.docker_signs = Some(docker_signs);
+
+        let stage = SignStage;
+        let result = stage.run(&mut ctx);
+        assert!(result.is_err(), "duplicate default docker_signs IDs should be rejected");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("default"),
+            "error should mention the 'default' ID, got: {err}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Bug 5: Docker sign Digest variable uses correct casing
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_docker_sign_digest_go_compat_syntax() {
+        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use anodize_core::config::DockerSignConfig;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let marker_path = tmp.path().join("docker_digest_case.txt");
+        let marker_str = marker_path.to_string_lossy().to_string();
+
+        // Use Go-compat syntax {{ .Digest }} which gets preprocessed to {{ Digest }}
+        let docker_signs = vec![DockerSignConfig {
+            id: Some("test-digest-case".to_string()),
+            cmd: Some("sh".to_string()),
+            args: Some(vec![
+                "-c".to_string(),
+                format!(
+                    "echo \"{{{{ Digest }}}}\" > {}",
+                    marker_str
+                ),
+            ]),
+            artifacts: Some("all".to_string()),
+            ids: None,
+            stdin: None,
+            stdin_file: None,
+            env: None,
+            output: None,
+            if_condition: None,
+            signature: None,
+            certificate: None,
+        }];
+
+        let mut ctx = TestContextBuilder::new().dry_run(false).build();
+        ctx.config.docker_signs = Some(docker_signs);
+
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("digest".to_string(), "sha256:deadbeef".to_string());
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::DockerImage,
+            name: String::new(),
+            path: std::path::PathBuf::from("ghcr.io/myorg/app:latest"),
+            target: None,
+            crate_name: "test".to_string(),
+            metadata,
+            size: None,
+        });
+
+        let stage = SignStage;
+        stage.run(&mut ctx).unwrap();
+
+        let output = std::fs::read_to_string(&marker_path).unwrap();
+        assert_eq!(
+            output.trim(),
+            "sha256:deadbeef",
+            "PascalCase Digest template var should resolve correctly, got: {}",
+            output.trim()
+        );
     }
 }

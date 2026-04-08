@@ -29,12 +29,14 @@ impl Stage for SrpmStage {
         };
 
         // Check disable
-        if let Some(ref d) = srpm_cfg.disable {
-            if d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
+        if let Some(ref d) = srpm_cfg.disable
+            && d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
                 log.verbose("skipping disabled SRPM config");
                 return Ok(());
             }
-        }
+
+        // GoReleaser parity: when global skip_sign is active, clear signature config
+        let skip_sign = ctx.should_skip("sign");
 
         let dist = ctx.config.dist.clone();
         let dry_run = ctx.options.dry_run;
@@ -74,7 +76,7 @@ impl Stage for SrpmStage {
         let spec_file = srpm_cfg
             .spec_file
             .as_deref()
-            .unwrap_or_else(|| {
+            .unwrap_or({
                 // No spec file configured — we'll generate a minimal one
                 ""
             });
@@ -182,12 +184,38 @@ impl Stage for SrpmStage {
         fs::copy(&spec_path, &spec_dest)
             .with_context(|| "srpm: copy spec to rpmbuild SPECS")?;
 
+        // Resolve signature configuration (GoReleaser parity: skip_sign + SRPM_PASSPHRASE)
+        let effective_signature = if skip_sign {
+            None
+        } else {
+            srpm_cfg.signature.as_ref()
+        };
+
         // Run rpmbuild
-        let output = Command::new("rpmbuild")
+        let mut rpmbuild_cmd = Command::new("rpmbuild");
+        rpmbuild_cmd
             .arg("-bs")
             .arg("--define")
-            .arg(format!("_topdir {}", rpmbuild_dir.display()))
-            .arg(&spec_dest)
+            .arg(format!("_topdir {}", rpmbuild_dir.display()));
+
+        // Wire signing options when signature config is present
+        if let Some(sig) = effective_signature
+            && let Some(ref key_file) = sig.key_file {
+                rpmbuild_cmd.arg("--define").arg(format!("_gpg_name {}", key_file));
+                rpmbuild_cmd.arg("--sign");
+
+                // GoReleaser parity: read SRPM_PASSPHRASE env var when no
+                // passphrase is configured inline.
+                if let Some(ref passphrase) = sig.passphrase {
+                    rpmbuild_cmd.env("GPG_PASSPHRASE", passphrase);
+                } else if let Ok(passphrase) = std::env::var("SRPM_PASSPHRASE")
+                    && !passphrase.is_empty() {
+                        rpmbuild_cmd.env("GPG_PASSPHRASE", &passphrase);
+                    }
+            }
+
+        rpmbuild_cmd.arg(&spec_dest);
+        let output = rpmbuild_cmd
             .output()
             .with_context(|| "srpm: failed to spawn rpmbuild")?;
 

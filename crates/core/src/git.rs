@@ -238,7 +238,10 @@ fn strip_url_credentials(url: &str) -> String {
 }
 
 /// Detect git info for a given tag.
-pub fn detect_git_info(tag: &str) -> Result<GitInfo> {
+///
+/// When `skip_validate` is true and the tag is not valid semver, a warning is
+/// logged and a default `SemVer { 0, 0, 0 }` is used instead of returning an error.
+pub fn detect_git_info(tag: &str, skip_validate: bool) -> Result<GitInfo> {
     let commit = git_output(&["rev-parse", "HEAD"])?;
     let short_commit = git_output(&["rev-parse", "--short", "HEAD"])?;
     let branch = git_output(&["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
@@ -248,7 +251,9 @@ pub fn detect_git_info(tag: &str) -> Result<GitInfo> {
     let commit_timestamp =
         git_output(&["-c", "log.showSignature=false", "log", "-1", "--format=%at"])
             .unwrap_or_default();
-    let remote_url_raw = git_output(&["remote", "get-url", "origin"]).unwrap_or_default();
+    // Use ls-remote --get-url (matches GoReleaser git.go:355).
+    // Without an explicit remote name this defaults to "origin".
+    let remote_url_raw = git_output(&["ls-remote", "--get-url"]).unwrap_or_default();
     // Strip credentials from HTTPS URLs (e.g. https://user:token@github.com/... → https://github.com/...)
     let remote_url = strip_url_credentials(&remote_url_raw);
     let summary = git_output(&[
@@ -262,7 +267,7 @@ pub fn detect_git_info(tag: &str) -> Result<GitInfo> {
     .unwrap_or_default();
 
     // Try annotated tag message fields first; fall back to commit message fields.
-    let tag_subject = git_output(&["tag", "-l", "--format=%(subject)", tag])
+    let tag_subject = git_output(&["tag", "-l", "--format=%(contents:subject)", tag])
         .ok()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| {
@@ -276,7 +281,7 @@ pub fn detect_git_info(tag: &str) -> Result<GitInfo> {
             git_output(&["-c", "log.showSignature=false", "log", "-1", "--format=%B"])
                 .unwrap_or_default()
         });
-    let tag_body = git_output(&["tag", "-l", "--format=%(body)", tag])
+    let tag_body = git_output(&["tag", "-l", "--format=%(contents:body)", tag])
         .ok()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| {
@@ -284,7 +289,23 @@ pub fn detect_git_info(tag: &str) -> Result<GitInfo> {
                 .unwrap_or_default()
         });
 
-    let semver = parse_semver_tag(tag)?;
+    let semver = match parse_semver_tag(tag) {
+        Ok(sv) => sv,
+        Err(e) => {
+            if skip_validate {
+                eprintln!("WARNING: current tag is not semver, skipping validation");
+                SemVer {
+                    major: 0,
+                    minor: 0,
+                    patch: 0,
+                    prerelease: None,
+                    build_metadata: None,
+                }
+            } else {
+                return Err(e);
+            }
+        }
+    };
     let first_commit = get_first_commit().ok();
     Ok(GitInfo {
         tag: tag.to_string(),

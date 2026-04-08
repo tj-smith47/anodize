@@ -37,8 +37,8 @@ Run the full release pipeline
 | `--dry-run` | — | — | Run full pipeline without side effects |
 | `--clean` | — | — | Remove dist directory before starting |
 | `--skip` | — | — | Skip stages (comma-separated, e.g. docker,announce) |
-| `--token` | — | — | GitHub token (overrides GITHUB_TOKEN env var) |
-| `--timeout` | — | `30m` | Pipeline timeout duration (e.g., 30m, 1h, 5s) |
+| `--token` | — | — | GitHub token (overrides ANODIZE_GITHUB_TOKEN / GITHUB_TOKEN env vars) |
+| `--timeout` | — | `60m` | Pipeline timeout duration (e.g., 60m, 1h, 5s) |
 | `--parallelism` | `-p` | `12` | Maximum number of parallel build jobs |
 | `--auto-snapshot` | — | — | Automatically set --snapshot if the git repo is dirty |
 | `--single-target` | — | — | Build only for the host target triple |
@@ -46,7 +46,11 @@ Run the full release pipeline
 | `--workspace` | — | — | Release a specific workspace in a monorepo config |
 | `--draft` | — | — | Set the release as a draft |
 | `--release-header` | — | — | Path to a file containing custom release header text |
+| `--release-header-tmpl` | — | — | Path to a template file for release header (rendered with template variables) |
 | `--release-footer` | — | — | Path to a file containing custom release footer text |
+| `--release-footer-tmpl` | — | — | Path to a template file for release footer (rendered with template variables) |
+| `--release-notes-tmpl` | — | — | Path to a template file for release notes (rendered with template variables, overrides --release-notes) |
+| `--fail-fast` | — | — | Abort immediately on first error during publishing |
 | `--split` | — | — | Run only the build stage for split CI fan-out (outputs artifacts JSON to dist/) |
 | `--merge` | — | — | Merge artifacts from split build jobs and resume the pipeline from post-build stages |
 
@@ -59,10 +63,12 @@ Build binaries only (always runs in snapshot mode)
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--crate` | — | — | Build a specific crate (repeatable) |
-| `--timeout` | — | `30m` | Pipeline timeout duration (e.g., 30m, 1h, 5s) |
+| `--timeout` | — | `60m` | Pipeline timeout duration (e.g., 60m, 1h, 5s) |
 | `--parallelism` | `-p` | `12` | Maximum number of parallel build jobs |
 | `--single-target` | — | — | Build only for the host target triple |
 | `--workspace` | — | — | Build a specific workspace in a monorepo config |
+| `--output` | `-o` | — | Copy the built binary to this path (requires --single-target and single crate) |
+| `--skip` | — | — | Skip stages (comma-separated: pre-hooks, post-hooks, validate, before) |
 
 
 ### `anodize check`
@@ -105,6 +111,11 @@ Generate shell completions
 Check availability of required external tools
 
 
+### `anodize man`
+
+Generate man pages to stdout
+
+
 ### `anodize jsonschema`
 
 Output JSON Schema for .anodize.yaml
@@ -134,7 +145,7 @@ Continue a split release by merging artifacts and running post-build stages
 | `--dist` | — | — | Custom dist directory (overrides config) |
 | `--dry-run` | — | — | Run full pipeline without side effects |
 | `--skip` | — | — | Skip stages (comma-separated, e.g. docker,announce) |
-| `--token` | — | — | GitHub token (overrides GITHUB_TOKEN env var) |
+| `--token` | — | — | GitHub token (overrides ANODIZE_GITHUB_TOKEN / GITHUB_TOKEN env vars) |
 
 
 ### `anodize publish`
@@ -145,7 +156,7 @@ Run only the publish stages (release, publish, blob) from a completed dist/
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--dry-run` | — | — | Run full pipeline without side effects |
-| `--token` | — | — | GitHub token (overrides GITHUB_TOKEN env var) |
+| `--token` | — | — | GitHub token (overrides ANODIZE_GITHUB_TOKEN / GITHUB_TOKEN env vars) |
 | `--dist` | — | — | Custom dist directory (overrides config) |
 
 
@@ -158,6 +169,6 @@ Run only the announce stage from a completed dist/
 |------|-------|---------|-------------|
 | `--dry-run` | — | — | Run full pipeline without side effects |
 | `--dist` | — | — | Custom dist directory (overrides config) |
-| `--token` | — | — | GitHub token (overrides GITHUB_TOKEN env var) |
+| `--token` | — | — | GitHub token (overrides ANODIZE_GITHUB_TOKEN / GITHUB_TOKEN env vars) |
 | `--skip` | — | — | Skip stages (comma-separated) |
 

@@ -2,32 +2,88 @@
 
 A Rust-native release automation tool. The same declarative, config-driven release pipeline that [GoReleaser](https://goreleaser.com/) provides for Go — built for Rust.
 
-Anodize reads a declarative config file and executes a full release pipeline: build, archive, checksum, changelog, GitHub release, Docker images, package manager publishing, and more.
+Anodize reads a declarative config file and executes a full release pipeline: build, archive, checksum, changelog, sign, release, publish, and announce — all from a single `anodize release` command.
 
 Written by [Claude](https://claude.ai); maintained by us.
 
 ## Features
 
-- **Cross-platform builds** via `cargo-zigbuild`, `cross`, or native `cargo build`
-- **Archives** in tar.gz, tar.xz, tar.zst, zip, or raw binary format with OS-specific overrides
-- **Checksums** with SHA-1, SHA-224, SHA-256, SHA-384, SHA-512, BLAKE2b, and BLAKE2s
-- **Changelog** generation from conventional commits or GitHub-native release notes
-- **GitHub Releases** with asset uploads, draft/prerelease detection, header/footer templates
-- **crates.io** publishing with dependency-aware ordering and index polling
-- **Homebrew** formula generation and tap updates
-- **Scoop** manifest generation and bucket updates
-- **Docker** multi-arch image builds via `docker buildx` with extra files and push control
-- **Linux packages** (.deb, .rpm, .apk) via nFPM with full lifecycle scripts
-- **Signing** with GPG and cosign (multiple signing configs supported)
-- **Custom publishers** for generic post-release artifact publishing
-- **Announcements** via Discord, Slack, and generic webhooks
-- **Tera templates** (Jinja2-like) with GoReleaser-compatible `{{ .Field }}` syntax
-- **Workspace support** with per-crate independent release cadences
+**Build**
+- Cross-platform builds via `cargo-zigbuild`, `cross`, or native `cargo build`
+- Per-build hooks (pre/post), environment variables, feature flags, and target overrides
+- UPX binary compression with per-target filtering
+- Workspace support with per-crate independent release cadences
+
+**Package**
+- Archives in tar.gz, tar.xz, tar.zst, zip, gz, or raw binary format with OS-specific overrides
+- Linux packages (.deb, .rpm, .apk, .archlinux, .ipk) via nFPM with full lifecycle scripts
+- Snapcraft snaps with prime-dir architecture
+- macOS DMG disk images and PKG installers
+- Windows MSI and NSIS installers
+- Flatpak bundles
+- Makeself self-extracting archives
+- Source RPMs (.src.rpm)
+- Source archives with file filtering
+- SBOM generation (CycloneDX/SPDX)
+- Checksums with SHA-256, SHA-512, SHA3, BLAKE2b, BLAKE2s, BLAKE3, CRC32, MD5, and more
+
+**Sign**
+- GPG and cosign signing for binaries, archives, checksums, Docker images, and SBOMs
+- Multiple independent signing configurations
+- Conditional signing via template expressions
+
+**Publish**
+- GitHub/GitLab/Gitea Releases with asset uploads, draft/prerelease detection, header/footer templates
+- crates.io with dependency-aware ordering and index polling
+- Homebrew formula and cask generation
+- Scoop manifest generation
+- Chocolatey package generation
+- Winget manifest generation
+- AUR PKGBUILD and .SRCINFO generation
+- Krew plugin manifest generation
+- Nix derivation generation
+- npm package publishing
+- Docker multi-arch images via `docker buildx`
+- Blob storage uploads (S3, GCS, Azure)
+- Artifactory, Cloudsmith, Fury, Docker Hub
+- Custom publisher commands
+
+**Announce**
+- Discord, Slack, Telegram, Teams, Mattermost
+- Email, Reddit, Twitter/X, Mastodon, Bluesky, LinkedIn
+- OpenCollective, Discourse
+- Generic webhooks with custom headers and templates
+
+**Advanced**
+- Tera templates (Jinja2-like) with GoReleaser-compatible `{{ .Field }}` syntax
+- Nightly builds with date-based versioning
+- Config includes for shared configuration
+- Split/merge CI for fan-out parallel builds
+- Monorepo support with independent workspaces
+- Auto-tagging from commit message directives
+- Reproducible builds with `mod_timestamp` and `builds_info`
+- JSON Schema for editor autocomplete and validation
 
 ## Installation
 
+### Homebrew (macOS/Linux)
+
+```bash
+brew install tj-smith47/tap/anodize
+```
+
+### Cargo
+
 ```bash
 cargo install anodize
+```
+
+### From source
+
+```bash
+git clone https://github.com/tj-smith47/anodize.git
+cd anodize
+cargo install --path crates/cli
 ```
 
 ## Quick Start
@@ -39,24 +95,29 @@ anodize init > .anodize.yaml
 # Validate your config
 anodize check
 
+# Check that required tools are available
+anodize healthcheck
+
 # Build a snapshot (no publishing)
 anodize release --snapshot
 
-# Release a specific crate
-anodize release --crate my-crate
-
-# Release all crates with unreleased changes
-anodize release --all
-
 # Dry run (full pipeline, no side effects)
 anodize release --dry-run
+
+# Create a tag and release
+git tag -a v0.1.0 -m "v0.1.0"
+git push origin v0.1.0
 ```
+
+For CI-based releases, set `GITHUB_TOKEN` (or `ANODIZE_GITHUB_TOKEN`) as a secret — the release pipeline picks it up automatically.
 
 ## Configuration
 
-Anodize uses `.anodize.yaml` (or `.anodize.toml`) in your project root.
+Anodize uses `.anodize.yaml` (or `.anodize.toml`) in your project root. Add a schema comment for editor autocomplete:
 
 ```yaml
+# yaml-language-server: $schema=https://tj-smith47.github.io/anodize/schema.json
+
 project_name: myapp
 
 defaults:
@@ -82,14 +143,15 @@ crates:
         owner: myorg
         name: myapp
     publish:
-      crates: true
+      crates:
+        enabled: true
       homebrew:
         tap:
           owner: myorg
           name: homebrew-tap
 ```
 
-See the [full configuration reference](docs/configuration.md) for all available fields and the [template reference](docs/templates.md) for template variables and filters.
+See the [full configuration reference](https://tj-smith47.github.io/anodize/docs/reference/configuration/) and the [template reference](https://tj-smith47.github.io/anodize/docs/general/templates/) for all available fields, variables, and filters.
 
 ## GitHub Actions
 
@@ -113,14 +175,14 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: tj-smith47/anodize@v1
-        with:
-          args: release
+      - name: Install anodize
+        run: cargo install anodize
+
+      - name: Release
+        run: anodize release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
-
-> A full-featured JavaScript-based action (with binary caching and structured outputs) is planned at [tj-smith47/anodize-action](https://github.com/tj-smith47/anodize-action).
 
 ## CLI Reference
 
@@ -128,12 +190,18 @@ jobs:
 
 ```
 anodize release                    Full release pipeline
-anodize build                      Build binaries only
+anodize build                      Build binaries only (snapshot mode)
 anodize check                      Validate configuration
 anodize init                       Generate starter config
 anodize changelog                  Generate changelog only
-anodize completion <shell>         Generate shell completions (bash/zsh/fish/powershell)
-anodize healthcheck                Check availability of required external tools
+anodize completion <shell>         Shell completions (bash/zsh/fish/powershell)
+anodize healthcheck                Check external tool availability
+anodize man                        Generate man pages
+anodize jsonschema                 Output JSON Schema for .anodize.yaml
+anodize tag                        Auto-tag from commit directives
+anodize publish                    Run publish stages from completed dist/
+anodize announce                   Run announce stage from completed dist/
+anodize continue                   Merge split build artifacts and resume pipeline
 ```
 
 ### Global Flags
@@ -142,6 +210,7 @@ anodize healthcheck                Check availability of required external tools
 -f, --config <path>                Path to config file (overrides auto-detection)
     --verbose                      Enable verbose output
     --debug                        Enable debug output
+-q, --quiet                        Suppress non-error output
 ```
 
 ### Release Flags
@@ -151,35 +220,28 @@ anodize healthcheck                Check availability of required external tools
     --all                          Release all crates with unreleased changes
     --force                        Force release even without changes
     --snapshot                     Build without publishing
+    --nightly                      Nightly release with date-based version
     --dry-run                      Full pipeline, no side effects
     --clean                        Remove dist/ directory first
     --skip=<stages>                Skip stages (comma-separated)
-    --token <token>                GitHub token (overrides GITHUB_TOKEN env)
-    --timeout <duration>           Pipeline timeout (default: 30m)
+    --token <token>                GitHub token (overrides env vars)
+    --timeout <duration>           Pipeline timeout (default: 60m)
 -p, --parallelism <n>              Max parallel build jobs (default: CPU count)
     --auto-snapshot                Auto-enable snapshot if repo is dirty
     --single-target                Build only for the host target triple
-    --release-notes <path>         Custom release notes file (overrides changelog)
+    --split                        Fan-out: build only, output artifacts JSON
+    --merge                        Fan-in: merge split artifacts, run post-build
+    --draft                        Set the release as a draft
+    --release-notes <path>         Custom release notes file
+    --release-header <path>        Custom release header file
+    --release-footer <path>        Custom release footer file
+    --workspace <name>             Release a specific monorepo workspace
+    --fail-fast                    Abort on first publish error
 ```
 
-### Build Flags
+## Documentation
 
-```
-    --crate <name>                 Build a specific crate (repeatable)
-    --timeout <duration>           Pipeline timeout (default: 30m)
--p, --parallelism <n>              Max parallel build jobs (default: CPU count)
-    --single-target                Build only for the host target triple
-```
-
-## Coming Soon
-
-- Monorepo support (multiple independent workspaces)
-- Nightly builds
-- Config includes/templates
-- Split/merge CI builds
-- Native OS installers (dmg, msi, pkg)
-- Chocolatey and Winget
-- Full-featured GitHub Action with caching
+Full documentation is available at **[tj-smith47.github.io/anodize](https://tj-smith47.github.io/anodize/)**.
 
 ## License
 

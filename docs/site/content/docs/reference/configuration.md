@@ -15,28 +15,53 @@ Anodize uses `.anodize.yaml` (or `.anodize.toml`) in your project root.
 |-------|------|---------|-------------|
 | `after` | HooksConfig | — | Hooks run after the release pipeline completes. |
 | `announce` | AnnounceConfig | — | Announcement configuration (Slack, Discord, email, etc.). |
+| `artifactories` | list of ArtifactoryConfig | — | Artifactory upload configurations. |
+| `aur_sources` | list of AurSourceConfig | — | AUR source package publishing configurations (source-only PKGBUILD, not -bin). |
 | `before` | HooksConfig | — | Hooks run before the release pipeline starts. |
 | `binary_signs` | list of SignConfig | `[]` | Binary-specific signing configs (same shape as `signs` but only for binary artifacts). |
 | `changelog` | ChangelogConfig | — | Changelog generation configuration. |
+| `cloudsmiths` | list of CloudSmithConfig | — | CloudSmith publisher configurations. |
 | `crates` | list of CrateConfig | `[]` | List of crates in this project. |
 | `defaults` | Defaults | — | Default values applied to all crates unless overridden. |
 | `dist` | string | `./dist` | Output directory for build artifacts (default: ./dist). |
 | `docker_signs` | list of DockerSignConfig | — | Docker image signing configurations. |
-| `env` | map or list | — | Environment variables available to all template expressions. Accepts a YAML mapping (`KEY: value`) or a list of `KEY=VALUE` strings (GoReleaser parity). Values are template-rendered. |
-| `env_files` | list or map | — | Either a list of `.env` file paths to load, or a mapping of token file paths (`github_token`, `gitlab_token`, `gitea_token`). |
-| `includes` | list of string | — | Additional config files to merge into this config (glob patterns supported). |
+| `dockerhub` | list of DockerHubConfig | — | DockerHub description sync configurations. |
+| `env` | map | — | Environment variables available to all template expressions.
+
+Accepts two YAML forms: - **Map form**: `env: { MY_VAR: hello, DEPLOY_ENV: staging }` - **List form** (GoReleaser parity): `env: ["MY_VAR=hello", "DEPLOY_ENV=staging"]`
+
+Values are rendered through the template engine before being set, so expressions like `{{ .Tag }}` or `{{ .Date }}` are expanded. |
+| `env_files` | EnvFilesConfig | — | Environment file configuration. Accepts either: - A list of `.env` file paths: `[".env", ".release.env"]` - A struct with token file paths: `{ github_token: "~/.config/goreleaser/github_token" }` |
+| `force_token` | ForceTokenKind | — | Force a specific token type for authentication. When set, overrides automatic token detection from environment variables. |
+| `fury` | list of FuryConfig | — | GemFury publisher configurations. |
+| `git` | GitConfig | — | Git-level tag discovery and sorting settings. |
+| `gitea_urls` | GiteaUrlsConfig | — | Custom Gitea API/download URLs for self-hosted Gitea installations. |
+| `github_urls` | GitHubUrlsConfig | — | Custom GitHub API/upload/download URLs for GitHub Enterprise installations. |
+| `gitlab_urls` | GitLabUrlsConfig | — | Custom GitLab API/download URLs for self-hosted GitLab installations. |
+| `homebrew_casks` | list of TopLevelHomebrewCaskConfig | — | Top-level Homebrew Cask configurations. GoReleaser parity: `homebrew_casks` is a top-level array with its own repository, commit_author, directory, skip_upload, hooks, dependencies, conflicts, completions, manpages, structured uninstall/zap, etc. |
+| `includes` | list of IncludeSpec | — | Additional config files to merge into this config. Supports plain string paths, `from_file:` for structured file paths, and `from_url:` for fetching configs from URLs with optional headers. |
+| `makeselfs` | list of MakeselfConfig | `[]` | Makeself self-extracting archive configurations. |
+| `metadata` | MetadataConfig | — | Project metadata configuration (applied to metadata.json output files). |
+| `milestones` | list of MilestoneConfig | — | Milestone closing configurations. |
+| `monorepo` | MonorepoConfig | — | GoReleaser Pro monorepo configuration. When configured, tag discovery filters by tag_prefix and the working directory is scoped to dir. |
 | `nightly` | NightlyConfig | — | Nightly release configuration. |
+| `notarize` | NotarizeConfig | — | macOS code signing and notarization configuration. |
+| `npms` | list of NpmConfig | — | NPM publisher configurations. |
 | `partial` | PartialConfig | — | Partial/split build configuration for fan-out CI pipelines. |
 | `project_name` | string | — | Human-readable project name used in templates and release titles. |
 | `publishers` | list of PublisherConfig | — | Generic artifact publisher configurations. |
 | `release` | ReleaseConfig | — | GitHub release configuration shared by all crates. |
 | `report_sizes` | bool | — | When true, log artifact file sizes after building. |
-| `sbom` | SbomConfig | — | Software bill of materials (SBOM) generation configuration. |
+| `sboms` | list of SbomConfig | `[]` | Software bill of materials (SBOM) generation configurations. |
 | `signs` | list of SignConfig | `[]` | Signing configurations for binaries, archives, and checksums. |
 | `snapshot` | SnapshotConfig | — | Snapshot release configuration (local/non-tag builds). |
 | `source` | SourceConfig | — | Source archive configuration. |
+| `srpm` | SrpmConfig | — | Source RPM configuration. |
 | `tag` | TagConfig | — | Automatic semantic version tagging configuration. |
+| `template_files` | list of TemplateFileConfig | — | Template files to render and include as release artifacts. File contents are processed through the template engine. |
+| `uploads` | list of UploadConfig | — | Generic HTTP upload configurations. |
 | `upx` | list of UpxConfig | `[]` | UPX binary compression configurations. |
+| `variables` | map | — | Custom template variables accessible as {{ .Var.key }} in templates. Provides a way to define reusable values, especially useful with config includes. |
 | `version` | integer | — | Schema version. Currently supports 1 (implicit default) and 2. |
 | `workspaces` | list of WorkspaceConfig | — | Independent workspace roots in a monorepo. |
 
@@ -45,7 +70,7 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `post` | list of HookEntry | — | Commands to run after the pipeline or stage completes. |
-| `pre` | list of HookEntry | — | Commands to run before the pipeline or stage starts. |
+| `pre` | list of HookEntry | — | Commands to run before the pipeline or stage starts. GoReleaser uses `hooks` as the field name under `before:`. We accept both `pre` and `hooks` for migration compatibility. |
 
 ## `announce`
 | Field | Type | Default | Description |
@@ -66,12 +91,68 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `twitter` | TwitterAnnounce | — | Twitter/X announcement configuration. |
 | `webhook` | WebhookConfig | — | Generic webhook announcement configuration. |
 
+## `artifactories`
+Artifactory upload configuration. Uploads artifacts to JFrog Artifactory repositories.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `checksum` | bool | — | Include checksums in uploaded artifacts. |
+| `checksum_header` | string | — | Header name used for checksum verification (e.g. `X-Checksum-Sha256`). |
+| `client_x509_cert` | string | — | Path to client X.509 certificate for mTLS authentication. |
+| `client_x509_key` | string | — | Path to client X.509 private key for mTLS authentication. |
+| `custom_artifact_name` | bool | — | Use custom artifact naming instead of default. |
+| `custom_headers` | map | — | Custom HTTP headers sent with each upload request. |
+| `extra_files` | list of ExtraFileSpec | — | Extra files to upload alongside build artifacts. |
+| `extra_files_only` | bool | — | When true, upload only extra_files (skip normal artifacts). |
+| `exts` | list of string | — | File extension filter: only upload artifacts matching these extensions. |
+| `ids` | list of string | — | Build IDs filter: only upload artifacts from builds whose `id` is in this list. |
+| `meta` | bool | — | Include metadata artifacts in uploaded artifacts. |
+| `method` | string | — | HTTP method to use for uploads (default: "PUT"). |
+| `mode` | string | — | Upload mode: "archive" (upload archives) or "binary" (upload binaries). |
+| `name` | string | — | Human-readable name for this publisher (used in logs). |
+| `password` | string | — | Artifactory password or API key (or env var reference). |
+| `signature` | bool | — | Include signatures in uploaded artifacts. |
+| `skip` | StringOrBool | — | Template-conditional skip: if rendered result is `"true"`, skip this publisher. |
+| `target` | string | — | Target URL template for uploads (supports template variables). |
+| `trusted_certificates` | string | — | PEM-encoded trusted CA certificates for TLS verification. Appended to the system certificate pool. |
+| `username` | string | — | Artifactory username for authentication. |
+
+## `aur_sources`
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `arches` | list of string | — | Explicit architecture list (default: auto-detect from artifacts). |
+| `backup` | list of string | — | Backup files to preserve on upgrade. |
+| `build` | string | — | Custom `build()` function body for PKGBUILD. |
+| `commit_author` | CommitAuthorConfig | — | Commit author with optional signing. |
+| `commit_msg_template` | string | — | Custom commit message template. |
+| `conflicts` | list of string | — | Packages this PKGBUILD conflicts with. |
+| `contributors` | list of string | — | Contributors listed in PKGBUILD comments. |
+| `depends` | list of string | — | Runtime dependencies. |
+| `description` | string | — | Short description of the package. |
+| `directory` | string | — | Subdirectory in the git repo for committed files. |
+| `disable` | StringOrBool | — | Disable this config. |
+| `git_ssh_command` | string | — | Custom SSH command for git operations. |
+| `git_url` | string | — | AUR SSH git URL. |
+| `homepage` | string | — | Project homepage URL. |
+| `ids` | list of string | — | Build IDs filter. |
+| `license` | string | — | SPDX license identifier. |
+| `maintainers` | list of string | — | PKGBUILD maintainer entries. |
+| `makedepends` | list of string | — | Build-time dependencies (source packages need these). |
+| `name` | string | — | Override the package name (default: crate name, no -bin suffix). |
+| `optdepends` | list of string | — | Optional dependencies. |
+| `package` | string | — | Custom `package()` function body for PKGBUILD. |
+| `prepare` | string | — | Custom `prepare()` function body for PKGBUILD. |
+| `private_key` | string | — | Path to SSH private key file. |
+| `provides` | list of string | — | Packages this PKGBUILD provides. |
+| `rel` | string | — | Package release number (default: "1"). |
+| `skip_upload` | StringOrBool | — | Skip publishing. `"true"` always skips; `"auto"` skips for prereleases. |
+| `url_template` | string | — | Custom URL template for download URLs. |
+
 ## `before`
 Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` and `post` lists of hook commands that run around the entire pipeline (not individual stages).
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `post` | list of HookEntry | — | Commands to run after the pipeline or stage completes. |
-| `pre` | list of HookEntry | — | Commands to run before the pipeline or stage starts. |
+| `pre` | list of HookEntry | — | Commands to run before the pipeline or stage starts. GoReleaser uses `hooks` as the field name under `before:`. We accept both `pre` and `hooks` for migration compatibility. |
 
 ## `binary_signs`
 | Field | Type | Default | Description |
@@ -84,7 +165,7 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `id` | string | — | Unique identifier for this sign config. |
 | `ids` | list of string | — | Build IDs filter: only sign artifacts from builds whose `id` is in this list. |
 | `if` | string | — | Template-conditional: skip this sign config if rendered result is "false" or empty. |
-| `output` | bool | — | Capture and log stdout/stderr of the signing command. |
+| `output` | StringOrBool | — | Capture and log stdout/stderr of the signing command. Accepts bool or template string (e.g., "{{ .IsSnapshot }}"). |
 | `signature` | string | — | Signature output filename template (supports templates). |
 | `stdin` | string | — | Content written to the signing command's stdin. |
 | `stdin_file` | string | — | Path to a file whose content is written to the signing command's stdin. |
@@ -93,18 +174,37 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `abbrev` | integer | — | Hash abbreviation length. Default: 7. Set to -1 to omit the hash entirely. |
+| `ai` | ChangelogAiConfig | — | AI-powered changelog enhancement configuration. |
 | `disable` | StringOrBool | — | Disable changelog generation. Accepts bool or template string (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional disable). |
+| `divider` | string | — | Divider string inserted between changelog groups (e.g. `"---"`). Supports templates. |
 | `filters` | ChangelogFilters | — | Commit message filters to include or exclude from the changelog. |
 | `footer` | string | — | Text appended to the changelog (inline string or path). |
 | `format` | string | — | Template for each changelog commit line. Available variables: SHA (full hash), ShortSHA (abbreviated), Message (commit subject), AuthorName, AuthorEmail, Login (per-commit GitHub username, `github` backend only), Logins (comma-separated list of all GitHub usernames in the release, `github` backend only). Default: `"{{ ShortSHA }} {{ Message }}"` |
 | `groups` | list of ChangelogGroup | — | Groups for organizing changelog entries by commit message prefix. |
 | `header` | string | — | Text prepended to the changelog (inline string or path). |
+| `paths` | list of string | — | File paths to filter commits by. Only commits touching files under these paths are included. Works with `use: git` for precise per-commit filtering. With `use: github`, only the first path is used for API queries; multi-path filtering is coarse. Supports template rendering. |
 | `sort` | string | — | Sort order for changelog entries: "asc" or "desc" (default: "asc"). |
+| `title` | string | — | Title heading for the changelog. Default: "Changelog". Supports templates. |
 | `use` | string | — | Changelog source: `"git"` (default), `"github"`, or `"github-native"`. `"github"` fetches commits via the GitHub API, enriching entries with author login information (available as the `Logins` template variable). `"github-native"` delegates entirely to GitHub's auto-generated notes. |
+
+## `cloudsmiths`
+CloudSmith publisher configuration. Pushes packages to CloudSmith repositories.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `component` | string | — | Debian component name (e.g. "main"). |
+| `distributions` | map | — | Distribution mapping per format (e.g. `deb: "ubuntu/focal"`). |
+| `formats` | list of string | — | Package format filter: only publish artifacts matching these formats. |
+| `ids` | list of string | — | Build IDs filter: only publish artifacts from builds whose `id` is in this list. |
+| `organization` | string | — | CloudSmith organization slug. |
+| `repository` | string | — | CloudSmith repository slug. |
+| `republish` | StringOrBool | — | When true, allow republishing over existing package versions. |
+| `secret_name` | string | — | Environment variable name containing the CloudSmith API key. |
+| `skip` | StringOrBool | — | Template-conditional skip: if rendered result is `"true"`, skip this publisher. |
 
 ## `crates`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| `app_bundles` | list of AppBundleConfig | — | macOS app bundle configurations for this crate. |
 | `archives` | list of ArchiveConfig | `[]` | Archive configurations for this crate. Set to false to disable archiving, or provide an array of archive configs. |
 | `binstall` | BinstallConfig | — | cargo-binstall metadata configuration for this crate. |
 | `blobs` | list of BlobConfig | — | Cloud storage (S3/GCS/Azure) upload configurations for this crate. |
@@ -113,12 +213,16 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `cross` | CrossStrategy | — | Cross-compilation strategy for this crate: auto, zigbuild, cross, or cargo. |
 | `depends_on` | list of string | — | Other crates this crate depends on; ensures release ordering. |
 | `dmgs` | list of DmgConfig | — | macOS DMG disk image configurations for this crate. |
-| `docker` | list of DockerConfig | — | Docker image build configurations for this crate. |
+| `docker` | list of DockerConfig | — | Docker image build configurations for this crate (legacy API). |
+| `docker_digest` | DockerDigestConfig | — | Docker image digest file configuration for this crate. |
 | `docker_manifests` | list of DockerManifestConfig | — | Docker multi-platform manifest configurations for this crate. |
+| `docker_v2` | list of DockerV2Config | — | Docker V2 image build configurations for this crate (newer API with images+tags, annotations, build_args, sbom, disable). |
+| `flatpaks` | list of FlatpakConfig | — | Linux Flatpak bundle configurations for this crate. |
 | `msis` | list of MsiConfig | — | Windows MSI installer configurations for this crate. |
 | `name` | string | — | Crate name as published (must match the Cargo.toml package name). |
 | `nfpm` | list of NfpmConfig | — | Linux package (deb, rpm, apk) configurations for this crate. |
-| `no_unique_dist_dir` | bool | — | When true, all build outputs are placed in a flat `dist/` directory instead of `dist/{target}/`. |
+| `no_unique_dist_dir` | StringOrBool | — | When true (or template evaluating to "true"), all build outputs are placed in a flat `dist/` directory instead of `dist/{target}/`. |
+| `nsis` | list of NsisConfig | — | NSIS installer configurations for this crate. |
 | `path` | string | — | Relative path to the crate directory from the project root. |
 | `pkgs` | list of PkgConfig | — | macOS PKG installer configurations for this crate. |
 | `publish` | PublishConfig | — | Publishing targets (Homebrew, Scoop, AUR, etc.) for this crate. |
@@ -144,20 +248,198 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 |-------|------|---------|-------------|
 | `args` | list of string | — | Arguments passed to the signing command (supports templates). |
 | `artifacts` | string | — | Docker artifact types to sign: "all", "image", or "manifest" (default: "none"). |
+| `certificate` | string | — | Certificate file to embed in the signature (Cosign bundle signing). |
 | `cmd` | string | — | Signing command to invoke (default: "cosign"). |
 | `env` | map | — | Environment variables passed to the signing command. |
 | `id` | string | — | Unique identifier for this docker sign config. |
 | `ids` | list of string | — | Docker config IDs filter: only sign images from configs whose `id` is in this list. |
 | `if` | string | — | Template-conditional: skip this docker sign config if rendered result is "false" or empty. |
-| `output` | bool | — | Capture and log stdout/stderr of the docker signing command. |
+| `output` | StringOrBool | — | Capture and log stdout/stderr of the docker signing command. |
+| `signature` | string | — | Signature output filename template (supports templates). |
 | `stdin` | string | — | Content written to the signing command's stdin. |
 | `stdin_file` | string | — | Path to a file whose content is written to the signing command's stdin. |
+
+## `dockerhub`
+DockerHub description sync configuration. Pushes image descriptions and README content to DockerHub repositories.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `description` | string | — | Short description for the DockerHub repository (max 100 chars). |
+| `disable` | StringOrBool | — | Disable this publisher. Accepts bool or template string. |
+| `full_description` | DockerHubFullDescription | — | Full description (README) source for the DockerHub repository. |
+| `images` | list of string | — | DockerHub image names to update (e.g. `myorg/myapp`). |
+| `secret_name` | string | — | Environment variable name containing the DockerHub token. |
+| `username` | string | — | DockerHub username for authentication. |
+
+## `fury`
+GemFury publisher configuration. Pushes packages to GemFury (fury.io) package hosting.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `account` | string | — | GemFury account name. |
+| `disable` | StringOrBool | — | Disable this publisher. Accepts bool or template string. |
+| `formats` | list of string | — | Package format filter: only publish artifacts matching these formats (e.g. "deb", "rpm"). |
+| `ids` | list of string | — | Build IDs filter: only publish artifacts from builds whose `id` is in this list. |
+| `secret_name` | string | — | Environment variable name containing the GemFury push token. |
+
+## `git`
+Git-level tag discovery and sorting settings.
+
+Controls how anodize discovers and orders tags when determining the current and previous versions. This is separate from `TagConfig`, which controls version *bumping* logic.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `ignore_tag_prefixes` | list of string | — | Tag prefixes to ignore during version detection (supports templates). Tags starting with any prefix in this list are excluded. Mirrors GoReleaser Pro's ignore_tag_prefixes feature. |
+| `ignore_tags` | list of string | — | Tag patterns to ignore during version detection (supports templates). Tags matching any pattern in this list are excluded from version detection entirely. |
+| `prerelease_suffix` | string | — | Suffix that identifies pre-release tags for sorting purposes. When set, tags ending with this suffix are treated as pre-releases and sorted accordingly during tag discovery. |
+| `tag_sort` | string | — | How to sort git tags when determining the latest version.
+
+Accepted values: - `"-version:refname"` (default) — lexicographic version sort on the tag name. - `"-version:creatordate"` — sort by the tag's creation date (newest first). |
+
+## `gitea_urls`
+Custom Gitea API/download URLs for self-hosted Gitea installations. Matches GoReleaser's `GiteaURLs` struct.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `api` | string | — | Gitea API base URL (e.g. `https://gitea.example.com/api/v1/`). |
+| `download` | string | — | Gitea download URL for release assets. |
+| `skip_tls_verify` | bool | — | When true, skip TLS certificate verification for the custom URLs. |
+
+## `github_urls`
+Custom GitHub API/upload/download URLs for GitHub Enterprise installations. Matches GoReleaser's `GitHubURLs` struct.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `api` | string | — | GitHub API base URL (e.g. `https://github.example.com/api/v3/`). |
+| `download` | string | — | GitHub download URL for release assets (e.g. `https://github.example.com/`). |
+| `skip_tls_verify` | bool | — | When true, skip TLS certificate verification for the custom URLs. |
+| `upload` | string | — | GitHub upload URL for release assets (e.g. `https://github.example.com/api/uploads/`). |
+
+## `gitlab_urls`
+Custom GitLab API/download URLs for self-hosted GitLab installations. Matches GoReleaser's `GitLabURLs` struct.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `api` | string | — | GitLab API base URL (e.g. `https://gitlab.example.com/api/v4/`). |
+| `download` | string | — | GitLab download URL for release assets. |
+| `skip_tls_verify` | bool | — | When true, skip TLS certificate verification for the custom URLs. |
+| `use_job_token` | bool | — | When true, use the CI_JOB_TOKEN for authentication instead of a personal token. |
+| `use_package_registry` | bool | — | When true, use the GitLab Package Registry for uploads instead of Generic Packages. |
+
+## `homebrew_casks`
+Top-level Homebrew Cask configuration. GoReleaser has `homebrew_casks` as a top-level config array with its own repository, commit_author, directory, skip_upload, etc.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `alternative_names` | list of string | — | Alternative cask names (aliases). |
+| `app` | string | — | macOS .app bundle name (e.g. "MyApp.app"). |
+| `binaries` | list of string | — | Binary stubs to create in /usr/local/bin. |
+| `caveats` | string | — | Custom caveats shown after install. |
+| `commit_author` | CommitAuthorConfig | — | Commit author with optional signing. |
+| `commit_msg_template` | string | — | Custom commit message template. Default: "Brew cask update for {{ .ProjectName }} version {{ .Tag }}" |
+| `completions` | HomebrewCaskCompletions | — | Shell completion file paths. |
+| `conflicts` | list of HomebrewCaskConflictEntry | — | Conflicting casks/formulas. |
+| `custom_block` | string | — | Custom Ruby code block inserted into the cask definition. |
+| `dependencies` | list of HomebrewCaskDependencyEntry | — | Cask/formula dependencies. |
+| `description` | string | — | Cask description. |
+| `directory` | string | — | Subdirectory in the tap repo for cask placement (default: "Casks"). |
+| `generate_completions_from_executable` | HomebrewCaskGeneratedCompletions | — | Auto-generate shell completions from an executable. |
+| `homepage` | string | — | Project homepage URL. |
+| `hooks` | HomebrewCaskHooks | — | Pre/post install/uninstall hooks. |
+| `ids` | list of string | — | Build IDs filter: only include artifacts from builds whose `id` is in this list. |
+| `license` | string | — | SPDX license identifier. |
+| `manpages` | list of string | — | Manpage file paths (glob patterns supported). |
+| `name` | string | — | Cask name (default: project name). |
+| `repository` | RepositoryConfig | — | Unified repository config for the Homebrew tap. |
+| `service` | string | — | Homebrew service block content. |
+| `skip_upload` | StringOrBool | — | Skip publishing the cask. `"true"` always skips; `"auto"` skips for prerelease versions. Accepts bool or template string. |
+| `uninstall` | HomebrewCaskUninstall | — | Uninstall stanza configuration. |
+| `url` | HomebrewCaskURL | — | Download URL configuration. |
+| `zap` | HomebrewCaskUninstall | — | Deep uninstall (zap) stanza configuration. |
+
+## `makeselfs`
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `compression` | string | — | Compression algorithm: gzip, bzip2, xz, lzo, compress, or none. |
+| `description` | string | — | Description for LSM metadata. |
+| `disable` | StringOrBool | — | Disable this config. Accepts bool or template string. |
+| `extra_args` | list of string | — | Extra arguments passed to the makeself command. |
+| `files` | list of MakeselfFile | — | Additional files to include in the archive. |
+| `goarch` | list of string | — | Target architecture filter. |
+| `goos` | list of string | — | Target OS filter (default: ["linux", "darwin"]). |
+| `homepage` | string | — | Homepage URL for LSM metadata. |
+| `id` | string | — | Unique identifier for this makeself config (default: "default"). |
+| `ids` | list of string | — | Build IDs filter: only include artifacts whose `id` is in this list. |
+| `keywords` | list of string | — | Keywords for LSM metadata. |
+| `license` | string | — | License for LSM metadata. |
+| `maintainer` | string | — | Maintainer for LSM metadata. |
+| `name` | string | — | Display name embedded in the self-extracting archive. |
+| `name_template` | string | — | Output filename template (default includes project, version, os, arch). |
+| `script` | string | — | Startup script to run when the archive is extracted and executed. Required — the archive will not be created without this. |
+
+## `metadata`
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `description` | string | — | Human-readable project description (exposed as `{{ .Metadata.Description }}`). |
+| `homepage` | string | — | Project homepage URL (exposed as `{{ .Metadata.Homepage }}`). |
+| `license` | string | — | Project license identifier, e.g. "MIT" or "Apache-2.0" (exposed as `{{ .Metadata.License }}`). |
+| `maintainers` | list of string | — | List of project maintainers (exposed as `{{ .Metadata.Maintainers }}`). |
+| `mod_timestamp` | string | — | Global modification timestamp for metadata output files (metadata.json and artifacts.json). Template string (e.g. "{{ .CommitTimestamp }}") or unix timestamp. When set, rendered late in the pipeline and applied as file mtime. Exposed as `{{ .Metadata.ModTimestamp }}`. |
+
+## `milestones`
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `close` | bool | — | Close the milestone on release. Default: false. |
+| `fail_on_error` | bool | — | Fail the pipeline if milestone close fails. Default: false. |
+| `name_template` | string | — | Milestone name template (default: "{{ .Tag }}"). |
+| `repo` | ScmRepoConfig | — | Repository owner/name. Auto-detected from git remote if not set. |
+
+## `monorepo`
+GoReleaser Pro monorepo configuration.
+
+When configured, tag discovery filters by `tag_prefix` and the working directory is scoped to `dir`.
+
+This is DIFFERENT from `TagConfig.tag_prefix`: - `MonorepoConfig.tag_prefix`: tags in git already HAVE the prefix (e.g. `subproject1/v1.2.3`). The prefix is STRIPPED for `{{ .Tag }}` while `{{ .PrefixedTag }}` retains the full tag. - `TagConfig.tag_prefix`: a prefix to PREPEND when constructing `{{ .PrefixedTag }}` from a plain tag.
+
+When `monorepo` is configured, it takes precedence over `tag.tag_prefix` for `PrefixedTag` / `PrefixedPreviousTag` behavior.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `dir` | string | — | Working directory for this subproject.
+
+Used for changelog path filtering (when no explicit `changelog.paths` or `crate.path` is configured) and as the default build `dir`. |
+| `tag_prefix` | string | — | Tag prefix for this subproject (e.g. `"subproject1/"`).
+
+Tags matching this prefix are selected during tag discovery, and the prefix is stripped from `{{ .Tag }}` while `{{ .PrefixedTag }}` retains the full tag. |
 
 ## `nightly`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `name_template` | string | — | Template for the release name. Default: "{{ .ProjectName }}-nightly" |
 | `tag_name` | string | — | Tag name used for the nightly release. Default: "nightly". |
+
+## `notarize`
+Top-level notarization configuration supporting both cross-platform (`rcodesign`) and native macOS (`codesign` + `xcrun notarytool`) modes.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `macos` | list of MacOSSignNotarizeConfig | — | Cross-platform signing/notarization (rcodesign-based, works on any OS). |
+| `macos_native` | list of MacOSNativeSignNotarizeConfig | — | Native signing/notarization (codesign + xcrun, macOS only). |
+
+## `npms`
+NPM publisher configuration. Publishes packages to NPM registries.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `access` | string | — | NPM access level: "public" or "restricted". |
+| `author` | string | — | Package author (e.g. `"Jane Doe <jane@example.com>"`). |
+| `bugs` | string | — | Bug tracker URL for package.json. |
+| `description` | string | — | Package description. |
+| `disable` | StringOrBool | — | Disable this publisher. Accepts bool or template string. |
+| `extra` | map | — | Additional package.json fields as key-value pairs. |
+| `extra_files` | list of ExtraFileSpec | — | Extra files to include in the NPM package. |
+| `format` | string | — | Package format: "tgz" (default) or other supported NPM formats. |
+| `homepage` | string | — | Package homepage URL. |
+| `id` | string | — | Unique identifier for this NPM publisher (when multiple are configured). |
+| `ids` | list of string | — | Build IDs filter: only publish artifacts from builds whose `id` is in this list. |
+| `if` | string | — | Template-conditional: only run this publisher if the condition evaluates to true. |
+| `keywords` | list of string | — | Package keywords for NPM search. |
+| `license` | string | — | SPDX license identifier (e.g. "MIT", "Apache-2.0"). |
+| `name` | string | — | NPM package name (e.g. `@myorg/mypackage`). |
+| `repository` | string | — | Repository URL for package.json. |
+| `tag` | string | — | NPM dist-tag (e.g. "latest", "next", "beta"). |
+| `templated_extra_files` | list of TemplatedExtraFile | — | Extra files whose contents are rendered through the template engine before inclusion. |
+| `url_template` | string | — | Custom URL template for package downloads. |
 
 ## `partial`
 | Field | Type | Default | Description |
@@ -172,11 +454,14 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `checksum` | bool | — | Include checksums in published artifacts. |
 | `cmd` | string | — | Command to invoke for publishing. |
 | `dir` | string | — | Working directory for the publisher command. |
-| `disable` | string | — | Template-conditional disable: if rendered result is `"true"`, skip this publisher. |
+| `disable` | StringOrBool | — | Template-conditional disable: if rendered result is `"true"`, skip this publisher. Accepts bool or template string (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"`). |
 | `env` | map | — | Environment variables passed to the publish command. |
+| `extra_files` | list of ExtraFile | — | Extra files to include in publishing (glob patterns with optional name override). |
 | `ids` | list of string | — | Build IDs filter: only publish artifacts from builds whose `id` is in this list. |
+| `meta` | bool | — | Include metadata artifacts in published artifacts. |
 | `name` | string | — | Human-readable name for this publisher (used in logs). |
 | `signature` | bool | — | Include signatures in published artifacts. |
+| `templated_extra_files` | list of TemplatedExtraFile | — | Extra files whose contents are rendered through the template engine before publishing. Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded. GoReleaser Pro feature. |
 
 ## `release`
 | Field | Type | Default | Description |
@@ -186,7 +471,9 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `draft` | bool | — | When true, create the release as a draft (unpublished). |
 | `extra_files` | list of ExtraFileSpec | — | Extra files to upload to the release beyond build artifacts. |
 | `footer` | ContentSource | — | Text appended to the release body (inline string, from_file, or from_url). |
-| `github` | GitHubConfig | — | GitHub repository to release to (owner and name). |
+| `gitea` | ScmRepoConfig | — | Gitea repository to release to (owner and name). |
+| `github` | ScmRepoConfig | — | GitHub repository to release to (owner and name). |
+| `gitlab` | ScmRepoConfig | — | GitLab repository to release to (owner and name). |
 | `header` | ContentSource | — | Text prepended to the release body (inline string, from_file, or from_url). |
 | `ids` | list of string | — | Artifact IDs filter for uploads. |
 | `include_meta` | bool | — | Upload metadata.json and artifacts.json as release assets. |
@@ -196,15 +483,25 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `prerelease` | object | — | Mark release as pre-release: true, false, or "auto" (inferred from tag). |
 | `replace_existing_artifacts` | bool | — | When true, replace existing release artifacts with the same name. |
 | `replace_existing_draft` | bool | — | When true, replace an existing draft release instead of failing. |
-| `skip_upload` | bool | — | When true, skip uploading artifacts to the release. |
+| `skip_upload` | StringOrBool | — | Skip uploading artifacts: true, false, or "auto" (skip for snapshots). Accepts bool or template string (GoReleaser uses string type). |
+| `tag` | string | — | Override the release tag (template string). When set, this tag is used as the `tag_name` in the GitHub release API instead of the crate's `tag_template`. Useful in monorepo setups to strip a tag prefix (e.g. `"{{ .Tag }}"` to publish `v1.0.0` instead of `myapp/v1.0.0`). This is a GoReleaser Pro feature provided for free by anodize. |
 | `target_commitish` | string | — | Target branch or SHA for the release tag. |
+| `templated_extra_files` | list of TemplatedExtraFile | — | Extra files whose contents are rendered through the template engine before upload. Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded. GoReleaser Pro feature. |
 | `use_existing_draft` | bool | — | Reuse an existing draft release instead of creating a new one. |
 
-## `sbom`
+## `sboms`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enabled` | bool | — | When true, generate an SBOM (software bill of materials) for the release. |
-| `format` | string | — | SBOM format: "cyclonedx" (default) or "spdx". |
+| `args` | list of string | — | Command-line arguments (supports templates and $artifact, $document vars). |
+| `artifacts` | string | — | Which artifacts to catalog: "source", "archive", "binary", "package", "diskimage", "installer", "any" (default: "archive"). |
+| `cmd` | string | — | Command to run for SBOM generation (default: "syft"). |
+| `disable` | StringOrBool | — | Disable this SBOM config. Accepts bool or template string. |
+| `documents` | list of string | — | Output document path templates (supports templates). |
+| `env` | map | — | Environment variables to pass to the command.
+
+Accepts both map form (`KEY: value`) and GoReleaser list form (`- KEY=value`). Values are template-rendered before being set. |
+| `id` | string | — | Unique identifier for this SBOM config (default: "default"). |
+| `ids` | list of string | — | Filter by artifact IDs (ignored if artifacts="source"). |
 
 ## `signs`
 | Field | Type | Default | Description |
@@ -217,7 +514,7 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `id` | string | — | Unique identifier for this sign config. |
 | `ids` | list of string | — | Build IDs filter: only sign artifacts from builds whose `id` is in this list. |
 | `if` | string | — | Template-conditional: skip this sign config if rendered result is "false" or empty. |
-| `output` | bool | — | Capture and log stdout/stderr of the signing command. |
+| `output` | StringOrBool | — | Capture and log stdout/stderr of the signing command. Accepts bool or template string (e.g., "{{ .IsSnapshot }}"). |
 | `signature` | string | — | Signature output filename template (supports templates). |
 | `stdin` | string | — | Content written to the signing command's stdin. |
 | `stdin_file` | string | — | Path to a file whose content is written to the signing command's stdin. |
@@ -225,15 +522,40 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 ## `snapshot`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `name_template` | string | — | Version string template for snapshot builds (e.g., "{{ .Commit }}-SNAPSHOT"). |
+| `version_template` | string | — | Version string template for snapshot builds (e.g., "{{ .Commit }}-SNAPSHOT"). Primary field is `version_template` (GoReleaser convention); `name_template` is the deprecated alias kept for backwards compatibility. |
 
 ## `source`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `enabled` | bool | — | When true, generate a source code archive for the release. |
-| `files` | list of string | — | Extra files to include in the source archive (glob patterns). |
-| `format` | string | — | Archive format for the source tarball: tar.gz, tar.xz, tar.zst, or zip (default: tar.gz). |
+| `files` | list of SourceFileEntry | `[]` | Extra files to include in the source archive. Accepts strings (glob patterns) or objects with src/dst/info. |
+| `format` | string | — | Archive format for the source tarball: tar.gz, tgz, tar, or zip (default: tar.gz). |
 | `name_template` | string | — | Filename template for the source archive (supports templates). |
+| `prefix_template` | string | — | Prefix prepended to all paths inside the archive (supports templates). Defaults to name_template value. Use this to set a different prefix than the archive name. |
+
+## `srpm`
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `compression` | string | — | Compression algorithm (gzip, xz, zstd, none). |
+| `contents` | list of NfpmContentConfig | — | Additional contents to include in the source RPM. |
+| `description` | string | — | Package description. |
+| `disable` | StringOrBool | — | Disable this config. Accepts bool or template string. |
+| `docs` | list of string | — | Documentation files to include. |
+| `enabled` | bool | — | Enable source RPM generation. Default: false. |
+| `epoch` | string | — | RPM epoch. |
+| `file_name_template` | string | — | Output filename template. |
+| `group` | string | — | RPM group. |
+| `license` | string | — | License identifier. |
+| `license_file_name` | string | — | License file name to include. |
+| `maintainer` | string | — | Package maintainer. |
+| `package_name` | string | — | Package name (default: project_name). |
+| `packager` | string | — | RPM packager field. |
+| `section` | string | — | RPM section. |
+| `signature` | SrpmSignatureConfig | — | RPM signature configuration. |
+| `spec_file` | string | — | Path to the RPM spec file template. |
+| `summary` | string | — | Summary line. |
+| `url` | string | — | Homepage URL. |
+| `vendor` | string | — | Package vendor. |
 
 ## `tag`
 | Field | Type | Default | Description |
@@ -256,14 +578,52 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `tag_prefix` | string | — | Prefix prepended to version tags (e.g., "v" produces "v1.2.3"). |
 | `verbose` | bool | — | When true, print verbose tag calculation output. |
 
+## `template_files`
+Configuration for a template file that is rendered through the template engine and placed in the dist directory as a release artifact.
+
+GoReleaser Pro feature: all rendered template files are uploaded to the release by default. Both `src` and `dst` paths support template rendering.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `dst` | string | — | Destination filename, prefixed with the dist directory. Templates: allowed. |
+| `id` | string | — | Identifier for this template file entry (default: "default"). |
+| `mode` | string | — | File permissions in octal notation as a string, e.g. `"0755"` (default: `"0655"`). Parsed at runtime via `parse_octal_mode()` to avoid YAML interpreting as decimal. |
+| `src` | string | — | Source template file path. The file contents are rendered through the template engine. Templates: allowed (in path itself). |
+
+## `uploads`
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `checksum` | bool | — | Include checksums in uploaded artifacts. |
+| `checksum_header` | string | — | Header name for the SHA256 checksum of the artifact. |
+| `client_x509_cert` | string | — | Path to PEM-encoded client X.509 certificate for mTLS. |
+| `client_x509_key` | string | — | Path to PEM-encoded client X.509 key for mTLS. |
+| `custom_artifact_name` | bool | — | When true, use the artifact name as-is (don't append to target URL). |
+| `custom_headers` | map | — | Custom HTTP headers (each value is template-expanded). |
+| `disable` | StringOrBool | — | Skip condition template (if rendered to "true", skip this upload). |
+| `extra_files` | list of ExtraFile | — | Extra files to include in uploading. |
+| `extra_files_only` | bool | — | Upload only extra files, skip normal artifacts. |
+| `exts` | list of string | — | File extension filter: only upload artifacts with these extensions. |
+| `ids` | list of string | — | Build IDs filter: only upload artifacts whose `id` is in this list. |
+| `meta` | bool | — | Include metadata artifacts in uploaded artifacts. |
+| `method` | string | — | HTTP method: PUT or POST (default: PUT). |
+| `mode` | string | — | Upload mode: "archive" (default) or "binary". |
+| `name` | string | — | Human-readable name for this upload config. |
+| `password` | string | — | Password for HTTP basic auth (env var template recommended). |
+| `signature` | bool | — | Include signatures in uploaded artifacts. |
+| `target` | string | — | Target URL template (supports template variables like {{ .ProjectName }}, {{ .Version }}). |
+| `trusted_certificates` | string | — | Path to PEM-encoded trusted CA certificates. |
+| `username` | string | — | Username for HTTP basic auth (or env var template). |
+
 ## `upx`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `args` | list of string | `[]` | Extra arguments passed to UPX (e.g., ["-9", "--brute"]). |
 | `binary` | string | `upx` | UPX executable path or name (default: "upx"). |
-| `enabled` | bool | `true` | When true, compress binaries with UPX (default: true). |
+| `brute` | bool | — | Use brute-force compression (--brute flag). Very slow but produces smallest output. |
+| `compress` | string | — | UPX compression level string (e.g., "1"-"9", "best"). Maps to `--compress` flag. |
+| `enabled` | StringOrBool | — | Whether to compress binaries with UPX. Accepts bool or template string (GoReleaser parity: `tmpl.Bool(upx.Enabled)`). |
 | `id` | string | — | Unique identifier for this UPX config. |
 | `ids` | list of string | — | Build IDs filter: only compress binaries from builds whose `id` is in this list. |
+| `lzma` | bool | — | Use LZMA compression (--lzma flag). |
 | `required` | bool | `false` | When true, fail the build if UPX is not found. |
 | `targets` | list of string | — | Target triples to compress binaries for (empty means all targets). |
 
@@ -276,7 +636,9 @@ A workspace represents an independent project root within a monorepo. Each works
 | `binary_signs` | list of SignConfig | `[]` | Binary-specific signing configs (same shape as `signs` but only for binary artifacts). |
 | `changelog` | ChangelogConfig | — | Changelog configuration for this workspace. |
 | `crates` | list of CrateConfig | `[]` | Crates belonging to this workspace. |
-| `env` | map | — | Environment variables scoped to this workspace. |
+| `env` | map | — | Environment variables scoped to this workspace.
+
+Accepts both map form (`MY_VAR: hello`) and GoReleaser list form (`- MY_VAR=hello`). Values are template-rendered at pipeline startup. |
 | `name` | string | — | Workspace identifier used in logs and template variables. |
 | `signs` | list of SignConfig | `[]` | Signing configurations for binaries, archives, and checksums. |
 

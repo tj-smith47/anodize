@@ -39,12 +39,11 @@ pub fn publish_to_fury(ctx: &Context, log: &StageLogger) -> Result<()> {
 
     for entry in entries {
         // Check disable flag.
-        if let Some(ref d) = entry.disable {
-            if d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
+        if let Some(ref d) = entry.disable
+            && d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
                 log.status("fury: entry disabled, skipping");
                 continue;
             }
-        }
 
         // Account is required — bail before dry-run so config errors surface
         // even in dry-run mode.

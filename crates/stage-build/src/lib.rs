@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -52,12 +52,18 @@ pub(crate) fn detect_cross_strategy() -> CrossStrategy {
 /// Resolve the build program and subcommand from the cross strategy and
 /// optional cross_tool override. When `cross_tool` is set it takes precedence
 /// over any strategy — the tool is used directly with "build" as the subcommand.
+///
+/// When `command_override` is set (from `BuildConfig.command`), it replaces
+/// the auto-detected subcommand. For example, `command: "auditable build"`
+/// produces `cargo auditable build` instead of `cargo build`.
 pub(crate) fn resolve_build_program(
     strategy: &CrossStrategy,
     cross_tool: Option<&str>,
-) -> (String, &'static str) {
+    command_override: Option<&str>,
+) -> (String, String) {
     if let Some(tool) = cross_tool {
-        return (tool.to_string(), "build");
+        let subcmd = command_override.unwrap_or("build").to_string();
+        return (tool.to_string(), subcmd);
     }
 
     // Resolve Auto strategy at runtime
@@ -67,12 +73,15 @@ pub(crate) fn resolve_build_program(
         strategy.clone()
     };
 
-    match resolved {
+    let (prog, default_subcmd) = match resolved {
         CrossStrategy::Zigbuild => ("cargo".to_string(), "zigbuild"),
         CrossStrategy::Cross => ("cross".to_string(), "build"),
         // Cargo and Auto (already resolved above)
         _ => ("cargo".to_string(), "build"),
-    }
+    };
+
+    let subcmd = command_override.unwrap_or(default_subcmd).to_string();
+    (prog, subcmd)
 }
 
 // ---------------------------------------------------------------------------
@@ -90,16 +99,21 @@ pub(crate) fn build_command(
     no_default_features: bool,
     env: &HashMap<String, String>,
     cross_tool: Option<&str>,
+    command_override: Option<&str>,
 ) -> BuildCommand {
-    let (program, subcommand) = resolve_build_program(strategy, cross_tool);
+    let (program, subcommand) = resolve_build_program(strategy, cross_tool, command_override);
 
-    let mut args: Vec<String> = vec![
-        subcommand.to_string(),
+    // The subcommand may contain spaces (e.g. "auditable build"), split into separate args
+    let mut args: Vec<String> = subcommand
+        .split_whitespace()
+        .map(|s| s.to_string())
+        .collect();
+    args.extend([
         "--bin".to_string(),
         binary.to_string(),
         "--target".to_string(),
         target.to_string(),
-    ];
+    ]);
 
     // Append flags (split on whitespace)
     if let Some(f) = flags {
@@ -142,15 +156,20 @@ pub(crate) fn build_lib_command(
     no_default_features: bool,
     env: &HashMap<String, String>,
     cross_tool: Option<&str>,
+    command_override: Option<&str>,
 ) -> BuildCommand {
-    let (program, subcommand) = resolve_build_program(strategy, cross_tool);
+    let (program, subcommand) = resolve_build_program(strategy, cross_tool, command_override);
 
-    let mut args: Vec<String> = vec![
-        subcommand.to_string(),
+    // The subcommand may contain spaces (e.g. "auditable build"), split into separate args
+    let mut args: Vec<String> = subcommand
+        .split_whitespace()
+        .map(|s| s.to_string())
+        .collect();
+    args.extend([
         "--lib".to_string(),
         "--target".to_string(),
         target.to_string(),
-    ];
+    ]);
 
     // Append flags (split on whitespace)
     if let Some(f) = flags {
@@ -332,11 +351,18 @@ fn build_universal_binary(
         binary_name.clone()
     };
 
-    // Place the universal binary in the same directory as the arm64 binary
-    let out_path = arm64_path
-        .parent()
-        .map(|p| p.join(&out_name))
-        .unwrap_or_else(|| PathBuf::from(&out_name));
+    // Place the universal binary in dist/{crate_name}_darwin_all/{name}
+    // matching GoReleaser's convention for universal binaries.
+    let dist_dir = &ctx.config.dist;
+    let ub_dir = dist_dir.join(format!("{}_darwin_all", crate_name));
+    let out_path = ub_dir.join(&out_name);
+
+    // Execute pre-hooks if configured
+    let template_vars = ctx.template_vars().clone();
+    if let Some(ref hooks) = ub.hooks
+        && let Some(ref pre) = hooks.pre {
+            run_hooks(pre, "pre-universal-binary", dry_run, &log, Some(&template_vars))?;
+        }
 
     if dry_run {
         log.status(&format!(
@@ -354,6 +380,14 @@ fn build_universal_binary(
                  install Xcode command-line tools or ensure lipo is on PATH"
             );
         }
+
+        // Ensure output directory exists
+        std::fs::create_dir_all(&ub_dir).with_context(|| {
+            format!(
+                "failed to create universal binary output dir: {}",
+                ub_dir.display()
+            )
+        })?;
 
         log.status(&format!(
             "lipo -create -output {} {} {}",
@@ -379,6 +413,12 @@ fn build_universal_binary(
         }
     }
 
+    // Execute post-hooks if configured
+    if let Some(ref hooks) = ub.hooks
+        && let Some(ref post) = hooks.post {
+            run_hooks(post, "post-universal-binary", dry_run, &log, Some(&template_vars))?;
+        }
+
     // Apply mod_timestamp if configured
     if let Some(ref ts) = ub.mod_timestamp
         && !dry_run
@@ -393,9 +433,12 @@ fn build_universal_binary(
         ));
     }
 
-    // Register the universal binary artifact
+    // Register the universal binary artifact with UniversalBinary kind.
+    // Set `replaces` metadata for OnlyReplacingUnibins publisher filter:
+    // true = this universal binary supersedes per-arch variants in publishers.
+    let replaces = ub.replace == Some(true);
     ctx.artifacts.add(Artifact {
-        kind: ArtifactKind::Binary,
+        kind: ArtifactKind::UniversalBinary,
         name: String::new(),
         path: out_path,
         target: Some("darwin-universal".to_string()),
@@ -403,6 +446,7 @@ fn build_universal_binary(
         metadata: HashMap::from([
             ("binary".to_string(), binary_name),
             ("universal".to_string(), "true".to_string()),
+            ("replaces".to_string(), replaces.to_string()),
         ]),
         size: None,
     });
@@ -509,11 +553,306 @@ const KNOWN_TARGETS: &[&str] = &[
     "thumbv7neon-unknown-linux-gnueabihf",
     "wasm32-unknown-unknown",
     "wasm32-wasi",
+    "wasm32-wasip1",
+    "wasm32-wasip2",
     "x86_64-linux-android",
     "x86_64-apple-ios",
     "aarch64-apple-ios",
     "aarch64-apple-ios-sim",
+    // MIPS targets
+    "mips-unknown-linux-gnu",
+    "mips-unknown-linux-musl",
+    "mipsel-unknown-linux-gnu",
+    "mipsel-unknown-linux-musl",
+    "mips64-unknown-linux-gnuabi64",
+    "mips64-unknown-linux-muslabi64",
+    "mips64el-unknown-linux-gnuabi64",
+    "mips64el-unknown-linux-muslabi64",
+    // RISC-V targets
+    "riscv32i-unknown-none-elf",
+    "riscv32imac-unknown-none-elf",
+    "riscv32imc-unknown-none-elf",
+    "riscv64gc-unknown-linux-musl",
+    "riscv64gc-unknown-none-elf",
+    "riscv64imac-unknown-none-elf",
+    // s390x targets
+    "s390x-unknown-linux-musl",
+    // PowerPC targets
+    "powerpc-unknown-linux-gnuspe",
+    "powerpc64le-unknown-linux-musl",
+    "powerpc64-unknown-linux-musl",
+    // SPARC targets
+    "sparc64-unknown-linux-gnu",
+    "sparc-unknown-linux-gnu",
+    "sparcv9-sun-solaris",
+    // Thumb targets (ARM embedded)
+    "thumbv6m-none-eabi",
+    "thumbv7em-none-eabi",
+    "thumbv7em-none-eabihf",
+    "thumbv7m-none-eabi",
+    "thumbv7neon-linux-androideabi",
+    "thumbv8m.base-none-eabi",
+    "thumbv8m.main-none-eabi",
+    "thumbv8m.main-none-eabihf",
+    // i686 targets
+    "i686-unknown-freebsd",
+    "i686-unknown-linux-musl",
+    // Additional i686 targets
+    "i586-unknown-linux-gnu",
+    "i586-unknown-linux-musl",
+    // Additional ARM targets
+    "arm-unknown-linux-musleabi",
+    "arm-unknown-linux-musleabihf",
+    "armv5te-unknown-linux-gnueabi",
+    "armv5te-unknown-linux-musleabi",
+    "armv7-unknown-linux-gnueabi",
+    "armv7-unknown-linux-musleabi",
+    "armv7-unknown-linux-musleabihf",
+    "armv7-unknown-linux-ohos",
+    // Apple targets
+    "aarch64-apple-tvos",
+    "aarch64-apple-watchos",
+    // FreeBSD / OpenBSD / NetBSD
+    "aarch64-unknown-freebsd",
+    "x86_64-unknown-openbsd",
+    "aarch64-unknown-openbsd",
+    // Solaris / illumos
+    "x86_64-pc-solaris",
+    // Fuchsia
+    "aarch64-unknown-fuchsia",
+    "x86_64-unknown-fuchsia",
+    // Redox
+    "x86_64-unknown-redox",
+    // Haiku
+    "x86_64-unknown-haiku",
+    // UEFI
+    "x86_64-unknown-uefi",
+    "aarch64-unknown-uefi",
+    "i686-unknown-uefi",
+    // None / bare-metal
+    "aarch64-unknown-none",
+    "aarch64-unknown-none-softfloat",
+    "x86_64-unknown-none",
 ];
+
+// ---------------------------------------------------------------------------
+// strip_glibc_suffix — strip glibc version suffix like ".2.17" from targets
+// ---------------------------------------------------------------------------
+
+/// Strip a glibc version suffix from a target triple.
+///
+/// Targets like `aarch64-unknown-linux-gnu.2.17` carry a `.X.Y` suffix that
+/// tells cargo-zigbuild which glibc version to link against. Cargo itself
+/// doesn't understand the suffix, so we strip it when constructing the target
+/// directory path. The full target (with suffix) is passed to cargo-zigbuild.
+///
+/// Returns `(cargo_target, has_suffix)` — when there is no suffix the input
+/// is returned unchanged.
+fn strip_glibc_suffix(target: &str) -> (&str, bool) {
+    // Match patterns like "gnu.2.17", "musl.1.1"
+    // The suffix starts with a dot followed by a digit after "gnu" or "musl"
+    if let Some(idx) = target.rfind("gnu.").or_else(|| target.rfind("musl.")) {
+        let suffix_start = target[idx..].find('.').map(|i| idx + i);
+        if let Some(start) = suffix_start {
+            // Verify the part after the dot looks like a version (starts with digit)
+            let after_dot = &target[start + 1..];
+            if after_dot.starts_with(|c: char| c.is_ascii_digit()) {
+                return (&target[..start], true);
+            }
+        }
+    }
+    (target, false)
+}
+
+/// Check if a target has a glibc version suffix and should be validated
+/// against the known targets list without the suffix.
+fn target_for_validation(target: &str) -> &str {
+    strip_glibc_suffix(target).0
+}
+
+// ---------------------------------------------------------------------------
+// expand_env_vars — expand $VAR and ${VAR} in strings
+// ---------------------------------------------------------------------------
+
+/// Expand shell-style environment variable references (`$VAR` and `${VAR}`)
+/// in a string value, matching GoReleaser's `os.ExpandEnv()` behavior.
+fn expand_env_vars(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let chars: Vec<char> = input.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '$' && i + 1 < chars.len() {
+            if chars[i + 1] == '{' {
+                // ${VAR} form
+                if let Some(end) = chars[i + 2..].iter().position(|&c| c == '}') {
+                    let var_name: String = chars[i + 2..i + 2 + end].iter().collect();
+                    result.push_str(&std::env::var(&var_name).unwrap_or_default());
+                    i = i + 2 + end + 1;
+                } else {
+                    // No closing brace, keep literal
+                    result.push('$');
+                    i += 1;
+                }
+            } else if chars[i + 1].is_ascii_alphanumeric() || chars[i + 1] == '_' {
+                // $VAR form — consume alphanumeric + underscore
+                let start = i + 1;
+                let mut end = start;
+                while end < chars.len()
+                    && (chars[end].is_ascii_alphanumeric() || chars[end] == '_')
+                {
+                    end += 1;
+                }
+                let var_name: String = chars[start..end].iter().collect();
+                result.push_str(&std::env::var(&var_name).unwrap_or_default());
+                i = end;
+            } else {
+                result.push('$');
+                i += 1;
+            }
+        } else {
+            result.push(chars[i]);
+            i += 1;
+        }
+    }
+    result
+}
+
+// ---------------------------------------------------------------------------
+// is_dynamically_linked — minimal ELF check for PT_INTERP
+// ---------------------------------------------------------------------------
+
+/// Check if a binary at the given path is dynamically linked by reading ELF
+/// program headers and looking for a PT_INTERP segment (type 3).
+///
+/// Returns `false` for non-ELF files, files that can't be read, or statically
+/// linked ELF binaries.
+pub fn is_dynamically_linked(path: &Path) -> bool {
+    use std::io::Read;
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+
+    // Read enough of the header to determine ELF class and program header info
+    let mut buf = [0u8; 64];
+    if file.read(&mut buf).unwrap_or(0) < 64 {
+        return false;
+    }
+
+    // Verify ELF magic: 0x7f 'E' 'L' 'F'
+    if &buf[0..4] != b"\x7fELF" {
+        return false;
+    }
+
+    let is_64bit = buf[4] == 2;
+    let is_le = buf[5] == 1; // 1 = little-endian, 2 = big-endian
+
+    let read_u16 = |b: &[u8]| -> u16 {
+        if is_le {
+            u16::from_le_bytes([b[0], b[1]])
+        } else {
+            u16::from_be_bytes([b[0], b[1]])
+        }
+    };
+    let read_u32 = |b: &[u8]| -> u32 {
+        if is_le {
+            u32::from_le_bytes([b[0], b[1], b[2], b[3]])
+        } else {
+            u32::from_be_bytes([b[0], b[1], b[2], b[3]])
+        }
+    };
+    let read_u64 = |b: &[u8]| -> u64 {
+        if is_le {
+            u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]])
+        } else {
+            u64::from_be_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]])
+        }
+    };
+
+    // Parse program header offset, entry size, and count
+    let (ph_offset, ph_entry_size, ph_count) = if is_64bit {
+        // e_phoff at offset 32 (8 bytes), e_phentsize at 54 (2 bytes), e_phnum at 56 (2 bytes)
+        let offset = read_u64(&buf[32..40]);
+        let entry_size = read_u16(&buf[54..56]);
+        let count = read_u16(&buf[56..58]);
+        (offset, entry_size as u64, count)
+    } else {
+        // 32-bit ELF: e_phoff at offset 28 (4 bytes), e_phentsize at 42, e_phnum at 44
+        let offset = read_u32(&buf[28..32]) as u64;
+        let entry_size = read_u16(&buf[42..44]);
+        let count = read_u16(&buf[44..46]);
+        (offset, entry_size as u64, count)
+    };
+
+    if ph_count == 0 || ph_entry_size == 0 {
+        return false;
+    }
+
+    // Read all program headers
+    let total_size = ph_entry_size * ph_count as u64;
+    let mut ph_buf = vec![0u8; total_size as usize];
+    use std::io::Seek;
+    if file.seek(std::io::SeekFrom::Start(ph_offset)).is_err() {
+        return false;
+    }
+    if file.read_exact(&mut ph_buf).is_err() {
+        return false;
+    }
+
+    // Scan for PT_INTERP (type 3)
+    let pt_interp: u32 = 3;
+    for i in 0..ph_count as usize {
+        let entry_start = i * ph_entry_size as usize;
+        let p_type = read_u32(&ph_buf[entry_start..entry_start + 4]);
+        if p_type == pt_interp {
+            return true;
+        }
+    }
+
+    false
+}
+
+// ---------------------------------------------------------------------------
+// check_workspace_package — validate --package flag for workspace crates
+// ---------------------------------------------------------------------------
+
+/// If the Cargo.toml at `crate_path` has a `[workspace]` section with `members`,
+/// verify that the build flags contain `--package` or `-p`. Returns an error
+/// if the workspace is detected but no package flag is present.
+fn check_workspace_package(crate_path: &str, flags: Option<&str>) -> Result<()> {
+    let cargo_toml_path = Path::new(crate_path).join("Cargo.toml");
+    let content = match std::fs::read_to_string(&cargo_toml_path) {
+        Ok(c) => c,
+        Err(_) => return Ok(()),
+    };
+    let doc = match content.parse::<toml_edit::DocumentMut>() {
+        Ok(d) => d,
+        Err(_) => return Ok(()),
+    };
+
+    // Check for [workspace] with members
+    if let Some(ws) = doc.get("workspace")
+        && ws.get("members").is_some() {
+            // Check if flags contain --package or -p
+            let has_package = flags.is_some_and(|f| {
+                let tokens: Vec<&str> = f.split_whitespace().collect();
+                tokens.iter().any(|t| {
+                    *t == "-p"
+                        || t.starts_with("--package")
+                        || t.starts_with("-p=")
+                        || t.starts_with("--package=")
+                })
+            });
+            if !has_package {
+                anyhow::bail!(
+                    "you need to specify which workspace package to build, \
+                     please add '--package=<name>' to your build flags"
+                );
+            }
+        }
+
+    Ok(())
+}
 
 // ---------------------------------------------------------------------------
 // find_workspace_root — walk up from crate path to find workspace Cargo.toml
@@ -871,6 +1210,21 @@ impl Stage for BuildStage {
                 }
             };
 
+            // Validate: no duplicate build IDs within this crate
+            {
+                let mut seen_ids: HashSet<&str> = HashSet::new();
+                for build in &builds {
+                    if let Some(ref id) = build.id
+                        && !seen_ids.insert(id.as_str()) {
+                            anyhow::bail!(
+                                "found 2 builds with the ID '{}' in crate '{}'",
+                                id,
+                                crate_cfg.name
+                            );
+                        }
+                }
+            }
+
             // Detect crate type for cdylib/wasm awareness (once per crate)
             let crate_type = detect_crate_type(&crate_cfg.path);
             let is_wasm_crate = matches!(crate_type.as_deref(), Some("cdylib"));
@@ -880,8 +1234,13 @@ impl Stage for BuildStage {
             );
 
             for build in &builds {
-                // Skip builds marked with skip: true
-                if build.skip.unwrap_or(false) {
+                // Skip builds marked with skip: true/template
+                let should_skip = build
+                    .skip
+                    .as_ref()
+                    .map(|s| s.is_disabled(|tmpl| ctx.render_template(tmpl)))
+                    .unwrap_or(false);
+                if should_skip {
                     log.status(&format!(
                         "skipping build '{}' (skip: true)",
                         build.id.as_deref().unwrap_or(&build.binary)
@@ -889,14 +1248,11 @@ impl Stage for BuildStage {
                     continue;
                 }
 
-                // Render binary name through template engine
-                let binary_name = ctx.render_template(&build.binary).unwrap_or_else(|e| {
-                    log.warn(&format!(
-                        "failed to render binary template '{}': {}, using raw value",
-                        build.binary, e
-                    ));
-                    build.binary.clone()
-                });
+                // NOTE: Binary name rendering is deferred to the per-target loop
+                // below so that per-target template variables (Os, Arch, Target)
+                // are available in the template. The raw template is used in log
+                // messages before the target loop.
+                let binary_name_raw = &build.binary;
 
                 // Targets: per-build override (even if empty), else global defaults.
                 // An explicitly empty list (Some(vec![])) means "skip this build".
@@ -916,7 +1272,7 @@ impl Stage for BuildStage {
                     if had_targets && targets.is_empty() {
                         log.warn(&format!(
                             "--single-target: host triple '{}' not in configured targets for {}/{}, skipping",
-                            single, crate_cfg.name, binary_name
+                            single, crate_cfg.name, binary_name_raw
                         ));
                         continue;
                     }
@@ -929,7 +1285,7 @@ impl Stage for BuildStage {
                     if had_targets && targets.is_empty() {
                         log.verbose(&format!(
                             "split: no targets match partial filter for {}/{}, skipping",
-                            crate_cfg.name, binary_name
+                            crate_cfg.name, binary_name_raw
                         ));
                         continue;
                     }
@@ -939,18 +1295,20 @@ impl Stage for BuildStage {
                 if targets.is_empty() {
                     log.warn(&format!(
                         "no targets configured for {}/{}, skipping",
-                        crate_cfg.name, binary_name
+                        crate_cfg.name, binary_name_raw
                     ));
                     continue;
                 }
 
-                // Validate targets against known list (warn, not error)
+                // Validate targets against known list (error, matching GoReleaser)
                 for target in &targets {
-                    if !KNOWN_TARGETS.contains(&target.as_str()) {
-                        log.warn(&format!(
-                            "target '{}' is not in the known targets list; it may be invalid",
+                    let validation_target = target_for_validation(target);
+                    if !KNOWN_TARGETS.contains(&validation_target) {
+                        anyhow::bail!(
+                            "target '{}' is not in the known targets list and may be invalid; \
+                             if this is a custom target, add it to your build config",
                             target
-                        ));
+                        );
                     }
                 }
 
@@ -991,6 +1349,26 @@ impl Stage for BuildStage {
                     log.warn("both `cross` strategy and `cross_tool` are set; `cross_tool` takes precedence");
                 }
 
+                // Command override (e.g. "auditable build" for `cargo auditable build`)
+                let command_override = build.command.clone();
+
+                // Workspace --package validation: if building from a workspace root,
+                // ensure --package is specified in the build flags.
+                check_workspace_package(&crate_cfg.path, flags)?;
+
+                // Resolve no_unique_dist_dir: per-build overrides crate-level
+                let no_unique_dist_dir_val = build
+                    .no_unique_dist_dir
+                    .as_ref()
+                    .map(|s| s.is_disabled(|tmpl| ctx.render_template(tmpl)))
+                    .or_else(|| {
+                        crate_cfg
+                            .no_unique_dist_dir
+                            .as_ref()
+                            .map(|s| s.is_disabled(|tmpl| ctx.render_template(tmpl)))
+                    })
+                    .unwrap_or(false);
+
                 // Per-target env (target-keyed map in BuildConfig.env)
                 for target in &targets {
                     // Check ignore list
@@ -1021,6 +1399,18 @@ impl Stage for BuildStage {
                         features.clone()
                     };
 
+                    // GoReleaser parity: template-render the flags string
+                    // through the template engine before splitting on whitespace.
+                    // This allows flags like `--cfg={{ .Os }}` to be resolved.
+                    // Filter out empty results after rendering.
+                    let effective_flags: Option<String> = effective_flags.and_then(|f| {
+                        let rendered = ctx
+                            .render_template(&f)
+                            .unwrap_or_else(|_| f.clone());
+                        let trimmed = rendered.trim().to_string();
+                        if trimmed.is_empty() { None } else { Some(trimmed) }
+                    });
+
                     // Determine the binary path
                     // Flags may contain --release, --profile release, or
                     // --profile=<name>; detect the effective cargo profile.
@@ -1028,6 +1418,33 @@ impl Stage for BuildStage {
 
                     let is_wasm_target = target.contains("wasm32");
                     let (os, arch) = map_target(target);
+
+                    // Set per-target template vars BEFORE rendering binary name
+                    ctx.template_vars_mut().set("Target", target);
+                    ctx.template_vars_mut().set("Os", &os);
+                    ctx.template_vars_mut().set("Arch", &arch);
+                    let first_component = target.split('-').next().unwrap_or("");
+                    match first_component {
+                        "aarch64" => ctx.template_vars_mut().set("Arm64", "v8"),
+                        "armv7" | "armv7l" => ctx.template_vars_mut().set("Arm", "7"),
+                        "armv6" | "armv6l" | "arm" => ctx.template_vars_mut().set("Arm", "6"),
+                        "x86_64" => ctx.template_vars_mut().set("Amd64", "v1"),
+                        "i686" | "i386" | "i586" => ctx.template_vars_mut().set("I386", "sse2"),
+                        _ => {}
+                    }
+                    let artifact_ext = if os == "windows" { ".exe" } else { "" };
+                    ctx.template_vars_mut().set("ArtifactExt", artifact_ext);
+                    ctx.template_vars_mut()
+                        .set("ArtifactID", build.id.as_deref().unwrap_or(""));
+
+                    // Render binary name with per-target template vars available
+                    let binary_name = ctx.render_template(binary_name_raw).unwrap_or_else(|e| {
+                        log.warn(&format!(
+                            "failed to render binary template '{}': {}, using raw value",
+                            binary_name_raw, e
+                        ));
+                        binary_name_raw.to_string()
+                    });
 
                     // Determine the output file name based on target and crate type
                     let (output_name, artifact_kind) = if is_wasm_target && is_wasm_crate {
@@ -1055,15 +1472,16 @@ impl Stage for BuildStage {
                         (name, ArtifactKind::Binary)
                     };
 
-                    // Per-target env from build config (used below for
-                    // cargo_target_dir prediction and later for the Command).
+                    // Strip glibc version suffix for the cargo target dir path.
+                    // e.g. "aarch64-unknown-linux-gnu.2.17" -> stripped for dir
+                    let (cargo_target_name, _has_glibc_suffix) = strip_glibc_suffix(target);
+
                     let raw_target_env: Option<&HashMap<String, String>> =
                         build.env.as_ref().and_then(|m| m.get(target.as_str()));
 
-                    // Workspace root target directory (not per-crate);
-                    // respects per-build CARGO_TARGET_DIR, then process env.
+                    // Use stripped target name for directory path
                     let bin_path = cargo_target_dir(raw_target_env)
-                        .join(target)
+                        .join(cargo_target_name)
                         .join(profile)
                         .join(&output_name);
 
@@ -1075,9 +1493,20 @@ impl Stage for BuildStage {
                             src_binary.clone()
                         };
                         let src_path = cargo_target_dir(raw_target_env)
-                            .join(target)
+                            .join(cargo_target_name)
                             .join(profile)
                             .join(&src_name);
+
+                        // Clear per-target template vars before continuing
+                        ctx.template_vars_mut().set("Target", "");
+                        ctx.template_vars_mut().set("Os", "");
+                        ctx.template_vars_mut().set("Arch", "");
+                        ctx.template_vars_mut().set("Arm64", "");
+                        ctx.template_vars_mut().set("Arm", "");
+                        ctx.template_vars_mut().set("Amd64", "");
+                        ctx.template_vars_mut().set("I386", "");
+                        ctx.template_vars_mut().set("ArtifactExt", "");
+                        ctx.template_vars_mut().set("ArtifactID", "");
 
                         copy_jobs.push(BuildJob {
                             cmd: None,
@@ -1091,7 +1520,7 @@ impl Stage for BuildStage {
                             reproducible: false,
                             pre_hooks: Vec::new(),
                             post_hooks: Vec::new(),
-                            no_unique_dist_dir: crate_cfg.no_unique_dist_dir.unwrap_or(false),
+                            no_unique_dist_dir: no_unique_dist_dir_val,
                             crate_path: crate_cfg.path.clone(),
                             mod_timestamp: build.mod_timestamp.clone(),
                         });
@@ -1106,43 +1535,8 @@ impl Stage for BuildStage {
                         .cloned()
                         .unwrap_or_default();
 
-                    // Add per-target template variables (Target, Os, Arch) so that
-                    // env value templates can reference them, matching GoReleaser's
-                    // {{ .Target }}, {{ .Os }}, {{ .Arch }} availability.
-                    ctx.template_vars_mut().set("Target", target);
-                    ctx.template_vars_mut().set("Os", &os);
-                    ctx.template_vars_mut().set("Arch", &arch);
-
-                    // Set architecture sub-variant template variables matching
-                    // GoReleaser's Arm, Arm64, Amd64, I386, etc.
-                    let first_component = target.split('-').next().unwrap_or("");
-                    match first_component {
-                        "aarch64" => {
-                            ctx.template_vars_mut().set("Arm64", "v8");
-                        }
-                        "armv7" | "armv7l" => {
-                            ctx.template_vars_mut().set("Arm", "7");
-                        }
-                        "armv6" | "armv6l" | "arm" => {
-                            ctx.template_vars_mut().set("Arm", "6");
-                        }
-                        "x86_64" => {
-                            ctx.template_vars_mut().set("Amd64", "v1");
-                        }
-                        "i686" | "i386" | "i586" => {
-                            ctx.template_vars_mut().set("I386", "sse2");
-                        }
-                        _ => {}
-                    }
-
-                    // Set ArtifactExt based on the target OS
-                    let artifact_ext = if os == "windows" { ".exe" } else { "" };
-                    ctx.template_vars_mut().set("ArtifactExt", artifact_ext);
-
-                    // Set ArtifactID from the build config's id field
-                    ctx.template_vars_mut().set("ArtifactID", build.id.as_deref().unwrap_or(""));
-
-                    // Render env values through template engine
+                    // Template vars already set before binary name render above.
+                    // Render env values and expand shell-style env var references.
                     let mut rendered_env: HashMap<String, String> = HashMap::new();
                     for (k, v) in &target_env {
                         let rendered_val = ctx.render_template(v).unwrap_or_else(|e| {
@@ -1152,7 +1546,8 @@ impl Stage for BuildStage {
                             ));
                             v.clone()
                         });
-                        rendered_env.insert(k.clone(), rendered_val);
+                        // Expand $VAR and ${VAR} matching GoReleaser's os.ExpandEnv()
+                        rendered_env.insert(k.clone(), expand_env_vars(&rendered_val));
                     }
                     target_env = rendered_env;
 
@@ -1168,12 +1563,18 @@ impl Stage for BuildStage {
                                 ));
                                 v.clone()
                             });
-                            target_env.insert(k.clone(), rendered_val);
+                            target_env.insert(k.clone(), expand_env_vars(&rendered_val));
                         }
                     }
 
+                    // Set per-target hook context: Name, Path, Ext
+                    ctx.template_vars_mut().set("Name", &binary_name);
+                    ctx.template_vars_mut()
+                        .set("Path", &bin_path.to_string_lossy());
+                    ctx.template_vars_mut()
+                        .set("Ext", if os == "windows" { ".exe" } else { "" });
+
                     // Remove per-target template variables to avoid leaking
-                    // to other builds/targets.
                     ctx.template_vars_mut().set("Target", "");
                     ctx.template_vars_mut().set("Os", "");
                     ctx.template_vars_mut().set("Arch", "");
@@ -1183,6 +1584,9 @@ impl Stage for BuildStage {
                     ctx.template_vars_mut().set("I386", "");
                     ctx.template_vars_mut().set("ArtifactExt", "");
                     ctx.template_vars_mut().set("ArtifactID", "");
+                    ctx.template_vars_mut().set("Name", "");
+                    ctx.template_vars_mut().set("Path", "");
+                    ctx.template_vars_mut().set("Ext", "");
 
                     // Reproducible builds: inject SOURCE_DATE_EPOCH and RUSTFLAGS
                     if build.reproducible.unwrap_or(false) {
@@ -1216,6 +1620,7 @@ impl Stage for BuildStage {
                             no_default_features,
                             &target_env,
                             cross_tool.as_deref(),
+                            command_override.as_deref(),
                         )
                     } else {
                         build_command(
@@ -1228,6 +1633,7 @@ impl Stage for BuildStage {
                             no_default_features,
                             &target_env,
                             cross_tool.as_deref(),
+                            command_override.as_deref(),
                         )
                     };
 
@@ -1251,7 +1657,7 @@ impl Stage for BuildStage {
                             .as_ref()
                             .and_then(|h| h.post.clone())
                             .unwrap_or_default(),
-                        no_unique_dist_dir: crate_cfg.no_unique_dist_dir.unwrap_or(false),
+                        no_unique_dist_dir: no_unique_dist_dir_val,
                         crate_path: crate_cfg.path.clone(),
                         mod_timestamp: build.mod_timestamp.clone(),
                     });
@@ -1340,6 +1746,11 @@ impl Stage for BuildStage {
             } else {
                 job_bin_path.to_path_buf()
             };
+
+            // Check for ELF dynamic linking and store in metadata
+            if artifact_path.exists() && is_dynamically_linked(&artifact_path) {
+                meta.insert("DynamicallyLinked".to_string(), "true".to_string());
+            }
 
             ctx.artifacts.add(Artifact {
                 kind: artifact_kind,
@@ -1704,6 +2115,7 @@ mod tests {
             false,
             &Default::default(),
             None,
+            None,
         );
         assert_eq!(cmd.program, "cargo");
         assert!(cmd.args.contains(&"build".to_string()));
@@ -1726,6 +2138,7 @@ mod tests {
             false,
             &Default::default(),
             None,
+            None,
         );
         assert_eq!(cmd.program, "cargo");
         assert!(cmd.args.contains(&"zigbuild".to_string()));
@@ -1744,6 +2157,7 @@ mod tests {
             false,
             &Default::default(),
             None,
+            None,
         );
         assert_eq!(cmd.program, "cross");
         assert!(cmd.args.contains(&"build".to_string()));
@@ -1761,6 +2175,7 @@ mod tests {
             false,
             &Default::default(),
             None,
+            None,
         );
         assert!(cmd.args.contains(&"--features".to_string()));
         assert!(cmd.args.contains(&"tls,json".to_string()));
@@ -1777,6 +2192,7 @@ mod tests {
             &[],
             true,
             &Default::default(),
+            None,
             None,
         );
         assert!(cmd.args.contains(&"--no-default-features".to_string()));
@@ -1809,6 +2225,7 @@ mod tests {
             false,
             &Default::default(),
             None,
+            None,
         );
         assert!(cmd.args.contains(&"this-is-not-a-valid-triple".to_string()));
         assert_eq!(cmd.program, "cargo");
@@ -1826,6 +2243,7 @@ mod tests {
             &[],
             false,
             &Default::default(),
+            None,
             None,
         );
         assert!(cmd.args.contains(&"--bin".to_string()));
@@ -1979,6 +2397,7 @@ mod tests {
             false,
             &env,
             None,
+            None,
         );
         assert_eq!(cmd.env.get("CC").unwrap(), "gcc-12");
         assert_eq!(
@@ -2090,6 +2509,7 @@ crate_type = ["dylib"]
             false,
             &Default::default(),
             None,
+            None,
         );
         assert_eq!(cmd.program, "cargo");
         assert!(cmd.args.contains(&"build".to_string()));
@@ -2112,6 +2532,7 @@ crate_type = ["dylib"]
             true,
             &Default::default(),
             None,
+            None,
         );
         assert!(cmd.args.contains(&"--lib".to_string()));
         assert!(cmd.args.contains(&"--features".to_string()));
@@ -2129,6 +2550,7 @@ crate_type = ["dylib"]
             &[],
             false,
             &Default::default(),
+            None,
             None,
         );
         assert_eq!(cmd.program, "cargo");
@@ -2335,7 +2757,7 @@ crate_type = ["dylib"]
         // A universal artifact should have been registered
         let universals: Vec<_> = ctx
             .artifacts
-            .by_kind(ArtifactKind::Binary)
+            .by_kind(ArtifactKind::UniversalBinary)
             .into_iter()
             .filter(|a| a.target.as_deref() == Some("darwin-universal"))
             .collect();
@@ -2390,7 +2812,7 @@ crate_type = ["dylib"]
 
         let universals: Vec<_> = ctx
             .artifacts
-            .by_kind(ArtifactKind::Binary)
+            .by_kind(ArtifactKind::UniversalBinary)
             .into_iter()
             .filter(|a| a.target.as_deref() == Some("darwin-universal"))
             .collect();
@@ -2440,7 +2862,7 @@ crate_type = ["dylib"]
         // No universal artifact should have been registered
         let universals: Vec<_> = ctx
             .artifacts
-            .by_kind(ArtifactKind::Binary)
+            .by_kind(ArtifactKind::UniversalBinary)
             .into_iter()
             .filter(|a| a.target.as_deref() == Some("darwin-universal"))
             .collect();
@@ -2491,7 +2913,7 @@ crate_type = ["dylib"]
 
         let universals: Vec<_> = ctx
             .artifacts
-            .by_kind(ArtifactKind::Binary)
+            .by_kind(ArtifactKind::UniversalBinary)
             .into_iter()
             .filter(|a| a.target.as_deref() == Some("darwin-universal"))
             .collect();
@@ -2539,7 +2961,7 @@ crate_type = ["dylib"]
 
         let universals: Vec<_> = ctx
             .artifacts
-            .by_kind(ArtifactKind::Binary)
+            .by_kind(ArtifactKind::UniversalBinary)
             .into_iter()
             .filter(|a| a.target.as_deref() == Some("darwin-universal"))
             .collect();
@@ -2732,6 +3154,7 @@ crate_type = ["dylib"]
             false,
             &Default::default(),
             Some("/usr/bin/my-cross"),
+            None,
         );
         assert_eq!(cmd.program, "/usr/bin/my-cross");
         assert!(cmd.args.contains(&"build".to_string()));
@@ -2869,7 +3292,7 @@ crate_type = ["dylib"]
 
     #[test]
     fn test_resolve_build_program_auto() {
-        let (prog, sub) = resolve_build_program(&CrossStrategy::Auto, None);
+        let (prog, sub) = resolve_build_program(&CrossStrategy::Auto, None, None);
         // Auto resolves at runtime — at minimum it falls back to cargo
         assert!(
             prog == "cargo" || prog == "cross",
@@ -2880,21 +3303,21 @@ crate_type = ["dylib"]
 
     #[test]
     fn test_resolve_build_program_zigbuild() {
-        let (prog, sub) = resolve_build_program(&CrossStrategy::Zigbuild, None);
+        let (prog, sub) = resolve_build_program(&CrossStrategy::Zigbuild, None, None);
         assert_eq!(prog, "cargo");
         assert_eq!(sub, "zigbuild");
     }
 
     #[test]
     fn test_resolve_build_program_cross() {
-        let (prog, sub) = resolve_build_program(&CrossStrategy::Cross, None);
+        let (prog, sub) = resolve_build_program(&CrossStrategy::Cross, None, None);
         assert_eq!(prog, "cross");
         assert_eq!(sub, "build");
     }
 
     #[test]
     fn test_resolve_build_program_cross_tool_overrides() {
-        let (prog, sub) = resolve_build_program(&CrossStrategy::Zigbuild, Some("/usr/bin/custom"));
+        let (prog, sub) = resolve_build_program(&CrossStrategy::Zigbuild, Some("/usr/bin/custom"), None);
         assert_eq!(prog, "/usr/bin/custom");
         assert_eq!(sub, "build");
     }
@@ -2952,5 +3375,424 @@ crates:
         let hooks = build.hooks.as_ref().unwrap();
         assert_eq!(hooks.pre.as_ref().unwrap().len(), 1);
         assert_eq!(hooks.post.as_ref().unwrap().len(), 1);
+    }
+
+    // ---- Parity gap tests ----
+
+    #[test]
+    fn test_strip_glibc_suffix_with_version() {
+        let (stripped, has_suffix) = strip_glibc_suffix("aarch64-unknown-linux-gnu.2.17");
+        assert_eq!(stripped, "aarch64-unknown-linux-gnu");
+        assert!(has_suffix);
+    }
+
+    #[test]
+    fn test_strip_glibc_suffix_no_suffix() {
+        let (stripped, has_suffix) = strip_glibc_suffix("aarch64-unknown-linux-gnu");
+        assert_eq!(stripped, "aarch64-unknown-linux-gnu");
+        assert!(!has_suffix);
+    }
+
+    #[test]
+    fn test_strip_glibc_suffix_musl_version() {
+        let (stripped, has_suffix) = strip_glibc_suffix("x86_64-unknown-linux-musl.1.1");
+        assert_eq!(stripped, "x86_64-unknown-linux-musl");
+        assert!(has_suffix);
+    }
+
+    #[test]
+    fn test_strip_glibc_suffix_windows_no_change() {
+        let (stripped, has_suffix) = strip_glibc_suffix("x86_64-pc-windows-msvc");
+        assert_eq!(stripped, "x86_64-pc-windows-msvc");
+        assert!(!has_suffix);
+    }
+
+    #[test]
+    fn test_target_for_validation_strips_suffix() {
+        let t = target_for_validation("aarch64-unknown-linux-gnu.2.17");
+        assert_eq!(t, "aarch64-unknown-linux-gnu");
+    }
+
+    #[test]
+    fn test_target_for_validation_no_suffix() {
+        let t = target_for_validation("x86_64-unknown-linux-gnu");
+        assert_eq!(t, "x86_64-unknown-linux-gnu");
+    }
+
+    #[test]
+    fn test_expand_env_vars_dollar_var() {
+        // SAFETY: test-only env mutation
+        unsafe { std::env::set_var("TEST_EXPAND_VAR", "hello") };
+        let result = expand_env_vars("$TEST_EXPAND_VAR world");
+        assert_eq!(result, "hello world");
+        unsafe { std::env::remove_var("TEST_EXPAND_VAR") };
+    }
+
+    #[test]
+    fn test_expand_env_vars_brace_var() {
+        unsafe { std::env::set_var("TEST_EXPAND_BRACE", "braced") };
+        let result = expand_env_vars("${TEST_EXPAND_BRACE}_suffix");
+        assert_eq!(result, "braced_suffix");
+        unsafe { std::env::remove_var("TEST_EXPAND_BRACE") };
+    }
+
+    #[test]
+    fn test_expand_env_vars_missing_var() {
+        let result = expand_env_vars("$NONEXISTENT_VAR_12345");
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_expand_env_vars_no_vars() {
+        let result = expand_env_vars("plain string with no vars");
+        assert_eq!(result, "plain string with no vars");
+    }
+
+    #[test]
+    fn test_is_dynamically_linked_nonexistent() {
+        assert!(!is_dynamically_linked(Path::new("/nonexistent/path")));
+    }
+
+    #[test]
+    fn test_is_dynamically_linked_non_elf() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("not_elf");
+        std::fs::write(&path, b"not an elf file").unwrap();
+        assert!(!is_dynamically_linked(&path));
+    }
+
+    #[test]
+    fn test_check_workspace_package_no_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cargo_toml = tmp.path().join("Cargo.toml");
+        std::fs::write(
+            &cargo_toml,
+            "[package]\nname = \"test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        let result = check_workspace_package(tmp.path().to_str().unwrap(), None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_check_workspace_package_workspace_without_package_flag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cargo_toml = tmp.path().join("Cargo.toml");
+        std::fs::write(
+            &cargo_toml,
+            "[workspace]\nmembers = [\"crates/a\", \"crates/b\"]\n",
+        )
+        .unwrap();
+        let result = check_workspace_package(tmp.path().to_str().unwrap(), Some("--release"));
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("--package=<name>"));
+    }
+
+    #[test]
+    fn test_check_workspace_package_workspace_with_package_flag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cargo_toml = tmp.path().join("Cargo.toml");
+        std::fs::write(
+            &cargo_toml,
+            "[workspace]\nmembers = [\"crates/a\"]\n",
+        )
+        .unwrap();
+        let result = check_workspace_package(
+            tmp.path().to_str().unwrap(),
+            Some("--release --package=myapp"),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_check_workspace_package_workspace_with_p_flag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cargo_toml = tmp.path().join("Cargo.toml");
+        std::fs::write(
+            &cargo_toml,
+            "[workspace]\nmembers = [\"crates/a\"]\n",
+        )
+        .unwrap();
+        let result = check_workspace_package(
+            tmp.path().to_str().unwrap(),
+            Some("--release -p myapp"),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_duplicate_build_id_validation() {
+        use anodize_core::config::{BuildConfig, Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let mut config = Config::default();
+        config.project_name = "test".to_string();
+        config.crates.push(CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            builds: Some(vec![
+                BuildConfig {
+                    id: Some("dup".to_string()),
+                    binary: "myapp".to_string(),
+                    targets: Some(vec!["x86_64-unknown-linux-gnu".to_string()]),
+                    ..Default::default()
+                },
+                BuildConfig {
+                    id: Some("dup".to_string()),
+                    binary: "myapp2".to_string(),
+                    targets: Some(vec!["x86_64-unknown-linux-gnu".to_string()]),
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        });
+
+        let opts = ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        let stage = BuildStage;
+        let result = stage.run(&mut ctx);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("found 2 builds with the ID 'dup'"),
+            "expected duplicate ID error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_invalid_target_errors() {
+        use anodize_core::config::{BuildConfig, Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let mut config = Config::default();
+        config.project_name = "test".to_string();
+        config.crates.push(CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            builds: Some(vec![BuildConfig {
+                binary: "myapp".to_string(),
+                targets: Some(vec!["this-is-not-a-valid-triple".to_string()]),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        });
+
+        let opts = ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        let stage = BuildStage;
+        let result = stage.run(&mut ctx);
+        assert!(result.is_err(), "invalid target should error");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("not in the known targets list"),
+            "expected known targets error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_skip_build_with_string_or_bool() {
+        use anodize_core::config::{BuildConfig, Config, CrateConfig, StringOrBool};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let mut config = Config::default();
+        config.project_name = "test".to_string();
+        config.crates.push(CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            builds: Some(vec![BuildConfig {
+                binary: "myapp".to_string(),
+                skip: Some(StringOrBool::Bool(true)),
+                targets: Some(vec!["x86_64-unknown-linux-gnu".to_string()]),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        });
+
+        let opts = ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        let stage = BuildStage;
+        assert!(stage.run(&mut ctx).is_ok());
+        // No artifacts should be registered since the build was skipped
+        let binaries = ctx
+            .artifacts
+            .by_kind(ArtifactKind::Binary);
+        assert!(binaries.is_empty(), "skipped build should produce no artifacts");
+    }
+
+    #[test]
+    fn test_command_override() {
+        let cmd = build_command(
+            "mybin",
+            ".",
+            "x86_64-unknown-linux-gnu",
+            &CrossStrategy::Cargo,
+            Some("--release"),
+            &[],
+            false,
+            &Default::default(),
+            None,
+            Some("auditable build"),
+        );
+        assert_eq!(cmd.program, "cargo");
+        // "auditable build" should be split into two args
+        assert!(cmd.args.contains(&"auditable".to_string()));
+        assert!(cmd.args.contains(&"build".to_string()));
+        assert!(cmd.args.contains(&"--bin".to_string()));
+    }
+
+    #[test]
+    fn test_resolve_build_program_with_command_override() {
+        let (prog, sub) = resolve_build_program(&CrossStrategy::Cargo, None, Some("auditable build"));
+        assert_eq!(prog, "cargo");
+        assert_eq!(sub, "auditable build");
+    }
+
+    #[test]
+    fn test_known_targets_contains_mips() {
+        assert!(KNOWN_TARGETS.contains(&"mips-unknown-linux-gnu"));
+        assert!(KNOWN_TARGETS.contains(&"mipsel-unknown-linux-gnu"));
+        assert!(KNOWN_TARGETS.contains(&"mips64-unknown-linux-gnuabi64"));
+    }
+
+    #[test]
+    fn test_known_targets_contains_riscv() {
+        assert!(KNOWN_TARGETS.contains(&"riscv64gc-unknown-linux-gnu"));
+        assert!(KNOWN_TARGETS.contains(&"riscv64gc-unknown-linux-musl"));
+        assert!(KNOWN_TARGETS.contains(&"riscv32imac-unknown-none-elf"));
+    }
+
+    #[test]
+    fn test_known_targets_contains_powerpc() {
+        assert!(KNOWN_TARGETS.contains(&"powerpc-unknown-linux-gnu"));
+        assert!(KNOWN_TARGETS.contains(&"powerpc64-unknown-linux-gnu"));
+        assert!(KNOWN_TARGETS.contains(&"powerpc64le-unknown-linux-gnu"));
+    }
+
+    #[test]
+    fn test_known_targets_contains_sparc() {
+        assert!(KNOWN_TARGETS.contains(&"sparc64-unknown-linux-gnu"));
+    }
+
+    #[test]
+    fn test_known_targets_contains_thumb() {
+        assert!(KNOWN_TARGETS.contains(&"thumbv6m-none-eabi"));
+        assert!(KNOWN_TARGETS.contains(&"thumbv7em-none-eabi"));
+    }
+
+    #[test]
+    fn test_known_targets_contains_wasm() {
+        assert!(KNOWN_TARGETS.contains(&"wasm32-unknown-unknown"));
+        assert!(KNOWN_TARGETS.contains(&"wasm32-wasi"));
+        assert!(KNOWN_TARGETS.contains(&"wasm32-wasip1"));
+        assert!(KNOWN_TARGETS.contains(&"wasm32-wasip2"));
+    }
+
+    #[test]
+    fn test_known_targets_contains_i686() {
+        assert!(KNOWN_TARGETS.contains(&"i686-unknown-linux-gnu"));
+        assert!(KNOWN_TARGETS.contains(&"i686-unknown-freebsd"));
+        assert!(KNOWN_TARGETS.contains(&"i586-unknown-linux-gnu"));
+    }
+
+    #[test]
+    fn test_known_targets_contains_s390x() {
+        assert!(KNOWN_TARGETS.contains(&"s390x-unknown-linux-gnu"));
+        assert!(KNOWN_TARGETS.contains(&"s390x-unknown-linux-musl"));
+    }
+
+    #[test]
+    fn test_build_config_command_field_parses() {
+        use anodize_core::config::Config;
+
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    builds:
+      - binary: myapp
+        command: "auditable build"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let build = &config.crates[0].builds.as_ref().unwrap()[0];
+        assert_eq!(build.command.as_deref(), Some("auditable build"));
+    }
+
+    #[test]
+    fn test_build_config_skip_string_or_bool_parses() {
+        use anodize_core::config::{Config, StringOrBool};
+
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    builds:
+      - binary: myapp
+        skip: true
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let build = &config.crates[0].builds.as_ref().unwrap()[0];
+        assert_eq!(build.skip, Some(StringOrBool::Bool(true)));
+    }
+
+    #[test]
+    fn test_build_config_skip_template_parses() {
+        use anodize_core::config::{Config, StringOrBool};
+
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    builds:
+      - binary: myapp
+        skip: "{{ if .IsSnapshot }}true{{ endif }}"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let build = &config.crates[0].builds.as_ref().unwrap()[0];
+        match &build.skip {
+            Some(StringOrBool::String(s)) => {
+                assert!(s.contains("IsSnapshot"));
+            }
+            other => panic!("expected StringOrBool::String, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_build_config_no_unique_dist_dir_string_or_bool() {
+        use anodize_core::config::{Config, StringOrBool};
+
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    builds:
+      - binary: myapp
+        no_unique_dist_dir: true
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let build = &config.crates[0].builds.as_ref().unwrap()[0];
+        assert_eq!(build.no_unique_dist_dir, Some(StringOrBool::Bool(true)));
     }
 }

@@ -187,8 +187,21 @@ fn resolve_extra_files(specs: &[ExtraFileSpec]) -> Result<Vec<ResolvedExtraFile>
             .with_context(|| format!("checksum: invalid extra_files glob: {pattern}"))?
             .collect::<std::result::Result<Vec<_>, _>>()
             .with_context(|| format!("checksum: error reading glob results for: {pattern}"))?;
-        for m in matches {
-            if m.is_file() && seen.insert(m.clone()) {
+        // GoReleaser constraint (extra_files.go:33-34): when name_template is set,
+        // the glob must match exactly one entry. Check BEFORE directory filtering
+        // to match GoReleaser's behavior.
+        if let Some(ref tmpl) = name_tmpl
+            && matches.len() > 1 {
+                bail!(
+                    "checksum: extra_files glob '{}' -> '{}': glob matches {} files",
+                    pattern,
+                    tmpl,
+                    matches.len()
+                );
+            }
+        let file_matches: Vec<_> = matches.into_iter().filter(|m| m.is_file()).collect();
+        for m in file_matches {
+            if seen.insert(m.clone()) {
                 results.push(ResolvedExtraFile {
                     path: m,
                     name_template: name_tmpl.clone(),
@@ -366,8 +379,8 @@ impl Stage for ChecksumStage {
             }
 
             // Process templated_extra_files: render and add as checksummable artifacts
-            if let Some(ref tpl_specs) = templated_extra_files {
-                if !tpl_specs.is_empty() {
+            if let Some(ref tpl_specs) = templated_extra_files
+                && !tpl_specs.is_empty() {
                     let rendered =
                         anodize_core::templated_files::process_templated_extra_files(
                             tpl_specs, ctx, &dist, "checksum",
@@ -386,7 +399,6 @@ impl Stage for ChecksumStage {
                         });
                     }
                 }
-            }
 
             if source_artifacts.is_empty() {
                 log.verbose(&format!(
@@ -399,6 +411,10 @@ impl Stage for ChecksumStage {
             let ext = &algorithm; // e.g. "sha256" or "sha512"
 
             let mut combined_lines: Vec<String> = Vec::new();
+            // Collect (artifact_path, "algorithm:hash") pairs so we can store
+            // the checksum back into each artifact's metadata after the loop.
+            // GoReleaser stores this as Extra["Checksum"] = "algorithm:hash".
+            let mut artifact_checksums: Vec<(PathBuf, String)> = Vec::new();
 
             for artifact in &source_artifacts {
                 // In dry-run mode, files may not exist on disk; skip with placeholder
@@ -418,6 +434,12 @@ impl Stage for ChecksumStage {
                         )
                     })?
                 };
+
+                // Store the checksum for later propagation to artifact metadata.
+                artifact_checksums.push((
+                    artifact.path.clone(),
+                    format!("{}:{}", algorithm, hash),
+                ));
 
                 let filename = artifact
                     .path
@@ -450,6 +472,7 @@ impl Stage for ChecksumStage {
                         let mut vars = ctx.template_vars().clone();
                         vars.set("ArtifactName", filename);
                         vars.set("ArtifactExt", artifact_ext);
+                        vars.set("Algorithm", &algorithm);
                         let rendered =
                             anodize_core::template::render(tmpl, &vars).with_context(|| {
                                 format!(
@@ -457,18 +480,12 @@ impl Stage for ChecksumStage {
                                     artifact.path.display()
                                 )
                             })?;
-                        artifact
-                            .path
-                            .parent()
-                            .unwrap_or(Path::new("."))
-                            .join(rendered)
+                        // GoReleaser places sidecars in dist (checksums.go:79)
+                        Path::new(&dist).join(rendered)
                     } else {
                         // Default sidecar naming: {artifact}.{algorithm}
-                        artifact
-                            .path
-                            .parent()
-                            .unwrap_or(Path::new("."))
-                            .join(format!("{}.{}", filename, ext))
+                        // GoReleaser places sidecars in dist (checksums.go:79)
+                        Path::new(&dist).join(format!("{}.{}", filename, ext))
                     };
 
                     // GoReleaser writes ONLY the raw hex hash in sidecar files
@@ -581,6 +598,20 @@ impl Stage for ChecksumStage {
                 log.status(&format!(
                     "split mode: skipping combined checksums file for crate {crate_name}"
                 ));
+            }
+
+            // GoReleaser parity: store the computed checksum back into each
+            // source artifact's metadata as "Checksum" = "algorithm:hash".
+            // Publishers (Homebrew, Krew, etc.) read this to get per-artifact
+            // checksums without re-hashing.
+            let checksum_map: std::collections::HashMap<&PathBuf, &String> =
+                artifact_checksums.iter().map(|(p, v)| (p, v)).collect();
+            for art in ctx.artifacts.all_mut() {
+                if let Some(val) = checksum_map.get(&art.path) {
+                    art.metadata
+                        .entry("Checksum".to_string())
+                        .or_insert_with(|| (*val).clone());
+                }
             }
         }
 

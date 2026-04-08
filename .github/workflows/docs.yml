@@ -2,11 +2,12 @@ name: Deploy Docs
 
 on:
   push:
-    branches: [main]
+    branches: [master]
     paths:
       - "docs/site/**"
       - "crates/xtask/**"
       - "crates/cli/src/lib.rs"
+      - "crates/core/src/config.rs"
   workflow_dispatch:
 
 permissions:
@@ -37,6 +38,11 @@ jobs:
 
       - name: Generate reference docs
         run: cargo xtask gen-docs
+
+      - name: Generate JSON Schema
+        run: |
+          cargo build --release -p anodize
+          ./target/release/anodize jsonschema > docs/site/static/schema.json
 
       - name: Build site
         run: cd docs/site && zola build

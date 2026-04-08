@@ -120,9 +120,9 @@ pub fn resolve_git_context(
         // Validate HEAD points at the tag (like GoReleaser's ErrWrongRef).
         // Skip this check for the synthetic v0.0.0 tag since it doesn't exist in git.
         let is_synthetic_tag = tag == "v0.0.0" && tag_override.is_none();
-        if !is_synthetic_tag {
-            if let Ok(false) = git::tag_points_at_head(&tag) {
-                if !ctx.options.snapshot {
+        if !is_synthetic_tag
+            && let Ok(false) = git::tag_points_at_head(&tag)
+                && !ctx.options.snapshot {
                     let head = git::get_short_commit().unwrap_or_else(|_| "unknown".to_string());
                     anyhow::bail!(
                         "tag {} does not point at HEAD ({}). Check out the tag or use --snapshot to skip this check.",
@@ -130,10 +130,8 @@ pub fn resolve_git_context(
                         head
                     );
                 }
-            }
-        }
 
-        match git::detect_git_info(&tag) {
+        match git::detect_git_info(&tag, ctx.skip_validate()) {
             Ok(mut git_info) => {
                 // Validate dirty working tree: error in non-snapshot/non-dry-run mode,
                 // matching GoReleaser's CheckDirty behavior.
@@ -251,6 +249,16 @@ pub fn setup_env(
                 }
             }
         }
+    } else {
+        // GoReleaser parity (env.go:setDefaultTokenFiles): always check default
+        // token file paths even when env_files is not configured.
+        let default_config = anodize_core::config::EnvFilesTokenConfig::default();
+        let token_vars = anodize_core::config::load_token_files(&default_config, log)
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        for (key, value) in &token_vars {
+            ctx.template_vars_mut().set_env(key, value);
+            set_env_var_single_threaded(key, value);
+        }
     }
 
     // Populate user-defined env vars into template context (highest priority).
@@ -280,30 +288,91 @@ pub fn setup_env(
         }
     }
 
-    // Early token presence check (like GoReleaser's ErrMissingToken in env.go).
-    // Warn if no SCM token is available and the pipeline will need one.
-    // Don't hard-error — snapshot mode and dry-run can proceed without a token.
-    // Note: resolve_scm_token_type() has already populated ctx.options.token
-    // from the correct env var for the detected SCM type.
-    if ctx.options.token.is_none() && !ctx.is_snapshot() {
+    // GoReleaser env.go:75-86: when force_token is active, clear non-forced
+    // token env vars BEFORE the multi-token check so it cannot fire.
+    let resolved_force = config.force_token.as_ref().cloned().or_else(|| {
+        let env_val = std::env::var("ANODIZE_FORCE_TOKEN")
+            .ok()
+            .or_else(|| std::env::var("GORELEASER_FORCE_TOKEN").ok())?;
+        match env_val.to_lowercase().as_str() {
+            "github" => Some(ForceTokenKind::GitHub),
+            "gitlab" => Some(ForceTokenKind::GitLab),
+            "gitea" => Some(ForceTokenKind::Gitea),
+            _ => None,
+        }
+    });
+    if let Some(ref forced) = resolved_force {
+        // Remove env vars for non-forced token types so downstream code
+        // only sees the forced provider's token.
+        let keep_github = matches!(forced, ForceTokenKind::GitHub);
+        let keep_gitlab = matches!(forced, ForceTokenKind::GitLab);
+        let keep_gitea = matches!(forced, ForceTokenKind::Gitea);
+        if !keep_github {
+            // SAFETY: single-threaded pipeline setup, see set_env_var_single_threaded.
+            unsafe {
+                std::env::remove_var("GITHUB_TOKEN");
+                std::env::remove_var("ANODIZE_GITHUB_TOKEN");
+            }
+        }
+        if !keep_gitlab {
+            unsafe { std::env::remove_var("GITLAB_TOKEN") };
+        }
+        if !keep_gitea {
+            unsafe { std::env::remove_var("GITEA_TOKEN") };
+        }
+    }
+
+    // Multiple-token detection (GoReleaser env.go:88-101 ErrMultipleTokens).
+    // When multiple SCM tokens are set without force_token, error early.
+    if resolved_force.is_none() {
+        let has_github = std::env::var("GITHUB_TOKEN").is_ok()
+            || std::env::var("ANODIZE_GITHUB_TOKEN").is_ok();
+        let has_gitlab = std::env::var("GITLAB_TOKEN").is_ok();
+        let has_gitea = std::env::var("GITEA_TOKEN").is_ok();
+        let count = [has_github, has_gitlab, has_gitea]
+            .iter()
+            .filter(|&&b| b)
+            .count();
+        if count > 1 {
+            anyhow::bail!(
+                "multiple SCM tokens set simultaneously ({}). Set force_token in config \
+                 or ANODIZE_FORCE_TOKEN env var to specify which to use.",
+                [
+                    if has_github { Some("GITHUB_TOKEN") } else { None },
+                    if has_gitlab { Some("GITLAB_TOKEN") } else { None },
+                    if has_gitea { Some("GITEA_TOKEN") } else { None },
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(", ")
+            );
+        }
+    }
+
+    // Missing token hard error (GoReleaser env.go:138-142 ErrMissingToken).
+    // Error early if no SCM token and the pipeline needs one.
+    // Snapshot mode, dry-run, and release.disable can proceed without a token.
+    if ctx.options.token.is_none() && !ctx.is_snapshot() && !ctx.is_dry_run() {
+        let release_disabled = config.crates.first().and_then(|c| {
+            c.release.as_ref()?.disable.as_ref()
+        }).is_some_and(|d| d.is_disabled(|t| ctx.render_template(t)));
         let needs_token = config.crates.iter().any(|c| c.release.is_some())
-            && !ctx.should_skip("release");
+            && !ctx.should_skip("release")
+            && !release_disabled;
         if needs_token {
             let hint = match ctx.token_type {
                 anodize_core::scm::ScmTokenType::GitLab => {
-                    "no GitLab token found; release/publish stages may fail. \
-                     Set GITLAB_TOKEN."
+                    "no GitLab token found. Set GITLAB_TOKEN."
                 }
                 anodize_core::scm::ScmTokenType::Gitea => {
-                    "no Gitea token found; release/publish stages may fail. \
-                     Set GITEA_TOKEN."
+                    "no Gitea token found. Set GITEA_TOKEN."
                 }
                 anodize_core::scm::ScmTokenType::GitHub => {
-                    "no GitHub token found; release/publish stages may fail. \
-                     Set GITHUB_TOKEN or ANODIZE_GITHUB_TOKEN."
+                    "no GitHub token found. Set GITHUB_TOKEN or ANODIZE_GITHUB_TOKEN."
                 }
             };
-            log.warn(hint);
+            anyhow::bail!("{}", hint);
         }
     }
 

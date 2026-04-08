@@ -191,8 +191,9 @@ pub(crate) fn sort_commits(commits: &mut [CommitInfo], order: &str) -> Result<()
 // ---------------------------------------------------------------------------
 
 /// Group commits by matching `raw_message` against each group's `regexp`.
-/// Groups are emitted in `order` (ascending). Commits that do not match any
-/// group are collected into an implicit "Others" group appended at the end.
+/// Commits are matched against groups in config order, then groups are sorted
+/// by `order` (ascending) for display. Commits that do not match any group
+/// are silently dropped (matching GoReleaser behavior).
 /// Groups with zero matching commits are omitted from the output.
 ///
 /// When a group has nested `groups`, the commits that matched the parent group
@@ -226,14 +227,12 @@ fn group_commits_inner(
             }]
         });
     }
-    // Sort groups by their `order` field (None sorts last).
-    let mut sorted_groups: Vec<&ChangelogGroup> = groups.iter().collect();
-    sorted_groups.sort_by_key(|g| g.order.unwrap_or(i32::MAX));
-
-    // Compile regexes once. Invalid patterns are hard errors.
+    // Compile regexes once in CONFIG order for matching. Invalid patterns are
+    // hard errors. GoReleaser matches commits against groups in config order,
+    // then sorts by `order` for display only.
     let mut compiled: Vec<(Option<Regex>, &ChangelogGroup)> =
-        Vec::with_capacity(sorted_groups.len());
-    for g in &sorted_groups {
+        Vec::with_capacity(groups.len());
+    for g in groups {
         let re = match g.regexp.as_deref() {
             Some(p) => {
                 let re = Regex::new(p).map_err(|e| {
@@ -243,7 +242,7 @@ fn group_commits_inner(
             }
             None => None,
         };
-        compiled.push((re, *g));
+        compiled.push((re, g));
     }
 
     let mut buckets: Vec<Vec<CommitInfo>> = vec![Vec::new(); compiled.len()];
@@ -278,7 +277,8 @@ fn group_commits_inner(
         buckets[ci_idx].append(&mut others);
     }
 
-    let mut result: Vec<GroupedCommits> = Vec::new();
+    // Build results paired with their order key, then sort by `order` for display.
+    let mut result: Vec<(i32, GroupedCommits)> = Vec::new();
     for ((_, group), bucket) in compiled.iter().zip(buckets) {
         if bucket.is_empty() && group.groups.as_ref().is_none_or(|g| g.is_empty()) {
             continue;
@@ -298,20 +298,20 @@ fn group_commits_inner(
             // the parent shows no direct commits.
             Vec::new()
         };
-        result.push(GroupedCommits {
+        let order_key = group.order.unwrap_or(i32::MAX);
+        result.push((order_key, GroupedCommits {
             title: group.title.clone(),
             commits: own_commits,
             subgroups,
-        });
+        }));
     }
+    // Sort by the `order` field for display (stable sort preserves config order
+    // for groups with equal order values).
+    result.sort_by_key(|(order, _)| *order);
+    let result: Vec<GroupedCommits> = result.into_iter().map(|(_, gc)| gc).collect();
 
-    if !others.is_empty() {
-        result.push(GroupedCommits {
-            title: "Others".to_string(),
-            commits: others,
-            subgroups: Vec::new(),
-        });
-    }
+    // GoReleaser silently drops commits that don't match any group regex.
+    // No implicit "Others" group is added.
 
     Ok(result)
 }
@@ -328,7 +328,7 @@ fn group_commits_inner(
 /// `-1`) omit the hash entirely.
 ///
 /// If `format_template` is `None`, the default format depends on the SCM backend:
-/// - `git` backend (default): `{{ ShortSHA }} {{ Message }}`
+/// - `git` backend (default): `{{ SHA }} {{ Message }}` (GoReleaser uses full SHA)
 /// - `github`/`gitlab`/`gitea` backend: `{{ ShortSHA }}: {{ Message }} (@Login or AuthorName <AuthorEmail>)`
 ///   Falls back to `AuthorName <AuthorEmail>` when `Login` is empty (matching GoReleaser).
 ///
@@ -352,6 +352,7 @@ pub(crate) fn render_changelog(
 /// newline handling. GoReleaser's `newLineFor()` checks `ctx.TokenType`, not
 /// the changelog source. When `scm_provider` is set, it overrides `use_source`
 /// for newline selection (but not for default format template selection).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn render_changelog_with_provider(
     grouped: &[GroupedCommits],
     abbrev: i32,
@@ -367,7 +368,8 @@ pub(crate) fn render_changelog_with_provider(
     } else {
         match use_source {
             "github" | "gitlab" | "gitea" => "{{ ShortSHA }}: {{ Message }} ({% if Login %}@{{ Login }}{% else %}{{ AuthorName }} <{{ AuthorEmail }}>{% endif %})",
-            _ => "{{ ShortSHA }} {{ Message }}",
+            // GoReleaser default: `{{ .SHA }} {{ .Message }}` (full hash).
+            _ => "{{ SHA }} {{ Message }}",
         }
     };
     let tmpl = format_template.unwrap_or(default_format);
@@ -392,6 +394,7 @@ pub(crate) fn render_changelog_with_provider(
 
 /// Recursively render grouped commits at the given heading depth.
 /// Depth is capped at 6 (matching Markdown's `######` max heading level).
+#[allow(clippy::too_many_arguments)]
 fn render_groups(
     out: &mut String,
     groups: &[GroupedCommits],
@@ -408,12 +411,11 @@ fn render_groups(
     let hashes = "#".repeat(depth);
     for (i, group) in groups.iter().enumerate() {
         // Insert divider between groups (not before the first one).
-        if i > 0 {
-            if let Some(div) = divider {
+        if i > 0
+            && let Some(div) = divider {
                 out.push_str(div);
                 out.push('\n');
             }
-        }
         // Only emit a heading when the group has a non-empty title.
         // When no changelog groups are configured, the default group has an
         // empty title so commits render as a plain bullet list without a
@@ -483,7 +485,7 @@ fn render_commit_line(
             format!("{} {}", short_sha, commit.description)
         }
     });
-    out.push_str(&format!("- {}{}", rendered, newline));
+    out.push_str(&format!("* {}{}", rendered, newline));
 }
 
 // ---------------------------------------------------------------------------
@@ -814,7 +816,7 @@ impl Stage for ChangelogStage {
                 h.clone()
             });
             final_markdown.push_str(&rendered);
-            final_markdown.push('\n');
+            final_markdown.push_str("\n\n");
         }
         final_markdown.push_str(&combined_markdown);
         if let Some(ref f) = footer {
@@ -822,16 +824,12 @@ impl Stage for ChangelogStage {
                 log.warn(&format!("changelog: failed to render footer template: {e}"));
                 f.clone()
             });
+            final_markdown.push('\n');
             final_markdown.push_str(&rendered);
             final_markdown.push('\n');
         }
 
-        // Write to dist/CHANGELOG.md (skip during dry-run — this is the only side effect).
-        if ctx.is_dry_run() {
-            log.status("(dry-run) skipping write to disk");
-            return Ok(());
-        }
-
+        // Write to dist/CHANGELOG.md (GoReleaser writes this even in dry-run mode).
         std::fs::create_dir_all(&dist)
             .with_context(|| format!("changelog: create dist dir {}", dist.display()))?;
         let notes_path = dist.join("CHANGELOG.md");
@@ -1350,13 +1348,15 @@ mod tests {
     }
 
     /// Build a test `CommitInfo` with just the fields tests typically set.
-    /// New fields (`full_hash`, `author_name`, `author_email`) default to empty.
+    /// `full_hash` defaults to the same value as `hash` so that the default
+    /// format template (`{{ SHA }} {{ Message }}`) produces meaningful output.
     fn ci(raw_message: &str, kind: &str, description: &str, hash: &str) -> CommitInfo {
         CommitInfo {
             raw_message: raw_message.into(),
             kind: kind.into(),
             description: description.into(),
             hash: hash.into(),
+            full_hash: hash.into(),
             ..Default::default()
         }
     }
@@ -1497,6 +1497,7 @@ mod tests {
 
     #[test]
     fn test_group_commits_others_bucket() {
+        // GoReleaser silently drops unmatched commits (no implicit "Others" group).
         let commits = vec![
             ci("feat: new thing", "feat", "new thing", "abc"),
             ci("chore: update deps", "chore", "update deps", "xyz"),
@@ -1508,11 +1509,9 @@ mod tests {
             groups: None,
         }];
         let result = group_commits(&commits, &groups, &test_logger()).unwrap();
-        assert_eq!(result.len(), 2);
+        assert_eq!(result.len(), 1, "unmatched commits should be dropped");
         assert_eq!(result[0].title, "Features");
-        assert_eq!(result[1].title, "Others");
-        assert_eq!(result[1].commits.len(), 1);
-        assert_eq!(result[1].commits[0].kind, "chore");
+        assert_eq!(result[0].commits.len(), 1);
     }
 
     #[test]
@@ -1580,16 +1579,18 @@ mod tests {
         let body = render_changelog(&grouped, 7, None, "", "git", None, None);
 
         // Simulate the header/footer wrapping logic from ChangelogStage::run
+        // (uses double-newline separator matching GoReleaser)
         let header = "# My Release Notes";
         let footer = "---\nGenerated by anodize";
         let mut final_md = String::new();
         final_md.push_str(header);
-        final_md.push('\n');
+        final_md.push_str("\n\n");
         final_md.push_str(&body);
+        final_md.push('\n');
         final_md.push_str(footer);
         final_md.push('\n');
 
-        assert!(final_md.starts_with("# My Release Notes\n"));
+        assert!(final_md.starts_with("# My Release Notes\n\n"));
         assert!(final_md.contains("## Features"));
         assert!(final_md.contains("add X"));
         assert!(final_md.ends_with("Generated by anodize\n"));
@@ -1607,11 +1608,11 @@ mod tests {
         let header = "# Release Notes";
         let mut final_md = String::new();
         final_md.push_str(header);
-        final_md.push('\n');
+        final_md.push_str("\n\n");
         final_md.push_str(&body);
 
         // Body now includes default "## Changelog" title (matching GoReleaser)
-        assert!(final_md.starts_with("# Release Notes\n## Changelog\n\n- def5678 bug"));
+        assert!(final_md.starts_with("# Release Notes\n\n## Changelog\n\n* def5678 bug"));
     }
 
     #[test]
@@ -1631,7 +1632,7 @@ mod tests {
 
         // No groups configured => no "## Changes" heading
         assert!(!final_md.contains("## Changes"));
-        assert!(final_md.contains("- def5678 bug"));
+        assert!(final_md.contains("* def5678 bug"));
         assert!(final_md.ends_with("-- end --\n"));
     }
 
@@ -1731,14 +1732,14 @@ mod tests {
             )],
             subgroups: Vec::new(),
         }];
-        // abbrev = 5 should truncate to "abc12"
+        // Default format is now `{{ SHA }} {{ Message }}` (full hash), so abbrev
+        // does not affect the output. The full SHA always appears.
         let md = render_changelog(&grouped, 5, None, "", "git", None, None);
         assert!(
-            md.contains("abc12 test abbrev"),
-            "expected 'abc12 test abbrev' in: {}",
+            md.contains("abc1234567890 test abbrev"),
+            "expected 'abc1234567890 test abbrev' in: {}",
             md
         );
-        assert!(!md.contains("abc1234"), "should not contain full hash");
     }
 
     #[test]
@@ -1748,7 +1749,7 @@ mod tests {
             commits: vec![ci("feat: short", "feat", "short", "abc")],
             subgroups: Vec::new(),
         }];
-        // abbrev = 10, but hash is only 3 chars — use full hash
+        // Default format uses `{{ SHA }}` (full hash), so abbrev is irrelevant.
         let md = render_changelog(&grouped, 10, None, "", "git", None, None);
         assert!(md.contains("abc short"), "expected 'abc short' in: {}", md);
     }
@@ -1765,10 +1766,11 @@ mod tests {
             )],
             subgroups: Vec::new(),
         }];
+        // Default format is now `{{ SHA }} {{ Message }}` (full hash).
         let md = render_changelog(&grouped, 7, None, "", "git", None, None);
         assert!(
-            md.contains("abc1234 default abbrev"),
-            "expected 'abc1234 default abbrev' in: {}",
+            md.contains("abc1234def5678 default abbrev"),
+            "expected 'abc1234def5678 default abbrev' in: {}",
             md
         );
     }
@@ -1940,9 +1942,10 @@ abbrev: 10
 
         // Parse all commits
         let mut all_commits: Vec<CommitInfo> = Vec::new();
-        for (_hash, short_hash, message) in &raw_messages {
+        for (full_hash, short_hash, message) in &raw_messages {
             let mut info = parse_commit_message(message);
             info.hash = short_hash.to_string();
+            info.full_hash = full_hash.to_string();
             all_commits.push(info);
         }
 
@@ -1988,22 +1991,12 @@ abbrev: 10
         ];
         let grouped = group_commits(&sorted, &groups, &test_logger()).unwrap();
 
-        // Verify grouping
-        assert!(
-            grouped.len() >= 2,
-            "should have at least Features and Bug Fixes groups"
-        );
+        // Verify grouping — unmatched "chore" commit is silently dropped (GoReleaser behavior)
+        assert_eq!(grouped.len(), 2, "should have Features and Bug Fixes groups only");
         assert_eq!(grouped[0].title, "Features");
         assert_eq!(grouped[0].commits.len(), 3, "3 feat commits");
         assert_eq!(grouped[1].title, "Bug Fixes");
         assert_eq!(grouped[1].commits.len(), 2, "2 fix commits");
-
-        // The "chore" commit should end up in "Others"
-        if grouped.len() > 2 {
-            assert_eq!(grouped[2].title, "Others");
-            assert_eq!(grouped[2].commits.len(), 1);
-            assert_eq!(grouped[2].commits[0].kind, "chore");
-        }
 
         // Render
         let md = render_changelog(&grouped, 7, None, "", "git", None, None);
@@ -2050,19 +2043,19 @@ abbrev: 10
             "ci commit should be filtered out"
         );
 
-        // Verify hash abbreviations are present (default format: "ShortSHA Message")
+        // Verify full hashes are present (default format: "{{ SHA }} {{ Message }}")
         assert!(
-            md.contains("a1b2c3d "),
-            "hash should be abbreviated to 7 chars"
+            md.contains("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2 "),
+            "full hash should appear in output"
         );
-        assert!(md.contains("b2c3d4e "));
+        assert!(md.contains("b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3 "));
 
         // Verify bullets
-        let bullet_lines: Vec<&str> = md.lines().filter(|l| l.starts_with("- ")).collect();
+        let bullet_lines: Vec<&str> = md.lines().filter(|l| l.starts_with("* ")).collect();
         assert_eq!(
             bullet_lines.len(),
-            6,
-            "should have 6 bullet points total (3 feat + 2 fix + 1 chore)"
+            5,
+            "should have 5 bullet points total (3 feat + 2 fix; chore dropped)"
         );
     }
 
@@ -2141,6 +2134,7 @@ abbrev: 10
             .map(|(hash, msg)| {
                 let mut info = parse_commit_message(msg);
                 info.hash = hash.to_string();
+                info.full_hash = hash.to_string();
                 info
             })
             .collect();
@@ -2153,21 +2147,23 @@ abbrev: 10
 
         let body = render_changelog(&grouped, 7, None, "", "git", None, None);
 
-        // Simulate header/footer wrapping as ChangelogStage.run does
+        // Simulate header/footer wrapping as ChangelogStage.run does (double-newline separator)
         let header = "# Release v1.0.0";
         let footer = "---\nFull changelog: https://github.com/example/repo/compare/v0.9.0...v1.0.0";
 
         let mut final_md = String::new();
         final_md.push_str(header);
-        final_md.push('\n');
+        final_md.push_str("\n\n");
         final_md.push_str(&body);
+        final_md.push('\n');
         final_md.push_str(footer);
         final_md.push('\n');
 
-        // Body includes default "## Changelog" title (matching GoReleaser)
-        assert!(final_md.starts_with("# Release v1.0.0\n## Changelog\n\n- abc1234 initial release"));
-        assert!(final_md.contains("- abc1234 initial release"));
-        assert!(final_md.contains("- def5678 typo in config"));
+        // Body includes default "## Changelog" title (matching GoReleaser).
+        // Default format uses `{{ SHA }}` (full hash).
+        assert!(final_md.starts_with("# Release v1.0.0\n\n## Changelog\n\n* abc1234 initial release"));
+        assert!(final_md.contains("* abc1234 initial release"));
+        assert!(final_md.contains("* def5678 typo in config"));
         assert!(final_md.ends_with("compare/v0.9.0...v1.0.0\n"));
     }
 
@@ -2441,19 +2437,19 @@ abbrev: 10
             subgroups: Vec::new(),
         }];
 
-        // abbrev = 3 should produce "abc test"
+        // Default format is now `{{ SHA }} {{ Message }}` (full hash), so abbrev
+        // does not affect the output — the full SHA always appears.
         let md = render_changelog(&grouped, 3, None, "", "git", None, None);
         assert!(
-            md.contains("abc test"),
-            "abbrev=3 expected 'abc test', got: {}",
+            md.contains("abcdef1234567890 test"),
+            "abbrev=3 expected full hash 'abcdef1234567890 test', got: {}",
             md
         );
 
-        // abbrev = 10 should produce "abcdef1234 test"
         let md10 = render_changelog(&grouped, 10, None, "", "git", None, None);
         assert!(
-            md10.contains("abcdef1234 test"),
-            "abbrev=10 expected 'abcdef1234 test', got: {}",
+            md10.contains("abcdef1234567890 test"),
+            "abbrev=10 expected full hash 'abcdef1234567890 test', got: {}",
             md10
         );
     }
@@ -2810,13 +2806,14 @@ abbrev: 10
 
     #[test]
     #[serial]
-    fn test_changelog_dry_run_skips_write_no_error() {
+    fn test_changelog_dry_run_writes_file() {
         use anodize_core::config::{Config, CrateConfig};
         use anodize_core::context::{Context, ContextOptions};
         use std::process::Command;
 
         let tmp = tempfile::tempdir().unwrap();
         let repo = tmp.path();
+        let dist = repo.join("dist");
 
         let git = |args: &[&str]| {
             let output = Command::new("git")
@@ -2836,10 +2833,10 @@ abbrev: 10
         git(&["add", "."]);
         git(&["commit", "-m", "feat: initial"]);
 
-        // Use an impossible dist path, but dry-run should skip the write
+        // GoReleaser writes CHANGELOG.md even in dry-run mode
         let config = Config {
             project_name: "test".to_string(),
-            dist: std::path::PathBuf::from("/dev/null/impossible/dist"),
+            dist: dist.clone(),
             crates: vec![CrateConfig {
                 name: "test".to_string(),
                 path: ".".to_string(),
@@ -2864,7 +2861,11 @@ abbrev: 10
 
         assert!(
             result.is_ok(),
-            "dry-run should skip fs write and succeed even with bad dist path"
+            "dry-run should succeed and write CHANGELOG.md"
+        );
+        assert!(
+            dist.join("CHANGELOG.md").exists(),
+            "CHANGELOG.md should be written even in dry-run mode"
         );
     }
 
@@ -2923,11 +2924,11 @@ abbrev: 10
             }],
             subgroups: Vec::new(),
         }];
-        // Default format: "{{ ShortSHA }} {{ Message }}"
+        // Default format: "{{ SHA }} {{ Message }}" (full hash, matching GoReleaser)
         let md = render_changelog(&grouped, 7, None, "", "git", None, None);
         assert!(
-            md.contains("- def5678 bug"),
-            "default format should be 'ShortSHA Message', got: {md}"
+            md.contains("* def5678abcdef bug"),
+            "default format should be 'SHA Message', got: {md}"
         );
     }
 
@@ -3141,7 +3142,7 @@ format: "{{ ShortSHA }} {{ Message }} @{{ Logins }}"
         let md = render_changelog(&grouped, -1, None, "", "git", None, None);
         // With abbrev=-1, the default format is "{{ Message }}" (no hash)
         assert!(
-            md.contains("- no hash test"),
+            md.contains("* no hash test"),
             "should contain commit message without hash, got: {md}"
         );
         assert!(
@@ -3167,7 +3168,7 @@ format: "{{ ShortSHA }} {{ Message }} @{{ Logins }}"
             None,
         );
         assert!(
-            md.contains("- |test"),
+            md.contains("* |test"),
             "ShortSHA should be empty with abbrev=-1, got: {md}"
         );
     }
@@ -3252,19 +3253,18 @@ format: "{{ ShortSHA }} {{ Message }} @{{ Logins }}"
 
         assert_eq!(result.len(), 2, "should have Features and Bug Fixes");
         assert_eq!(result[0].title, "Features");
-        // Features group distributes commits into subgroups
+        // Features group distributes commits into subgroups.
+        // GoReleaser drops unmatched commits silently, so "generic feature"
+        // that matched the parent but not any subgroup is dropped.
         assert_eq!(
             result[0].subgroups.len(),
-            3,
-            "should have Core, API, and Others subgroups"
+            2,
+            "should have Core and API subgroups (no Others)"
         );
         assert_eq!(result[0].subgroups[0].title, "Core");
         assert_eq!(result[0].subgroups[0].commits.len(), 1);
         assert_eq!(result[0].subgroups[1].title, "API");
         assert_eq!(result[0].subgroups[1].commits.len(), 1);
-        // The "generic feature" that matched the parent but not any subgroup goes to Others
-        assert_eq!(result[0].subgroups[2].title, "Others");
-        assert_eq!(result[0].subgroups[2].commits.len(), 1);
 
         assert_eq!(result[1].title, "Bug Fixes");
         assert_eq!(result[1].commits.len(), 1);
@@ -3279,8 +3279,8 @@ format: "{{ ShortSHA }} {{ Message }} @{{ Logins }}"
         // Use explicit format to keep assertions simple.
         let md = render_changelog(&grouped, 7, Some("{{ ShortSHA }} {{ Message }}"), "", "gitlab", None, None);
         // GitLab should use 3-space + newline for markdown line breaks.
-        assert!(md.contains("- abc1234 feature A   \n"), "GitLab should use '   \\n' for line breaks, got: {md}");
-        assert!(md.contains("- def5678 bug B   \n"), "GitLab should use '   \\n' for line breaks, got: {md}");
+        assert!(md.contains("* abc1234 feature A   \n"), "GitLab should use '   \\n' for line breaks, got: {md}");
+        assert!(md.contains("* def5678 bug B   \n"), "GitLab should use '   \\n' for line breaks, got: {md}");
     }
 
     #[test]
@@ -3289,7 +3289,7 @@ format: "{{ ShortSHA }} {{ Message }} @{{ Logins }}"
             ci("feat: x", "feat", "x", "aaa1111"),
         ])];
         let md = render_changelog(&grouped, 7, Some("{{ ShortSHA }} {{ Message }}"), "", "gitea", None, None);
-        assert!(md.contains("- aaa1111 x   \n"), "Gitea should use '   \\n' for line breaks, got: {md}");
+        assert!(md.contains("* aaa1111 x   \n"), "Gitea should use '   \\n' for line breaks, got: {md}");
     }
 
     #[test]
@@ -3299,7 +3299,7 @@ format: "{{ ShortSHA }} {{ Message }} @{{ Logins }}"
         ])];
         let md = render_changelog(&grouped, 7, Some("{{ ShortSHA }} {{ Message }}"), "", "github", None, None);
         // GitHub should NOT use 3-space newlines.
-        assert!(md.contains("- bbb2222 y\n"), "GitHub should use plain newline, got: {md}");
+        assert!(md.contains("* bbb2222 y\n"), "GitHub should use plain newline, got: {md}");
         assert!(!md.contains("   \n"), "GitHub should NOT use '   \\n', got: {md}");
     }
 
@@ -3382,7 +3382,7 @@ format: "{{ ShortSHA }} {{ Message }} @{{ Logins }}"
         // Custom format referencing ShortSHA should get the full SHA when abbrev=0
         let md = render_changelog(&grouped, 0, Some("{{ ShortSHA }}|{{ Message }}"), "", "git", None, None);
         assert!(
-            md.contains("- abc1234567890def1234567890abc1234567890de|test"),
+            md.contains("* abc1234567890def1234567890abc1234567890de|test"),
             "ShortSHA should be full SHA with abbrev=0, got: {md}"
         );
     }
@@ -3408,9 +3408,10 @@ format: "{{ ShortSHA }} {{ Message }} @{{ Logins }}"
             "",
             vec![ci("feat: add X", "feat", "add X", "abc1234")],
         )];
+        // Default format uses `{{ SHA }}` (full hash).
         let md = render_changelog(&grouped, 7, None, "", "git", Some(""), None);
         assert!(!md.contains("## "), "empty title should suppress title heading: {md}");
-        assert!(md.starts_with("- abc1234 add X"), "commits should start immediately: {md}");
+        assert!(md.starts_with("* abc1234 add X"), "commits should start immediately: {md}");
     }
 
     #[test]

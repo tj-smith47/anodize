@@ -7,7 +7,7 @@ use anyhow::{Context as _, Result};
 use serde::Serialize;
 
 use anodize_core::artifact::{Artifact, ArtifactKind};
-use anodize_core::config::{SnapcraftConfig, SnapcraftExtraFileSpec};
+use anodize_core::config::SnapcraftConfig;
 use anodize_core::context::Context;
 use anodize_core::stage::Stage;
 
@@ -45,11 +45,11 @@ struct SnapcraftYaml {
     plugs: HashMap<String, serde_json::Value>,
     #[serde(skip_serializing_if = "is_empty_vec")]
     slots: Vec<String>,
+    #[serde(rename = "layout")]
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     layouts: HashMap<String, SnapcraftYamlLayout>,
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     hooks: HashMap<String, serde_json::Value>,
-    parts: HashMap<String, SnapcraftYamlPart>,
 }
 
 #[derive(Default, Serialize)]
@@ -129,19 +129,6 @@ struct SnapcraftYamlLayout {
     type_: Option<String>,
 }
 
-#[derive(Serialize)]
-struct SnapcraftYamlPart {
-    plugin: String,
-    source: String,
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
-    organize: HashMap<String, String>,
-    #[serde(rename = "stage")]
-    #[serde(skip_serializing_if = "is_empty_vec")]
-    stage_files: Vec<String>,
-    #[serde(rename = "prime")]
-    #[serde(skip_serializing_if = "is_empty_vec")]
-    prime_files: Vec<String>,
-}
 
 // ---------------------------------------------------------------------------
 // triple_to_snap_arch — map target triple to snapcraft architecture name
@@ -162,41 +149,56 @@ fn triple_to_snap_arch(triple: &str) -> &'static str {
     } else if triple.contains("ppc64le") || triple.contains("powerpc64le") {
         "ppc64el"
     } else if triple.contains("riscv64") {
+        // riscv64 is not supported by the snap store; mapped but filtered below
         "riscv64"
     } else {
         "amd64"
     }
 }
 
+/// GoReleaser parity (snapcraft.go:isValidArch): check whether an architecture
+/// is supported by the snap store.  riscv64 is not in the list.
+fn is_valid_snap_arch(arch: &str) -> bool {
+    matches!(arch, "s390x" | "ppc64el" | "arm64" | "armhf" | "i386" | "amd64")
+}
+
 // ---------------------------------------------------------------------------
-// generate_snapcraft_yaml
+// generate_snap_yaml
 // ---------------------------------------------------------------------------
 
-/// Generate a snapcraft.yaml string from the anodize snapcraft config.
+/// Generate a snap.yaml metadata string from the anodize snapcraft config.
+///
+/// GoReleaser parity: this generates the `snap.yaml` file that goes into
+/// `prime/meta/snap.yaml` — it is *not* a `snapcraft.yaml` build recipe.
+/// Binaries and extra files are staged into the `prime/` directory by the
+/// caller; this function only produces the metadata.
 ///
 /// `binary_names` is the list of binary filenames to include in this snap.
 /// The first binary is used as the default app name when no apps are configured.
 /// `target` is the optional target triple, used to set the architectures field.
-pub fn generate_snapcraft_yaml(
+pub fn generate_snap_yaml(
     config: &SnapcraftConfig,
     version: &str,
     binary_names: &[&str],
-    extra_files: Option<&[SnapcraftExtraFileSpec]>,
     target: Option<&str>,
+    project_name: Option<&str>,
 ) -> Result<String> {
     let primary_binary = binary_names.first().copied().unwrap_or("binary");
+    // GoReleaser defaults snap name to ctx.Config.ProjectName, not binary name.
     let name = config
         .name
         .clone()
-        .unwrap_or_else(|| primary_binary.to_string());
+        .unwrap_or_else(|| project_name.unwrap_or(primary_binary).to_string());
+    // GoReleaser parity (snapcraft.go:115-155): summary and description are
+    // required fields; error instead of silently defaulting.
     let summary = config
         .summary
         .clone()
-        .unwrap_or_else(|| format!("{name} snap package"));
+        .ok_or_else(|| anyhow::anyhow!("snapcraft: summary is required for snap '{}'", name))?;
     let description = config
         .description
         .clone()
-        .unwrap_or_else(|| format!("{name} ��� built with anodize"));
+        .ok_or_else(|| anyhow::anyhow!("snapcraft: description is required for snap '{}'", name))?;
     let base = config.base.clone().unwrap_or_else(|| "core22".to_string());
     let confinement = config
         .confinement
@@ -252,12 +254,19 @@ pub fn generate_snapcraft_yaml(
             })
             .collect()
     } else {
-        // Default app entry: use primary binary name as both app name and command
+        // GoReleaser parity (snapcraft.go:315-323): when no apps are configured,
+        // use snap.Name as the app name key (falling back to the binary filename).
+        // The command is always the binary basename — binaries sit at the prime root.
+        let default_app_name = config
+            .name
+            .as_deref()
+            .filter(|n| !n.is_empty())
+            .unwrap_or(primary_binary);
         let mut default_apps = HashMap::new();
         default_apps.insert(
-            primary_binary.to_string(),
+            default_app_name.to_string(),
             SnapcraftYamlApp {
-                command: Some(format!("bin/{primary_binary}")),
+                command: Some(primary_binary.to_string()),
                 ..Default::default()
             },
         );
@@ -283,70 +292,6 @@ pub fn generate_snapcraft_yaml(
                 .collect()
         })
         .unwrap_or_default();
-
-    // Build parts section — a single "binary" part that copies all binaries in
-    let mut organize = HashMap::new();
-    let mut stage_files = Vec::new();
-    let mut prime_files = Vec::new();
-    for bin_name in binary_names {
-        organize.insert(bin_name.to_string(), format!("bin/{bin_name}"));
-        stage_files.push(format!("bin/{bin_name}"));
-        prime_files.push(format!("bin/{bin_name}"));
-    }
-
-    // Include extra files in organize/stage/prime, handling duplicate basenames
-    if let Some(files) = extra_files {
-        let mut seen_names: HashMap<String, usize> = HashMap::new();
-        for file in files {
-            let source = file.source();
-            let base_name = std::path::Path::new(source)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(source)
-                .to_string();
-            // Compute the temp-dir filename, deduplicating collisions
-            let temp_name = if file.destination().is_some() {
-                // When destination is explicit, use its basename as the
-                // temp-dir name (matches the copy logic in SnapcraftStage)
-                let d = file.destination().unwrap();
-                std::path::Path::new(d)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or(&base_name)
-                    .to_string()
-            } else {
-                let count = seen_names.entry(base_name.clone()).or_insert(0);
-                *count += 1;
-                if *count > 1 {
-                    let p = std::path::Path::new(&base_name);
-                    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("extra");
-                    let ext = p.extension().and_then(|e| e.to_str());
-                    match ext {
-                        Some(e) => format!("{stem}_{}.{e}", *count - 1),
-                        None => format!("{stem}_{}", *count - 1),
-                    }
-                } else {
-                    base_name.clone()
-                }
-            };
-            let dest = file.destination().unwrap_or(&temp_name);
-            organize.insert(temp_name.to_string(), dest.to_string());
-            stage_files.push(dest.to_string());
-            prime_files.push(dest.to_string());
-        }
-    }
-
-    let mut parts = HashMap::new();
-    parts.insert(
-        "binary".to_string(),
-        SnapcraftYamlPart {
-            plugin: "dump".to_string(),
-            source: ".".to_string(),
-            organize,
-            stage_files,
-            prime_files,
-        },
-    );
 
     // Map target triple to snapcraft architecture name
     let architectures: Vec<String> = if let Some(triple) = target {
@@ -374,7 +319,6 @@ pub fn generate_snapcraft_yaml(
         slots: config.slots.clone().unwrap_or_default(),
         layouts,
         hooks: config.hooks.clone().unwrap_or_default(),
-        parts,
     };
 
     let yaml = serde_yaml_ng::to_string(&yaml_model).context("serialize snapcraft YAML")?;
@@ -386,13 +330,16 @@ pub fn generate_snapcraft_yaml(
 // ---------------------------------------------------------------------------
 
 /// Construct the snapcraft pack CLI command arguments.
-/// This only builds the snap; publishing is handled separately via
-/// `snapcraft_upload_command`.
-pub fn snapcraft_command(output_path: &str) -> Vec<String> {
+///
+/// GoReleaser parity (snapcraft.go:417): `snapcraft pack <prime_dir> --output <snap_file>`.
+/// The prime directory is a pre-staged directory containing binaries, extra files,
+/// and `meta/snap.yaml`. No `--destructive-mode` is needed because there is no
+/// build step — the directory is already assembled.
+pub fn snapcraft_command(prime_dir: &str, output_path: &str) -> Vec<String> {
     vec![
         "snapcraft".to_string(),
         "pack".to_string(),
-        "--destructive-mode".to_string(),
+        prime_dir.to_string(),
         "--output".to_string(),
         output_path.to_string(),
     ]
@@ -510,15 +457,14 @@ impl Stage for SnapcraftStage {
 
             for snap_cfg in snap_configs {
                 // Skip disabled configs
-                if let Some(ref d) = snap_cfg.disable {
-                    if d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
+                if let Some(ref d) = snap_cfg.disable
+                    && d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
                         log.status(&format!(
                             "skipping disabled snapcraft config for crate {}",
                             krate.name
                         ));
                         continue;
                     }
-                }
 
                 // Validate confinement value
                 if let Some(conf) = &snap_cfg.confinement {
@@ -592,6 +538,20 @@ impl Stage for SnapcraftStage {
                     } else {
                         Some(target_key.clone())
                     };
+
+                    // GoReleaser parity (snapcraft.go:204-218): skip unsupported
+                    // architectures (e.g. riscv64 is not in the snap store).
+                    if let Some(ref t) = target {
+                        let snap_arch = triple_to_snap_arch(t);
+                        if !is_valid_snap_arch(snap_arch) {
+                            log.warn(&format!(
+                                "snapcraft: skipping unsupported arch '{}' (target: {})",
+                                snap_arch, t
+                            ));
+                            continue;
+                        }
+                    }
+
                     // Derive Os/Arch from the target triple for template rendering
                     let (os, arch) = target
                         .as_deref()
@@ -670,12 +630,15 @@ impl Stage for SnapcraftStage {
                         continue;
                     }
 
-                    // Create temp directory for snapcraft build
+                    // GoReleaser parity (snapcraft.go:244-420): pre-stage binaries
+                    // and extra files into a prime directory, write snap.yaml to
+                    // prime/meta/snap.yaml, then run `snapcraft pack prime_dir`.
                     let tmp_dir =
                         tempfile::tempdir().context("create temp dir for snapcraft build")?;
-                    let snap_dir = tmp_dir.path().join("snap");
-                    fs::create_dir_all(&snap_dir)
-                        .with_context(|| format!("create snap dir: {}", snap_dir.display()))?;
+                    let prime_dir = tmp_dir.path().join("prime");
+                    let meta_dir = prime_dir.join("meta");
+                    fs::create_dir_all(&meta_dir)
+                        .with_context(|| format!("create prime/meta dir: {}", meta_dir.display()))?;
 
                     // Collect all binary names for this platform group
                     let all_binary_names: Vec<String> = target_binaries
@@ -691,79 +654,84 @@ impl Stage for SnapcraftStage {
                     let binary_name_refs: Vec<&str> =
                         all_binary_names.iter().map(|s| s.as_str()).collect();
 
-                    // Generate and write snapcraft.yaml
-                    let yaml_content = generate_snapcraft_yaml(
-                        snap_cfg,
+                    // GoReleaser renders summary, description, and grade
+                    // through its template engine before generating the YAML.
+                    let mut rendered_cfg = snap_cfg.clone();
+                    if let Some(ref s) = rendered_cfg.summary {
+                        rendered_cfg.summary = Some(ctx.render_template(s).with_context(|| {
+                            format!("snapcraft: render summary for crate {}", krate.name)
+                        })?);
+                    }
+                    if let Some(ref d) = rendered_cfg.description {
+                        rendered_cfg.description = Some(ctx.render_template(d).with_context(|| {
+                            format!("snapcraft: render description for crate {}", krate.name)
+                        })?);
+                    }
+                    if let Some(ref g) = rendered_cfg.grade {
+                        rendered_cfg.grade = Some(ctx.render_template(g).with_context(|| {
+                            format!("snapcraft: render grade for crate {}", krate.name)
+                        })?);
+                    }
+
+                    // Generate and write snap.yaml to prime/meta/snap.yaml
+                    let project_name = &ctx.config.project_name;
+                    let yaml_content = generate_snap_yaml(
+                        &rendered_cfg,
                         &version,
                         &binary_name_refs,
-                        snap_cfg.extra_files.as_deref(),
                         target.as_deref(),
+                        Some(project_name.as_str()),
                     )?;
-                    let yaml_path = snap_dir.join("snapcraft.yaml");
+                    let yaml_path = meta_dir.join("snap.yaml");
                     fs::write(&yaml_path, &yaml_content).with_context(|| {
-                        format!("write snapcraft.yaml to {}", yaml_path.display())
+                        format!("write snap.yaml to {}", yaml_path.display())
                     })?;
 
-                    // Copy all binaries for this platform into temp directory
+                    // GoReleaser parity (snapcraft.go:325-335): copy binaries
+                    // directly into the prime directory root with mode 0555.
                     for bin_artifact in target_binaries {
                         let bin_name = bin_artifact
                             .path
                             .file_name()
                             .and_then(|n| n.to_str())
                             .unwrap_or("binary");
-                        let binary_dest = tmp_dir.path().join(bin_name);
+                        let binary_dest = prime_dir.join(bin_name);
                         let bin_path_str = bin_artifact.path.to_string_lossy();
                         fs::copy(&bin_artifact.path, &binary_dest).with_context(|| {
                             format!("copy binary {} to {}", bin_path_str, binary_dest.display())
                         })?;
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            let perms = std::fs::Permissions::from_mode(0o555);
+                            std::fs::set_permissions(&binary_dest, perms).with_context(|| {
+                                format!("set binary mode 0555 on {}", binary_dest.display())
+                            })?;
+                        }
                     }
 
-                    // Copy extra files into temp directory, handling duplicate basenames
+                    // GoReleaser parity (snapcraft.go:253-267): copy extra files
+                    // into the prime directory at their destination paths.
                     if let Some(extra_files) = &snap_cfg.extra_files {
-                        let mut seen_names: HashMap<String, usize> = HashMap::new();
                         for extra in extra_files {
                             let src = PathBuf::from(extra.source());
-                            let base_name = src
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("extra")
-                                .to_string();
-                            // If a destination is specified, use its basename;
-                            // otherwise use source basename with a counter for
-                            // collisions.
-                            let dest_name = if let Some(d) = extra.destination() {
-                                std::path::Path::new(d)
-                                    .file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or(&base_name)
-                                    .to_string()
-                            } else {
-                                let count = seen_names.entry(base_name.clone()).or_insert(0);
-                                *count += 1;
-                                if *count > 1 {
-                                    // Add counter suffix before extension to
-                                    // avoid overwriting
-                                    let p = std::path::Path::new(&base_name);
-                                    let stem = p
-                                        .file_stem()
-                                        .and_then(|s| s.to_str())
-                                        .unwrap_or("extra");
-                                    let ext = p.extension().and_then(|e| e.to_str());
-                                    match ext {
-                                        Some(e) => format!("{stem}_{}.{e}", *count - 1),
-                                        None => format!("{stem}_{}", *count - 1),
-                                    }
-                                } else {
-                                    base_name.clone()
-                                }
-                            };
-                            let dest = tmp_dir.path().join(&dest_name);
+                            let dest_rel = extra
+                                .destination()
+                                .unwrap_or_else(|| extra.source());
+                            let dest = prime_dir.join(dest_rel);
+                            if let Some(parent) = dest.parent() {
+                                fs::create_dir_all(parent).with_context(|| {
+                                    format!("create dir for extra file: {}", parent.display())
+                                })?;
+                            }
                             fs::copy(&src, &dest).with_context(|| {
                                 format!("copy extra file {} to {}", src.display(), dest.display())
                             })?;
-                            // Apply file mode if specified
+                            // Apply file mode: GoReleaser defaults extra
+                            // file mode to 0644 when not specified.
                             #[cfg(unix)]
-                            if let Some(mode) = extra.mode() {
+                            {
+                                let mode = extra.mode().unwrap_or(0o644);
                                 if mode > 0o7777 {
                                     anyhow::bail!(
                                         "snapcraft: invalid file mode {:o} for '{}' — \
@@ -781,31 +749,60 @@ impl Stage for SnapcraftStage {
                         }
                     }
 
-                    // Process templated_extra_files: render and copy to snap build dir
-                    if let Some(ref tpl_specs) = snap_cfg.templated_extra_files {
-                        if !tpl_specs.is_empty() {
-                            anodize_core::templated_files::process_templated_extra_files(
-                                tpl_specs,
-                                ctx,
-                                tmp_dir.path(),
-                                "snapcraft",
-                            )?;
+                    // GoReleaser parity (snapcraft.go:382-396): copy completer files
+                    // referenced by app configs into the prime directory.
+                    if let Some(ref apps_map) = snap_cfg.apps {
+                        for app_cfg in apps_map.values() {
+                            if let Some(ref completer_path) = app_cfg.completer {
+                                let src = PathBuf::from(completer_path);
+                                let dest = prime_dir.join(completer_path);
+                                if let Some(parent) = dest.parent() {
+                                    fs::create_dir_all(parent).with_context(|| {
+                                        format!(
+                                            "snapcraft: create dir for completer {}",
+                                            parent.display()
+                                        )
+                                    })?;
+                                }
+                                if src.exists() {
+                                    fs::copy(&src, &dest).with_context(|| {
+                                        format!(
+                                            "snapcraft: copy completer {} to {}",
+                                            src.display(),
+                                            dest.display()
+                                        )
+                                    })?;
+                                }
+                            }
                         }
                     }
 
+                    // Process templated_extra_files: render and copy to prime dir
+                    if let Some(ref tpl_specs) = snap_cfg.templated_extra_files
+                        && !tpl_specs.is_empty() {
+                            anodize_core::templated_files::process_templated_extra_files(
+                                tpl_specs,
+                                ctx,
+                                &prime_dir,
+                                "snapcraft",
+                            )?;
+                        }
+
                     // Apply mod_timestamp if set
                     if let Some(ts) = &snap_cfg.mod_timestamp {
-                        anodize_core::util::apply_mod_timestamp(tmp_dir.path(), ts, &log)?;
+                        anodize_core::util::apply_mod_timestamp(&prime_dir, ts, &log)?;
                     }
 
-                    // Run snapcraft pack
-                    let cmd_args = snapcraft_command(&snap_path.to_string_lossy());
+                    // Run snapcraft pack prime_dir --output snap_file
+                    let cmd_args = snapcraft_command(
+                        &prime_dir.to_string_lossy(),
+                        &snap_path.to_string_lossy(),
+                    );
 
                     log.status(&format!("running: {}", cmd_args.join(" ")));
 
                     let output = Command::new(&cmd_args[0])
                         .args(&cmd_args[1..])
-                        .current_dir(tmp_dir.path())
                         .output()
                         .with_context(|| {
                             format!(
@@ -827,11 +824,13 @@ impl Stage for SnapcraftStage {
 
                     // If replace is set, mark archives for this crate+target for removal
                     if snap_cfg.replace.unwrap_or(false) {
-                        archives_to_remove.extend(anodize_core::util::collect_replace_archives(
-                            &ctx.artifacts,
-                            &krate.name,
-                            target.as_deref(),
-                        ));
+                        archives_to_remove.extend(
+                            anodize_core::util::collect_replace_archives(
+                                &ctx.artifacts,
+                                &krate.name,
+                                target.as_deref(),
+                            ),
+                        );
                     }
                 }
             }
@@ -906,11 +905,10 @@ impl Stage for SnapcraftPublishStage {
                     continue;
                 }
                 // Skip disabled configs
-                if let Some(ref d) = snap_cfg.disable {
-                    if d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
+                if let Some(ref d) = snap_cfg.disable
+                    && d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
                         continue;
                     }
-                }
 
                 // Find snap artifacts for this crate (optionally filtered by id)
                 let matching: Vec<_> = snap_artifacts
@@ -931,9 +929,25 @@ impl Stage for SnapcraftPublishStage {
                 for artifact in &matching {
                     let snap_path = artifact.path.to_string_lossy();
 
+                    // GoReleaser renders each channel template through the
+                    // template engine, filtering out empty results.
+                    let rendered_channels: Option<Vec<String>> =
+                        snap_cfg.channel_templates.as_ref().map(|templates| {
+                            templates
+                                .iter()
+                                .filter_map(|tmpl| {
+                                    ctx.render_template(tmpl).ok().filter(|s| !s.is_empty())
+                                })
+                                .collect()
+                        });
+                    // GoReleaser also renders grade through the template engine
+                    let rendered_grade: Option<String> = snap_cfg
+                        .grade
+                        .as_deref()
+                        .map(|g| ctx.render_template(g).unwrap_or_else(|_| g.to_string()));
                     let effective_channels = resolve_effective_channels(
-                        snap_cfg.channel_templates.as_deref(),
-                        snap_cfg.grade.as_deref(),
+                        rendered_channels.as_deref(),
+                        rendered_grade.as_deref(),
                     );
                     let upload_args =
                         snapcraft_upload_command(&snap_path, effective_channels.as_deref());
@@ -999,11 +1013,11 @@ mod tests {
     use tempfile::TempDir;
 
     // -----------------------------------------------------------------------
-    // generate_snapcraft_yaml tests
+    // generate_snap_yaml tests
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_generate_snapcraft_yaml_basic() {
+    fn test_generate_snap_yaml_basic() {
         let cfg = SnapcraftConfig {
             name: Some("mysnap".to_string()),
             summary: Some("A test snap".to_string()),
@@ -1014,7 +1028,7 @@ mod tests {
             license: Some("MIT".to_string()),
             ..Default::default()
         };
-        let yaml = generate_snapcraft_yaml(&cfg, "1.2.3", &["myapp"], None, None).unwrap();
+        let yaml = generate_snap_yaml(&cfg, "1.2.3", &["myapp"], None, None).unwrap();
         assert!(yaml.contains("name: mysnap"), "missing name");
         assert!(yaml.contains("version: 1.2.3"), "missing version");
         assert!(yaml.contains("summary: A test snap"), "missing summary");
@@ -1026,19 +1040,18 @@ mod tests {
         assert!(yaml.contains("grade: stable"), "missing grade");
         assert!(yaml.contains("confinement: strict"), "missing confinement");
         assert!(yaml.contains("license: MIT"), "missing license");
-        // Verify parts section with binary
-        assert!(yaml.contains("parts:"), "missing parts");
-        assert!(yaml.contains("binary:"), "missing binary part");
-        assert!(yaml.contains("plugin: dump"), "missing dump plugin");
+        // Prime-dir approach: no parts section in snap.yaml
+        assert!(!yaml.contains("parts:"), "snap.yaml should not have parts");
+        assert!(!yaml.contains("plugin:"), "snap.yaml should not have plugin");
     }
 
     #[test]
-    fn test_generate_snapcraft_yaml_with_apps() {
+    fn test_generate_snap_yaml_with_apps() {
         let mut apps = HashMap::new();
         apps.insert(
             "myapp".to_string(),
             SnapcraftApp {
-                command: Some("bin/myapp".to_string()),
+                command: Some("myapp".to_string()),
                 daemon: Some("simple".to_string()),
                 stop_mode: Some("sigterm".to_string()),
                 restart_condition: Some("on-failure".to_string()),
@@ -1052,14 +1065,16 @@ mod tests {
         let cfg = SnapcraftConfig {
             name: Some("mysnap".to_string()),
             apps: Some(apps),
+            summary: Some("Test snap".to_string()),
+            description: Some("A test snap package".to_string()),
             ..Default::default()
         };
-        let yaml = generate_snapcraft_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
+        let yaml = generate_snap_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
         assert!(yaml.contains("apps:"), "missing apps section");
         assert!(yaml.contains("myapp:"), "missing app name");
         // S4: args should be appended to command, not a separate field
         assert!(
-            yaml.contains("command: bin/myapp --verbose"),
+            yaml.contains("command: myapp --verbose"),
             "args should be appended to command, got:\n{yaml}"
         );
         assert!(
@@ -1091,9 +1106,11 @@ mod tests {
             name: Some("mysnap".to_string()),
             plugs: Some(plugs),
             slots: Some(vec!["dbus-slot".to_string()]),
+            summary: Some("Test snap".to_string()),
+            description: Some("A test snap package".to_string()),
             ..Default::default()
         };
-        let yaml = generate_snapcraft_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
+        let yaml = generate_snap_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
         assert!(yaml.contains("plugs:"), "missing plugs section");
         assert!(yaml.contains("network:"), "missing network plug");
         assert!(yaml.contains("home:"), "missing home plug");
@@ -1134,10 +1151,12 @@ mod tests {
         let cfg = SnapcraftConfig {
             name: Some("mysnap".to_string()),
             layouts: Some(layouts),
+            summary: Some("Test snap".to_string()),
+            description: Some("A test snap package".to_string()),
             ..Default::default()
         };
-        let yaml = generate_snapcraft_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
-        assert!(yaml.contains("layouts:"), "missing layouts section");
+        let yaml = generate_snap_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
+        assert!(yaml.contains("layout:"), "missing layout section");
         assert!(
             yaml.contains("/usr/share/myapp"),
             "missing layout path /usr/share/myapp"
@@ -1162,9 +1181,11 @@ mod tests {
             let cfg = SnapcraftConfig {
                 name: Some("mysnap".to_string()),
                 confinement: Some(mode.to_string()),
-                ..Default::default()
+                summary: Some("Test snap".to_string()),
+            description: Some("A test snap package".to_string()),
+            ..Default::default()
             };
-            let yaml = generate_snapcraft_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
+            let yaml = generate_snap_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
             assert!(
                 yaml.contains(&format!("confinement: {mode}")),
                 "missing confinement: {mode}"
@@ -1176,9 +1197,11 @@ mod tests {
     fn test_generate_snapcraft_yaml_defaults() {
         let cfg = SnapcraftConfig {
             name: Some("mysnap".to_string()),
+            summary: Some("Test snap".to_string()),
+            description: Some("A test snap package".to_string()),
             ..Default::default()
         };
-        let yaml = generate_snapcraft_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
+        let yaml = generate_snap_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
         // Default base should be core22
         assert!(yaml.contains("base: core22"), "default base not core22");
         // Default confinement should be strict
@@ -1190,10 +1213,24 @@ mod tests {
 
     #[test]
     fn test_generate_snapcraft_yaml_minimal() {
-        // Completely default config — only binary_name is used
+        // GoReleaser parity: summary and description are required
         let cfg = SnapcraftConfig::default();
-        let yaml = generate_snapcraft_yaml(&cfg, "0.1.0", &["mytool"], None, None).unwrap();
-        // Name falls back to binary_name
+        let err = generate_snap_yaml(&cfg, "0.1.0", &["mytool"], None, None);
+        assert!(err.is_err(), "should error when summary is missing");
+        assert!(
+            err.unwrap_err().to_string().contains("summary is required"),
+            "error should mention missing summary"
+        );
+    }
+
+    #[test]
+    fn test_generate_snapcraft_yaml_minimal_with_required_fields() {
+        let cfg = SnapcraftConfig {
+            summary: Some("A test snap".to_string()),
+            description: Some("A test description".to_string()),
+            ..Default::default()
+        };
+        let yaml = generate_snap_yaml(&cfg, "0.1.0", &["mytool"], None, None).unwrap();
         assert!(yaml.contains("name: mytool"), "missing fallback name");
         assert!(yaml.contains("version: 0.1.0"), "missing version");
         assert!(yaml.contains("base: core22"), "missing default base");
@@ -1201,9 +1238,7 @@ mod tests {
             yaml.contains("confinement: strict"),
             "missing default confinement"
         );
-        assert!(yaml.contains("parts:"), "missing parts");
-        assert!(yaml.contains("plugin: dump"), "missing dump plugin");
-        // Summary and description should be auto-generated
+        assert!(!yaml.contains("parts:"), "snap.yaml should not have parts");
         assert!(yaml.contains("summary:"), "missing summary");
         assert!(yaml.contains("description:"), "missing description");
     }
@@ -1214,19 +1249,23 @@ mod tests {
 
     #[test]
     fn test_snapcraft_command_basic() {
-        let cmd = snapcraft_command("/tmp/output/mysnap_1.0.0_amd64.snap");
+        let cmd = snapcraft_command("/tmp/prime", "/tmp/output/mysnap_1.0.0_amd64.snap");
         assert_eq!(cmd[0], "snapcraft");
         assert_eq!(cmd[1], "pack");
-        assert_eq!(cmd[2], "--destructive-mode");
+        assert_eq!(cmd[2], "/tmp/prime");
         assert_eq!(cmd[3], "--output");
         assert_eq!(cmd[4], "/tmp/output/mysnap_1.0.0_amd64.snap");
         assert_eq!(cmd.len(), 5);
     }
 
     #[test]
-    fn test_snapcraft_command_no_publish_flag() {
-        // snapcraft pack should never contain --publish
-        let cmd = snapcraft_command("/tmp/out.snap");
+    fn test_snapcraft_command_no_destructive_mode() {
+        // Prime-dir approach: no --destructive-mode needed
+        let cmd = snapcraft_command("/tmp/prime", "/tmp/out.snap");
+        assert!(
+            !cmd.contains(&"--destructive-mode".to_string()),
+            "pack command should not have --destructive-mode with prime-dir approach"
+        );
         assert!(
             !cmd.contains(&"--publish".to_string()),
             "pack command should not have --publish"
@@ -1329,6 +1368,8 @@ mod tests {
         let snap_cfg = SnapcraftConfig {
             name: Some("mysnap".to_string()),
             disable: Some(StringOrBool::Bool(true)),
+            summary: Some("Test snap".to_string()),
+            description: Some("A test snap package".to_string()),
             ..Default::default()
         };
 
@@ -1367,6 +1408,8 @@ mod tests {
 
         let snap_cfg = SnapcraftConfig {
             name: Some("mysnap".to_string()),
+            summary: Some("Test snap".to_string()),
+            description: Some("A test snap package".to_string()),
             ..Default::default()
         };
 
@@ -1482,6 +1525,8 @@ mod tests {
         let snap_cfg = SnapcraftConfig {
             name: Some("mysnap".to_string()),
             ids: Some(vec!["build-linux-arm".to_string()]),
+            summary: Some("Test snap".to_string()),
+            description: Some("A test snap package".to_string()),
             ..Default::default()
         };
 
@@ -1546,6 +1591,8 @@ mod tests {
         let snap_cfg = SnapcraftConfig {
             name: Some("mysnap".to_string()),
             ids: Some(vec!["myapp".to_string()]),
+            summary: Some("Test snap".to_string()),
+            description: Some("A test snap package".to_string()),
             ..Default::default()
         };
 
@@ -1611,6 +1658,8 @@ mod tests {
         let snap_cfg = SnapcraftConfig {
             name: Some("mysnap".to_string()),
             ids: Some(vec![]),
+            summary: Some("Test snap".to_string()),
+            description: Some("A test snap package".to_string()),
             ..Default::default()
         };
 
@@ -1663,27 +1712,20 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_yaml_with_extra_files() {
+    fn test_generate_snap_yaml_no_extra_files_in_metadata() {
+        // Prime-dir approach: extra files are staged physically, not in snap.yaml
         let cfg = SnapcraftConfig {
             name: Some("mysnap".to_string()),
+            summary: Some("Test snap".to_string()),
+            description: Some("A test snap package".to_string()),
             ..Default::default()
         };
-        let extra = vec![
-            SnapcraftExtraFileSpec::Source("README.md".to_string()),
-            SnapcraftExtraFileSpec::Source("config/defaults.yaml".to_string()),
-        ];
-        let yaml = generate_snapcraft_yaml(&cfg, "1.0.0", &["myapp"], Some(&extra), None).unwrap();
-        // Extra files should appear in the organize mapping
-        assert!(
-            yaml.contains("README.md"),
-            "extra file README.md should be in yaml"
-        );
-        assert!(
-            yaml.contains("defaults.yaml"),
-            "extra file defaults.yaml should be in yaml"
-        );
-        // The binary should still be there
-        assert!(yaml.contains("bin/myapp"), "binary should be in yaml");
+        let yaml = generate_snap_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
+        // snap.yaml should not have parts/organize/stage/prime sections
+        assert!(!yaml.contains("parts:"), "snap.yaml should not have parts");
+        assert!(!yaml.contains("organize:"), "snap.yaml should not have organize");
+        // Default app command is just the binary name (at prime root)
+        assert!(yaml.contains("command: myapp"), "default app command should be binary name");
     }
 
     #[test]
@@ -1693,6 +1735,8 @@ mod tests {
         let snap_cfg = SnapcraftConfig {
             name: Some("mysnap".to_string()),
             id: Some("main-snap".to_string()),
+            summary: Some("Test snap".to_string()),
+            description: Some("A test snap package".to_string()),
             ..Default::default()
         };
 
@@ -1878,6 +1922,8 @@ crates:
         let snap_cfg = SnapcraftConfig {
             name: Some("mysnap".to_string()),
             name_template: Some("{{ invalid unclosed".to_string()),
+            summary: Some("Test snap".to_string()),
+            description: Some("A test snap package".to_string()),
             ..Default::default()
         };
 
@@ -1932,11 +1978,15 @@ crates:
         let snap_cfg_strict = SnapcraftConfig {
             name: Some("mysnap-strict".to_string()),
             confinement: Some("strict".to_string()),
+            summary: Some("Test snap".to_string()),
+            description: Some("A test snap package".to_string()),
             ..Default::default()
         };
         let snap_cfg_classic = SnapcraftConfig {
             name: Some("mysnap-classic".to_string()),
             confinement: Some("classic".to_string()),
+            summary: Some("Test snap".to_string()),
+            description: Some("A test snap package".to_string()),
             ..Default::default()
         };
 
@@ -2004,6 +2054,8 @@ crates:
 
         let snap_cfg = SnapcraftConfig {
             name: Some("mysnap".to_string()),
+            summary: Some("Test snap".to_string()),
+            description: Some("A test snap package".to_string()),
             ..Default::default()
         };
 
@@ -2071,6 +2123,8 @@ crates:
         let snap_cfg = SnapcraftConfig {
             name: Some("mysnap".to_string()),
             replace: Some(true),
+            summary: Some("Test snap".to_string()),
+            description: Some("A test snap package".to_string()),
             ..Default::default()
         };
 
@@ -2152,6 +2206,8 @@ crates:
         let snap_cfg = SnapcraftConfig {
             name: Some("mysnap".to_string()),
             confinement: Some("invalid-confinement".to_string()),
+            summary: Some("Test snap".to_string()),
+            description: Some("A test snap package".to_string()),
             ..Default::default()
         };
 
@@ -2208,6 +2264,8 @@ crates:
 
         let snap_cfg = SnapcraftConfig {
             name: Some("mysnap".to_string()),
+            summary: Some("Test snap".to_string()),
+            description: Some("A test snap package".to_string()),
             ..Default::default()
         };
 
@@ -2261,6 +2319,8 @@ crates:
         let snap_cfg = SnapcraftConfig {
             name: Some("mysnap".to_string()),
             publish: Some(false),
+            summary: Some("Test snap".to_string()),
+            description: Some("A test snap package".to_string()),
             ..Default::default()
         };
 
@@ -2310,6 +2370,8 @@ crates:
             name: Some("mysnap".to_string()),
             publish: Some(true),
             channel_templates: Some(vec!["edge".to_string()]),
+            summary: Some("Test snap".to_string()),
+            description: Some("A test snap package".to_string()),
             ..Default::default()
         };
 
@@ -2359,6 +2421,8 @@ crates:
             name: Some("mysnap".to_string()),
             publish: Some(true),
             disable: Some(StringOrBool::Bool(true)),
+            summary: Some("Test snap".to_string()),
+            description: Some("A test snap package".to_string()),
             ..Default::default()
         };
 
@@ -2451,9 +2515,11 @@ crates:
         let cfg = SnapcraftConfig {
             name: Some("mysnap".to_string()),
             apps: Some(apps),
+            summary: Some("Test snap".to_string()),
+            description: Some("A test snap package".to_string()),
             ..Default::default()
         };
-        let yaml = generate_snapcraft_yaml(&cfg, "2.0.0", &["mydaemon"], None, None).unwrap();
+        let yaml = generate_snap_yaml(&cfg, "2.0.0", &["mydaemon"], None, None).unwrap();
 
         // Verify all kebab-case fields are present
         assert!(yaml.contains("adapter: none"), "missing adapter\n{yaml}");
@@ -2555,39 +2621,39 @@ crates:
         let cfg = SnapcraftConfig {
             name: Some("mysnap".to_string()),
             hooks: Some(hooks),
+            summary: Some("Test snap".to_string()),
+            description: Some("A test snap package".to_string()),
             ..Default::default()
         };
-        let yaml = generate_snapcraft_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
+        let yaml = generate_snap_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
         assert!(yaml.contains("hooks:"), "missing hooks section\n{yaml}");
         assert!(yaml.contains("configure:"), "missing configure hook\n{yaml}");
         assert!(yaml.contains("install:"), "missing install hook\n{yaml}");
     }
 
     #[test]
-    fn test_generate_yaml_extra_files_structured() {
+    fn test_generate_snap_yaml_layout_key_is_singular() {
+        // snap.yaml uses "layout:" (singular), not "layouts:"
+        let mut layouts = HashMap::new();
+        layouts.insert(
+            "/usr/share/myapp".to_string(),
+            SnapcraftLayout {
+                bind: Some("$SNAP/usr/share/myapp".to_string()),
+                symlink: None,
+                bind_file: None,
+                type_: None,
+            },
+        );
         let cfg = SnapcraftConfig {
             name: Some("mysnap".to_string()),
+            summary: Some("Test snap".to_string()),
+            description: Some("A test snap package".to_string()),
+            layouts: Some(layouts),
             ..Default::default()
         };
-        let extra = vec![
-            SnapcraftExtraFileSpec::Source("README.md".to_string()),
-            SnapcraftExtraFileSpec::Detailed {
-                source: "config/app.conf".to_string(),
-                destination: Some("etc/app.conf".to_string()),
-                mode: Some(0o644),
-            },
-        ];
-        let yaml = generate_snapcraft_yaml(&cfg, "1.0.0", &["myapp"], Some(&extra), None).unwrap();
-        // Simple file: source filename used as-is
-        assert!(
-            yaml.contains("README.md"),
-            "missing simple extra file\n{yaml}"
-        );
-        // Structured file: destination should be used
-        assert!(
-            yaml.contains("etc/app.conf"),
-            "missing structured extra file destination\n{yaml}"
-        );
+        let yaml = generate_snap_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
+        assert!(yaml.contains("layout:"), "should use singular 'layout:'");
+        assert!(!yaml.contains("layouts:"), "should not use plural 'layouts:'");
     }
 
     #[test]
@@ -2724,35 +2790,28 @@ crates:
         let cfg = SnapcraftConfig {
             name: Some("mysnap".to_string()),
             apps: Some(apps),
+            summary: Some("Test snap".to_string()),
+            description: Some("A test snap package".to_string()),
             ..Default::default()
         };
-        let yaml = generate_snapcraft_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
+        let yaml = generate_snap_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
         assert!(yaml.contains("MY_PORT: 8080"), "missing integer env\n{yaml}");
         assert!(yaml.contains("DEBUG: true"), "missing boolean env\n{yaml}");
         assert!(yaml.contains("NAME: myapp"), "missing string env\n{yaml}");
     }
 
     #[test]
-    fn test_generate_yaml_extra_files_duplicate_basenames() {
-        // Two extra files with the same basename should not collide in organize
+    fn test_generate_snap_yaml_multiple_binaries() {
+        // Multiple binaries should all get default app entries
         let cfg = SnapcraftConfig {
             name: Some("mysnap".to_string()),
+            summary: Some("Test snap".to_string()),
+            description: Some("A test snap package".to_string()),
             ..Default::default()
         };
-        let extra = vec![
-            SnapcraftExtraFileSpec::Source("a/config.yaml".to_string()),
-            SnapcraftExtraFileSpec::Source("b/config.yaml".to_string()),
-        ];
-        let yaml = generate_snapcraft_yaml(&cfg, "1.0.0", &["myapp"], Some(&extra), None).unwrap();
-        // The first file keeps its name; the second gets a counter suffix
-        assert!(
-            yaml.contains("config.yaml"),
-            "first config.yaml missing\n{yaml}"
-        );
-        assert!(
-            yaml.contains("config_1.yaml"),
-            "deduplicated config_1.yaml missing\n{yaml}"
-        );
+        let yaml = generate_snap_yaml(&cfg, "1.0.0", &["server", "client"], None, None).unwrap();
+        // Default app uses first binary name
+        assert!(yaml.contains("command: server"), "default app should use first binary\n{yaml}");
     }
 
     #[test]
@@ -2819,9 +2878,11 @@ crates:
         let cfg = SnapcraftConfig {
             name: Some("mysnap".to_string()),
             apps: Some(apps),
+            summary: Some("Test snap".to_string()),
+            description: Some("A test snap package".to_string()),
             ..Default::default()
         };
-        let yaml = generate_snapcraft_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
+        let yaml = generate_snap_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
 
         // None of the new fields should appear
         assert!(!yaml.contains("adapter:"), "adapter should be omitted\n{yaml}");

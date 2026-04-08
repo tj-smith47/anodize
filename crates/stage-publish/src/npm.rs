@@ -427,8 +427,8 @@ pub fn publish_to_npm(ctx: &Context, log: &StageLogger) -> Result<()> {
         }
 
         // Render and write templated_extra_files into the npm package temp directory.
-        if let Some(ref tef) = entry.templated_extra_files {
-            if !tef.is_empty() {
+        if let Some(ref tef) = entry.templated_extra_files
+            && !tef.is_empty() {
                 let rendered =
                     anodize_core::templated_files::process_templated_extra_files(
                         tef, ctx, tmp_dir.path(), "npm",
@@ -438,7 +438,6 @@ pub fn publish_to_npm(ctx: &Context, log: &StageLogger) -> Result<()> {
                     rendered.len()
                 ));
             }
-        }
 
         let pkg_json_path = tmp_dir.path().join("package.json");
         let pkg_json_str = serde_json::to_string_pretty(&pkg)

@@ -26,6 +26,7 @@ members = [
     "crates/stage-templatefiles",
     "crates/stage-makeself",
     "crates/stage-srpm",
+    "crates/stage-sbom",
     "crates/cli",
     "crates/xtask",
 ]
@@ -52,6 +53,7 @@ anodize-stage-docker = { path = "crates/stage-docker", version = "0.1.0" }
 anodize-stage-sign = { path = "crates/stage-sign", version = "0.1.0" }
 anodize-stage-announce = { path = "crates/stage-announce", version = "0.1.0" }
 anodize-stage-source = { path = "crates/stage-source", version = "0.1.0" }
+anodize-stage-sbom = { path = "crates/stage-sbom", version = "0.1.0" }
 anodize-stage-upx = { path = "crates/stage-upx", version = "0.1.0" }
 anodize-stage-snapcraft = { path = "crates/stage-snapcraft", version = "0.1.0" }
 anodize-stage-dmg = { path = "crates/stage-dmg", version = "0.1.0" }

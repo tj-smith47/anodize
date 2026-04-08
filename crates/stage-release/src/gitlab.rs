@@ -321,8 +321,8 @@ pub(crate) async fn gitlab_upload_asset(
                 .context("gitlab: parse release links JSON")?;
 
             for link in &links {
-                if link["name"].as_str() == Some(file_name) {
-                    if let Some(link_id) = link["id"].as_u64() {
+                if link["name"].as_str() == Some(file_name)
+                    && let Some(link_id) = link["id"].as_u64() {
                         let delete_url =
                             format!("{}/{}", links_api, link_id);
                         let del_resp = client
@@ -345,7 +345,6 @@ pub(crate) async fn gitlab_upload_asset(
                         }
                         break;
                     }
-                }
             }
         } else {
             // Could not list links — report the original error.
@@ -406,11 +405,10 @@ async fn detect_pre_v17_gitlab(client: &Client, api_url: &str) -> bool {
     let version_url = format!("{}/version", api);
     match client.get(&version_url).send().await {
         Ok(resp) if resp.status().is_success() => {
-            if let Ok(body) = resp.json::<serde_json::Value>().await {
-                if let Some(version_str) = body["version"].as_str() {
+            if let Ok(body) = resp.json::<serde_json::Value>().await
+                && let Some(version_str) = body["version"].as_str() {
                     return is_pre_v17(version_str);
                 }
-            }
             // Could not parse version — default to pre-v17 (conservative).
             true
         }
@@ -422,11 +420,10 @@ async fn detect_pre_v17_gitlab(client: &Client, api_url: &str) -> bool {
 /// Parse a GitLab version string and return true if the major version is < 17.
 fn is_pre_v17(version_str: &str) -> bool {
     // CI_SERVER_VERSION is like "16.11.0" or "17.0.0"
-    if let Some(major_str) = version_str.split('.').next() {
-        if let Ok(major) = major_str.parse::<u32>() {
+    if let Some(major_str) = version_str.split('.').next()
+        && let Ok(major) = major_str.parse::<u32>() {
             return major < 17;
         }
-    }
     false
 }
 

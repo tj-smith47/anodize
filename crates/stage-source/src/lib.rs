@@ -21,6 +21,7 @@ use anodize_core::stage::Stage;
 /// Extra files are placed under the prefix directory (matching GoReleaser)
 /// by creating a temporary staging directory and using `tar --append` to
 /// insert them into the archive after creation.
+#[allow(clippy::too_many_arguments)]
 fn create_source_archive(
     dist: &Path,
     format: &str,
@@ -58,18 +59,19 @@ fn create_source_archive(
     cmd.current_dir(repo_root);
     cmd.arg("archive")
         .arg("--format")
-        .arg(initial_format)
-        .arg(format!("--prefix={}/", prefix))
-        .arg("--output")
+        .arg(initial_format);
+
+    // Only pass --prefix when prefix is non-empty; GoReleaser omits it when unset.
+    if !prefix.is_empty() {
+        cmd.arg(format!("--prefix={}/", prefix));
+    }
+
+    cmd.arg("--output")
         .arg(&initial_path);
 
-    // For zip format, use --add-file (files go at root — limitation accepted
-    // for zip since tar append doesn't apply; zip is rare for source archives).
-    if git_format == "zip" {
-        for entry in extra_files {
-            cmd.arg("--add-file").arg(&entry.src);
-        }
-    }
+    // For zip format with extra files, we create the base archive first via
+    // git archive, then append extra files under the prefix using the zip crate.
+    // (--add-file puts files at root, which is wrong when prefix is set.)
 
     cmd.arg(commit);
 
@@ -80,6 +82,80 @@ fn create_source_archive(
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!("source: git archive failed: {}", stderr.trim());
+    }
+
+    // Append extra files to zip under the prefix (matching tar behavior)
+    if git_format == "zip" && !extra_files.is_empty() {
+        use std::io::{Read as _, Write as _};
+
+        let zip_data = std::fs::read(&output_path).context("source: read zip for appending")?;
+        let reader = std::io::Cursor::new(&zip_data);
+        let mut archive = zip::ZipArchive::new(reader).context("source: open zip archive")?;
+
+        let mut out_buf = Vec::new();
+        {
+            let writer = std::io::Cursor::new(&mut out_buf);
+            let mut zip_writer = zip::ZipWriter::new(writer);
+
+            // Copy existing entries
+            for i in 0..archive.len() {
+                let mut entry = archive.by_index(i).context("source: read zip entry")?;
+                let options = zip::write::SimpleFileOptions::default()
+                    .compression_method(entry.compression());
+                zip_writer
+                    .start_file(entry.name().to_string(), options)
+                    .context("source: start zip entry")?;
+                let mut data = Vec::new();
+                entry
+                    .read_to_end(&mut data)
+                    .context("source: read zip entry data")?;
+                zip_writer
+                    .write_all(&data)
+                    .context("source: write zip entry")?;
+            }
+
+            // Append extra files under prefix
+            for file_entry in extra_files {
+                let src = std::path::Path::new(&file_entry.src);
+                let do_strip = file_entry.strip_parent.unwrap_or(false);
+                let dest_rel = if let Some(ref dst) = file_entry.dst {
+                    dst.clone()
+                } else if do_strip {
+                    src.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| file_entry.src.clone())
+                } else {
+                    file_entry.src.clone()
+                };
+
+                let archive_path = if prefix.is_empty() {
+                    dest_rel
+                } else {
+                    format!("{}/{}", prefix, dest_rel)
+                };
+
+                if !src.exists() {
+                    log.warn(&format!("source: extra file '{}' not found, skipping", file_entry.src));
+                    continue;
+                }
+
+                let file_data = std::fs::read(src)
+                    .with_context(|| format!("source: read extra file '{}'", file_entry.src))?;
+
+                let options = zip::write::SimpleFileOptions::default()
+                    .compression_method(zip::CompressionMethod::Deflated);
+                zip_writer
+                    .start_file(&archive_path, options)
+                    .context("source: start zip extra file entry")?;
+                zip_writer
+                    .write_all(&file_data)
+                    .context("source: write zip extra file")?;
+            }
+
+            zip_writer.finish().context("source: finish zip")?;
+        }
+
+        std::fs::write(&output_path, &out_buf).context("source: write updated zip")?;
     }
 
     // Append extra files using the Rust tar crate for per-file metadata control
@@ -231,9 +307,10 @@ fn create_source_archive(
 }
 
 /// Determine the repository root via `git rev-parse --show-toplevel`.
-fn get_repo_root() -> Result<PathBuf> {
+fn get_repo_root(cwd: &Path) -> Result<PathBuf> {
     let output = Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
+        .current_dir(cwd)
         .output()
         .context("source: failed to run 'git rev-parse --show-toplevel'")?;
 
@@ -496,10 +573,8 @@ impl Stage for SourceStage {
             .map(|s| s.is_enabled())
             .unwrap_or(false);
 
-        let sbom_enabled = !ctx.config.sboms.is_empty();
-
-        if !source_enabled && !sbom_enabled {
-            log.status("nothing enabled, skipping");
+        if !source_enabled {
+            log.status("source archive not enabled, skipping");
             return Ok(());
         }
 
@@ -510,19 +585,7 @@ impl Stage for SourceStage {
             })?;
         }
 
-        // --- Source archive ---
-        if source_enabled {
-            self.run_source_archive(ctx, &dist)?;
-        }
-
-        // --- SBOM ---
-        if sbom_enabled {
-            // Clone the sbom configs to avoid borrowing ctx while iterating
-            let sbom_configs = ctx.config.sboms.clone();
-            for sbom_cfg in &sbom_configs {
-                self.run_sbom(ctx, &dist, sbom_cfg)?;
-            }
-        }
+        self.run_source_archive(ctx, &dist)?;
 
         Ok(())
     }
@@ -548,15 +611,30 @@ impl SourceStage {
             format!("{}-{}", project_name, version)
         };
 
-        // Determine the archive prefix (directory name inside the archive)
+        // Determine the archive prefix (directory name inside the archive).
+        // GoReleaser defaults to empty (no prefix) when prefix_template is not configured.
         let prefix = if let Some(ref tpl) = source_cfg.prefix_template {
             ctx.render_template(tpl)
                 .with_context(|| format!("source: failed to render prefix_template '{}'", tpl))?
         } else {
-            name.clone()
+            String::new()
         };
 
-        let extra_files = source_cfg.files.clone();
+        // GoReleaser renders extra file source patterns through the
+        // template engine before glob expansion.
+        let extra_files: Vec<SourceFileEntry> = source_cfg
+            .files
+            .iter()
+            .map(|entry| {
+                let rendered_src = ctx.render_template(&entry.src).unwrap_or_else(|_| entry.src.clone());
+                SourceFileEntry {
+                    src: rendered_src,
+                    dst: entry.dst.clone(),
+                    strip_parent: entry.strip_parent,
+                    info: entry.info.clone(),
+                }
+            })
+            .collect();
 
         let log = ctx.logger("source");
         if ctx.is_dry_run() {
@@ -569,7 +647,10 @@ impl SourceStage {
 
         log.status(&format!("creating {}.{} archive...", name, format));
 
-        let repo_root = get_repo_root()?;
+        let cwd = ctx.options.project_root.clone()
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
+        let repo_root = get_repo_root(&cwd)?;
         let commit = ctx
             .git_info
             .as_ref()
@@ -578,12 +659,18 @@ impl SourceStage {
         let output_path =
             create_source_archive(dist, &format, &name, &prefix, &extra_files, &repo_root, commit, &log)?;
 
+        // GoReleaser sets artifact name to the filename (e.g. "foo-1.0.0.tar.gz").
+        let artifact_name = output_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+
         let mut metadata = HashMap::new();
         metadata.insert("format".to_string(), format);
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::SourceArchive,
-            name: String::new(),
+            name: artifact_name,
             path: output_path,
             target: None,
             crate_name: project_name.clone(),
@@ -594,6 +681,10 @@ impl SourceStage {
         Ok(())
     }
 
+    // SBOM generation has been extracted to the standalone stage-sbom crate.
+    // Kept as dead code temporarily for reference; the run_sbom method is now
+    // implemented in anodize_stage_sbom::SbomStage.
+    #[allow(dead_code)]
     fn run_sbom(&self, ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()> {
         let log = ctx.logger("source");
         let project_name = ctx.config.project_name.clone();
@@ -627,7 +718,7 @@ impl SourceStage {
         // Default documents based on artifacts type
         let documents = sbom_cfg.documents.clone().unwrap_or_else(|| {
             match artifacts_type {
-                "binary" => vec!["{{ .ArtifactName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}.sbom.json".to_string()],
+                "binary" => vec!["{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}.sbom.json".to_string()],
                 "any" => vec![],
                 _ => vec!["{{ .ArtifactName }}.sbom.json".to_string()],
             }
@@ -819,6 +910,23 @@ impl SourceStage {
             let mut command = Command::new(cmd);
             command.args(&rendered_args);
             command.current_dir(dist);
+            // GoReleaser parity (sbom.go): restrict environment to a small
+            // whitelist to prevent accidental leakage of tokens/credentials.
+            command.env_clear();
+            for key in &[
+                "HOME",
+                "USER",
+                "USERPROFILE",
+                "TMPDIR",
+                "TMP",
+                "TEMP",
+                "PATH",
+                "LOCALAPPDATA",
+            ] {
+                if let Ok(val) = std::env::var(key) {
+                    command.env(key, val);
+                }
+            }
             for (k, v) in &rendered_env {
                 command.env(k, v);
             }
@@ -896,8 +1004,11 @@ impl SourceStage {
         }
 
         // Find Cargo.lock starting from repo root (or CWD as fallback)
-        let search_dir = get_repo_root()
-            .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        let fallback_cwd = ctx.options.project_root.clone()
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
+        let search_dir = get_repo_root(&fallback_cwd)
+            .unwrap_or(fallback_cwd);
         let cargo_lock_path = find_cargo_lock(&search_dir)?;
         let cargo_lock_content = std::fs::read_to_string(&cargo_lock_path).with_context(|| {
             format!(
@@ -1707,17 +1818,11 @@ dependencies = [
                 files: vec![],
             })
             .dist(dist.clone())
+            .project_root(tmp.path().to_path_buf())
             .build();
-
-        // Run from the temp dir so git commands find the repo
-        let orig_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(tmp.path()).unwrap();
 
         let stage = SourceStage;
         let result = stage.run(&mut ctx);
-
-        // Restore CWD before asserting (so failures don't leave CWD wrong)
-        std::env::set_current_dir(&orig_dir).unwrap();
 
         assert!(
             result.is_ok(),
@@ -1776,9 +1881,8 @@ dependencies = [
             info: None,
         }];
 
-        // Save and set CWD to the temp dir so git commands work
-        let orig_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(tmp.path()).unwrap();
+        // create_source_archive uses repo_root (tmp.path()) directly via current_dir(),
+        // so no process-wide CWD mutation is needed.
 
         let result = create_source_archive(
             &dist,
@@ -1791,7 +1895,6 @@ dependencies = [
             &log,
         );
 
-        std::env::set_current_dir(&orig_dir).unwrap();
 
         let archive_path = result.expect("create_source_archive should succeed");
         assert!(archive_path.exists(), "archive should exist");
@@ -1852,7 +1955,7 @@ dependencies = [
             info: None,
         }];
 
-        let orig_dir = std::env::current_dir().unwrap();
+
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = create_source_archive(
@@ -1866,7 +1969,6 @@ dependencies = [
             &log,
         );
 
-        std::env::set_current_dir(&orig_dir).unwrap();
 
         let archive_path = result.expect("create_source_archive should succeed");
 
@@ -1917,7 +2019,7 @@ dependencies = [
             info: None,
         }];
 
-        let orig_dir = std::env::current_dir().unwrap();
+
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = create_source_archive(
@@ -1931,7 +2033,6 @@ dependencies = [
             &log,
         );
 
-        std::env::set_current_dir(&orig_dir).unwrap();
 
         let archive_path = result.expect("create_source_archive should succeed");
 
@@ -1987,7 +2088,7 @@ dependencies = [
             }),
         }];
 
-        let orig_dir = std::env::current_dir().unwrap();
+
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = create_source_archive(
@@ -2001,7 +2102,6 @@ dependencies = [
             &log,
         );
 
-        std::env::set_current_dir(&orig_dir).unwrap();
 
         assert!(result.is_ok(), "failed: {:?}", result.err());
 

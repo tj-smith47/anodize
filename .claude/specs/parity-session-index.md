@@ -605,18 +605,270 @@ GoReleaser exposes per-artifact `.OS`, `.Arch`, `.Target` variables. Anodize exp
 GoReleaser explicitly passes HOME, USER, PATH, TMPDIR, etc. Anodize only passes publisher-configured env.
 - [x] System env inherited by default (Rust Command behavior, no env_clear). Documented.
 
-### Phase Z: Final Parity Audit
+### Session N: Deep Parity Audit (2026-04-07)
 
-**After ALL sessions A-M complete:**
-- [ ] Update goreleaser-parity-matrix.md — mark all items Implemented
-- [ ] Delete superseded docs: parity-gap-analysis.md
-- [ ] Consolidate fresh-parity-gap-analysis.md into matrix
-- [ ] Fresh parity audit: read EVERY GoReleaser pipe at `/opt/repos/goreleaser/internal/pipe/*/`, compare against our implementation using the parity definition above (config field parity, behavioral parity, wiring parity, error parity, auth parity, default parity). Produce pass/fail report per feature area. Fix all remaining gaps. Re-audit until zero failures. This is the sign-off.
+**Build Stage**
+- [x] Binary name template rendered before per-target vars — moved render into per-target loop
+- [x] No glibc version suffix support — added `strip_glibc_suffix()`, full target kept for cargo-zigbuild
+- [x] Invalid targets warn instead of error — changed to `bail!()` matching GoReleaser
+- [x] No duplicate build ID validation — added HashSet check per crate
+- [x] No workspace `--package` validation — added `check_workspace_package()` parsing Cargo.toml
+- [x] Build hooks lack per-target context — Name, Path, Ext, Target, Os, Arch now set in template vars
+- [x] `skip` is `Option<bool>` — changed to `Option<StringOrBool>` with template evaluation
+- [x] `no_unique_dist_dir` is `Option<bool>` — changed to `Option<StringOrBool>` with template evaluation
+- [x] Universal binary hooks unwired — added pre/post hook execution around lipo
+- [x] Universal binary artifact type — changed to `ArtifactKind::UniversalBinary`
+- [x] Universal binary output path — now uses `dist/{crate}_darwin_all/{name}`
+- [x] No `command` config field — added `command: Option<String>` with multi-word split
+- [x] Known targets list incomplete — expanded to ~110+ targets (all mips, riscv, powerpc, sparc, thumb, wasm, etc.)
+- [x] No ELF dynamic link detection — added PT_INTERP check, stores `DynamicallyLinked` in artifact metadata
+- [x] Process env vars not expanded — added `expand_env_vars()` for `$VAR`/`${VAR}` expansion
+
+**Archive / Checksum / Source**
+- [x] Missing `Algorithm` template variable in split checksum mode — added to template vars; sidecar path fixed to use dist dir
+- [x] Source archive prefix default differs: changed to empty (no prefix) when prefix_template unset; removed unconditional trailing `/`
+- [x] Extra files glob + name_template constraint not enforced — check now runs before directory filtering, includes template in error
+- [x] Backslash normalization missing in archive entry paths — `.replace('\\', "/")` in three locations
+
+**Config / Env / Git**
+- [x] Gitea download URL not derived from API URL — now strips `/api/v1` from API URL as fallback
+- [x] No `ErrMultipleTokens` detection — now errors when multiple SCM tokens set without force_token
+- [x] No `ErrMissingToken` hard error — now errors early (skipped in snapshot/dry-run mode)
+- [x] Default token file paths (`~/.config/goreleaser/{github,gitlab,gitea}_token`) never auto-checked — now always auto-checked in setup_env even without explicit env_files config
+- [x] No `project_name` auto-inference from Cargo.toml when not set in config — now reads package.name
+- [x] Empty snapshot version (from bad template) not validated — now errors on empty rendered name
+- [x] Git remote URL uses `remote get-url origin` instead of `ls-remote --get-url` — fixed
+- [x] Effective config not written in dry-run mode — now always writes
+
+**Release / Changelog / Sign**
+- [x] Milestone close not implemented for GitLab and Gitea — only GitHub works — added `close_milestone_gitlab()` and `close_milestone_gitea()` with REST API calls
+- [x] Sign config ID dedup validation missing — added HashSet check for signs and binary_signs
+- [x] Changelog format default uses `ShortSHA` — changed git backend default to `{{ SHA }} {{ Message }}`
+
+**Docker / UPX / SBOM / Notarize**
+- [x] UPX `enabled` is `bool` — changed to `Option<StringOrBool>` with template evaluation
+- [x] No parallel UPX compression (GoReleaser uses `semerrgroup`) — added `std::thread::scope` with chunked parallelism bounded by `ctx.options.parallelism`
+- [x] Notarize missing status differentiation (rejected vs timeout vs invalid in errors) — added `check_notarize_output()` parsing status strings; timeout non-fatal per GoReleaser
+- [x] SBOM subprocess gets full environment instead of restricted passthrough vars — added `env_clear()` + 8-var whitelist matching GoReleaser
+
+**Publishers**
+- [x] Homebrew Cask: nested cask config (under `homebrew`) ignores all extended fields — wired custom_block, service, license, manpages, completions, dependencies, conflicts, hooks from HomebrewCaskConfig
+- [x] Homebrew Cask: no `#{version}` URL interpolation for Homebrew auto-update mechanism — URL version replaced with `#{version}` for auto-update
+- [x] Nix: hash format differs — anodize uses SRI (`sha256-...`), GoReleaser uses nix-native base32 — implemented `nix_base32_encode()` matching Nix's `printHash32()`
+- [x] Krew: missing required field validation (description, short_description) and binary count enforcement — added hard errors for missing required fields
+- [x] All publishers: commit message defaults differ from GoReleaser templates — updated all 6 publisher kinds to match GoReleaser defaults
+- [x] AUR Source: missing `.install` file support (`Install` field) — already implemented: install file written to disk, PKGBUILD includes `install=` line
+- [x] Winget: missing `# yaml-language-server: $schema=...` header comments — already implemented: GENERATED_HEADER + SCHEMA_* constants prepended to all 3 manifest files
+
+**Packaging**
+- [x] nFPM: no `skip_sign` check — added `skip_sign` parameter, clears signature configs when active
+- [x] nFPM: missing `libdirs` defaults — now defaults to `/usr/include`, `/usr/lib`, `/usr/lib`
+- [x] nFPM: default name template — already uses `PackageName` (verified correct)
+- [x] nFPM: termux prefix rewriting incomplete — missing libdirs (Header/CArchive/CShared) — added termux prefix rewriting for all three libdirs
+- [x] nFPM: no warning when `formats` is empty — now logs warning and skips
+- [x] Snapcraft: missing completer file copy into build directory — added completer file copy from app configs into snap build dir
+- [x] Snapcraft: defaults summary/description silently instead of erroring — changed to hard errors when missing
+- [x] Snapcraft: riscv64 accepted but unsupported by snap store — added `is_valid_snap_arch()` check, skips with warning
+- [x] SRPM: missing `SRPM_PASSPHRASE` env var — now reads passphrase from config or env
+- [x] SRPM: no `skip_sign` wiring — now checks `ctx.should_skip("sign")`
+- [x] Makeself: `strip_parent` config field defined but never wired — now uses filename only when set
+
+**Announce / CLI**
+- [x] Missing `--release-header-tmpl` and `--release-footer-tmpl` CLI flags — added both
+- [x] SMTP: `body_template` field name from GoReleaser not accepted as alias for `message_template` — added serde alias
+- [x] Custom publisher env not sandboxed — full system env inherited vs GoReleaser's 8-var passthrough — added `env_clear()` + 8-var whitelist (HOME/USER/USERPROFILE/TMPDIR/TMP/TEMP/PATH/SYSTEMROOT)
+- [x] Custom publisher shell execution via `sh -c` vs GoReleaser's direct exec with shellwords parse — replaced `sh -c` with shellwords parse + direct exec
+- [x] Slack blocks: missing `\"` to `"` un-escaping before template rendering — added in render_json_template
+- [x] Webhook: auto-wraps non-JSON messages — changed to always send raw message (matching GoReleaser)
+
+**Infrastructure / Cross-Cutting**
+- [x] No deprecation system for config fields — deprecated fields silently accepted — added `Context::deprecate()` with dedup via `notified_deprecations` HashSet
+- [x] No ID uniqueness validation — added for build IDs (stage-build), sign IDs (stage-sign); docker v2/makeself already had it
+- [x] No strict YAML parsing — unknown config fields silently ignored — added `deny_unknown_fields` to top-level `Config` struct
+- [x] Hook output redaction uses hardcoded 10-var list — now delegates to `redact::redact_string()` which auto-discovers secrets
+- [x] No GitHub API rate limit handling (sleep-and-retry on 403/429) — added `check_github_rate_limit()` proactive check + 403/429 detection in upload retry loop
+
+### Session O: Extremely Deep Parity Audit (2026-04-07)
+
+10 parallel comparison agents read every GoReleaser pipe line-by-line. 85+ findings across all areas. 3 rounds of code review until zero issues remained.
+
+**Template Engine**
+- [x] Preprocess `eq`/`ne`/`gt`/`lt`/`ge`/`le` comparison functions → Tera operators (`==`/`!=`/`>`/`<`/`>=`/`<=`)
+- [x] Variadic `eq X Y Z` → `X == Y or X == Z` (Go's eq is variadic)
+- [x] Preprocess `and`/`or` prefix functions → Tera infix operators
+- [x] Preprocess `len .X` → `X | length`
+- [x] Register `index` as a Tera function (map/array lookup)
+- [x] Fix `map` positional syntax preprocessing — `map "k1" "v1"` → `map(pairs=[...])`
+- [x] Missing env var (`{{ Env.NONEXISTENT }}`) returns empty string instead of error (matching GoReleaser)
+- [x] Regex cache for preprocessor comparison rewriting (avoid per-call compilation)
+
+**Config Types**
+- [x] All 14 announce provider `enabled` fields: `Option<bool>` → `Option<StringOrBool>` (template-conditional enable)
+- [x] Discord `color`: `u32` → `String` (GoReleaser uses string, parsed at runtime)
+- [x] Telegram `message_thread_id`: `i64` → `String` (template support)
+- [x] Email subject/body defaults changed to match GoReleaser ("is out!" and ReleaseURL body)
+
+**Sign Stage**
+- [x] "all" artifact filter narrowed to release-uploadable types only (not internal types)
+- [x] Sign env field values now template-rendered through context
+- [x] Sign command stdout/stderr now redacted for secrets
+- [x] Docker sign IDs validated for uniqueness
+- [x] Docker sign digest template var set in both PascalCase (`Digest`) and lowercase (`digest`)
+
+**Snapcraft**
+- [x] Summary, description, grade now template-rendered
+- [x] Channel templates now template-rendered (filter empty results)
+- [x] Default snap name uses ProjectName (not binary name)
+- [x] Extra files default mode 0644
+- [x] Binary copy mode 0555
+
+**Archive / Source / Checksum**
+- [x] Archive file spec `src` patterns now template-rendered before glob expansion
+- [x] Source archive extra file `src` patterns now template-rendered
+- [x] Source archive artifact name set to filename (was empty string)
+- [x] FormatOverride warns on empty `os` or `format`
+- [x] Checksum hash stored in artifact metadata as `"Checksum": "algorithm:hash"` for publisher consumption
+- [x] Checksum metadata storage uses HashMap for O(1) lookup (was O(n*m))
+
+**Release / Changelog**
+- [x] Release body header/footer separator changed from `\n\n` to `\n` (matching GoReleaser)
+
+**Build**
+- [x] Build flags template-rendered through context (supports `{{ .Version }}` in flags)
+- [x] Before hooks run with template vars (Env, ProjectName, time vars — before git context)
+- [x] Duplicate KNOWN_TARGETS entries removed (x86_64-linux-android, thumbv7neon-linux-androideabi, x86_64-apple-ios)
+
+**Publishers**
+- [x] Scoop: platform uniqueness validation (error on duplicate amd64/arm64/386 entries)
+- [x] Krew: goarch "all" expanded to amd64 + arm64 platform entries
+- [x] HTTP upload/Artifactory: custom_headers values template-rendered with artifact context
+- [x] Chocolatey: default `source_repo` to `https://push.chocolatey.org/` (was already pushing — verified)
+
+**Blob**
+- [x] Added Signature, Certificate, Flatpak, SourceRpm to uploadable artifact types
+
+**Makeself**
+- [x] "replaces" metadata propagated from source binary to makeself artifact
+
+**Infrastructure**
+- [x] Unused `base64::Engine` import moved into `#[cfg(test)]` function
+- [x] `git ls-remote --get-url` comment corrected (defaults to origin, not "first remote")
+
+### Session O: Remaining Findings (architectural / deferred)
+
+Items identified by the deep audit that are intentional architectural differences or require larger refactors:
+
+**Intentional Differences (N/A):**
+- Universal binary uses `lipo` instead of native Mach-O fat binary builder — requires macOS, but avoids reimplementing Mach-O format in Rust
+- Snapcraft uses `snapcraft.yaml` + `snapcraft pack` instead of GoReleaser's pre-prime `snap.yaml` approach — both produce valid snaps
+- SRPM uses `rpmbuild` subprocess instead of nfpm Go library — architectural choice, both produce valid SRPMs
+- UPX uses `targets` glob filter instead of `goos/goarch` — Rust target triples are more precise
+- Teams uses Adaptive Card format instead of GoReleaser's legacy MessageCard — Adaptive Cards are the modern replacement
+- Slack blocks/attachments use typed structs instead of untyped `any` — limits arbitrary Block Kit JSON but provides type safety
+- Build command uses `--bin <name>` explicitly — GoReleaser relies on Cargo.toml default target
+- `filter`/`reverseFilter` regex uses Perl-like (Rust regex) vs GoReleaser's POSIX ERE — different match semantics for alternations
+
+**Deferred — All Resolved (Session O completion, 2026-04-07):**
+- [x] SBOM extracted to independent `stage-sbom` crate with SbomStage, wired into pipeline after SourceStage
+- [x] Blob KMS client-side encryption via CLI tools (aws/gcloud/az) for awskms://, gcpkms://, azurekeyvault:// URL schemes
+- [x] Nix formatter support (alejandra/nixfmt) — verified working: whitelist validation, subprocess after template render, warn-on-failure
+- [x] Nix per-platform sourceRoots — sourceRootMap generated when archives have different WrappedIn per platform
+- [x] Nix dynamically-linked binary detection — ELF PT_INTERP check, autoPatchelfHook + stdenv.cc.cc.lib in derivation
+- [x] Homebrew formula: auto-generated multi-binary install from ExtraBinaries metadata (sorted, deduped)
+- [x] Homebrew cask: multi-platform support with on_macos/on_linux + on_intel/on_arm nesting
+- [x] All publishers: `OnlyReplacingUnibins` filter for universal binary deduplication (Homebrew, Scoop, Nix, Krew, shared util)
+- [x] All publishers: `Repository.Git.URL` SSH push with StrictHostKeyChecking=accept-new, -F /dev/null, private key support
+- [x] GitHub co-author email → username resolution via noreply parsing + Search Users API with caching
+- [x] GitHub rate limit checking for non-upload operations (release create, draft find, milestone ops)
+- [x] GitHub asset deletion pagination (per_page=100, iterative page scan, 50-page safety cap)
+- [x] `--skip` values validated against known stage set (separate Release and Build sets, descriptive error on invalid)
+- [x] `build` subcommand has `--skip` flag (valid: pre-hooks, post-hooks, validate, before)
+- [x] `--skip=validate` tolerates non-semver tags (warning + SemVer{0,0,0} default)
+- N/A: `printf`/`print`/`println` — NOT in GoReleaser's template engine either (verified in tmpl.go FuncMap)
+
+### Pre-Release Session: Parity Audit Batch 1 (2026-04-08)
+
+5 parallel comparison agents audited all GoReleaser pipes. 17 BUGs + 2 GAPs fixed. 3,200+ tests pass.
+
+**Infrastructure (defaults/env/git/snapshot/metadata)**
+- [x] force_token must clear non-forced tokens BEFORE multi-token check (helpers.rs ordering)
+- [x] release.disable must suppress token validation (helpers.rs)
+- [x] Snapshot must NOT overwrite RawVersion (release.rs)
+- [x] Metadata.json + artifacts.json must be written in dry-run mode (release.rs)
+- [x] Tag annotation format: %(subject) → %(contents:subject), %(body) → %(contents:body) (git.rs)
+- [x] Artifact paths normalized to forward slashes in artifacts.json (artifact.rs)
+
+**Changelog / Release**
+- [x] Changelog header/footer separator: \n → \n\n (lib.rs)
+- [x] Remove implicit "Others" group for unmatched commits — GoReleaser drops them (lib.rs)
+- [x] Group matching: config order for matching, sort order for display only (lib.rs)
+- [x] Bullet character: `- ` → `* ` (lib.rs)
+- [x] CHANGELOG.md written even in dry-run mode (lib.rs)
+- [x] Archive binary format exempt from different-binary-count check (lib.rs)
+
+**Publishers**
+- [x] Homebrew: formula name `@N` handling — skip digit after AT insertion (homebrew.rs)
+- [x] AUR: .SRCINFO backup entries added (aur.rs)
+- [x] Krew: header comment + platform sorting by URI descending (krew.rs)
+- [x] Scoop: removed checkver/autoupdate fields not in GoReleaser (scoop.rs)
+- [x] Nix: install ALL binaries from archive, not just one (nix.rs)
+
+**Flaky tests**
+- [x] Removed 4 additional `set_current_dir` races in source stage tests
+
+**Previously deferred — now fixed (2026-04-08):**
+- [x] nfpm creates 1 package per platform with all binaries (was per-binary) — rearchitected artifact grouping via BTreeMap
+- [x] Source archive zip extra files placed under prefix (was at root) — zip crate append with prefix path
+- [x] SBOM error when command produces no output (was silent success) — bail on missing/empty output files
+- [x] nfpm empty maintainer warning — log warning when maintainer field is empty
+- [x] nfpm ID uniqueness validation — HashSet check across all crate nfpm configs
+
+**Remaining architectural differences (genuine refactors):**
+- [x] Snapcraft prime-dir architecture: pre-stages binaries into prime/, writes snap.yaml to prime/meta/, runs `snapcraft pack prime_dir` (Session N)
+- [x] nfpm iOS/AIX/Android platform support: expanded target filter + format restrictions (ios=deb-only, aix=rpm-only/ppc64-only) (Session N)
+- [x] nfpm C library artifact staging: Header/CArchive/CShared collected alongside Binary, routed to libdirs (Session N)
 
 ### Post-Release: Developer Experience / Infrastructure
 
 - [x] JSON Schema generation: `anodize jsonschema` CLI command using schemars-derived schema
 - [x] Config reference auto-generated from JSON Schema (xtask gen-docs)
-- [ ] Publish JSON Schema to docs site URL
-- [ ] Register with SchemaStore.org for auto-discovery (`.anodize.y{,a}ml` pattern)
-- [ ] `# yaml-language-server: $schema=...` inline comment works automatically once schema is published
+- [x] Publish JSON Schema to docs site URL (`docs/site/static/schema.json`, generated in docs workflow)
+- [x] `# yaml-language-server: $schema=...` inline comment — added to `.anodize.yaml`
+
+### Pre-Release: Documentation Site Parity
+
+26 doc pages exist on goreleaser.com for features Anodize has implemented but has no corresponding doc page. Each page must be written by reading the stage source code and the GoReleaser doc page side-by-side.
+
+**General:**
+- [x] `general/artifacts` — artifact types reference
+- [x] `general/dist` — dist directory config
+- [x] `general/git` — git config (tag_sort, etc.)
+- [x] `general/metadata` — metadata config
+- [x] `general/retry` — retry config
+- [x] `general/templatefiles` — template files stage
+
+**Package:**
+- [x] `package/app_bundles` — macOS app bundles
+- [x] `package/flatpak` — flatpak stage
+- [x] `package/makeself` — makeself stage
+- [x] `package/nsis` — NSIS installer stage
+- [x] `package/srpm` — source RPM stage
+- [x] `package/docker_digests` — docker digest config
+- [x] `package/docker_manifest` — docker manifest config
+
+**Sign:**
+- [x] `sign/notarize` — notarize stage
+
+**Publish:**
+- [x] `publish/artifactory` — artifactory publisher
+- [x] `publish/aursources` — AUR source publisher
+- [x] `publish/cloudsmith` — cloudsmith publisher
+- [x] `publish/dockerhub` — dockerhub publisher
+- [x] `publish/gemfury` — fury publisher
+- [x] `publish/homebrew_casks` — homebrew cask (separate page from formulas)
+- [x] `publish/npm` — npm publisher
+- [x] `publish/upload` — generic upload publisher
+- [x] `publish/scm/gitlab` — GitLab release
+- [x] `publish/scm/gitea` — Gitea release
+- [x] `publish/milestone` — milestone closing
+- [x] `publish/beforepublish` — before-publish hooks

@@ -750,12 +750,8 @@ fn test_e2e_dry_run_no_side_effects() {
             "dist/ should NOT contain checksum files after dry-run, found: {:?}",
             entries
         );
-        let has_metadata = entries.iter().any(|name| name == "metadata.json");
-        assert!(
-            !has_metadata,
-            "dist/ should NOT contain metadata.json after dry-run, found: {:?}",
-            entries
-        );
+        // GoReleaser writes metadata.json and artifacts.json even in dry-run mode.
+        // Anodize matches this behavior: metadata is always written for debugging.
     }
     // If dist/ doesn't exist at all, that's the expected case for dry-run.
 
@@ -1584,9 +1580,9 @@ crates:
     );
 }
 
-/// Unknown YAML fields should be silently ignored (not cause parse errors).
+/// GoReleaser parity: unknown YAML fields should be rejected (strict parsing).
 #[test]
-fn test_check_unknown_yaml_fields_ignored() {
+fn test_check_unknown_yaml_fields_rejected() {
     let tmp = TempDir::new().unwrap();
     create_test_project(tmp.path());
     create_config(
@@ -1594,12 +1590,10 @@ fn test_check_unknown_yaml_fields_ignored() {
         r#"
 project_name: test-project
 future_feature: "this field does not exist yet"
-experimental_mode: true
 crates:
   - name: test-project
     path: "."
     tag_template: "v{{ .Version }}"
-    unknown_crate_field: 42
 "#,
     );
 
@@ -1610,9 +1604,15 @@ crates:
         .unwrap();
 
     assert!(
-        output.status.success(),
-        "check should succeed even with unknown YAML fields.\nstderr:\n{}",
+        !output.status.success(),
+        "check should fail with unknown YAML fields.\nstderr:\n{}",
         String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unknown field"),
+        "error should mention unknown field.\nstderr:\n{}",
+        stderr
     );
 }
 
@@ -2755,12 +2755,8 @@ crates:
         stderr
     );
 
-    // No CHANGELOG.md should exist (changelog dry-run skips disk write)
-    let notes_path = tmp.path().join("dist/CHANGELOG.md");
-    assert!(
-        !notes_path.exists(),
-        "CHANGELOG.md should NOT exist after dry-run"
-    );
+    // GoReleaser writes CHANGELOG.md even in dry-run mode.
+    // Anodize matches this behavior for debugging and downstream stage consumption.
 }
 
 /// E2E #12: Check command with nested custom config path validates correctly.

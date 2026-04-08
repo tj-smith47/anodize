@@ -1,55 +1,22 @@
+use anodize_core::config::AurSourceConfig;
 use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
 use anyhow::{Context as _, Result};
 
 use crate::util;
 
-/// Publish AUR source packages for a crate.
+/// Shared core logic for publishing a single AUR source entry.
 ///
-/// Unlike the binary AUR publisher (which generates `-bin` packages with
-/// prebuilt binaries), this generates source-only PKGBUILDs that build from
-/// source using `cargo build`. The package name does NOT have a `-bin` suffix.
-pub fn publish_to_aur_source(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> Result<()> {
-    let crate_cfg = ctx
-        .config
-        .crates
-        .iter()
-        .find(|c| c.name == crate_name)
-        .ok_or_else(|| anyhow::anyhow!("aur_source: crate '{}' not found", crate_name))?;
-    let publish_cfg = crate_cfg
-        .publish
-        .as_ref()
-        .and_then(|p| p.aur_source.as_ref())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "aur_source: no aur_source config for crate '{}'",
-                crate_name
-            )
-        })?;
-
-    // Check disable
-    if let Some(ref d) = publish_cfg.disable {
-        if d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
-            log.status(&format!(
-                "aur_source: skipping disabled config for crate '{}'",
-                crate_name
-            ));
-            return Ok(());
-        }
-    }
-
-    // Check skip_upload
-    if let Some(ref skip) = publish_cfg.skip_upload {
-        let should_skip = skip.is_disabled(|tmpl| ctx.render_template(tmpl));
-        if should_skip {
-            log.status(&format!(
-                "aur_source: skipping upload for crate '{}' (skip_upload=true)",
-                crate_name
-            ));
-            return Ok(());
-        }
-    }
-
+/// Both per-crate (`publish_to_aur_source`) and top-level (`publish_top_level_aur_sources`)
+/// delegate here after resolving which `AurSourceConfig` to use.
+fn publish_aur_source_entry(
+    ctx: &mut Context,
+    cfg: &AurSourceConfig,
+    default_name: &str,
+    strip_bin_suffix: bool,
+    label: &str,
+    log: &StageLogger,
+) -> Result<()> {
     let version = ctx
         .template_vars()
         .get("Version")
@@ -57,26 +24,21 @@ pub fn publish_to_aur_source(ctx: &mut Context, crate_name: &str, log: &StageLog
         .unwrap_or_else(|| "0.0.0".to_string())
         .replace('-', "_");
 
-    // Package name: no -bin suffix (this is a source package)
-    let pkg_name = publish_cfg
+    let raw_name = cfg
         .name
-        .clone()
-        .unwrap_or_else(|| crate_name.to_string());
+        .as_deref()
+        .unwrap_or(default_name);
+    let pkg_name = if strip_bin_suffix {
+        raw_name.strip_suffix("-bin").unwrap_or(raw_name).to_string()
+    } else {
+        raw_name.to_string()
+    };
 
-    let description = publish_cfg
-        .description
-        .as_deref()
-        .unwrap_or(crate_name);
-    let homepage = publish_cfg
-        .homepage
-        .as_deref()
-        .unwrap_or("");
-    let license = publish_cfg
-        .license
-        .as_deref()
-        .unwrap_or("MIT");
+    let description = cfg.description.as_deref().unwrap_or(default_name);
+    let homepage = cfg.homepage.as_deref().unwrap_or("");
+    let license = cfg.license.as_deref().unwrap_or("MIT");
 
-    let pkgrel: u32 = publish_cfg
+    let pkgrel: u32 = cfg
         .rel
         .as_deref()
         .and_then(|r| r.parse().ok())
@@ -89,24 +51,18 @@ pub fn publish_to_aur_source(ctx: &mut Context, crate_name: &str, log: &StageLog
         .cloned()
         .unwrap_or_default();
 
-    let source_url = if let Some(ref tmpl) = publish_cfg.url_template {
+    let source_url = if let Some(ref tmpl) = cfg.url_template {
         ctx.render_template(tmpl)
-            .with_context(|| "aur_source: render url_template")?
+            .with_context(|| format!("{}: render url_template", label))?
     } else {
-        // Default: GitHub release source tarball.
-        // Extract owner from GitURL, supporting both HTTPS and SSH formats:
-        //   https://github.com/owner/repo  -> owner at split('/')[3]
-        //   git@github.com:owner/repo.git  -> owner before '/'
         let git_url = ctx
             .template_vars()
             .get("GitURL")
             .cloned()
             .unwrap_or_default();
         let owner = if git_url.contains("://") {
-            // HTTPS-style URL
             git_url.split('/').nth(3).unwrap_or("").to_string()
         } else if git_url.contains(':') {
-            // SSH-style URL (git@host:owner/repo)
             git_url
                 .split(':')
                 .nth(1)
@@ -124,37 +80,34 @@ pub fn publish_to_aur_source(ctx: &mut Context, crate_name: &str, log: &StageLog
             .cloned()
             .unwrap_or_default();
         if owner.is_empty() {
-            log.warn("aur_source: could not extract owner from GitURL; set url_template explicitly");
+            log.warn(&format!(
+                "{}: could not extract owner from GitURL; set url_template explicitly",
+                label
+            ));
         }
         format!(
             "https://github.com/{owner}/{project}/archive/refs/tags/{tag}.tar.gz",
-            owner = owner,
-            project = project,
-            tag = tag,
         )
     };
 
-    // Source URL has been computed above — used in PKGBUILD generation
-
-    let maintainers = publish_cfg.maintainers.clone().unwrap_or_default();
-    let contributors = publish_cfg.contributors.clone().unwrap_or_default();
-    let depends = publish_cfg.depends.clone().unwrap_or_default();
-    let optdepends = publish_cfg.optdepends.clone().unwrap_or_default();
-    let conflicts = publish_cfg
+    let maintainers = cfg.maintainers.clone().unwrap_or_default();
+    let contributors = cfg.contributors.clone().unwrap_or_default();
+    let depends = cfg.depends.clone().unwrap_or_default();
+    let optdepends = cfg.optdepends.clone().unwrap_or_default();
+    let conflicts = cfg
         .conflicts
         .clone()
         .unwrap_or_else(|| vec![format!("{}-bin", pkg_name)]);
-    let provides = publish_cfg
+    let provides = cfg
         .provides
         .clone()
         .unwrap_or_else(|| vec![pkg_name.clone()]);
-    let backup = publish_cfg.backup.clone().unwrap_or_default();
-    let makedepends = publish_cfg
+    let backup = cfg.backup.clone().unwrap_or_default();
+    let makedepends = cfg
         .makedepends
         .clone()
         .unwrap_or_else(|| vec!["rust".to_string(), "cargo".to_string()]);
 
-    // Generate the source PKGBUILD using a custom template
     let pkgbuild = generate_source_pkgbuild(
         &pkg_name,
         &version,
@@ -171,13 +124,12 @@ pub fn publish_to_aur_source(ctx: &mut Context, crate_name: &str, log: &StageLog
         &provides,
         &backup,
         &source_url,
-        publish_cfg.prepare.as_deref(),
-        publish_cfg.build.as_deref(),
-        publish_cfg.package.as_deref(),
-        crate_name,
+        cfg.prepare.as_deref(),
+        cfg.build.as_deref(),
+        cfg.package.as_deref(),
+        default_name,
     );
 
-    // Generate .SRCINFO
     let srcinfo = generate_source_srcinfo(
         &pkg_name,
         &version,
@@ -195,8 +147,8 @@ pub fn publish_to_aur_source(ctx: &mut Context, crate_name: &str, log: &StageLog
 
     if ctx.is_dry_run() {
         log.status(&format!(
-            "(dry-run) would publish AUR source package '{}'",
-            pkg_name
+            "(dry-run) would publish AUR source package '{}' ({})",
+            pkg_name, label
         ));
         log.verbose(&format!("PKGBUILD:\n{}", pkgbuild));
         return Ok(());
@@ -206,23 +158,20 @@ pub fn publish_to_aur_source(ctx: &mut Context, crate_name: &str, log: &StageLog
     let dist = ctx.config.dist.clone();
     let aur_dir = dist.join("aur_source").join(&pkg_name);
     std::fs::create_dir_all(&aur_dir)
-        .with_context(|| format!("aur_source: create dir {}", aur_dir.display()))?;
+        .with_context(|| format!("{}: create dir {}", label, aur_dir.display()))?;
 
     std::fs::write(aur_dir.join("PKGBUILD"), &pkgbuild)
-        .with_context(|| "aur_source: write PKGBUILD")?;
+        .with_context(|| format!("{}: write PKGBUILD", label))?;
     std::fs::write(aur_dir.join(".SRCINFO"), &srcinfo)
-        .with_context(|| "aur_source: write .SRCINFO")?;
+        .with_context(|| format!("{}: write .SRCINFO", label))?;
 
     // Register artifacts
-    let pkgbuild_path = aur_dir.join("PKGBUILD");
-    let srcinfo_path = aur_dir.join(".SRCINFO");
-
     ctx.artifacts.add(anodize_core::artifact::Artifact {
         kind: anodize_core::artifact::ArtifactKind::SourcePkgBuild,
         name: "PKGBUILD".to_string(),
-        path: pkgbuild_path,
+        path: aur_dir.join("PKGBUILD"),
         target: None,
-        crate_name: crate_name.to_string(),
+        crate_name: pkg_name.clone(),
         metadata: {
             let mut m = std::collections::HashMap::new();
             m.insert("id".to_string(), pkg_name.clone());
@@ -235,9 +184,9 @@ pub fn publish_to_aur_source(ctx: &mut Context, crate_name: &str, log: &StageLog
     ctx.artifacts.add(anodize_core::artifact::Artifact {
         kind: anodize_core::artifact::ArtifactKind::SourceSrcInfo,
         name: ".SRCINFO".to_string(),
-        path: srcinfo_path,
+        path: aur_dir.join(".SRCINFO"),
         target: None,
-        crate_name: crate_name.to_string(),
+        crate_name: pkg_name.clone(),
         metadata: {
             let mut m = std::collections::HashMap::new();
             m.insert("id".to_string(), pkg_name.clone());
@@ -247,25 +196,24 @@ pub fn publish_to_aur_source(ctx: &mut Context, crate_name: &str, log: &StageLog
     });
 
     // Push to AUR git repo if configured
-    if let Some(ref git_url) = publish_cfg.git_url {
-        let tmp_dir = tempfile::tempdir().context("aur_source: create temp dir")?;
+    if let Some(ref git_url) = cfg.git_url {
+        let tmp_dir = tempfile::tempdir().context(format!("{}: create temp dir", label))?;
         let repo_path = tmp_dir.path();
 
-        if publish_cfg.private_key.is_some() || publish_cfg.git_ssh_command.is_some() {
+        if cfg.private_key.is_some() || cfg.git_ssh_command.is_some() {
             util::clone_repo_ssh(
                 git_url,
-                publish_cfg.private_key.as_deref(),
-                publish_cfg.git_ssh_command.as_deref(),
+                cfg.private_key.as_deref(),
+                cfg.git_ssh_command.as_deref(),
                 repo_path,
-                "aur_source",
+                label,
                 log,
             )?;
         } else {
-            util::clone_repo_with_auth(git_url, None, repo_path, "aur_source", log)?;
+            util::clone_repo_with_auth(git_url, None, repo_path, label, log)?;
         }
 
-        // Determine output directory
-        let output_dir = if let Some(ref dir) = publish_cfg.directory {
+        let output_dir = if let Some(ref dir) = cfg.directory {
             let rendered_dir = ctx.render_template(dir).unwrap_or_else(|_| dir.clone());
             let d = repo_path.join(&rendered_dir);
             std::fs::create_dir_all(&d)?;
@@ -278,36 +226,98 @@ pub fn publish_to_aur_source(ctx: &mut Context, crate_name: &str, log: &StageLog
         std::fs::copy(aur_dir.join(".SRCINFO"), output_dir.join(".SRCINFO"))?;
 
         let commit_msg = crate::homebrew::render_commit_msg(
-            publish_cfg.commit_msg_template.as_deref(),
+            cfg.commit_msg_template.as_deref(),
             &pkg_name,
             &version,
             "package",
         );
-        let commit_opts = util::resolve_commit_opts(
-            publish_cfg.commit_author.as_ref(),
-            None,
-            None,
-        );
+        let commit_opts = util::resolve_commit_opts(cfg.commit_author.as_ref(), None, None);
         util::commit_and_push_with_opts(
             repo_path,
             &["."],
             &commit_msg,
             None,
-            "aur_source",
+            label,
             &commit_opts,
         )?;
 
-        log.status(&format!(
-            "aur_source: package '{}' pushed to {}",
-            pkg_name, git_url
-        ));
+        log.status(&format!("{}: package '{}' pushed to {}", label, pkg_name, git_url));
     }
 
-    log.status(&format!("aur_source: published '{}'", pkg_name));
+    log.status(&format!("{}: published '{}'", label, pkg_name));
+    Ok(())
+}
+
+/// Publish AUR source packages for a crate (per-crate config path).
+pub fn publish_to_aur_source(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> Result<()> {
+    let crate_cfg = ctx
+        .config
+        .crates
+        .iter()
+        .find(|c| c.name == crate_name)
+        .ok_or_else(|| anyhow::anyhow!("aur_source: crate '{}' not found", crate_name))?;
+    let publish_cfg = crate_cfg
+        .publish
+        .as_ref()
+        .and_then(|p| p.aur_source.as_ref())
+        .ok_or_else(|| {
+            anyhow::anyhow!("aur_source: no aur_source config for crate '{}'", crate_name)
+        })?
+        .clone();
+
+    if let Some(ref d) = publish_cfg.disable
+        && d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
+            log.status(&format!("aur_source: skipping disabled config for crate '{}'", crate_name));
+            return Ok(());
+        }
+    if let Some(ref skip) = publish_cfg.skip_upload
+        && skip.is_disabled(|tmpl| ctx.render_template(tmpl)) {
+            log.status(&format!("aur_source: skipping upload for crate '{}' (skip_upload=true)", crate_name));
+            return Ok(());
+        }
+
+    publish_aur_source_entry(ctx, &publish_cfg, crate_name, false, "aur_source", log)
+}
+
+/// Publish top-level `aur_sources` entries (not tied to a specific crate).
+///
+/// GoReleaser's `internal/pipe/aursources/aursources.go` reads `ctx.Config.AURSources`
+/// as a project-wide array. Each entry generates a source PKGBUILD and .SRCINFO,
+/// then pushes them to the configured AUR git repo.
+pub fn publish_top_level_aur_sources(ctx: &mut Context, log: &StageLogger) -> Result<()> {
+    let entries = match ctx.config.aur_sources {
+        Some(ref v) if !v.is_empty() => v.clone(),
+        _ => return Ok(()),
+    };
+
+    let project_name = ctx
+        .template_vars()
+        .get("ProjectName")
+        .cloned()
+        .unwrap_or_default();
+
+    for (i, cfg) in entries.iter().enumerate() {
+        let label = format!("aur_sources[{}]", i);
+
+        if let Some(ref d) = cfg.disable
+            && d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
+                log.status(&format!("{}: skipping disabled entry", label));
+                continue;
+            }
+        if let Some(ref skip) = cfg.skip_upload
+            && skip.is_disabled(|tmpl| ctx.render_template(tmpl)) {
+                log.status(&format!("{}: skipping upload (skip_upload=true)", label));
+                continue;
+            }
+
+        publish_aur_source_entry(ctx, cfg, &project_name, true, &label, log)?;
+    }
+
     Ok(())
 }
 
 /// Generate a .SRCINFO file for a source AUR package.
+#[allow(clippy::too_many_arguments)]
 fn generate_source_srcinfo(
     name: &str,
     version: &str,
@@ -356,6 +366,7 @@ fn generate_source_srcinfo(
 }
 
 /// Generate a source-only PKGBUILD that builds from source using cargo.
+#[allow(clippy::too_many_arguments)]
 fn generate_source_pkgbuild(
     name: &str,
     version: &str,
@@ -447,10 +458,7 @@ fn generate_source_pkgbuild(
             lines.push(format!("  {}", line));
         }
     } else {
-        lines.push(format!(
-            "  cd \"$srcdir/{}-$pkgver\"",
-            binary_name
-        ));
+        lines.push(format!("  cd \"$srcdir/{}-$pkgver\"", binary_name));
         lines.push("  cargo build --release --locked".to_string());
     }
     lines.push("}".to_string());
@@ -463,10 +471,7 @@ fn generate_source_pkgbuild(
             lines.push(format!("  {}", line));
         }
     } else {
-        lines.push(format!(
-            "  cd \"$srcdir/{}-$pkgver\"",
-            binary_name
-        ));
+        lines.push(format!("  cd \"$srcdir/{}-$pkgver\"", binary_name));
         lines.push(format!(
             "  install -Dm755 \"target/release/{}\" \"$pkgdir/usr/bin/{}\"",
             binary_name, binary_name
@@ -548,6 +553,66 @@ mod tests {
         assert!(pkgbuild.contains("patch -p1 < fix.patch"));
         assert!(pkgbuild.contains("make\n}"));
         assert!(pkgbuild.contains("make install DESTDIR=\"$pkgdir\""));
+    }
+
+    #[test]
+    fn test_generate_source_srcinfo() {
+        let srcinfo = generate_source_srcinfo(
+            "myapp",
+            "1.0.0",
+            1,
+            "A test application",
+            "https://example.com",
+            "MIT",
+            &["openssl".to_string()],
+            &["rust".to_string(), "cargo".to_string()],
+            &[],
+            &["myapp-bin".to_string()],
+            &["myapp".to_string()],
+            "https://github.com/user/myapp/archive/refs/tags/v1.0.0.tar.gz",
+        );
+
+        assert!(srcinfo.contains("pkgbase = myapp"));
+        assert!(srcinfo.contains("\tpkgver = 1.0.0"));
+        assert!(srcinfo.contains("\tmakedepends = rust"));
+        assert!(srcinfo.contains("\tdepends = openssl"));
+        assert!(srcinfo.contains("\tconflicts = myapp-bin"));
+        assert!(srcinfo.contains("\tprovides = myapp"));
+        assert!(srcinfo.contains("pkgname = myapp"));
+    }
+
+    #[test]
+    fn test_top_level_aur_sources_config_parsing() {
+        use anodize_core::config::Config;
+
+        let yaml = r#"
+project_name: test
+aur_sources:
+  - name: myapp
+    description: "My application"
+    license: MIT
+    makedepends:
+      - rust
+      - cargo
+    git_url: "ssh://aur@aur.archlinux.org/myapp.git"
+  - name: myapp-extra
+    description: "Extra package"
+    license: MIT
+    git_url: "ssh://aur@aur.archlinux.org/myapp-extra.git"
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let aur_sources = config.aur_sources.as_ref().unwrap();
+        assert_eq!(aur_sources.len(), 2);
+        assert_eq!(aur_sources[0].name.as_deref(), Some("myapp"));
+        assert_eq!(
+            aur_sources[0].makedepends.as_ref().unwrap(),
+            &["rust", "cargo"]
+        );
+        assert_eq!(aur_sources[1].name.as_deref(), Some("myapp-extra"));
     }
 
     #[test]

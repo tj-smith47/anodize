@@ -32,7 +32,9 @@ pub struct ReleaseOpts {
     pub workspace: Option<String>,
     pub draft: bool,
     pub release_header: Option<PathBuf>,
+    pub release_header_tmpl: Option<PathBuf>,
     pub release_footer: Option<PathBuf>,
+    pub release_footer_tmpl: Option<PathBuf>,
     pub fail_fast: bool,
     pub split: bool,
     pub merge: bool,
@@ -61,6 +63,23 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
         helpers::apply_workspace_overlay(&mut config, &ws);
     }
 
+    // Auto-infer project_name from Cargo.toml when not set in config
+    // (GoReleaser project.go:22-43 infers from Cargo.toml/go.mod/git remote).
+    if config.project_name.is_empty()
+        && let Ok(cargo_toml) = std::fs::read_to_string("Cargo.toml")
+            && let Ok(doc) = cargo_toml.parse::<toml_edit::DocumentMut>()
+                && let Some(name) = doc
+                    .get("package")
+                    .and_then(|p| p.get("name"))
+                    .and_then(|n| n.as_str())
+                {
+                    config.project_name = name.to_string();
+                    log.verbose(&format!(
+                        "inferred project_name '{}' from Cargo.toml",
+                        name
+                    ));
+                }
+
     // Auto-detect GitHub owner/name from git remote
     helpers::auto_detect_github(&mut config, &log);
 
@@ -79,6 +98,18 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
         let release = config.release.get_or_insert_with(Default::default);
         release.header = Some(anodize_core::config::ContentSource::Inline(header_content));
     }
+    // --release-header-tmpl overrides --release-header: file content is
+    // stored as-is and rendered through the template engine by the release stage.
+    if let Some(ref header_tmpl_path) = opts.release_header_tmpl {
+        let raw = std::fs::read_to_string(header_tmpl_path).with_context(|| {
+            format!(
+                "failed to read release header template file: {}",
+                header_tmpl_path.display()
+            )
+        })?;
+        let release = config.release.get_or_insert_with(Default::default);
+        release.header = Some(anodize_core::config::ContentSource::Inline(raw));
+    }
     if let Some(ref footer_path) = opts.release_footer {
         let footer_content = std::fs::read_to_string(footer_path).with_context(|| {
             format!(
@@ -88,6 +119,17 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
         })?;
         let release = config.release.get_or_insert_with(Default::default);
         release.footer = Some(anodize_core::config::ContentSource::Inline(footer_content));
+    }
+    // --release-footer-tmpl overrides --release-footer (template-rendered).
+    if let Some(ref footer_tmpl_path) = opts.release_footer_tmpl {
+        let raw = std::fs::read_to_string(footer_tmpl_path).with_context(|| {
+            format!(
+                "failed to read release footer template file: {}",
+                footer_tmpl_path.display()
+            )
+        })?;
+        let release = config.release.get_or_insert_with(Default::default);
+        release.footer = Some(anodize_core::config::ContentSource::Inline(raw));
     }
 
     if opts.clean && !opts.dry_run {
@@ -103,16 +145,14 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
     // (like GoReleaser's ErrDirtyDist).
     if !opts.clean {
         let dist = &config.dist;
-        if dist.exists() {
-            if let Ok(mut entries) = dist.read_dir() {
-                if entries.next().is_some() {
+        if dist.exists()
+            && let Ok(mut entries) = dist.read_dir()
+                && entries.next().is_some() {
                     anyhow::bail!(
                         "dist directory '{}' is not empty; use --clean to remove it first",
                         dist.display()
                     );
                 }
-            }
-        }
     }
 
     // Determine selected crates
@@ -134,13 +174,6 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
 
     // Topological sort of selected crates (respect depends_on ordering)
     let selected_sorted = topo_sort_selected(&config.crates, &selected);
-
-    // Run hooks before pipeline
-    if let Some(before) = &config.before
-        && let Some(ref hooks) = before.pre
-    {
-        pipeline::run_hooks(hooks, "before", opts.dry_run, &log, None)?;
-    }
 
     let mut skip_stages = opts.skip;
     // Snapshot mode automatically skips publish and announce stages
@@ -193,6 +226,7 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
         fail_fast: opts.fail_fast,
         partial_target: None, // Set by --split mode in run_split()
         merge: opts.merge,
+        project_root: None,
     };
     let mut ctx = Context::new(config.clone(), ctx_opts);
     helpers::resolve_scm_token_type(&mut ctx, &config);
@@ -202,6 +236,18 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
 
     // Populate user-defined env vars into template context
     helpers::setup_env(&mut ctx, &config, &log)?;
+
+    // Run hooks before pipeline — after env vars are populated so
+    // that template variables (Env.*, ProjectName, etc.) are available,
+    // but BEFORE git context resolution (matching GoReleaser ordering).
+    // Skip in --merge mode: the split jobs already validated the code.
+    if !opts.merge {
+        if let Some(before) = &config.before
+            && let Some(ref hooks) = before.pre
+        {
+            pipeline::run_hooks(hooks, "before", opts.dry_run, &log, Some(ctx.template_vars()))?;
+        }
+    }
 
     // Resolve tag and populate git variables before running the pipeline.
     helpers::resolve_git_context(&mut ctx, &config, &log)?;
@@ -303,8 +349,14 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
                     snapshot_tmpl
                 )
             })?;
+        // GoReleaser snapshot.go:37-39: empty snapshot name is an error.
+        if rendered_name.trim().is_empty() {
+            anyhow::bail!("empty snapshot name after rendering version_template");
+        }
         ctx.template_vars_mut().set("Version", &rendered_name);
-        ctx.template_vars_mut().set("RawVersion", &rendered_name);
+        // Note: RawVersion is intentionally NOT overwritten here.
+        // GoReleaser preserves RawVersion as the numeric semver base
+        // (Major.Minor.Patch) even in snapshot mode.
         ctx.template_vars_mut().set("ReleaseName", &rendered_name);
         log.verbose(&format!(
             "snapshot: version={}, release_name={}",
@@ -313,7 +365,8 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
     }
 
     // Dump effective (resolved) config to dist/config.yaml before pipeline runs.
-    if !opts.dry_run {
+    // GoReleaser always writes this, including in dry-run mode.
+    {
         let dist = config.dist.as_os_str();
         std::fs::create_dir_all(&config.dist).with_context(|| {
             format!(
@@ -359,103 +412,102 @@ fn run_post_pipeline(
     dry_run: bool,
     log: &anodize_core::log::StageLogger,
 ) -> Result<()> {
-    if !dry_run {
-        // Print artifact size table if configured
-        if config.report_sizes.unwrap_or(false) {
-            artifact::print_size_report(&mut ctx.artifacts, log);
+    // Print artifact size table if configured
+    if config.report_sizes.unwrap_or(false) {
+        artifact::print_size_report(&mut ctx.artifacts, log);
+    }
+
+    // GoReleaser writes metadata.json and artifacts.json even in dry-run mode.
+    let dist = &config.dist;
+    std::fs::create_dir_all(dist)
+        .with_context(|| format!("failed to create dist directory: {}", dist.display()))?;
+
+    // Write metadata.json with project metadata (GoReleaser parity).
+    let metadata_path = dist.join("metadata.json");
+    let goos = anodize_core::context::map_os_to_goos(std::env::consts::OS);
+    let goarch = anodize_core::context::map_arch_to_goarch(std::env::consts::ARCH);
+
+    let tag = ctx
+        .template_vars()
+        .get("Tag")
+        .cloned()
+        .unwrap_or_default();
+    let previous_tag = ctx
+        .template_vars()
+        .get("PreviousTag")
+        .cloned()
+        .unwrap_or_default();
+    let version = ctx.version();
+    let commit = ctx
+        .template_vars()
+        .get("FullCommit")
+        .cloned()
+        .unwrap_or_default();
+    let date = ctx.template_vars().get("Date").cloned().unwrap_or_default();
+
+    let project_metadata = serde_json::json!({
+        "project_name": config.project_name,
+        "tag": tag,
+        "previous_tag": previous_tag,
+        "version": version,
+        "commit": commit,
+        "date": date,
+        "runtime": {
+            "goos": goos,
+            "goarch": goarch,
         }
+    });
 
-        let dist = &config.dist;
-        std::fs::create_dir_all(dist)
-            .with_context(|| format!("failed to create dist directory: {}", dist.display()))?;
+    let json_str = serde_json::to_string_pretty(&project_metadata)
+        .context("failed to serialize project metadata JSON")?;
+    std::fs::write(&metadata_path, &json_str)
+        .with_context(|| format!("failed to write {}", metadata_path.display()))?;
+    log.status(&format!("wrote {}", metadata_path.display()));
 
-        // Write metadata.json with project metadata (GoReleaser parity).
-        let metadata_path = dist.join("metadata.json");
-        let goos = anodize_core::context::map_os_to_goos(std::env::consts::OS);
-        let goarch = anodize_core::context::map_arch_to_goarch(std::env::consts::ARCH);
+    // Register metadata.json as an artifact.
+    ctx.artifacts.add(anodize_core::artifact::Artifact {
+        kind: anodize_core::artifact::ArtifactKind::Metadata,
+        name: "metadata.json".to_string(),
+        path: metadata_path.clone(),
+        target: None,
+        crate_name: config.project_name.clone(),
+        metadata: Default::default(),
+        size: None,
+    });
 
-        let tag = ctx
-            .template_vars()
-            .get("Tag")
-            .cloned()
-            .unwrap_or_default();
-        let previous_tag = ctx
-            .template_vars()
-            .get("PreviousTag")
-            .cloned()
-            .unwrap_or_default();
-        let version = ctx.version();
-        let commit = ctx
-            .template_vars()
-            .get("FullCommit")
-            .cloned()
-            .unwrap_or_default();
-        let date = ctx.template_vars().get("Date").cloned().unwrap_or_default();
+    // Write artifacts.json with the artifact list.
+    let artifacts_path = dist.join("artifacts.json");
+    let artifacts_json = ctx
+        .artifacts
+        .to_artifacts_json()
+        .context("failed to serialize artifact list")?;
+    let json_str = serde_json::to_string_pretty(&artifacts_json)
+        .context("failed to serialize artifacts JSON")?;
+    std::fs::write(&artifacts_path, &json_str)
+        .with_context(|| format!("failed to write {}", artifacts_path.display()))?;
+    log.status(&format!("wrote {}", artifacts_path.display()));
 
-        let project_metadata = serde_json::json!({
-            "project_name": config.project_name,
-            "tag": tag,
-            "previous_tag": previous_tag,
-            "version": version,
-            "commit": commit,
-            "date": date,
-            "runtime": {
-                "goos": goos,
-                "goarch": goarch,
-            }
-        });
-
-        let json_str = serde_json::to_string_pretty(&project_metadata)
-            .context("failed to serialize project metadata JSON")?;
-        std::fs::write(&metadata_path, &json_str)
-            .with_context(|| format!("failed to write {}", metadata_path.display()))?;
-        log.status(&format!("wrote {}", metadata_path.display()));
-
-        // Register metadata.json as an artifact.
-        ctx.artifacts.add(anodize_core::artifact::Artifact {
-            kind: anodize_core::artifact::ArtifactKind::Metadata,
-            name: "metadata.json".to_string(),
-            path: metadata_path.clone(),
-            target: None,
-            crate_name: config.project_name.clone(),
-            metadata: Default::default(),
-            size: None,
-        });
-
-        // Write artifacts.json with the artifact list.
-        let artifacts_path = dist.join("artifacts.json");
-        let artifacts_json = ctx
-            .artifacts
-            .to_artifacts_json()
-            .context("failed to serialize artifact list")?;
-        let json_str = serde_json::to_string_pretty(&artifacts_json)
-            .context("failed to serialize artifacts JSON")?;
-        std::fs::write(&artifacts_path, &json_str)
-            .with_context(|| format!("failed to write {}", artifacts_path.display()))?;
-        log.status(&format!("wrote {}", artifacts_path.display()));
-
-        // Apply mod_timestamp to both metadata.json and artifacts.json if configured.
-        if let Some(ref meta) = config.metadata
-            && let Some(ref ts_tmpl) = meta.mod_timestamp
-        {
-            let rendered = ctx
-                .render_template(ts_tmpl)
-                .context("failed to render metadata.mod_timestamp template")?;
-            if !rendered.is_empty() {
-                let mtime = anodize_core::util::parse_mod_timestamp(&rendered)
-                    .with_context(|| {
-                        format!(
-                            "invalid metadata.mod_timestamp value: {:?}",
-                            rendered
-                        )
-                    })?;
-                anodize_core::util::set_file_mtime(&metadata_path, mtime)?;
-                anodize_core::util::set_file_mtime(&artifacts_path, mtime)?;
-                log.status(&format!(
-                    "set mtime on metadata.json and artifacts.json to {}",
-                    rendered
-                ));
-            }
+    // Apply mod_timestamp to both metadata.json and artifacts.json if configured.
+    if let Some(ref meta) = config.metadata
+        && let Some(ref ts_tmpl) = meta.mod_timestamp
+    {
+        let rendered = ctx
+            .render_template(ts_tmpl)
+            .context("failed to render metadata.mod_timestamp template")?;
+        if !rendered.is_empty() {
+            let mtime = anodize_core::util::parse_mod_timestamp(&rendered)
+                .with_context(|| {
+                    format!(
+                        "invalid metadata.mod_timestamp value: {:?}",
+                        rendered
+                    )
+                })?;
+            anodize_core::util::set_file_mtime(&metadata_path, mtime)?;
+            anodize_core::util::set_file_mtime(&artifacts_path, mtime)?;
+            log.status(&format!(
+                "set mtime on metadata.json and artifacts.json to {}",
+                rendered
+            ));
         }
     }
 
@@ -544,22 +596,38 @@ fn close_milestones(
             milestone_name, owner, repo_name
         ));
 
-        // Determine provider type — only GitHub is currently supported.
+        // GoReleaser parity: close milestones on GitHub, GitLab, and Gitea.
         let provider = resolve_milestone_provider(milestone_cfg, &ctx.config);
-        if provider != "github" {
-            let msg = format!(
-                "milestone: closing milestones on '{}' is not yet supported (only GitHub)",
-                provider
-            );
-            if milestone_cfg.fail_on_error.unwrap_or(false) {
-                anyhow::bail!("{}", msg);
+        let api_url = resolve_milestone_api_url(milestone_cfg, &ctx.config);
+        let close_result = match provider.as_str() {
+            "github" => close_milestone_github(&token, &owner, &repo_name, &milestone_name),
+            "gitlab" => close_milestone_gitlab(
+                &token,
+                &owner,
+                &repo_name,
+                &milestone_name,
+                api_url.as_deref(),
+            ),
+            "gitea" => close_milestone_gitea(
+                &token,
+                &owner,
+                &repo_name,
+                &milestone_name,
+                api_url.as_deref(),
+            ),
+            other => {
+                let msg = format!(
+                    "milestone: unknown provider '{}' — cannot close milestone",
+                    other
+                );
+                if milestone_cfg.fail_on_error.unwrap_or(false) {
+                    anyhow::bail!("{}", msg);
+                }
+                log.warn(&msg);
+                continue;
             }
-            log.warn(&msg);
-            continue;
-        }
-
-        // Close the milestone via GitHub API
-        match close_milestone_github(&token, &owner, &repo_name, &milestone_name) {
+        };
+        match close_result {
             Ok(()) => {
                 log.status(&format!("milestone '{}' closed", milestone_name));
             }
@@ -584,11 +652,10 @@ fn resolve_milestone_repo(
     milestone_cfg: &anodize_core::config::MilestoneConfig,
     config: &Config,
 ) -> (String, String) {
-    if let Some(ref repo_cfg) = milestone_cfg.repo {
-        if !repo_cfg.owner.is_empty() && !repo_cfg.name.is_empty() {
+    if let Some(ref repo_cfg) = milestone_cfg.repo
+        && !repo_cfg.owner.is_empty() && !repo_cfg.name.is_empty() {
             return (repo_cfg.owner.clone(), repo_cfg.name.clone());
         }
-    }
 
     // Fall back to the first crate's release config
     for crate_cfg in &config.crates {
@@ -736,6 +803,225 @@ fn close_milestone_github(
             );
         }
 
+        Ok(())
+    })
+}
+
+/// Simple percent-encoding for URL path segments.
+fn url_encode(s: &str) -> String {
+    let mut result = String::with_capacity(s.len() * 3);
+    for byte in s.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                result.push(byte as char);
+            }
+            _ => {
+                result.push_str(&format!("%{:02X}", byte));
+            }
+        }
+    }
+    result
+}
+
+/// Resolve the API base URL for milestone operations on GitLab/Gitea.
+fn resolve_milestone_api_url(
+    _milestone_cfg: &anodize_core::config::MilestoneConfig,
+    config: &Config,
+) -> Option<String> {
+    // Check top-level gitlab_urls / gitea_urls config
+    if let Some(ref gitlab) = config.gitlab_urls
+        && let Some(ref api) = gitlab.api {
+            // Strip trailing /api/v4/ to get base URL
+            let base = api.trim_end_matches('/').trim_end_matches("/api/v4");
+            return Some(base.to_string());
+        }
+    if let Some(ref gitea) = config.gitea_urls
+        && let Some(ref api) = gitea.api {
+            let base = api.trim_end_matches('/').trim_end_matches("/api/v1");
+            return Some(base.to_string());
+        }
+    None
+}
+
+/// Close a GitLab milestone by name using the REST API.
+fn close_milestone_gitlab(
+    token: &str,
+    owner: &str,
+    repo: &str,
+    milestone_name: &str,
+    api_url: Option<&str>,
+) -> Result<()> {
+    if token.is_empty() {
+        anyhow::bail!("no authentication token available for GitLab milestone close");
+    }
+    let base = api_url.unwrap_or("https://gitlab.com");
+
+    let rt = tokio::runtime::Runtime::new().context("milestone: create tokio runtime")?;
+    rt.block_on(async {
+        let client = reqwest::Client::new();
+        let project_path = format!("{}/{}", owner, repo);
+        let encoded_path = url_encode(&project_path);
+
+        // List milestones to find matching title
+        let url = format!(
+            "{}/api/v4/projects/{}/milestones?title={}",
+            base,
+            encoded_path,
+            url_encode(milestone_name)
+        );
+        let resp = client
+            .get(&url)
+            .header("PRIVATE-TOKEN", token)
+            .header("User-Agent", "anodize")
+            .send()
+            .await
+            .context("milestone: GitLab list milestones failed")?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!(
+                "milestone: GitLab list milestones failed (HTTP {}): {}",
+                status,
+                body
+            );
+        }
+
+        let milestones: Vec<serde_json::Value> = resp
+            .json()
+            .await
+            .context("milestone: parse GitLab milestones")?;
+
+        let milestone_id = milestones
+            .iter()
+            .find(|m| {
+                m.get("title")
+                    .and_then(|t| t.as_str())
+                    .is_some_and(|t| t == milestone_name)
+            })
+            .and_then(|m| m.get("id").and_then(|i| i.as_u64()));
+
+        let milestone_id = match milestone_id {
+            Some(id) => id,
+            None => return Ok(()), // Not found — may be already closed
+        };
+
+        // Close the milestone (GoReleaser: StateEvent = "close")
+        let close_url = format!(
+            "{}/api/v4/projects/{}/milestones/{}",
+            base, encoded_path, milestone_id
+        );
+        let resp = client
+            .put(&close_url)
+            .header("PRIVATE-TOKEN", token)
+            .header("User-Agent", "anodize")
+            .json(&serde_json::json!({ "state_event": "close" }))
+            .send()
+            .await
+            .context("milestone: GitLab close milestone failed")?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!(
+                "milestone: GitLab close failed (HTTP {}): {}",
+                status,
+                body
+            );
+        }
+        Ok(())
+    })
+}
+
+/// Close a Gitea milestone by name using the REST API.
+fn close_milestone_gitea(
+    token: &str,
+    owner: &str,
+    repo: &str,
+    milestone_name: &str,
+    api_url: Option<&str>,
+) -> Result<()> {
+    if token.is_empty() {
+        anyhow::bail!("no authentication token available for Gitea milestone close");
+    }
+    let base = api_url.unwrap_or("https://gitea.com");
+
+    let rt = tokio::runtime::Runtime::new().context("milestone: create tokio runtime")?;
+    rt.block_on(async {
+        let client = reqwest::Client::new();
+
+        // List milestones to find matching title
+        let url = format!(
+            "{}/api/v1/repos/{}/{}/milestones?state=open&name={}",
+            base,
+            owner,
+            repo,
+            url_encode(milestone_name)
+        );
+        let resp = client
+            .get(&url)
+            .header("Authorization", format!("token {}", token))
+            .header("User-Agent", "anodize")
+            .send()
+            .await
+            .context("milestone: Gitea list milestones failed")?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!(
+                "milestone: Gitea list milestones failed (HTTP {}): {}",
+                status,
+                body
+            );
+        }
+
+        let milestones: Vec<serde_json::Value> = resp
+            .json()
+            .await
+            .context("milestone: parse Gitea milestones")?;
+
+        let milestone_id = milestones
+            .iter()
+            .find(|m| {
+                m.get("title")
+                    .and_then(|t| t.as_str())
+                    .is_some_and(|t| t == milestone_name)
+            })
+            .and_then(|m| m.get("id").and_then(|i| i.as_u64()));
+
+        let milestone_id = match milestone_id {
+            Some(id) => id,
+            None => return Ok(()), // Not found — may be already closed
+        };
+
+        // Close the milestone (GoReleaser: state = "closed")
+        let close_url = format!(
+            "{}/api/v1/repos/{}/{}/milestones/{}",
+            base, owner, repo, milestone_id
+        );
+        let resp = client
+            .patch(&close_url)
+            .header("Authorization", format!("token {}", token))
+            .header("User-Agent", "anodize")
+            .json(&serde_json::json!({ "state": "closed", "title": milestone_name }))
+            .send()
+            .await
+            .context("milestone: Gitea close milestone failed")?;
+
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            // GoReleaser parity: 404 means milestone not found
+            return Ok(());
+        }
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!(
+                "milestone: Gitea close failed (HTTP {}): {}",
+                status,
+                body
+            );
+        }
         Ok(())
     })
 }

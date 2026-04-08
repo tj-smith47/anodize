@@ -74,10 +74,10 @@ pub fn resolve_token_type(
 /// - GitLab: `https://gitlab.com`
 /// - Gitea: `""` (must be provided by the user in config)
 pub fn default_download_url(token_type: ScmTokenType, custom_url: Option<&str>) -> String {
-    if let Some(url) = custom_url {
-        if !url.is_empty() {
-            return url.trim_end_matches('/').to_string();
-        }
+    if let Some(url) = custom_url
+        && !url.is_empty()
+    {
+        return url.trim_end_matches('/').to_string();
     }
 
     match token_type {

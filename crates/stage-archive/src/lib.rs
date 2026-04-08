@@ -552,6 +552,12 @@ fn resolve_default_extra_files() -> Vec<ResolvedExtraFile> {
     results
 }
 
+/// Normalize path separators: backslashes to forward slashes for archive entries.
+/// Matches GoReleaser `archive.go:377`: `strings.ReplaceAll(..., "\\", "/")`.
+fn normalize_archive_path(p: PathBuf) -> PathBuf {
+    PathBuf::from(p.to_string_lossy().replace('\\', "/"))
+}
+
 // ---------------------------------------------------------------------------
 // compute_archive_name  (helper)
 // ---------------------------------------------------------------------------
@@ -568,11 +574,13 @@ fn compute_archive_name(src: &Path, base_dir: Option<&Path>, wrap_dir: Option<&s
         PathBuf::from(src.file_name().unwrap_or(src.as_os_str()))
     };
 
-    if let Some(dir) = wrap_dir {
+    let joined = if let Some(dir) = wrap_dir {
         PathBuf::from(dir).join(relative)
     } else {
         relative
-    }
+    };
+
+    normalize_archive_path(joined)
 }
 
 // ---------------------------------------------------------------------------
@@ -853,6 +861,16 @@ impl Stage for ArchiveStage {
                 }
                 if let Some(ref overrides) = cfg.format_overrides {
                     for ov in overrides {
+                        // GoReleaser warns when format_overrides entries have
+                        // empty goos or empty format.
+                        if ov.os.is_empty() {
+                            log.warn("format_override has empty goos/os value");
+                        }
+                        if ov.format.as_deref().is_none_or(str::is_empty)
+                            && ov.formats.as_ref().is_none_or(|f| f.is_empty())
+                        {
+                            log.warn("format_override has empty format value");
+                        }
                         if let Some(ref fmt) = ov.format
                             && !VALID_ARCHIVE_FORMATS.contains(&fmt.as_str())
                         {
@@ -943,8 +961,13 @@ impl Stage for ArchiveStage {
 
                 // allow_different_binary_count check: when false (default),
                 // error if different targets have different binary counts
-                // (matches GoReleaser behavior which errors, not warns)
-                if !archive_cfg.allow_different_binary_count.unwrap_or(false) && by_target.len() > 1
+                // (matches GoReleaser behavior which errors, not warns).
+                // GoReleaser exempts the "binary" format from this check
+                // (archive/archive.go:131).
+                let archive_format = archive_cfg.format.as_deref().unwrap_or("tar.gz");
+                if archive_format != "binary"
+                    && !archive_cfg.allow_different_binary_count.unwrap_or(false)
+                    && by_target.len() > 1
                 {
                     let counts: Vec<usize> = by_target.values().map(|bins| bins.len()).collect();
                     let first = counts[0];
@@ -1082,9 +1105,38 @@ impl Stage for ArchiveStage {
                     // Extra files (LICENSE, README, etc.) — with ArchiveFileSpec support.
                     // When no files are configured, auto-include common files
                     // (LICENSE*, README*, CHANGELOG*) matching GoReleaser defaults.
+                    // GoReleaser renders file spec source patterns through the
+                    // template engine before glob expansion.
                     let extra_files: Vec<ResolvedExtraFile> =
                         if let Some(file_specs) = &archive_cfg.files {
-                            resolve_file_specs(file_specs).with_context(|| {
+                            let rendered_specs: Vec<ArchiveFileSpec> = file_specs
+                                .iter()
+                                .map(|spec| match spec {
+                                    ArchiveFileSpec::Glob(pattern) => {
+                                        let rendered = ctx
+                                            .render_template(pattern)
+                                            .unwrap_or_else(|_| pattern.clone());
+                                        ArchiveFileSpec::Glob(rendered)
+                                    }
+                                    ArchiveFileSpec::Detailed {
+                                        src,
+                                        dst,
+                                        info,
+                                        strip_parent,
+                                    } => {
+                                        let rendered_src = ctx
+                                            .render_template(src)
+                                            .unwrap_or_else(|_| src.clone());
+                                        ArchiveFileSpec::Detailed {
+                                            src: rendered_src,
+                                            dst: dst.clone(),
+                                            info: info.clone(),
+                                            strip_parent: *strip_parent,
+                                        }
+                                    }
+                                })
+                                .collect();
+                            resolve_file_specs(&rendered_specs).with_context(|| {
                                 format!("resolve file specs for {crate_name}/{target}")
                             })?
                         } else {
@@ -1112,13 +1164,14 @@ impl Stage for ArchiveStage {
                                 .file_name()
                                 .map(|n| n.to_string_lossy().to_string())
                                 .unwrap_or_else(|| "unknown".to_string());
-                            let archive_name = if strip_bin_dir {
+                            let raw_name = if strip_bin_dir {
                                 PathBuf::from(&file_name)
                             } else if let Some(dir) = wrap_dir {
                                 PathBuf::from(dir).join(&file_name)
                             } else {
                                 PathBuf::from(&file_name)
                             };
+                            let archive_name = normalize_archive_path(raw_name);
                             ArchiveEntry {
                                 src: bp.clone(),
                                 archive_name,
@@ -1153,11 +1206,12 @@ impl Stage for ArchiveStage {
                                     .map(|n| n.to_string_lossy().to_string())
                                     .unwrap_or_else(|| "unknown".to_string())
                             };
-                            let archive_name = if let Some(dir) = wrap_dir {
+                            let raw_name = if let Some(dir) = wrap_dir {
                                 PathBuf::from(dir).join(&base_name)
                             } else {
                                 PathBuf::from(&base_name)
                             };
+                            let archive_name = normalize_archive_path(raw_name);
                             Ok(ArchiveEntry {
                                 src: ef.src.clone(),
                                 archive_name,
@@ -1407,6 +1461,27 @@ impl Stage for ArchiveStage {
                         }
                         if let Some(dir) = wrap_dir {
                             metadata.insert("wrap_in_directory".to_string(), dir.to_string());
+                        }
+                        // Store binary names in archive metadata for publisher
+                        // consumption (e.g. Homebrew multi-binary install).
+                        let bin_names: Vec<String> = selected_bins
+                            .iter()
+                            .filter_map(|b| {
+                                b.metadata
+                                    .get("binary")
+                                    .cloned()
+                                    .or_else(|| {
+                                        b.path
+                                            .file_name()
+                                            .map(|n| n.to_string_lossy().to_string())
+                                    })
+                            })
+                            .collect();
+                        if !bin_names.is_empty() {
+                            metadata.insert(
+                                "extra_binaries".to_string(),
+                                bin_names.join(","),
+                            );
                         }
 
                         new_artifacts.push(Artifact {

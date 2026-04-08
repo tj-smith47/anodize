@@ -16,6 +16,7 @@ pub struct BuildOpts {
     pub single_target: Option<String>,
     pub workspace: Option<String>,
     pub output: Option<PathBuf>,
+    pub skip: Vec<String>,
 }
 
 pub fn run(opts: BuildOpts) -> Result<()> {
@@ -49,6 +50,7 @@ pub fn run(opts: BuildOpts) -> Result<()> {
         selected_crates: opts.crate_names,
         parallelism: opts.parallelism,
         single_target: opts.single_target,
+        skip_stages: opts.skip,
         ..Default::default()
     };
     let mut ctx = Context::new(config.clone(), ctx_opts);
@@ -139,6 +141,7 @@ mod tests {
             single_target: None,
             workspace: None,
             output: None,
+            skip: vec![],
         };
         assert_eq!(opts.parallelism, 4);
         assert!(opts.single_target.is_none());
@@ -158,6 +161,7 @@ mod tests {
             single_target: Some("x86_64-unknown-linux-gnu".to_string()),
             workspace: None,
             output: None,
+            skip: vec![],
         };
         assert_eq!(
             opts.single_target.as_deref(),
@@ -177,6 +181,7 @@ mod tests {
             single_target: None,
             workspace: Some("frontend".to_string()),
             output: None,
+            skip: vec![],
         };
         assert_eq!(opts.workspace.as_deref(), Some("frontend"));
     }

@@ -7,21 +7,11 @@ use anyhow::Result;
 
 /// Build the request body for a generic HTTP webhook.
 ///
-/// When content_type is `application/json` and the message is not already valid
-/// JSON, wraps the message in a `{"message": ...}` JSON object.  For all other
-/// content types the raw message is returned as-is.
-pub(crate) fn webhook_body(message: &str, content_type: &str) -> String {
-    // Match "application/json" with or without parameters (e.g. "; charset=utf-8").
-    if content_type.starts_with("application/json") {
-        // If the message is already valid JSON, send it verbatim.
-        if serde_json::from_str::<serde_json::Value>(message).is_ok() {
-            return message.to_string();
-        }
-        // Otherwise wrap in a simple JSON envelope.
-        serde_json::json!({ "message": message }).to_string()
-    } else {
-        message.to_string()
-    }
+/// GoReleaser sends the raw template output as the request body regardless of
+/// content type. The default template is already valid JSON (`{ "message": "..." }`).
+/// We match this behavior: always send the rendered message verbatim.
+pub(crate) fn webhook_body(message: &str, _content_type: &str) -> String {
+    message.to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -123,11 +113,11 @@ mod tests {
     }
 
     #[test]
-    fn test_webhook_body_json_wraps_plain_text() {
-        // Plain text is wrapped in {"message": ...} when content_type is application/json
+    fn test_webhook_body_json_raw_passthrough() {
+        // GoReleaser sends the raw template output as-is, no wrapping.
+        // The default template is already valid JSON.
         let body = webhook_body("Release v1.0.0 is out!", "application/json");
-        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(json["message"], "Release v1.0.0 is out!");
+        assert_eq!(body, "Release v1.0.0 is out!");
     }
 
     #[test]
@@ -147,8 +137,8 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(json["tag"], "v1.0");
 
+        // Plain text is also passed through raw (GoReleaser behavior).
         let body2 = webhook_body("plain text", "application/json; charset=utf-8");
-        let json2: serde_json::Value = serde_json::from_str(&body2).unwrap();
-        assert_eq!(json2["message"], "plain text");
+        assert_eq!(body2, "plain text");
     }
 }

@@ -659,18 +659,27 @@ All 11 deferred items were verified as implemented in prior sessions (2026-03-30
 - ✅ Checksum algorithms (sha3-*/blake3/crc32/md5) — all 14 algorithms with test vectors
 - Only remaining item: hooks `if` conditional — tracked in parity-session-index.md Session C
 
-### Fresh feature-by-feature re-audit
-- Re-fetch GoReleaser's current source code and documentation (features may have changed since Session 6)
-- Re-walk every config section, CLI flag, and stage
-- For each feature: trace config field → default value → stage wiring → output behavior (see audit method above)
-- Update the parity matrix (`.claude/specs/goreleaser-parity-matrix.md`)
-- Close every gap found — no deferrals, no "it's close enough"
+### Fresh feature-by-feature re-audit (ralph loop)
+
+**Batch 1 (2026-04-08):** 5 parallel comparison agents across all GoReleaser pipes. 17 BUGs fixed, 2 GAPs fixed, 11 tracked, 24 intentional. Key fixes: force_token ordering, release.disable token suppression, snapshot RawVersion, metadata/changelog in dry-run, tag annotation format, artifact path normalization, changelog separator/bullets/group-ordering/Others removal, archive binary-format exempt, Homebrew @N naming, AUR backup in SRCINFO, Krew header+sorting, Scoop extra fields removed, Nix multi-binary install.
+
+Tracked items needing future passes: nfpm multi-binary packaging, snapcraft prime-dir architecture, source archive zip prefix, SBOM missing-output error, nfpm iOS/AIX/Android, nfpm C library artifacts.
+
+**Use `/ralph-loop` to loop audit → fix → re-audit until zero gaps remain.** Each iteration:
+
+1. Read EVERY GoReleaser pipe at `/opt/repos/goreleaser/internal/pipe/*/`
+2. Compare against our implementation using all 6 parity dimensions (config field, behavioral, wiring, error, auth, default)
+3. For each feature: trace config field → default value → stage wiring → output behavior
+4. Fix all gaps found — no deferrals
+5. Re-audit. If new gaps found, loop again. Exit only when zero findings.
+
+Record all findings in `parity-session-index.md` — the single source of truth for parity work.
 
 ### Test coverage for all new parity work
 - Every gap closed gets parsing, behavior, and error path tests
 - Run coverage report to verify no blind spots
 
-**Session exit criteria:** Updated parity matrix shows zero unaccounted gaps. Every GoReleaser feature is either implemented with verified behavioral equivalence, or justified as N/A for Rust. All new work has tests. `cargo test --workspace` and `cargo clippy` pass.
+**Session exit criteria:** Ralph loop ran with zero findings on final pass. Every GoReleaser feature is either implemented with verified behavioral equivalence, or justified as N/A for Rust. All new work has tests. `cargo test --workspace` and `cargo clippy` pass. Ralph loop exited with zero findings on final pass.
 
 ---
 
@@ -751,6 +760,153 @@ All 11 deferred items were verified as implemented in prior sessions (2026-03-30
 - Continue until a round returns zero findings or 3 rounds complete
 
 **Session exit criteria:** Clean full-audit (zero findings across all three scopes). `cargo fmt --check`, `cargo clippy -- -D warnings`, and `cargo test --workspace` all pass. Codebase is publish-ready.
+
+---
+
+## Pre-Release Session: Audit, Setup & Fixes
+
+Everything below must be done before tagging v0.1.0.
+
+### ~~Task PRE-1: Audit changes from pre-release audit session~~ — DONE (2026-04-08)
+
+All items verified correct against GoReleaser source. No fixes needed.
+
+Changes were made hastily and must be verified against GoReleaser:
+
+- `.anodize.yaml`: removed `env_files: [".env"]`, replaced with top-level `env` — read GoReleaser `internal/pipe/env/env.go` to verify whether GR silently skips missing `.env` files or errors
+- `.anodize.yaml`: changed `after.hooks` → `after.post` — verify GoReleaser `Before`/`After` struct field mapping matches
+- `.anodize.yaml`: added `binstall.pkg_url` with `{ target }` (single braces, binstall syntax not Tera) — verify passthrough
+- `.anodize.yaml`: added `report_sizes`, `env`, `variables`, `git`, `tag`, `metadata`, `nightly`, `partial`, `release.footer`, `release.include_meta` — verify each field's default matches GoReleaser where applicable
+- `crates/core/src/config.rs`: `load_env_files` now warns+skips missing files — verify against GoReleaser `loadEnv()` exact behavior
+- `crates/core/src/config.rs`: test renamed from `test_load_env_files_nonexistent_returns_error` → `test_load_env_files_nonexistent_skips_with_warning` — verify correctness
+- `.github/workflows/release.yml` (new): verify `gcc-aarch64-linux-gnu` is correct package, verify `aarch64-pc-windows-msvc` cross-compiles from x86_64 Windows with this dep tree, verify `softprops/action-gh-release@v2` is current
+- `.github/workflows/ci.yml`: added snapshot job on main — verify it doesn't fire on PRs
+
+### ~~Task PRE-2: Wire `aur_sources` top-level config~~ — DONE (2026-04-08)
+
+Added `publish_top_level_aur_sources()` with shared `publish_aur_source_entry()` helper. Wired as step 17 in publish stage. Tests added.
+
+`Config.aur_sources` is parsed but never consumed. GoReleaser has `internal/pipe/aursources/aursources.go` that reads `ctx.Config.AURSources` and generates source PKGBUILDs + .SRCINFO, then publishes via git push. The per-crate `publish.aur_source` works but the top-level array form is dead.
+
+1. Read GoReleaser `internal/pipe/aursources/aursources.go` fully
+2. Add top-level consumer in publish stage that iterates `ctx.config.aur_sources`
+3. Test it
+
+### ~~Task PRE-3: crates.io publishing~~ — DONE (2026-04-08)
+
+All 27 crates published in dependency order: core → 25 stages → CLI. Release workflow has tiered publish script with 30s index propagation delays. `cargo install anodize` works.
+
+Release workflow has crates.io publishing commented out. `anodize` depends on 25+ `anodize-stage-*` crates not published to crates.io.
+
+1. Decide: publish all crates in dep order, or set `publish = false` on stage crates
+2. If publishing all: create ordered publish script (core → stages → cli, 30s delays)
+3. Generate crates.io API token, add as `CARGO_REGISTRY_TOKEN` repo secret
+4. Uncomment/add publish steps in release workflow
+
+### ~~Task PRE-4: GPG signing setup~~ — DONE (2026-04-08)
+
+Generated RSA 4096 key `1C7027C247A25CD1CBD680D72FFC4EEBA92C75B4` (TJ Smith, anodize release signing). Exported private key → `GPG_PRIVATE_KEY` secret. Fingerprint → `GPG_FINGERPRINT` secret. Added GPG import + checksum signing steps to release.yml.
+
+### ~~Task PRE-5: Publisher repo setup~~ — DONE (2026-04-08)
+
+- **Homebrew**: `tj-smith47/homebrew-tap` already existed with `Formula/` dir
+- **Scoop**: created `tj-smith47/scoop-bucket` with README
+- **WinGet**: created `tj-smith47/winget-pkgs` with `manifests/t/TJSmith/Anodize/` structure
+- **Krew**: created `tj-smith47/krew-index` with `plugins/` dir
+- **Chocolatey**: requires external account at community.chocolatey.org (add `CHOCOLATEY_API_KEY` secret when ready)
+- **AUR**: deferred to post-release (register `anodize-bin`, add SSH key as `AUR_SSH_KEY` secret)
+
+### ~~Task PRE-6: GitHub repo secrets & environment variables~~ — DONE (2026-04-08)
+
+Secrets set on `tj-smith47/anodize`:
+
+| Secret | Status |
+|--------|--------|
+| `GH_PAT` | Set (gh OAuth token with `repo` scope — used for cross-repo publisher pushes) |
+| `CARGO_REGISTRY_TOKEN` | Set (also set on `tj-smith47/cfgd`) |
+| `GPG_PRIVATE_KEY` | Set |
+| `GPG_FINGERPRINT` | Set |
+| `CHOCOLATEY_API_KEY` | Set |
+| `SNAPCRAFT_STORE_CREDENTIALS` | Set |
+
+Deferred (post-release):
+
+| Secret | Needs |
+|--------|-------|
+| `AUR_SSH_KEY` | AUR account + SSH key (deferred to post-release) |
+| `DISCORD_WEBHOOK_URL` | Discord server webhook (when announce enabled) |
+| `SLACK_WEBHOOK_URL` | Slack app webhook (when announce enabled) |
+
+### ~~Task PRE-7: CI tool installation~~ — DONE (2026-04-08)
+
+Added nFPM (goreleaser repo) and UPX (apt/brew/choco) install steps to release.yml. Enabled UPX in .anodize.yaml with target filtering (x86_64 linux/mac/win + aarch64 linux only).
+
+- **nFPM**: add to release workflow Linux jobs (`apt install nfpm` from goreleaser repo)
+- **UPX**: install in CI (`apt install upx` on Linux, `brew install upx` on macOS), change `enabled: false` → `enabled: true` in `.anodize.yaml`, add target filtering (UPX doesn't support macOS ARM or Windows ARM)
+
+### ~~Task PRE-8: Docsite — replace all "coming soon" stubs~~ — DONE (2026-04-08)
+
+All 9 stubs replaced with real documentation sourced from stage implementations. Staleness audit of all existing pages completed — regenerated reference pages via `cargo xtask gen-docs`, fixed 7 staleness issues in non-generated pages.
+
+9 pages have `{% coming_soon() %}` for features that ARE implemented:
+
+1. `docs/site/content/docs/builds/upx.md` — read `crates/stage-upx/src/lib.rs`, write real docs
+2. `docs/site/content/docs/builds/universal-binaries.md` — read universal binary stage, write real docs
+3. `docs/site/content/docs/packages/source-sbom.md` — read `crates/stage-sbom/src/lib.rs` and `crates/stage-source/src/lib.rs`, write real docs
+4. `docs/site/content/docs/publish/aur.md` — read `crates/stage-publish/src/aur.rs`, write real docs
+5. `docs/site/content/docs/publish/krew.md` — read `crates/stage-publish/src/krew.rs`, write real docs
+6. `docs/site/content/docs/publish/chocolatey.md` — read `crates/stage-publish/src/chocolatey.rs`, write real docs
+7. `docs/site/content/docs/publish/winget.md` — read `crates/stage-publish/src/winget.rs`, write real docs
+8. `docs/site/content/docs/advanced/config-includes.md` — read `crates/cli/src/pipeline.rs` include logic, write real docs
+9. `docs/site/content/docs/advanced/reproducible-builds.md` — read `mod_timestamp` and `builds_info` handling, write real docs
+
+Additionally: audit all existing doc pages against current implementation for staleness.
+
+### ~~Task PRE-9: Fix flaky test~~ — DONE (2026-04-08)
+
+Root cause: `set_current_dir()` race in parallel tests. Fix: added `project_root: Option<PathBuf>` to `ContextOptions`, `get_repo_root()` now takes explicit `cwd`. Fixed 5 total tests with same CWD race pattern.
+
+`test_source_stage_run_creates_archive_in_git_repo` in `crates/stage-source/src/lib.rs` intermittently panics at line 1753 ("No such file or directory") when run in the full workspace suite. Read the test, identify the race, fix it.
+
+---
+
+## Post-Bootstrap (after v0.1.0 is tagged)
+
+### Task POST-0: Register with SchemaStore.org
+
+Requires docs site live at `https://tj-smith47.github.io/anodize/schema.json` first.
+
+1. Fork `SchemaStore/schemastore`
+2. Add entry to `src/api/json/catalog.json`:
+   - `fileMatch`: `[".anodize.yaml", ".anodize.yml"]`
+   - `url`: `https://tj-smith47.github.io/anodize/schema.json`
+   - `name`: `Anodize`
+   - `description`: `Configuration file for Anodize release automation`
+3. Submit PR
+
+### ~~Task POST-1: Release workflow should dogfood anodize~~ — DONE (2026-04-08)
+
+Release workflow bootstraps anodize from source, uses split/merge: 3 matrix build jobs run `anodize release --split`, merge job runs `anodize release --merge`. All 27 workspace crates configured for crates.io publishing with dependency ordering.
+
+### Task POST-2: cfgd migration
+
+Create `.anodize.yaml` for `/opt/repos/cfgd`:
+- 3 binaries, 4 crates, shared version tag
+- Docker multi-arch (ghcr.io) for 3 containers
+- Helm chart packaging via `after` hooks or custom publisher
+- Crossplane xpkg + OLM bundle via `after` hooks
+- `cargo publish` ordered (cfgd-core → cfgd, 30s delay)
+- kubectl plugin binary renaming (`kubectl-cfgd`)
+- `protoc` build dep for CSI crate
+
+### Task POST-3: MCP server config
+
+GoReleaser v2.15 added `MCP` (MCP server registry) — publishes server metadata to registries. Language-agnostic concept, only missing OSS feature not in anodize's config struct (the other two — `Kos`, `GoMod` — are Go-specific).
+
+1. Read GoReleaser's MCP pipe implementation
+2. Add `mcp` field to Config
+3. Implement the stage
+4. Add to `.anodize.yaml` if applicable
 
 ---
 

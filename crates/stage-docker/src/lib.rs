@@ -424,10 +424,7 @@ pub fn build_docker_command(
     // Determine the effective backend for --load/--push logic.
     // Default is "docker" (matching GoReleaser); users must explicitly set
     // `use: buildx` for buildx features including multi-platform builds.
-    let effective_backend = match use_backend {
-        Some(b) => b,
-        None => "docker",
-    };
+    let effective_backend = use_backend.unwrap_or("docker");
 
     // --push in live mode (unless skip_push).  The --push flag is only valid
     // for buildx; plain `docker build` and `podman build` do NOT support it.
@@ -714,12 +711,11 @@ fn list_staging_dir_recursive(
 /// `docker push`.  Uses plain string parsing to avoid a regex dependency.
 fn find_sha256_digest(text: &str) -> Option<&str> {
     for word in text.split_whitespace() {
-        if let Some(rest) = word.strip_prefix("sha256:") {
-            if rest.len() >= 64 && rest[..64].chars().all(|c| c.is_ascii_hexdigit()) {
+        if let Some(rest) = word.strip_prefix("sha256:")
+            && rest.len() >= 64 && rest[..64].chars().all(|c| c.is_ascii_hexdigit()) {
                 // Return exactly "sha256:" + 64 hex chars (ignore trailing chars)
                 return Some(&word[..71]);
             }
-        }
     }
     None
 }
@@ -1141,6 +1137,7 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
 /// and copies matching binary artifacts into it. Filtering is done by:
 /// - `ids_filter`: optional list of artifact metadata IDs to include
 /// - `binary_filter`: optional list of binary names to include (legacy only)
+#[allow(clippy::too_many_arguments)]
 fn stage_binaries(
     platforms: &[String],
     staging_dir: &std::path::Path,
@@ -1513,15 +1510,14 @@ impl Stage for DockerStage {
             for krate in &crates {
                 if let Some(ref v2_cfgs) = krate.docker_v2 {
                     for v2_cfg in v2_cfgs {
-                        if let Some(ref id) = v2_cfg.id {
-                            if !seen_ids.insert(id.clone()) {
+                        if let Some(ref id) = v2_cfg.id
+                            && !seen_ids.insert(id.clone()) {
                                 log.warn(&format!(
                                     "duplicate docker_v2 config id '{}' — \
                                      each config should have a unique id",
                                     id
                                 ));
                             }
-                        }
                     }
                 }
             }
@@ -1550,8 +1546,8 @@ impl Stage for DockerStage {
 
             for (idx, docker_cfg) in docker_configs.iter().enumerate() {
                 // Check disable (template-aware) before doing any work.
-                if let Some(ref d) = docker_cfg.disable {
-                    if d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
+                if let Some(ref d) = docker_cfg.disable
+                    && d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
                         let fallback = format!("index {}", idx);
                         let label = docker_cfg.id.as_deref().unwrap_or(&fallback);
                         log.status(&format!(
@@ -1560,7 +1556,6 @@ impl Stage for DockerStage {
                         ));
                         continue;
                     }
-                }
 
                 // Determine platforms (default: empty = use host platform, no --platform flag).
                 // GoReleaser omits --platform when unset, letting Docker use the host platform.
@@ -1622,13 +1617,12 @@ impl Stage for DockerStage {
                 }
 
                 // Process templated_extra_files: render and copy to staging dir
-                if let Some(ref tpl_specs) = docker_cfg.templated_extra_files {
-                    if !tpl_specs.is_empty() {
+                if let Some(ref tpl_specs) = docker_cfg.templated_extra_files
+                    && !tpl_specs.is_empty() {
                         anodize_core::templated_files::process_templated_extra_files(
                             tpl_specs, ctx, &staging_dir, "docker",
                         )?;
                     }
-                }
 
                 // ------------------------------------------------------------------
                 // Render image tag templates
@@ -2268,8 +2262,8 @@ impl Stage for DockerStage {
             if let Some(ref manifest_configs) = krate.docker_manifests {
                 for (midx, manifest_cfg) in manifest_configs.iter().enumerate() {
                     // Check disable (template-aware) before doing any work.
-                    if let Some(ref d) = manifest_cfg.disable {
-                        if d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
+                    if let Some(ref d) = manifest_cfg.disable
+                        && d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
                             let fallback = format!("index {}", midx);
                             let label = manifest_cfg.id.as_deref().unwrap_or(&fallback);
                             log.status(&format!(
@@ -2278,7 +2272,6 @@ impl Stage for DockerStage {
                             ));
                             continue;
                         }
-                    }
 
                     // Validate: image_templates must not be empty — a manifest
                     // with zero images is always a configuration error.
@@ -2424,8 +2417,8 @@ impl Stage for DockerStage {
                                 rm_cmd.env(key, value);
                             }
                             rm_cmd.output()
-                        } {
-                            if !rm_output.status.success() {
+                        }
+                            && !rm_output.status.success() {
                                 let stderr =
                                     String::from_utf8_lossy(&rm_output.stderr).to_lowercase();
                                 if !stderr.contains("no such manifest")
@@ -2439,7 +2432,6 @@ impl Stage for DockerStage {
                                     );
                                 }
                             }
-                        }
 
                         // Manifest create/push with retry logic — registry
                         // operations can fail transiently. Uses the

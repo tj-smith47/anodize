@@ -212,7 +212,10 @@ pub(crate) fn clone_repo_ssh(
             std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600))
                 .with_context(|| format!("{label}: set SSH key permissions"))?;
         }
-        let built_ssh_cmd = format!("ssh -i {} -o StrictHostKeyChecking=no", key_path.display());
+        let built_ssh_cmd = format!(
+            "ssh -i {} -o StrictHostKeyChecking=accept-new -F /dev/null",
+            key_path.display()
+        );
         cmd.env("GIT_SSH_COMMAND", &built_ssh_cmd);
         ssh_cmd_for_config = Some(built_ssh_cmd);
     }
@@ -363,6 +366,7 @@ fn gh_is_available() -> bool {
 }
 
 /// Submit a pull request via the GitHub CLI (`gh pr create`).
+#[allow(clippy::too_many_arguments)]
 fn create_pr_via_gh_cli(
     repo_path: &Path,
     upstream_repo: &str,
@@ -928,6 +932,9 @@ pub(crate) fn find_artifacts_by_os_with_goarch(
         ctx.artifacts
             .by_kind_and_crate(ArtifactKind::Binary, crate_name),
     );
+    // OnlyReplacingUnibins: exclude universal binaries that didn't replace
+    // single-arch variants (GoReleaser parity).
+    let all: Vec<_> = all.into_iter().filter(|a| a.only_replacing_unibins()).collect();
     let filtered = filter_by_ids(all, ids);
     let os_artifacts: Vec<OsArtifact> = filtered
         .into_iter()
@@ -985,6 +992,9 @@ pub(crate) fn find_all_platform_artifacts_with_goarch(
         ctx.artifacts
             .by_kind_and_crate(ArtifactKind::Binary, crate_name),
     );
+    // OnlyReplacingUnibins: exclude universal binaries that didn't replace
+    // single-arch variants (GoReleaser parity).
+    let all: Vec<_> = all.into_iter().filter(|a| a.only_replacing_unibins()).collect();
     let filtered = filter_by_ids(all, ids);
     let os_artifacts: Vec<OsArtifact> = filtered
         .into_iter()
@@ -1012,18 +1022,16 @@ fn filter_by_goarch(
         .into_iter()
         .filter(|a| {
             // Filter amd64 artifacts by goamd64 config
-            if a.arch == "amd64" {
-                if let Some(want) = goamd64 {
+            if a.arch == "amd64"
+                && let Some(want) = goamd64 {
                     // Keep if artifact has no goamd64 (compat) or matches
-                    return a.goamd64.as_deref().map_or(true, |v| v == want);
+                    return a.goamd64.as_deref().is_none_or(|v| v == want);
                 }
-            }
             // Filter arm artifacts by goarm config
-            if a.arch.starts_with("arm") && a.arch != "arm64" {
-                if let Some(want) = goarm {
-                    return a.goarm.as_deref().map_or(true, |v| v == want);
+            if a.arch.starts_with("arm") && a.arch != "arm64"
+                && let Some(want) = goarm {
+                    return a.goarm.as_deref().is_none_or(|v| v == want);
                 }
-            }
             true
         })
         .collect()

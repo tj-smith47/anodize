@@ -89,8 +89,16 @@ impl Stage for UpxStage {
             return Ok(());
         }
 
+        let parallelism = ctx.options.parallelism.max(1);
+
         for upx_cfg in &upx_configs {
-            if !upx_cfg.enabled {
+            // GoReleaser parity: enabled supports template strings via tmpl.Bool()
+            let is_enabled = upx_cfg
+                .enabled
+                .as_ref()
+                .map(|v| v.evaluates_to_true(|tmpl| ctx.render_template(tmpl)))
+                .unwrap_or(false);
+            if !is_enabled {
                 continue;
             }
 
@@ -137,12 +145,11 @@ impl Stage for UpxStage {
                 continue;
             }
 
-            for (artifact_path, target) in &matching_artifacts {
-                let artifact_str = artifact_path.to_string_lossy();
-                let id_label = upx_cfg.id.as_deref().unwrap_or("default");
-                let target_label = target.as_deref().unwrap_or("unknown");
-
-                if ctx.is_dry_run() {
+            // Dry-run: just log what would happen (no parallelism needed)
+            if ctx.is_dry_run() {
+                for (artifact_path, _target) in &matching_artifacts {
+                    let artifact_str = artifact_path.to_string_lossy();
+                    let id_label = upx_cfg.id.as_deref().unwrap_or("default");
                     let mut extra_flags = Vec::new();
                     if let Some(ref level) = upx_cfg.compress {
                         extra_flags.push(format!("-{}", level));
@@ -161,86 +168,119 @@ impl Stage for UpxStage {
                         extra_flags.join(" "),
                         artifact_str,
                     ));
-                    continue;
                 }
+                continue;
+            }
 
-                log.status(&format!(
-                    "[{}] compressing {} (target: {})",
-                    id_label, artifact_str, target_label,
-                ));
+            // GoReleaser parity: compress artifacts in parallel using
+            // semerrgroup-style bounded concurrency (upx.go uses
+            // semerrgroup.New(ctx.Parallelism)).
+            for chunk in matching_artifacts.chunks(parallelism) {
+                let results: Vec<Result<()>> = std::thread::scope(|s| {
+                    let handles: Vec<_> = chunk
+                        .iter()
+                        .map(|(artifact_path, target)| {
+                            let binary = binary.clone();
+                            let upx_cfg = &upx_cfg;
+                            let thread_log =
+                                anodize_core::log::StageLogger::new("upx", log.verbosity());
+                            s.spawn(move || -> Result<()> {
+                                let artifact_str = artifact_path.to_string_lossy();
+                                let id_label = upx_cfg.id.as_deref().unwrap_or("default");
+                                let target_label = target.as_deref().unwrap_or("unknown");
 
-                let size_before = std::fs::metadata(artifact_path)
-                    .map(|m| m.len())
-                    .unwrap_or(0);
+                                thread_log.status(&format!(
+                                    "[{}] compressing {} (target: {})",
+                                    id_label, artifact_str, target_label,
+                                ));
 
-                let mut cmd = Command::new(binary);
-                cmd.arg("--quiet");
-                // Wire compress/lzma/brute config fields to UPX CLI flags.
-                if let Some(ref level) = upx_cfg.compress {
-                    // "best" maps to "--best" (not "-best"); all other levels
-                    // are single-character flags like "-9", "-1", etc.
-                    if level == "best" {
-                        cmd.arg("--best");
-                    } else {
-                        cmd.arg(format!("-{}", level));
-                    }
-                }
-                if upx_cfg.lzma.unwrap_or(false) {
-                    cmd.arg("--lzma");
-                }
-                if upx_cfg.brute.unwrap_or(false) {
-                    cmd.arg("--brute");
-                }
-                cmd.args(&upx_cfg.args);
-                cmd.arg(artifact_path);
-                let output = cmd.output().with_context(|| {
-                    format!("upx: failed to spawn '{}' for {}", binary, artifact_str)
-                })?;
+                                let size_before = std::fs::metadata(artifact_path)
+                                    .map(|m| m.len())
+                                    .unwrap_or(0);
 
-                if !output.status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    let combined = format!("{}{}", stdout, stderr);
+                                let mut cmd = Command::new(&binary);
+                                cmd.arg("--quiet");
+                                if let Some(ref level) = upx_cfg.compress {
+                                    if level == "best" {
+                                        cmd.arg("--best");
+                                    } else {
+                                        cmd.arg(format!("-{}", level));
+                                    }
+                                }
+                                if upx_cfg.lzma.unwrap_or(false) {
+                                    cmd.arg("--lzma");
+                                }
+                                if upx_cfg.brute.unwrap_or(false) {
+                                    cmd.arg("--brute");
+                                }
+                                cmd.args(&upx_cfg.args);
+                                cmd.arg(artifact_path);
+                                let output = cmd.output().with_context(|| {
+                                    format!(
+                                        "upx: failed to spawn '{}' for {}",
+                                        binary, artifact_str
+                                    )
+                                })?;
 
-                    // Known UPX exceptions that should be warnings, not errors.
-                    // This matches GoReleaser's behavior for mixed-architecture
-                    // builds where some binaries can't be compressed.
-                    const KNOWN_EXCEPTIONS: &[&str] = &[
-                        "CantPackException",
-                        "AlreadyPackedException",
-                        "NotCompressibleException",
-                        "UnknownExecutableFormatException",
-                        "IOException",
-                    ];
+                                if !output.status.success() {
+                                    let stderr = String::from_utf8_lossy(&output.stderr);
+                                    let stdout = String::from_utf8_lossy(&output.stdout);
+                                    let combined = format!("{}{}", stdout, stderr);
 
-                    if KNOWN_EXCEPTIONS.iter().any(|ex| combined.contains(ex)) {
-                        log.warn(&format!(
-                            "[{}] skipping {} (target: {}): {}",
-                            id_label,
-                            artifact_str,
-                            target_label,
-                            combined.trim(),
-                        ));
-                    } else {
-                        log.check_output(output, binary)?;
-                    }
-                } else {
-                    // Compression succeeded — log the ratio
-                    let size_after = std::fs::metadata(artifact_path)
-                        .map(|m| m.len())
-                        .unwrap_or(0);
-                    let ratio = if size_before > 0 {
-                        (size_after * 100) / size_before
-                    } else {
-                        100
-                    };
-                    log.status(&format!(
-                        "compressed {} ({} -> {}, {}%)",
-                        artifact_path.display(),
-                        format_size(size_before),
-                        format_size(size_after),
-                        ratio,
-                    ));
+                                    const KNOWN_EXCEPTIONS: &[&str] = &[
+                                        "CantPackException",
+                                        "AlreadyPackedException",
+                                        "NotCompressibleException",
+                                        "UnknownExecutableFormatException",
+                                        "IOException",
+                                    ];
+
+                                    if KNOWN_EXCEPTIONS.iter().any(|ex| combined.contains(ex)) {
+                                        thread_log.warn(&format!(
+                                            "[{}] skipping {} (target: {}): {}",
+                                            id_label,
+                                            artifact_str,
+                                            target_label,
+                                            combined.trim(),
+                                        ));
+                                    } else {
+                                        thread_log.check_output(output, &binary)?;
+                                    }
+                                } else {
+                                    let size_after = std::fs::metadata(artifact_path)
+                                        .map(|m| m.len())
+                                        .unwrap_or(0);
+                                    let ratio = if size_before > 0 {
+                                        (size_after * 100) / size_before
+                                    } else {
+                                        100
+                                    };
+                                    thread_log.status(&format!(
+                                        "compressed {} ({} -> {}, {}%)",
+                                        artifact_path.display(),
+                                        format_size(size_before),
+                                        format_size(size_after),
+                                        ratio,
+                                    ));
+                                }
+
+                                Ok(())
+                            })
+                        })
+                        .collect();
+                    handles
+                        .into_iter()
+                        .map(|h| {
+                            h.join().unwrap_or_else(|_| {
+                                Err(anyhow::anyhow!("upx compression thread panicked"))
+                            })
+                        })
+                        .collect()
+                });
+
+                // Return first error from the chunk
+                for result in results {
+                    result?;
                 }
             }
         }
@@ -498,7 +538,7 @@ crates: []
         assert_eq!(config.upx.len(), 1);
         assert_eq!(config.upx[0].binary, "/usr/bin/upx");
         assert_eq!(config.upx[0].args, vec!["--best", "--lzma"]);
-        assert!(!config.upx[0].enabled);
+        assert!(config.upx[0].enabled.is_none());
         assert!(!config.upx[0].required);
     }
 
@@ -532,7 +572,7 @@ crates: []
 "#;
         let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.upx.len(), 1);
-        assert!(!config.upx[0].enabled);
+        assert!(config.upx[0].enabled.is_none());
         assert_eq!(config.upx[0].binary, "upx");
         assert!(config.upx[0].args.is_empty());
         assert!(!config.upx[0].required);
@@ -587,7 +627,13 @@ upx:
 crates: []
 "#;
         let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
-        assert!(!config.upx[0].enabled);
+        assert!(
+            config.upx[0]
+                .enabled
+                .as_ref()
+                .map(|v| !v.as_bool())
+                .unwrap_or(true)
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -604,7 +650,7 @@ crates: []
     #[test]
     fn test_stage_skips_disabled_config() {
         let upx = vec![UpxConfig {
-            enabled: false,
+            enabled: Some(anodize_core::config::StringOrBool::Bool(false)),
             binary: "/nonexistent/binary".to_string(),
             args: vec!["--best".to_string()],
             ..Default::default()
@@ -654,7 +700,7 @@ crates: []
         let upx = vec![UpxConfig {
             binary: "/nonexistent/upx-binary-that-does-not-exist".to_string(),
             required: true,
-            enabled: true,
+            enabled: Some(anodize_core::config::StringOrBool::Bool(true)),
             ..Default::default()
         }];
 

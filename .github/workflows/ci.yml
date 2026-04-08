@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, 'session-*/**']
+    branches: [master, 'session-*/**']
   pull_request:
 
 concurrency:
@@ -71,3 +71,18 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Package all crates
         run: cargo package --workspace --no-verify
+
+  snapshot:
+    name: Snapshot (dry-run)
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Validate release pipeline
+        run: |
+          cargo build --release -p anodize
+          ./target/release/anodize release --snapshot --single-target --clean --dry-run

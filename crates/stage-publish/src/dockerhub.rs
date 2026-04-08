@@ -62,12 +62,11 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
 
     for entry in entries {
         // Check disable flag.
-        if let Some(ref d) = entry.disable {
-            if d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
+        if let Some(ref d) = entry.disable
+            && d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
                 log.status("dockerhub: entry disabled, skipping");
                 continue;
             }
-        }
 
         // Critical 1: Bail early when username is missing or empty (before
         // dry-run check so config errors surface even in dry-run mode).
@@ -203,7 +202,7 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
             }
 
             let patch_resp = client
-                .patch(&format!(
+                .patch(format!(
                     "https://hub.docker.com/v2/repositories/{}/{}/",
                     namespace, name
                 ))

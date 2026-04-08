@@ -142,12 +142,11 @@ impl Stage for MakeselfStage {
 
         for cfg in &configs {
             // Check disable
-            if let Some(ref d) = cfg.disable {
-                if d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
+            if let Some(ref d) = cfg.disable
+                && d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
                     log.verbose("skipping disabled makeself config");
                     continue;
                 }
-            }
 
             let id = cfg.id.as_deref().unwrap_or("default");
             let name = cfg
@@ -351,14 +350,17 @@ impl Stage for MakeselfStage {
                 if let Some(ref files) = cfg.files {
                     for f in files {
                         let src = Path::new(&f.source);
-                        let dest_name = f
-                            .destination
-                            .as_deref()
-                            .unwrap_or_else(|| {
-                                src.file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or(&f.source)
-                            });
+                        let dest_name = if let Some(ref dst) = f.destination {
+                            dst.as_str()
+                        } else if f.strip_parent.unwrap_or(false) {
+                            // strip_parent: use only the filename, dropping parent dirs
+                            src.file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or(&f.source)
+                        } else {
+                            // default: preserve the relative path as-is
+                            &f.source
+                        };
                         let dst = work_dir.join(dest_name);
                         if let Some(parent) = dst.parent() {
                             fs::create_dir_all(parent)?;
@@ -442,6 +444,12 @@ impl Stage for MakeselfStage {
                 let mut metadata = HashMap::new();
                 metadata.insert("id".to_string(), id.to_string());
                 metadata.insert("format".to_string(), "makeself".to_string());
+
+                // GoReleaser parity: copy ExtraReplaces ("replaces") metadata
+                // from the source binary artifact to the makeself artifact.
+                if let Some(replaces) = primary.metadata.get("replaces") {
+                    metadata.insert("replaces".to_string(), replaces.clone());
+                }
 
                 ctx.artifacts.add(Artifact {
                     kind: ArtifactKind::Makeself,

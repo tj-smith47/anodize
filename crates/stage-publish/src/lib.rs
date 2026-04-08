@@ -22,7 +22,7 @@ use anyhow::Result;
 
 use artifactory::publish_to_artifactory;
 use aur::publish_to_aur;
-use aur_source::publish_to_aur_source;
+use aur_source::{publish_to_aur_source, publish_top_level_aur_sources};
 use upload::publish_to_upload;
 use chocolatey::publish_to_chocolatey;
 use cloudsmith::publish_to_cloudsmith;
@@ -125,6 +125,9 @@ impl Stage for PublishStage {
         for crate_name in &crates_with_publisher(ctx, &selected, |p| p.aur_source.is_some()) {
             publish_to_aur_source(ctx, crate_name, &log)?;
         }
+
+        // 17. AUR source packages — top-level array (GoReleaser `aur_sources`).
+        publish_top_level_aur_sources(ctx, &log)?;
 
         Ok(())
     }
@@ -728,6 +731,61 @@ mod tests {
             }),
             ..Default::default()
         }];
+
+        let mut ctx = dry_run_ctx(config);
+        assert!(PublishStage.run(&mut ctx).is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // Top-level AUR sources integration tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_run_dry_run_top_level_aur_sources() {
+        use anodize_core::config::AurSourceConfig;
+
+        let mut config = Config::default();
+        config.aur_sources = Some(vec![AurSourceConfig {
+            name: Some("myapp".to_string()),
+            description: Some("My application".to_string()),
+            license: Some("MIT".to_string()),
+            git_url: Some("ssh://aur@aur.archlinux.org/myapp.git".to_string()),
+            makedepends: Some(vec!["rust".to_string(), "cargo".to_string()]),
+            ..Default::default()
+        }]);
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            ..Default::default()
+        }];
+
+        let mut ctx = dry_run_ctx(config);
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut().set("ProjectName", "myapp");
+        assert!(PublishStage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_top_level_aur_sources_empty_is_noop() {
+        let mut config = Config::default();
+        config.aur_sources = Some(vec![]);
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            ..Default::default()
+        }];
+
+        let mut ctx = dry_run_ctx(config);
+        assert!(PublishStage.run(&mut ctx).is_ok());
+    }
+
+    #[test]
+    fn test_top_level_aur_sources_none_is_noop() {
+        let mut config = Config::default();
+        config.aur_sources = None;
 
         let mut ctx = dry_run_ctx(config);
         assert!(PublishStage.run(&mut ctx).is_ok());

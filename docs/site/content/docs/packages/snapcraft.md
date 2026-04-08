@@ -40,7 +40,7 @@ crates:
 | `grade` | string | | Release quality: `stable` or `devel`. |
 | `license` | string | | SPDX license identifier. |
 | `confinement` | string | `strict` | Security model: `strict`, `devmode`, or `classic`. |
-| `plugs` | list | | Interface permissions (e.g. `home`, `network`, `personal-files`). |
+| `plugs` | map | | Interface plug definitions (HashMap\<String, Value\>). Keys are plug names; values are plug attributes. |
 | `slots` | list | | Shared interface slots for other snaps. |
 | `assumes` | list | | Required snapd features or minimum versions. |
 | `apps` | map | auto | Named app entries. Auto-generates a default entry from the first binary if omitted. |
@@ -119,8 +119,8 @@ crates:
         confinement: strict
         license: MIT
         plugs:
-          - home
-          - network
+          home: {}
+          network: {}
         apps:
           myapp:
             command: bin/myapp

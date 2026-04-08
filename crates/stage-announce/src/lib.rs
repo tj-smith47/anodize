@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use anodize_core::config::StringOrBool;
 use anodize_core::context::Context;
 use anodize_core::stage::Stage;
 use anyhow::Result;
@@ -26,6 +27,15 @@ pub mod webhook;
 
 const DEFAULT_MESSAGE_TEMPLATE: &str =
     "{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}";
+
+/// Evaluate an `enabled` field (now `Option<StringOrBool>`) through the template
+/// engine.  Returns `true` only when the value is present and resolves to truthy.
+fn is_enabled(ctx: &mut Context, enabled: Option<&StringOrBool>) -> bool {
+    match enabled {
+        None => false,
+        Some(val) => val.evaluates_to_true(|tmpl| ctx.render_template(tmpl)),
+    }
+}
 
 /// Render a required config field through the template engine, bailing with
 /// `provider: missing <field>` when the value is `None`.
@@ -60,7 +70,10 @@ fn render_json_template(
 ) -> Result<Option<serde_json::Value>> {
     match val {
         Some(v) => {
-            let rendered = ctx.render_template(&v.to_string())?;
+            // GoReleaser slack.go:107 un-escapes inner double quotes before template
+            // rendering so template expressions inside JSON strings work correctly.
+            let json_str = v.to_string().replace("\\\"", "\"");
+            let rendered = ctx.render_template(&json_str)?;
             Ok(Some(serde_json::from_str(&rendered)?))
         }
         None => Ok(None),
@@ -125,7 +138,7 @@ impl Stage for AnnounceStage {
         // Discord
         // ----------------------------------------------------------------
         if let Some(cfg) = &announce.discord
-            && cfg.enabled.unwrap_or(false)
+            && is_enabled(ctx, cfg.enabled.as_ref())
             && let Err(e) = (|| -> Result<()> {
                 // GoReleaser reads DISCORD_WEBHOOK_ID and DISCORD_WEBHOOK_TOKEN from
                 // env, and optionally DISCORD_API for the base URL.
@@ -151,7 +164,22 @@ impl Stage for AnnounceStage {
                 let message = render_message(ctx, cfg.message_template.as_deref())?;
                 // Default author to "anodize" (GoReleaser defaults to "GoReleaser").
                 let author = render_optional(ctx, cfg.author.as_deref().or(Some("anodize")))?;
-                let color = cfg.color;
+                // Color is a string that may contain template expressions; render
+                // and parse to u32 at runtime.
+                let color: Option<u32> = match cfg.color.as_deref() {
+                    Some(raw) => {
+                        let rendered = ctx.render_template(raw)?;
+                        let trimmed = rendered.trim();
+                        if trimmed.is_empty() {
+                            None
+                        } else {
+                            Some(trimmed.parse::<u32>().map_err(|e| {
+                                anyhow::anyhow!("announce.discord: invalid color {:?}: {}", trimmed, e)
+                            })?)
+                        }
+                    }
+                    None => None,
+                };
                 let icon_url = render_optional(ctx, cfg.icon_url.as_deref())?;
                 let opts = discord::DiscordOptions {
                     author: author.as_deref(),
@@ -170,7 +198,7 @@ impl Stage for AnnounceStage {
         // Discourse
         // ----------------------------------------------------------------
         if let Some(cfg) = &announce.discourse
-            && cfg.enabled.unwrap_or(false)
+            && is_enabled(ctx, cfg.enabled.as_ref())
             && let Err(e) = (|| -> Result<()> {
                 let server = require_rendered(ctx, cfg.server.as_deref(), "discourse", "server")?;
                 if server.is_empty() {
@@ -217,7 +245,7 @@ impl Stage for AnnounceStage {
         // Slack
         // ----------------------------------------------------------------
         if let Some(cfg) = &announce.slack
-            && cfg.enabled.unwrap_or(false)
+            && is_enabled(ctx, cfg.enabled.as_ref())
             && let Err(e) = (|| -> Result<()> {
                 let url = match cfg.webhook_url.as_deref() {
                     Some(u) => ctx.render_template(u)?,
@@ -262,7 +290,7 @@ impl Stage for AnnounceStage {
         // Generic HTTP webhook
         // ----------------------------------------------------------------
         if let Some(cfg) = &announce.webhook
-            && cfg.enabled.unwrap_or(false)
+            && is_enabled(ctx, cfg.enabled.as_ref())
             && let Err(e) = (|| -> Result<()> {
                 let url =
                     require_rendered(ctx, cfg.endpoint_url.as_deref(), "webhook", "endpoint_url")?;
@@ -330,7 +358,7 @@ impl Stage for AnnounceStage {
         // Telegram
         // ----------------------------------------------------------------
         if let Some(cfg) = &announce.telegram
-            && cfg.enabled.unwrap_or(false)
+            && is_enabled(ctx, cfg.enabled.as_ref())
             && let Err(e) = (|| -> Result<()> {
                 let bot_token = match cfg.bot_token.as_deref() {
                     Some(t) => ctx.render_template(t)?,
@@ -363,7 +391,26 @@ impl Stage for AnnounceStage {
                     }
                 };
                 let parse_mode = render_optional(ctx, Some(parse_mode_validated))?;
-                let message_thread_id = cfg.message_thread_id;
+                // message_thread_id is now a String supporting template expressions;
+                // render and parse to i64 at runtime.
+                let message_thread_id: Option<i64> = match cfg.message_thread_id.as_deref() {
+                    Some(raw) => {
+                        let rendered = ctx.render_template(raw)?;
+                        let trimmed = rendered.trim();
+                        if trimmed.is_empty() {
+                            None
+                        } else {
+                            Some(trimmed.parse::<i64>().map_err(|e| {
+                                anyhow::anyhow!(
+                                    "announce.telegram: invalid message_thread_id {:?}: {}",
+                                    trimmed,
+                                    e
+                                )
+                            })?)
+                        }
+                    }
+                    None => None,
+                };
 
                 dispatch(ctx, "telegram", &message, || {
                     telegram::send_telegram(
@@ -383,7 +430,7 @@ impl Stage for AnnounceStage {
         // Microsoft Teams
         // ----------------------------------------------------------------
         if let Some(cfg) = &announce.teams
-            && cfg.enabled.unwrap_or(false)
+            && is_enabled(ctx, cfg.enabled.as_ref())
             && let Err(e) = (|| -> Result<()> {
                 let url = match cfg.webhook_url.as_deref() {
                     Some(u) => ctx.render_template(u)?,
@@ -422,7 +469,7 @@ impl Stage for AnnounceStage {
         // Mattermost
         // ----------------------------------------------------------------
         if let Some(cfg) = &announce.mattermost
-            && cfg.enabled.unwrap_or(false)
+            && is_enabled(ctx, cfg.enabled.as_ref())
             && let Err(e) = (|| -> Result<()> {
                 let url = match cfg.webhook_url.as_deref() {
                     Some(u) => ctx.render_template(u)?,
@@ -466,7 +513,7 @@ impl Stage for AnnounceStage {
         // Reddit
         // ----------------------------------------------------------------
         if let Some(cfg) = &announce.reddit
-            && cfg.enabled.unwrap_or(false)
+            && is_enabled(ctx, cfg.enabled.as_ref())
             && let Err(e) = (|| -> Result<()> {
                 let app_id = require_rendered(
                     ctx,
@@ -509,7 +556,7 @@ impl Stage for AnnounceStage {
         // Twitter/X
         // ----------------------------------------------------------------
         if let Some(cfg) = &announce.twitter
-            && cfg.enabled.unwrap_or(false)
+            && is_enabled(ctx, cfg.enabled.as_ref())
             && let Err(e) = (|| -> Result<()> {
                 let message = render_message(ctx, cfg.message_template.as_deref())?;
                 let consumer_key = std::env::var("TWITTER_CONSUMER_KEY").map_err(|_| {
@@ -546,7 +593,7 @@ impl Stage for AnnounceStage {
         // Mastodon
         // ----------------------------------------------------------------
         if let Some(cfg) = &announce.mastodon
-            && cfg.enabled.unwrap_or(false)
+            && is_enabled(ctx, cfg.enabled.as_ref())
             && let Err(e) = (|| -> Result<()> {
                 let server = require_rendered(ctx, cfg.server.as_deref(), "mastodon", "server")?;
                 if server.is_empty() {
@@ -593,7 +640,7 @@ impl Stage for AnnounceStage {
         // Bluesky
         // ----------------------------------------------------------------
         if let Some(cfg) = &announce.bluesky
-            && cfg.enabled.unwrap_or(false)
+            && is_enabled(ctx, cfg.enabled.as_ref())
             && let Err(e) = (|| -> Result<()> {
                 let username =
                     require_rendered(ctx, cfg.username.as_deref(), "bluesky", "username")?;
@@ -625,7 +672,7 @@ impl Stage for AnnounceStage {
         // LinkedIn
         // ----------------------------------------------------------------
         if let Some(cfg) = &announce.linkedin
-            && cfg.enabled.unwrap_or(false)
+            && is_enabled(ctx, cfg.enabled.as_ref())
             && let Err(e) = (|| -> Result<()> {
                 let message = render_message(ctx, cfg.message_template.as_deref())?;
                 let access_token = std::env::var("LINKEDIN_ACCESS_TOKEN").map_err(|_| {
@@ -648,7 +695,7 @@ impl Stage for AnnounceStage {
         // OpenCollective
         // ----------------------------------------------------------------
         if let Some(cfg) = &announce.opencollective
-            && cfg.enabled.unwrap_or(false)
+            && is_enabled(ctx, cfg.enabled.as_ref())
             && let Err(e) = (|| -> Result<()> {
                 let slug = require_rendered(ctx, cfg.slug.as_deref(), "opencollective", "slug")?;
                 if slug.is_empty() {
@@ -689,7 +736,7 @@ impl Stage for AnnounceStage {
         // Email (SMTP or sendmail/msmtp fallback)
         // ----------------------------------------------------------------
         if let Some(cfg) = &announce.email
-            && cfg.enabled.unwrap_or(false)
+            && is_enabled(ctx, cfg.enabled.as_ref())
             && let Err(e) = (|| -> Result<()> {
                 let from = require_rendered(ctx, cfg.from.as_deref(), "email", "from")?;
 
@@ -707,9 +754,13 @@ impl Stage for AnnounceStage {
                 let subject = ctx.render_template(
                     cfg.subject_template
                         .as_deref()
-                        .unwrap_or("{{ ProjectName }} {{ Tag }} released"),
+                        .unwrap_or("{{ ProjectName }} {{ Tag }} is out!"),
                 )?;
-                let body = render_message(ctx, cfg.message_template.as_deref())?;
+                let body = ctx.render_template(
+                    cfg.message_template
+                        .as_deref()
+                        .unwrap_or("You can view details from: {{ ReleaseURL }}"),
+                )?;
 
                 let email_params = email::EmailParams {
                     from: &from,
@@ -820,7 +871,7 @@ mod tests {
     fn test_skips_disabled_discord() {
         let announce = AnnounceConfig {
             discord: Some(DiscordAnnounce {
-                enabled: Some(false),
+                enabled: Some(StringOrBool::Bool(false)),
                 webhook_url: Some("https://discord.invalid/webhook".to_string()),
                 message_template: None,
                 ..Default::default()
@@ -839,7 +890,7 @@ mod tests {
         let announce = AnnounceConfig {
             discord: None,
             slack: Some(SlackAnnounce {
-                enabled: Some(false),
+                enabled: Some(StringOrBool::Bool(false)),
                 webhook_url: Some("https://hooks.slack.invalid/services/T000".to_string()),
                 ..Default::default()
             }),
@@ -856,7 +907,7 @@ mod tests {
             discord: None,
             slack: None,
             webhook: Some(WebhookConfig {
-                enabled: Some(false),
+                enabled: Some(StringOrBool::Bool(false)),
                 endpoint_url: Some("https://example.invalid/hook".to_string()),
                 headers: None,
                 content_type: None,
@@ -874,7 +925,7 @@ mod tests {
     fn test_dry_run_discord_does_not_send() {
         let announce = AnnounceConfig {
             discord: Some(DiscordAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 webhook_url: Some("https://discord.invalid/webhook".to_string()),
                 message_template: Some("{{ .ProjectName }} {{ .Tag }} released!".to_string()),
                 ..Default::default()
@@ -901,7 +952,7 @@ mod tests {
         let announce = AnnounceConfig {
             discord: None,
             slack: Some(SlackAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 webhook_url: Some("https://hooks.slack.invalid/services/T000".to_string()),
                 message_template: Some("{{ .ProjectName }} {{ .Tag }} released!".to_string()),
                 ..Default::default()
@@ -934,7 +985,7 @@ mod tests {
         }];
         let announce = AnnounceConfig {
             slack: Some(SlackAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 webhook_url: Some("https://hooks.slack.invalid/services/T000".to_string()),
                 message_template: None,
                 blocks: Some(blocks),
@@ -988,7 +1039,7 @@ mod tests {
             discord: None,
             slack: None,
             webhook: Some(WebhookConfig {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 endpoint_url: Some("https://example.invalid/hook".to_string()),
                 headers: None,
                 content_type: Some("application/json".to_string()),
@@ -1014,7 +1065,7 @@ mod tests {
     fn test_missing_webhook_url_returns_error() {
         let announce = AnnounceConfig {
             discord: Some(DiscordAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 webhook_url: None, // intentionally missing
                 message_template: None,
                 ..Default::default()
@@ -1043,7 +1094,7 @@ mod tests {
     fn test_skips_disabled_telegram() {
         let announce = AnnounceConfig {
             telegram: Some(TelegramAnnounce {
-                enabled: Some(false),
+                enabled: Some(StringOrBool::Bool(false)),
                 bot_token: Some("123:ABC".to_string()),
                 chat_id: Some("-100123".to_string()),
                 ..Default::default()
@@ -1058,7 +1109,7 @@ mod tests {
     fn test_dry_run_telegram_does_not_send() {
         let announce = AnnounceConfig {
             telegram: Some(TelegramAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 bot_token: Some("123:ABC".to_string()),
                 chat_id: Some("-100123".to_string()),
                 message_template: Some("{{ .ProjectName }} {{ .Tag }} released!".to_string()),
@@ -1083,7 +1134,7 @@ mod tests {
     fn test_missing_telegram_bot_token_returns_error() {
         let announce = AnnounceConfig {
             telegram: Some(TelegramAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 bot_token: None,
                 chat_id: Some("-100123".to_string()),
                 ..Default::default()
@@ -1102,7 +1153,7 @@ mod tests {
     fn test_missing_telegram_chat_id_returns_error() {
         let announce = AnnounceConfig {
             telegram: Some(TelegramAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 bot_token: Some("123:ABC".to_string()),
                 chat_id: None,
                 ..Default::default()
@@ -1125,7 +1176,7 @@ mod tests {
     fn test_skips_disabled_teams() {
         let announce = AnnounceConfig {
             teams: Some(TeamsAnnounce {
-                enabled: Some(false),
+                enabled: Some(StringOrBool::Bool(false)),
                 webhook_url: Some("https://teams.invalid/webhook".to_string()),
                 ..Default::default()
             }),
@@ -1139,7 +1190,7 @@ mod tests {
     fn test_dry_run_teams_does_not_send() {
         let announce = AnnounceConfig {
             teams: Some(TeamsAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 webhook_url: Some("https://teams.invalid/webhook".to_string()),
                 message_template: Some("{{ .ProjectName }} {{ .Tag }} released!".to_string()),
                 ..Default::default()
@@ -1162,7 +1213,7 @@ mod tests {
     fn test_missing_teams_webhook_url_returns_error() {
         let announce = AnnounceConfig {
             teams: Some(TeamsAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 webhook_url: None,
                 ..Default::default()
             }),
@@ -1184,7 +1235,7 @@ mod tests {
     fn test_skips_disabled_mattermost() {
         let announce = AnnounceConfig {
             mattermost: Some(MattermostAnnounce {
-                enabled: Some(false),
+                enabled: Some(StringOrBool::Bool(false)),
                 webhook_url: Some("https://mm.invalid/hooks/xxx".to_string()),
                 ..Default::default()
             }),
@@ -1198,7 +1249,7 @@ mod tests {
     fn test_dry_run_mattermost_does_not_send() {
         let announce = AnnounceConfig {
             mattermost: Some(MattermostAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 webhook_url: Some("https://mm.invalid/hooks/xxx".to_string()),
                 channel: Some("releases".to_string()),
                 username: Some("release-bot".to_string()),
@@ -1226,7 +1277,7 @@ mod tests {
     fn test_missing_mattermost_webhook_url_returns_error() {
         let announce = AnnounceConfig {
             mattermost: Some(MattermostAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 webhook_url: None,
                 ..Default::default()
             }),
@@ -1248,7 +1299,7 @@ mod tests {
     fn test_skips_disabled_email() {
         let announce = AnnounceConfig {
             email: Some(EmailAnnounce {
-                enabled: Some(false),
+                enabled: Some(StringOrBool::Bool(false)),
                 from: Some("bot@example.com".to_string()),
                 to: vec!["dev@example.com".to_string()],
                 ..Default::default()
@@ -1263,7 +1314,7 @@ mod tests {
     fn test_dry_run_email_does_not_send() {
         let announce = AnnounceConfig {
             email: Some(EmailAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 from: Some("bot@example.com".to_string()),
                 to: vec!["dev@example.com".to_string()],
                 subject_template: Some("{{ .ProjectName }} {{ .Tag }} released".to_string()),
@@ -1288,7 +1339,7 @@ mod tests {
     fn test_missing_email_from_returns_error() {
         let announce = AnnounceConfig {
             email: Some(EmailAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 from: None,
                 to: vec!["dev@example.com".to_string()],
                 ..Default::default()
@@ -1307,7 +1358,7 @@ mod tests {
     fn test_missing_email_to_returns_error() {
         let announce = AnnounceConfig {
             email: Some(EmailAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 from: Some("bot@example.com".to_string()),
                 to: vec![],
                 ..Default::default()
@@ -1326,7 +1377,7 @@ mod tests {
     fn test_invalid_email_from_returns_error() {
         let announce = AnnounceConfig {
             email: Some(EmailAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 from: Some("not-an-email".to_string()),
                 to: vec!["dev@example.com".to_string()],
                 ..Default::default()
@@ -1352,15 +1403,15 @@ mod tests {
     #[test]
     fn test_discord_announce_new_fields() {
         let cfg = DiscordAnnounce {
-            enabled: Some(true),
+            enabled: Some(StringOrBool::Bool(true)),
             webhook_url: Some("https://discord.com/api/webhooks/123/abc".to_string()),
             message_template: None,
             author: Some("release-bot".to_string()),
-            color: Some(16711680),
+            color: Some("16711680".to_string()),
             icon_url: Some("https://example.com/icon.png".to_string()),
         };
         assert_eq!(cfg.author.as_deref(), Some("release-bot"));
-        assert_eq!(cfg.color, Some(16711680));
+        assert_eq!(cfg.color.as_deref(), Some("16711680"));
         assert_eq!(
             cfg.icon_url.as_deref(),
             Some("https://example.com/icon.png")
@@ -1370,7 +1421,7 @@ mod tests {
     #[test]
     fn test_webhook_skip_tls_verify_field() {
         let cfg = WebhookConfig {
-            enabled: Some(true),
+            enabled: Some(StringOrBool::Bool(true)),
             endpoint_url: Some("https://internal.example.com/hook".to_string()),
             skip_tls_verify: Some(true),
             ..Default::default()
@@ -1381,19 +1432,19 @@ mod tests {
     #[test]
     fn test_telegram_message_thread_id_field() {
         let cfg = TelegramAnnounce {
-            enabled: Some(true),
+            enabled: Some(StringOrBool::Bool(true)),
             bot_token: Some("123:ABC".to_string()),
             chat_id: Some("-100123".to_string()),
-            message_thread_id: Some(42),
+            message_thread_id: Some("42".to_string()),
             ..Default::default()
         };
-        assert_eq!(cfg.message_thread_id, Some(42));
+        assert_eq!(cfg.message_thread_id.as_deref(), Some("42"));
     }
 
     #[test]
     fn test_teams_title_and_color_fields() {
         let cfg = TeamsAnnounce {
-            enabled: Some(true),
+            enabled: Some(StringOrBool::Bool(true)),
             webhook_url: Some("https://teams.example.com/webhook".to_string()),
             title_template: Some("Release v1.0".to_string()),
             color: Some("0076D7".to_string()),
@@ -1406,7 +1457,7 @@ mod tests {
     #[test]
     fn test_mattermost_icon_emoji_and_color_fields() {
         let cfg = MattermostAnnounce {
-            enabled: Some(true),
+            enabled: Some(StringOrBool::Bool(true)),
             webhook_url: Some("https://mm.example.com/hooks/xxx".to_string()),
             icon_emoji: Some(":rocket:".to_string()),
             color: Some("#36a64f".to_string()),
@@ -1421,7 +1472,7 @@ mod tests {
         // When parse_mode is not explicitly set, it should default to "MarkdownV2".
         let announce = AnnounceConfig {
             telegram: Some(TelegramAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 bot_token: Some("123:ABC".to_string()),
                 chat_id: Some("-100123".to_string()),
                 message_template: Some("{{ .ProjectName }} released!".to_string()),
@@ -1452,7 +1503,7 @@ mod tests {
         let announce = AnnounceConfig {
             skip: Some(StringOrBool::Bool(true)),
             discord: Some(DiscordAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 webhook_url: Some("https://discord.invalid/webhook".to_string()),
                 message_template: Some("test".to_string()),
                 ..Default::default()
@@ -1479,7 +1530,7 @@ mod tests {
         let announce = AnnounceConfig {
             skip: Some(StringOrBool::String("{{ .IsNightly }}".to_string())),
             discord: Some(DiscordAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 webhook_url: Some("https://discord.invalid/webhook".to_string()),
                 message_template: Some("test".to_string()),
                 ..Default::default()
@@ -1537,7 +1588,7 @@ blocks:
     fn test_skips_disabled_reddit() {
         let announce = AnnounceConfig {
             reddit: Some(RedditAnnounce {
-                enabled: Some(false),
+                enabled: Some(StringOrBool::Bool(false)),
                 application_id: Some("app123".to_string()),
                 username: Some("testuser".to_string()),
                 sub: Some("rust".to_string()),
@@ -1556,7 +1607,7 @@ blocks:
         unsafe { std::env::set_var("REDDIT_PASSWORD", "testpass") };
         let announce = AnnounceConfig {
             reddit: Some(RedditAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 application_id: Some("app123".to_string()),
                 username: Some("testuser".to_string()),
                 sub: Some("rust".to_string()),
@@ -1591,7 +1642,7 @@ blocks:
     fn test_skips_disabled_twitter() {
         let announce = AnnounceConfig {
             twitter: Some(TwitterAnnounce {
-                enabled: Some(false),
+                enabled: Some(StringOrBool::Bool(false)),
                 message_template: None,
             }),
             ..Default::default()
@@ -1609,7 +1660,7 @@ blocks:
         unsafe { std::env::set_var("TWITTER_ACCESS_TOKEN_SECRET", "ats") };
         let announce = AnnounceConfig {
             twitter: Some(TwitterAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 message_template: Some(
                     "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
                         .to_string(),
@@ -1647,7 +1698,7 @@ blocks:
         unsafe { std::env::remove_var("TWITTER_ACCESS_TOKEN_SECRET") };
         let announce = AnnounceConfig {
             twitter: Some(TwitterAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 message_template: None,
             }),
             ..Default::default()
@@ -1676,7 +1727,7 @@ blocks:
     fn test_skips_disabled_mastodon() {
         let announce = AnnounceConfig {
             mastodon: Some(MastodonAnnounce {
-                enabled: Some(false),
+                enabled: Some(StringOrBool::Bool(false)),
                 server: Some("https://mastodon.social".to_string()),
                 message_template: None,
             }),
@@ -1694,7 +1745,7 @@ blocks:
         unsafe { std::env::set_var("MASTODON_ACCESS_TOKEN", "test-token") };
         let announce = AnnounceConfig {
             mastodon: Some(MastodonAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 server: Some("https://mastodon.social".to_string()),
                 message_template: Some(
                     "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
@@ -1728,7 +1779,7 @@ blocks:
         unsafe { std::env::set_var("MASTODON_ACCESS_TOKEN", "test-token") };
         let announce = AnnounceConfig {
             mastodon: Some(MastodonAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 server: None,
                 message_template: None,
             }),
@@ -1755,7 +1806,7 @@ blocks:
         unsafe { std::env::remove_var("MASTODON_ACCESS_TOKEN") };
         let announce = AnnounceConfig {
             mastodon: Some(MastodonAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 server: Some("https://mastodon.social".to_string()),
                 message_template: None,
             }),
@@ -1783,7 +1834,7 @@ blocks:
     fn test_mastodon_empty_server_skips() {
         let announce = AnnounceConfig {
             mastodon: Some(MastodonAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 server: Some("".to_string()),
                 message_template: None,
             }),
@@ -1802,7 +1853,7 @@ blocks:
     fn test_skips_disabled_bluesky() {
         let announce = AnnounceConfig {
             bluesky: Some(BlueskyAnnounce {
-                enabled: Some(false),
+                enabled: Some(StringOrBool::Bool(false)),
                 username: Some("user.bsky.social".to_string()),
                 ..Default::default()
             }),
@@ -1818,7 +1869,7 @@ blocks:
         unsafe { std::env::set_var("BLUESKY_APP_PASSWORD", "test_pass") };
         let announce = AnnounceConfig {
             bluesky: Some(BlueskyAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 username: Some("user.bsky.social".to_string()),
                 message_template: Some("{{ .ProjectName }} {{ .Tag }}".to_string()),
             }),
@@ -1847,7 +1898,7 @@ blocks:
         unsafe { std::env::set_var("BLUESKY_APP_PASSWORD", "test_pass") };
         let announce = AnnounceConfig {
             bluesky: Some(BlueskyAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 username: None,
                 message_template: None,
             }),
@@ -1868,7 +1919,7 @@ blocks:
         unsafe { std::env::remove_var("BLUESKY_APP_PASSWORD") };
         let announce = AnnounceConfig {
             bluesky: Some(BlueskyAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 username: Some("user.bsky.social".to_string()),
                 message_template: None,
             }),
@@ -1888,7 +1939,7 @@ blocks:
         unsafe { std::env::set_var("BLUESKY_APP_PASSWORD", "") };
         let announce = AnnounceConfig {
             bluesky: Some(BlueskyAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 username: Some("user.bsky.social".to_string()),
                 message_template: None,
             }),
@@ -1911,7 +1962,7 @@ blocks:
     fn test_skips_disabled_linkedin() {
         let announce = AnnounceConfig {
             linkedin: Some(LinkedInAnnounce {
-                enabled: Some(false),
+                enabled: Some(StringOrBool::Bool(false)),
                 message_template: None,
             }),
             ..Default::default()
@@ -1926,7 +1977,7 @@ blocks:
         unsafe { std::env::set_var("LINKEDIN_ACCESS_TOKEN", "test_token") };
         let announce = AnnounceConfig {
             linkedin: Some(LinkedInAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 message_template: Some(
                     "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
                         .to_string(),
@@ -1957,7 +2008,7 @@ blocks:
         unsafe { std::env::remove_var("LINKEDIN_ACCESS_TOKEN") };
         let announce = AnnounceConfig {
             linkedin: Some(LinkedInAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 message_template: None,
             }),
             ..Default::default()
@@ -1984,7 +2035,7 @@ blocks:
         unsafe { std::env::set_var("LINKEDIN_ACCESS_TOKEN", "") };
         let announce = AnnounceConfig {
             linkedin: Some(LinkedInAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 message_template: None,
             }),
             ..Default::default()
@@ -2006,7 +2057,7 @@ blocks:
     fn test_skips_disabled_opencollective() {
         let announce = AnnounceConfig {
             opencollective: Some(OpenCollectiveAnnounce {
-                enabled: Some(false),
+                enabled: Some(StringOrBool::Bool(false)),
                 slug: Some("my-project".to_string()),
                 ..Default::default()
             }),
@@ -2022,7 +2073,7 @@ blocks:
         unsafe { std::env::set_var("OPENCOLLECTIVE_TOKEN", "test_token") };
         let announce = AnnounceConfig {
             opencollective: Some(OpenCollectiveAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 slug: Some("my-project".to_string()),
                 title_template: Some("{{ .Tag }}".to_string()),
                 message_template: Some("{{ .ProjectName }} {{ .Tag }} is out!".to_string()),
@@ -2050,7 +2101,7 @@ blocks:
     fn test_opencollective_missing_slug_errors() {
         let announce = AnnounceConfig {
             opencollective: Some(OpenCollectiveAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 slug: None,
                 ..Default::default()
             }),
@@ -2068,7 +2119,7 @@ blocks:
     fn test_opencollective_empty_slug_skips() {
         let announce = AnnounceConfig {
             opencollective: Some(OpenCollectiveAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 slug: Some("".to_string()),
                 ..Default::default()
             }),
@@ -2085,7 +2136,7 @@ blocks:
         unsafe { std::env::remove_var("OPENCOLLECTIVE_TOKEN") };
         let announce = AnnounceConfig {
             opencollective: Some(OpenCollectiveAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 slug: Some("my-project".to_string()),
                 ..Default::default()
             }),
@@ -2113,7 +2164,7 @@ blocks:
         unsafe { std::env::set_var("OPENCOLLECTIVE_TOKEN", "") };
         let announce = AnnounceConfig {
             opencollective: Some(OpenCollectiveAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 slug: Some("my-project".to_string()),
                 ..Default::default()
             }),
@@ -2136,7 +2187,7 @@ blocks:
     fn test_skips_disabled_discourse() {
         let announce = AnnounceConfig {
             discourse: Some(DiscourseAnnounce {
-                enabled: Some(false),
+                enabled: Some(StringOrBool::Bool(false)),
                 server: Some("https://forum.example.com".to_string()),
                 category_id: Some(5),
                 ..Default::default()
@@ -2153,7 +2204,7 @@ blocks:
         unsafe { std::env::set_var("DISCOURSE_API_KEY", "test_key") };
         let announce = AnnounceConfig {
             discourse: Some(DiscourseAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 server: Some("https://forum.example.com".to_string()),
                 category_id: Some(5),
                 username: Some("release-bot".to_string()),
@@ -2188,7 +2239,7 @@ blocks:
         unsafe { std::env::set_var("DISCOURSE_API_KEY", "test_key") };
         let announce = AnnounceConfig {
             discourse: Some(DiscourseAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 server: None,
                 category_id: Some(5),
                 ..Default::default()
@@ -2210,7 +2261,7 @@ blocks:
         unsafe { std::env::set_var("DISCOURSE_API_KEY", "test_key") };
         let announce = AnnounceConfig {
             discourse: Some(DiscourseAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 server: Some("https://forum.example.com".to_string()),
                 category_id: None,
                 ..Default::default()
@@ -2232,7 +2283,7 @@ blocks:
         unsafe { std::env::set_var("DISCOURSE_API_KEY", "test_key") };
         let announce = AnnounceConfig {
             discourse: Some(DiscourseAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 server: Some("https://forum.example.com".to_string()),
                 category_id: Some(0),
                 ..Default::default()
@@ -2254,7 +2305,7 @@ blocks:
         unsafe { std::env::remove_var("DISCOURSE_API_KEY") };
         let announce = AnnounceConfig {
             discourse: Some(DiscourseAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 server: Some("https://forum.example.com".to_string()),
                 category_id: Some(5),
                 ..Default::default()
@@ -2283,7 +2334,7 @@ blocks:
         unsafe { std::env::set_var("DISCOURSE_API_KEY", "") };
         let announce = AnnounceConfig {
             discourse: Some(DiscourseAnnounce {
-                enabled: Some(true),
+                enabled: Some(StringOrBool::Bool(true)),
                 server: Some("https://forum.example.com".to_string()),
                 category_id: Some(5),
                 ..Default::default()

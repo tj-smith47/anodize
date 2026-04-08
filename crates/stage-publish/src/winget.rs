@@ -43,20 +43,23 @@ fn render_winget_commit_msg(
     package_id: &str,
     version: &str,
 ) -> String {
-    let default_tmpl = "chore: update {{ name }} manifest to {{ version }}";
+    // GoReleaser default: "New version: {{ .PackageIdentifier }} {{ .Version }}"
+    let default_tmpl = "New version: {{ PackageIdentifier }} {{ Version }}";
     let tmpl = template.unwrap_or(default_tmpl);
 
     let mut tera = tera::Tera::default();
     tera.autoescape_on(vec![]);
     if tera.add_raw_template("msg", tmpl).is_err() {
-        return format!("chore: update {} manifest to {}", package_id, version);
+        return format!("New version: {} {}", package_id, version);
     }
     let mut ctx = tera::Context::new();
+    ctx.insert("PackageIdentifier", package_id);
+    ctx.insert("Version", version);
+    // Legacy aliases for backward compat
     ctx.insert("name", package_id);
     ctx.insert("version", version);
-    ctx.insert("PackageIdentifier", package_id);
     tera.render("msg", &ctx)
-        .unwrap_or_else(|_| format!("chore: update {} manifest to {}", package_id, version))
+        .unwrap_or_else(|_| format!("New version: {} {}", package_id, version))
 }
 
 // ---------------------------------------------------------------------------
@@ -635,11 +638,10 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
     let matches_goamd64 = |a: &anodize_core::artifact::Artifact| -> bool {
         let target = a.target.as_deref().unwrap_or("");
         let (_, arch) = anodize_core::target::map_target(target);
-        if arch == "amd64" {
-            if let Some(want) = goamd64 {
-                return a.metadata.get("goamd64").map_or(true, |v| v == want);
+        if arch == "amd64"
+            && let Some(want) = goamd64 {
+                return a.metadata.get("goamd64").is_none_or(|v| v == want);
             }
-        }
         true
     };
 
@@ -1520,7 +1522,7 @@ mod tests {
     #[test]
     fn test_winget_commit_msg_default() {
         let msg = render_winget_commit_msg(None, "Org.MyTool", "1.0.0");
-        assert_eq!(msg, "chore: update Org.MyTool manifest to 1.0.0");
+        assert_eq!(msg, "New version: Org.MyTool 1.0.0");
     }
 
     #[test]

@@ -34,11 +34,11 @@ If no directive is found, the `default_bump` config (default: `minor`) is used.
 tag:
   default_bump: patch
   tag_prefix: "v"
-  initial_version: "0.0.0"
+  initial_version: "0.1.0"
   release_branches:
     - "main"
     - "release/.*"
-  branch_history: compare    # compare | last | full
+  branch_history: last       # last | full
   tag_context: repo          # repo | branch
 ```
 
@@ -48,11 +48,11 @@ tag:
 |-------|------|---------|-------------|
 | `default_bump` | string | `minor` | Default bump when no directive found |
 | `tag_prefix` | string | `v` | Prefix added to tags |
-| `initial_version` | string | `0.0.0` | Starting version when no tags exist |
-| `release_branches` | list | all | Branch patterns that trigger tags |
+| `initial_version` | string | `0.1.0` | Starting version when no tags exist |
+| `release_branches` | list | `["master", "main"]` | Branch patterns that trigger tags |
 | `custom_tag` | string | none | Override all bump logic |
 | `tag_context` | string | `repo` | Scope: `repo` or `branch` |
-| `branch_history` | string | `compare` | How many commits to scan: `compare`, `last`, `full` |
+| `branch_history` | string | `last` | How many commits to scan: `last`, `full` |
 | `prerelease` | bool | `false` | Enable prerelease mode |
 | `prerelease_suffix` | string | `beta` | Prerelease suffix |
 | `force_without_changes` | bool | `false` | Tag even without new commits |
@@ -60,7 +60,7 @@ tag:
 | `minor_string_token` | string | `#minor` | Custom minor bump trigger |
 | `patch_string_token` | string | `#patch` | Custom patch bump trigger |
 | `none_string_token` | string | `#none` | Custom skip trigger |
-| `git_api_tagging` | bool | `true` | Use GitHub API (true) or git CLI (false) |
+| `git_api_tagging` | string | none (disabled) | Use GitHub API (`github`) or git CLI (`git`) to create tags |
 
 ## Workspace-aware tagging
 

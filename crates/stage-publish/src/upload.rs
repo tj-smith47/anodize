@@ -19,12 +19,11 @@ pub fn publish_to_upload(ctx: &Context, log: &StageLogger) -> Result<()> {
 
     for entry in entries {
         // Check disable flag
-        if let Some(ref d) = entry.disable {
-            if d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
+        if let Some(ref d) = entry.disable
+            && d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
                 log.status("upload: entry skipped (disabled)");
                 continue;
             }
-        }
 
         // Name defaults to "upload" for env var naming
         let name = entry
