@@ -2,4 +2,5 @@
 /dist/
 .worktrees/
 .superpowers/
+.zig-cache/
 docs/site/public/

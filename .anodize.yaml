@@ -64,7 +64,7 @@ before:
   hooks:
     - cargo fmt --check
     - cargo clippy -- -D warnings
-    - cargo test --workspace --lib
+    - cargo test
 
 after:
   post:

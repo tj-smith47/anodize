@@ -238,8 +238,10 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
     // Run hooks before pipeline — after env vars are populated so
     // that template variables (Env.*, ProjectName, etc.) are available,
     // but BEFORE git context resolution (matching GoReleaser ordering).
-    // Skip in --merge mode: the split jobs already validated the code.
+    // Skip in --merge and --split modes: CI already validates the code
+    // before tagging, and hook compilation can dirty the working tree.
     if !opts.merge
+        && !opts.split
         && let Some(before) = &config.before
         && let Some(ref hooks) = before.pre
     {
