@@ -2735,9 +2735,15 @@ abbrev: 10
         git(&["commit", "-m", "feat: initial"]);
 
         // Use an impossible path for dist to trigger create_dir_all failure
+        let impossible_dist = if cfg!(windows) {
+            // NUL is the Windows equivalent of /dev/null — cannot be a directory
+            std::path::PathBuf::from("NUL\\impossible\\dist")
+        } else {
+            std::path::PathBuf::from("/dev/null/impossible/dist")
+        };
         let config = Config {
             project_name: "test".to_string(),
-            dist: std::path::PathBuf::from("/dev/null/impossible/dist"),
+            dist: impossible_dist,
             crates: vec![CrateConfig {
                 name: "test".to_string(),
                 path: ".".to_string(),

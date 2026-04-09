@@ -2262,7 +2262,11 @@ crates:
         let mut config = Config::default();
         config.project_name = "myapp".to_string();
         // Use an impossible path that create_dir_all will fail on
-        config.dist = std::path::PathBuf::from("/dev/null/impossible/dist");
+        config.dist = if cfg!(windows) {
+            std::path::PathBuf::from("NUL\\impossible\\dist")
+        } else {
+            std::path::PathBuf::from("/dev/null/impossible/dist")
+        };
         config.crates = vec![CrateConfig {
             name: "myapp".to_string(),
             path: ".".to_string(),

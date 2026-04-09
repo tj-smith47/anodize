@@ -88,7 +88,7 @@ impl Stage for TemplateFilesStage {
             })?;
 
             // Set file permissions
-            let mode = match &entry.mode {
+            let _mode = match &entry.mode {
                 Some(mode_str) => match parse_octal_mode(mode_str) {
                     Some(m) => m,
                     None => anyhow::bail!(
@@ -102,7 +102,7 @@ impl Stage for TemplateFilesStage {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&output_path, std::fs::Permissions::from_mode(mode))
+                std::fs::set_permissions(&output_path, std::fs::Permissions::from_mode(_mode))
                     .with_context(|| {
                         format!(
                             "templatefiles: failed to set permissions on '{}'",

@@ -1,4 +1,5 @@
 /target/
+/dist/
 .worktrees/
 .superpowers/
 docs/site/public/
