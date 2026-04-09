@@ -1330,6 +1330,28 @@ fn run_split(
     let p = pipeline::build_split_pipeline();
     p.run(ctx, log)?;
 
+    // Copy binary artifacts into the split dist directory so they survive
+    // upload/download between split and merge machines.  Update the artifact
+    // paths to point at the copies inside dist/.
+    for artifact in ctx.artifacts.all_mut() {
+        if !artifact.path.exists() {
+            continue; // dry-run or already relocated
+        }
+        if let Some(file_name) = artifact.path.file_name().map(|n| n.to_os_string()) {
+            let dest = split_dist.join(&file_name);
+            if artifact.path != dest {
+                std::fs::copy(&artifact.path, &dest).with_context(|| {
+                    format!(
+                        "split: copy {} -> {}",
+                        artifact.path.display(),
+                        dest.display()
+                    )
+                })?;
+                artifact.path = dest;
+            }
+        }
+    }
+
     // Serialize split context (config + git + template vars + artifacts)
     let split_artifacts: Vec<SplitArtifact> =
         ctx.artifacts.all().iter().map(artifact_to_split).collect();
