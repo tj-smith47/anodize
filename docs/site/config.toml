@@ -8,7 +8,7 @@ generate_feeds = false
 [markdown]
 highlight_code = true
 highlight_theme = "dracula"
-extra_syntaxes_and_themes = []
+
 
 [extra]
 github_url = "https://github.com/tj-smith47/anodize"

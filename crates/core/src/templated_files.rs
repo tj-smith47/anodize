@@ -258,9 +258,16 @@ mod tests {
         let ctx = TestContextBuilder::new().build();
         let out_dir = tmp.path().join("output");
 
+        // Use a platform-appropriate absolute path
+        let absolute_dst = if cfg!(windows) {
+            "C:\\etc\\passwd".to_string()
+        } else {
+            "/etc/passwd".to_string()
+        };
+
         let specs = vec![TemplatedExtraFile {
             src: src.to_string_lossy().to_string(),
-            dst: Some("/etc/passwd".to_string()),
+            dst: Some(absolute_dst),
             mode: None,
         }];
         let result = process_templated_extra_files(&specs, &ctx, &out_dir, "test");

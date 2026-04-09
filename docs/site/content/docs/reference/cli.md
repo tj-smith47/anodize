@@ -39,7 +39,7 @@ Run the full release pipeline
 | `--skip` | — | — | Skip stages (comma-separated, e.g. docker,announce) |
 | `--token` | — | — | GitHub token (overrides ANODIZE_GITHUB_TOKEN / GITHUB_TOKEN env vars) |
 | `--timeout` | — | `60m` | Pipeline timeout duration (e.g., 60m, 1h, 5s) |
-| `--parallelism` | `-p` | `12` | Maximum number of parallel build jobs |
+| `--parallelism` | `-p` | — | Maximum number of parallel build jobs (default: number of CPUs) |
 | `--auto-snapshot` | — | — | Automatically set --snapshot if the git repo is dirty |
 | `--single-target` | — | — | Build only for the host target triple |
 | `--release-notes` | — | — | Path to a custom release notes file (overrides changelog) |
@@ -64,7 +64,7 @@ Build binaries only (always runs in snapshot mode)
 |------|-------|---------|-------------|
 | `--crate` | — | — | Build a specific crate (repeatable) |
 | `--timeout` | — | `60m` | Pipeline timeout duration (e.g., 60m, 1h, 5s) |
-| `--parallelism` | `-p` | `12` | Maximum number of parallel build jobs |
+| `--parallelism` | `-p` | — | Maximum number of parallel build jobs (default: number of CPUs) |
 | `--single-target` | — | — | Build only for the host target triple |
 | `--workspace` | — | — | Build a specific workspace in a monorepo config |
 | `--output` | `-o` | — | Copy the built binary to this path (requires --single-target and single crate) |

@@ -281,19 +281,33 @@ mod tests {
 
     #[test]
     fn test_find_binary_absolute_path_exists() {
-        // /usr/bin/env exists on virtually all Unix systems
-        assert!(find_binary("/usr/bin/env"));
+        if cfg!(windows) {
+            // cmd.exe exists on all Windows systems
+            assert!(find_binary("C:\\Windows\\System32\\cmd.exe"));
+        } else {
+            // /usr/bin/env exists on virtually all Unix systems
+            assert!(find_binary("/usr/bin/env"));
+        }
     }
 
     #[test]
     fn test_find_binary_absolute_path_does_not_exist() {
-        assert!(!find_binary("/nonexistent/binary/path"));
+        if cfg!(windows) {
+            assert!(!find_binary("C:\\nonexistent\\binary\\path.exe"));
+        } else {
+            assert!(!find_binary("/nonexistent/binary/path"));
+        }
     }
 
     #[test]
     fn test_find_binary_bare_name_on_path() {
-        // "env" should be findable on PATH on any Unix system
-        assert!(find_binary("env"));
+        if cfg!(windows) {
+            // "cmd" should be findable on PATH on any Windows system
+            assert!(find_binary("cmd"));
+        } else {
+            // "env" should be findable on PATH on any Unix system
+            assert!(find_binary("env"));
+        }
     }
 
     #[test]

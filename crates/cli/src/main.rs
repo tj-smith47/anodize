@@ -1,4 +1,4 @@
-use anodize_cli::{Cli, Commands, detect_host_target};
+use anodize_cli::{Cli, Commands, detect_host_target, num_cpus};
 use anodize_core::context::{VALID_BUILD_SKIPS, VALID_RELEASE_SKIPS, validate_skip_values};
 
 use clap::Parser;
@@ -97,6 +97,7 @@ fn main() {
                 std::process::exit(1);
             }
 
+            let parallelism = parallelism.unwrap_or_else(num_cpus);
             timeout::run_with_timeout(duration, || {
                 commands::release::run(commands::release::ReleaseOpts {
                     crate_names,
@@ -138,6 +139,7 @@ fn main() {
             skip,
         } => {
             let duration = parse_timeout_or_exit(&timeout);
+            let parallelism = parallelism.unwrap_or_else(num_cpus);
             let config_override = cli.config.clone();
             let resolved_single_target = resolve_single_target(single_target);
             let verbose = cli.verbose;
@@ -347,8 +349,8 @@ mod tests {
         let cli = Cli::try_parse_from(["anodize", "release"]).unwrap();
         if let Commands::Release { parallelism, .. } = cli.command {
             assert!(
-                parallelism >= 1,
-                "default parallelism should be at least 1, got {}",
+                parallelism.is_none(),
+                "default parallelism should be None (auto-detect), got {:?}",
                 parallelism
             );
         } else {
@@ -361,8 +363,8 @@ mod tests {
         let cli = Cli::try_parse_from(["anodize", "build"]).unwrap();
         if let Commands::Build { parallelism, .. } = cli.command {
             assert!(
-                parallelism >= 1,
-                "default parallelism should be at least 1, got {}",
+                parallelism.is_none(),
+                "default parallelism should be None (auto-detect), got {:?}",
                 parallelism
             );
         } else {

@@ -57,8 +57,12 @@ pub enum Commands {
             help = "Pipeline timeout duration (e.g., 60m, 1h, 5s)"
         )]
         timeout: String,
-        #[arg(long, short = 'p', default_value_t = num_cpus(), help = "Maximum number of parallel build jobs")]
-        parallelism: usize,
+        #[arg(
+            long,
+            short = 'p',
+            help = "Maximum number of parallel build jobs (default: number of CPUs)"
+        )]
+        parallelism: Option<usize>,
         #[arg(long, help = "Automatically set --snapshot if the git repo is dirty")]
         auto_snapshot: bool,
         #[arg(long, help = "Build only for the host target triple")]
@@ -116,8 +120,12 @@ pub enum Commands {
             help = "Pipeline timeout duration (e.g., 60m, 1h, 5s)"
         )]
         timeout: String,
-        #[arg(long, short = 'p', default_value_t = num_cpus(), help = "Maximum number of parallel build jobs")]
-        parallelism: usize,
+        #[arg(
+            long,
+            short = 'p',
+            help = "Maximum number of parallel build jobs (default: number of CPUs)"
+        )]
+        parallelism: Option<usize>,
         #[arg(long, help = "Build only for the host target triple")]
         single_target: bool,
         #[arg(long, help = "Build a specific workspace in a monorepo config")]
