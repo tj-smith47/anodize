@@ -211,21 +211,23 @@ pub fn run(opts: TagOpts) -> Result<()> {
         return Ok(());
     }
 
-    // Determine base version
-    let base = match &prev_tag {
-        Some(tag) => git::parse_semver_tag(tag)?,
-        None => git::parse_semver_tag(&format!("{}{}", cfg.tag_prefix, cfg.initial_version))
+    // Determine base version.
+    // When there is no previous tag, use initial_version directly without bumping
+    // (matching github-tag-action behavior: initial_version IS the first tag).
+    let (new_major, new_minor, new_patch) = if prev_tag.is_none() {
+        let base = git::parse_semver_tag(&format!("{}{}", cfg.tag_prefix, cfg.initial_version))
             .unwrap_or(git::SemVer {
                 major: 0,
-                minor: 0,
+                minor: 1,
                 patch: 0,
                 prerelease: None,
                 build_metadata: None,
-            }),
+            });
+        (base.major, base.minor, base.patch)
+    } else {
+        let base = git::parse_semver_tag(prev_tag.as_ref().unwrap())?;
+        apply_bump(base.major, base.minor, base.patch, &bump)
     };
-
-    // Apply bump
-    let (new_major, new_minor, new_patch) = apply_bump(base.major, base.minor, base.patch, &bump);
 
     // Build new version string
     let mut new_version = format!("{}.{}.{}", new_major, new_minor, new_patch);

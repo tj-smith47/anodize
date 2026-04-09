@@ -120,10 +120,29 @@ struct NfpmYamlFileInfo {
     owner: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     group: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_octal_mode"
+    )]
     mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     mtime: Option<String>,
+}
+
+/// Serialize an octal mode string (e.g. "0755") as a YAML integer so nfpm
+/// can unmarshal it into Go's fs.FileMode.
+fn serialize_octal_mode<S: serde::Serializer>(
+    val: &Option<String>,
+    ser: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    match val {
+        Some(s) => {
+            let n = u32::from_str_radix(s.trim_start_matches('0'), 8)
+                .map_err(serde::ser::Error::custom)?;
+            ser.serialize_u32(n)
+        }
+        None => ser.serialize_none(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1651,7 +1670,7 @@ mod tests {
         assert!(yaml.contains("  file_info:"));
         assert!(yaml.contains("    owner: root"));
         assert!(yaml.contains("    group: root"));
-        assert!(yaml.contains("    mode: '0644'"));
+        assert!(yaml.contains("    mode: 420"));
     }
 
     #[test]
@@ -1682,7 +1701,7 @@ mod tests {
         // The binary entry always has file_info with mode 0755, but the
         // extra "dir" content entry should NOT have file_info
         assert!(
-            yaml.contains("mode: '0755'"),
+            yaml.contains("mode: 493"),
             "binary should have mode 0755"
         );
     }
@@ -1903,7 +1922,7 @@ crates:
         assert!(yaml.contains("  file_info:"));
         assert!(yaml.contains("    owner: root"));
         assert!(yaml.contains("    group: admin"));
-        assert!(yaml.contains("    mode: '0640'"));
+        assert!(yaml.contains("    mode: 416"));
 
         // Second content entry with type but no file_info
         assert!(yaml.contains("- src: /src/readme"));
@@ -2937,7 +2956,7 @@ crates:
             "file_info mtime missing:\n{yaml}"
         );
         assert!(yaml.contains("owner: root"), "owner missing:\n{yaml}");
-        assert!(yaml.contains("mode: '0755'"), "mode missing:\n{yaml}");
+        assert!(yaml.contains("mode: 493"), "mode missing:\n{yaml}");
     }
 
     #[test]
@@ -4804,7 +4823,7 @@ crates:
             "libdirs header dst missing:\n{yaml}"
         );
         assert!(
-            yaml.contains("mode: '0644'"),
+            yaml.contains("mode: 420"),
             "libdirs header mode should be 0644:\n{yaml}"
         );
     }
@@ -4878,7 +4897,7 @@ crates:
             "libdirs cshared dst missing:\n{yaml}"
         );
         assert!(
-            yaml.contains("mode: '0755'"),
+            yaml.contains("mode: 493"),
             "libdirs cshared mode should be 0755:\n{yaml}"
         );
     }
