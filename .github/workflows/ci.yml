@@ -22,6 +22,8 @@ jobs:
         with:
           components: rustfmt
       - uses: arduino/setup-task@v2
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Check formatting
         run: task fmt:check
 
@@ -35,6 +37,8 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - uses: arduino/setup-task@v2
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Clippy
         run: task clippy
 
@@ -62,6 +66,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: arduino/setup-task@v2
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Tests
         run: task test
       # Build release binary for reuse in release workflow (avoids
@@ -84,6 +90,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: arduino/setup-task@v2
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Package all crates
         run: task package
 

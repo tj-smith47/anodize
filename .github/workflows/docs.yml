@@ -28,6 +28,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: arduino/setup-task@v2
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Check generated docs are up-to-date
         run: task docs:check
 
@@ -44,6 +46,8 @@ jobs:
           cache-targets: false
 
       - uses: arduino/setup-task@v2
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Zola
         uses: taiki-e/install-action@v2
