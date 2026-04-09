@@ -76,8 +76,21 @@ tasks:
       - cargo clean
       - rm -rf dist/
 
+  tidy:
+    desc: Format code and regenerate docs
+    cmds:
+      - task: fmt
+      - task: docs
+
+  lint:
+    desc: Local pre-commit check (tidy, clippy, build)
+    cmds:
+      - task: tidy
+      - task: clippy
+      - task: build
+
   ci:
-    desc: Run all CI checks locally (everything except cross-platform builds)
+    desc: Run all CI checks (everything except cross-platform builds)
     cmds:
       - task: fmt:check
       - task: clippy
@@ -86,10 +99,10 @@ tasks:
       - task: package
 
   commit:
-    desc: "Run CI checks, then commit. Usage: task commit -- -m 'my message'"
+    desc: "Lint, then commit. Usage: task commit -- -m 'my message'"
     preconditions:
       - sh: git diff --cached --quiet || test -n "$(git diff --cached --name-only)"
         msg: "Nothing staged. Stage files with git add before running task commit."
     cmds:
-      - task: ci
+      - task: lint
       - git commit {{.CLI_ARGS}}
