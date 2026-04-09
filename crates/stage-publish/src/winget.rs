@@ -38,11 +38,7 @@ pub fn validate_package_identifier(id: &str) -> Result<()> {
 /// Render a commit message for WinGet with PackageIdentifier in the context.
 /// GoReleaser exposes `PackageIdentifier` as an extra template field
 /// (winget.go:291-293).
-fn render_winget_commit_msg(
-    template: Option<&str>,
-    package_id: &str,
-    version: &str,
-) -> String {
+fn render_winget_commit_msg(template: Option<&str>, package_id: &str, version: &str) -> String {
     // GoReleaser default: "New version: {{ .PackageIdentifier }} {{ .Version }}"
     let default_tmpl = "New version: {{ PackageIdentifier }} {{ Version }}";
     let tmpl = template.unwrap_or(default_tmpl);
@@ -495,7 +491,11 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
         log.status(&format!(
             "winget: skipping upload for '{}' (skip_upload={})",
             crate_name,
-            winget_cfg.skip_upload.as_ref().map(|v| v.as_str()).unwrap_or("")
+            winget_cfg
+                .skip_upload
+                .as_ref()
+                .map(|v| v.as_str())
+                .unwrap_or("")
         ));
         return Ok(());
     }
@@ -639,9 +639,10 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
         let target = a.target.as_deref().unwrap_or("");
         let (_, arch) = anodize_core::target::map_target(target);
         if arch == "amd64"
-            && let Some(want) = goamd64 {
-                return a.metadata.get("goamd64").is_none_or(|v| v == want);
-            }
+            && let Some(want) = goamd64
+        {
+            return a.metadata.get("goamd64").is_none_or(|v| v == want);
+        }
         true
     };
 
@@ -791,8 +792,8 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
     let installation_notes_rendered = render(winget_cfg.installation_notes.as_deref());
     let path_rendered = render(winget_cfg.path.as_deref());
     // GoReleaser defaults PackageName to Name (winget.go:74: cmp.Or).
-    let package_name_rendered = render(winget_cfg.package_name.as_deref())
-        .or_else(|| Some(name.to_string()));
+    let package_name_rendered =
+        render(winget_cfg.package_name.as_deref()).or_else(|| Some(name.to_string()));
     // ReleaseNotes: template-rendered (GoReleaser parity: winget.go:173-175).
     // The `ReleaseNotes` template variable (populated from changelog) is already
     // available in the template context, matching GoReleaser's `Changelog` field.

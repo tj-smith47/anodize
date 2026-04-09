@@ -191,14 +191,15 @@ fn resolve_extra_files(specs: &[ExtraFileSpec]) -> Result<Vec<ResolvedExtraFile>
         // the glob must match exactly one entry. Check BEFORE directory filtering
         // to match GoReleaser's behavior.
         if let Some(ref tmpl) = name_tmpl
-            && matches.len() > 1 {
-                bail!(
-                    "checksum: extra_files glob '{}' -> '{}': glob matches {} files",
-                    pattern,
-                    tmpl,
-                    matches.len()
-                );
-            }
+            && matches.len() > 1
+        {
+            bail!(
+                "checksum: extra_files glob '{}' -> '{}': glob matches {} files",
+                pattern,
+                tmpl,
+                matches.len()
+            );
+        }
         let file_matches: Vec<_> = matches.into_iter().filter(|m| m.is_file()).collect();
         for m in file_matches {
             if seen.insert(m.clone()) {
@@ -380,25 +381,24 @@ impl Stage for ChecksumStage {
 
             // Process templated_extra_files: render and add as checksummable artifacts
             if let Some(ref tpl_specs) = templated_extra_files
-                && !tpl_specs.is_empty() {
-                    let rendered =
-                        anodize_core::templated_files::process_templated_extra_files(
-                            tpl_specs, ctx, &dist, "checksum",
-                        )?;
-                    for (path, dst_name) in rendered {
-                        let metadata =
-                            HashMap::from([("extra_file".to_string(), "true".to_string())]);
-                        source_artifacts.push(Artifact {
-                            kind: ArtifactKind::Archive,
-                            name: dst_name,
-                            path,
-                            target: None,
-                            crate_name: crate_name.clone(),
-                            metadata,
-                            size: None,
-                        });
-                    }
+                && !tpl_specs.is_empty()
+            {
+                let rendered = anodize_core::templated_files::process_templated_extra_files(
+                    tpl_specs, ctx, &dist, "checksum",
+                )?;
+                for (path, dst_name) in rendered {
+                    let metadata = HashMap::from([("extra_file".to_string(), "true".to_string())]);
+                    source_artifacts.push(Artifact {
+                        kind: ArtifactKind::Archive,
+                        name: dst_name,
+                        path,
+                        target: None,
+                        crate_name: crate_name.clone(),
+                        metadata,
+                        size: None,
+                    });
                 }
+            }
 
             if source_artifacts.is_empty() {
                 log.verbose(&format!(
@@ -436,10 +436,7 @@ impl Stage for ChecksumStage {
                 };
 
                 // Store the checksum for later propagation to artifact metadata.
-                artifact_checksums.push((
-                    artifact.path.clone(),
-                    format!("{}:{}", algorithm, hash),
-                ));
+                artifact_checksums.push((artifact.path.clone(), format!("{}:{}", algorithm, hash)));
 
                 let filename = artifact
                     .path
@@ -449,8 +446,7 @@ impl Stage for ChecksumStage {
 
                 // Determine the display name for this artifact in the checksum line.
                 // If the extra file has a name_template, render it to get an alias.
-                let artifact_ext =
-                    anodize_core::template::extract_artifact_ext(filename);
+                let artifact_ext = anodize_core::template::extract_artifact_ext(filename);
                 let checksum_name = if let Some(tmpl) = artifact.metadata.get("extra_name_template")
                 {
                     let mut vars = ctx.template_vars().clone();
@@ -552,10 +548,7 @@ impl Stage for ChecksumStage {
                 // the Checksums template variable.
                 // Match GoReleaser: each line gets "\n" appended, then
                 // all are joined with no separator (strings.Join(lines, "")).
-                let content: String = combined_lines
-                    .iter()
-                    .map(|l| format!("{}\n", l))
-                    .collect();
+                let content: String = combined_lines.iter().map(|l| format!("{}\n", l)).collect();
 
                 // Set the Checksums template variable so release body templates
                 // can reference {{ .Checksums }}.
@@ -1047,7 +1040,7 @@ ids:
         assert!(combined.exists());
         let content = fs::read_to_string(&combined).unwrap();
         // SHA512 hex is 128 chars
-        let hash_part = content.trim().split_whitespace().next().unwrap_or("");
+        let hash_part = content.split_whitespace().next().unwrap_or("");
         assert_eq!(hash_part.len(), 128);
     }
 
@@ -2476,11 +2469,11 @@ extra_files:
         assert_eq!(checksums.len(), 2, "split mode should produce 2 sidecars");
         for a in &checksums {
             assert!(
-                a.metadata.get("source").is_some(),
+                a.metadata.contains_key("source"),
                 "sidecar artifact should have source metadata"
             );
             assert!(
-                a.metadata.get("combined").is_none(),
+                !a.metadata.contains_key("combined"),
                 "sidecar artifact should NOT have combined metadata"
             );
         }
@@ -2700,7 +2693,11 @@ extra_files:
 
         // Create a source template file
         let tpl_src = tmp.path().join("NOTES.md.tpl");
-        fs::write(&tpl_src, "Release notes for {{ .ProjectName }} {{ .Version }}").unwrap();
+        fs::write(
+            &tpl_src,
+            "Release notes for {{ .ProjectName }} {{ .Version }}",
+        )
+        .unwrap();
 
         // Create a fake archive
         let archive_path = dist.join("myapp.tar.gz");

@@ -59,18 +59,14 @@ pub fn preprocess(template: &str) -> String {
 /// These match `{{ if ... }}`, `{{ else }}`, `{{ else if ... }}`, `{{ end }}`,
 /// `{{ range ... }}`, `{{ with ... }}`, and `{{ $var := ... }}` patterns.
 /// Whitespace trimming markers (`-`) are preserved.
-static GO_IF_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\{\{(-?)\s*if\s+(.+?)\s*(-?)\}\}").unwrap()
-});
-static GO_ELSE_IF_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\{\{(-?)\s*else\s+if\s+(.+?)\s*(-?)\}\}").unwrap()
-});
-static GO_ELSE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\{\{(-?)\s*else\s*(-?)\}\}").unwrap()
-});
-static GO_END_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\{\{(-?)\s*end\s*(-?)\}\}").unwrap()
-});
+static GO_IF_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\{\{(-?)\s*if\s+(.+?)\s*(-?)\}\}").unwrap());
+static GO_ELSE_IF_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\{\{(-?)\s*else\s+if\s+(.+?)\s*(-?)\}\}").unwrap());
+static GO_ELSE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\{\{(-?)\s*else\s*(-?)\}\}").unwrap());
+static GO_END_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\{\{(-?)\s*end\s*(-?)\}\}").unwrap());
 static GO_RANGE_KV_RE: LazyLock<Regex> = LazyLock::new(|| {
     // {{ range $k, $v := .Map }}
     Regex::new(r"^\{\{(-?)\s*range\s+\$(\w+)\s*,\s*\$(\w+)\s*:=\s*(.+?)\s*(-?)\}\}").unwrap()
@@ -79,17 +75,15 @@ static GO_RANGE_V_RE: LazyLock<Regex> = LazyLock::new(|| {
     // {{ range $v := .Slice }} or {{ range .Slice }}
     Regex::new(r"^\{\{(-?)\s*range\s+(?:\$(\w+)\s*:=\s*)?(.+?)\s*(-?)\}\}").unwrap()
 });
-static GO_WITH_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\{\{(-?)\s*with\s+(.+?)\s*(-?)\}\}").unwrap()
-});
+static GO_WITH_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\{\{(-?)\s*with\s+(.+?)\s*(-?)\}\}").unwrap());
 static GO_VAR_ASSIGN_RE: LazyLock<Regex> = LazyLock::new(|| {
     // {{ $var := expr }}
     Regex::new(r"^\{\{(-?)\s*\$(\w+)\s*:=\s*(.+?)\s*(-?)\}\}").unwrap()
 });
 /// Match `{{ . }}` (bare dot reference to current context).
-static GO_DOT_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\{\{(-?)\s*\.\s*(-?)\}\}").unwrap()
-});
+static GO_DOT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\{\{(-?)\s*\.\s*(-?)\}\}").unwrap());
 
 /// Format a Tera block tag with optional whitespace trim markers.
 fn tera_block(ltrim: &str, content: &str, rtrim: &str) -> String {
@@ -405,8 +399,10 @@ fn preprocess_list_subexpr(template: &str) -> String {
                     let inner = &lcaps[1];
                     // Split items (quoted strings or bare identifiers) and rejoin as a Tera array literal.
                     // Bare identifiers pass through as variable references: `[Os, "windows"]`.
-                    static ITEM_RE: LazyLock<Regex> =
-                        LazyLock::new(|| Regex::new(r#""(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[a-zA-Z_][a-zA-Z0-9_.]*"#).unwrap());
+                    static ITEM_RE: LazyLock<Regex> = LazyLock::new(|| {
+                        Regex::new(r#""(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[a-zA-Z_][a-zA-Z0-9_.]*"#)
+                            .unwrap()
+                    });
                     let items: Vec<&str> = ITEM_RE.find_iter(inner).map(|m| m.as_str()).collect();
                     format!("[{}]", items.join(", "))
                 })
@@ -633,9 +629,13 @@ fn rewrite_prefix_to_infix(expr: &str, func_name: &str, operator: &str) -> Strin
 /// X can be a quoted string, identifier/dotted path, or parenthesized expression.
 fn rewrite_len(expr: &str) -> String {
     static LEN_RE: LazyLock<Regex> = LazyLock::new(|| {
-        let arg_pattern = r#"(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\([^()]*\)|[a-zA-Z_][a-zA-Z0-9_.]*)"#;
+        let arg_pattern =
+            r#"(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\([^()]*\)|[a-zA-Z_][a-zA-Z0-9_.]*)"#;
         // Use a capture group for the preceding character instead of look-behind.
-        let pattern = format!(r"(?:^|(?P<pre>[^a-zA-Z0-9_]))len\s+(?P<arg>{})", arg_pattern);
+        let pattern = format!(
+            r"(?:^|(?P<pre>[^a-zA-Z0-9_]))len\s+(?P<arg>{})",
+            arg_pattern
+        );
         Regex::new(&pattern).unwrap()
     });
 
@@ -661,8 +661,7 @@ static MAP_POSITIONAL_RE: LazyLock<Regex> = LazyLock::new(|| {
     // Use a capture group for the preceding character instead of look-behind.
     // No look-ahead needed; the greedy match of args handles the boundary
     // naturally, and we only apply this inside template blocks anyway.
-    let pattern =
-        format!(r"(?:^|(?P<pre>[^a-zA-Z0-9_]))map\s+(?P<args>{item}(?:\s+{item})+)");
+    let pattern = format!(r"(?:^|(?P<pre>[^a-zA-Z0-9_]))map\s+(?P<args>{item}(?:\s+{item})+)");
     Regex::new(&pattern).unwrap()
 });
 
@@ -688,10 +687,8 @@ fn preprocess_map_syntax(template: &str) -> String {
                     let args_str = mcaps.name("args").unwrap().as_str();
                     // Tokenize the arguments.
                     static ITEM_RE: LazyLock<Regex> = LazyLock::new(|| {
-                        Regex::new(
-                            r#""(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[a-zA-Z_][a-zA-Z0-9_.]*"#,
-                        )
-                        .unwrap()
+                        Regex::new(r#""(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[a-zA-Z_][a-zA-Z0-9_.]*"#)
+                            .unwrap()
                     });
                     let items: Vec<&str> =
                         ITEM_RE.find_iter(args_str).map(|m| m.as_str()).collect();
@@ -769,9 +766,8 @@ fn preprocess_positional_syntax(template: &str) -> String {
 /// After Pass 1 (dot stripping), `{{ .Now.Format "2006-01-02" }}` becomes
 /// `{{ Now.Format "2006-01-02" }}`. This regex rewrites it to
 /// `{{ Now | now_format(format="2006-01-02") }}`.
-static NOW_FORMAT_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"Now\.Format\s+("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')"#).unwrap()
-});
+static NOW_FORMAT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"Now\.Format\s+("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')"#).unwrap());
 
 /// Pass 4: Rewrite Go-style method calls to Tera filter syntax.
 ///
@@ -1164,9 +1160,7 @@ fn try_rewrite_piped(tokens: &[Token]) -> Option<String> {
     // Find the LAST pipe in the token stream. This handles chained filters like
     // `Version | trimprefix(prefix="v") | replace "." "-"` — we only rewrite
     // the final segment after the last pipe.
-    let last_pipe_idx = tokens
-        .iter()
-        .rposition(|t| matches!(t, Token::Pipe))?;
+    let last_pipe_idx = tokens.iter().rposition(|t| matches!(t, Token::Pipe))?;
 
     // Everything before the pipe (the expression being piped).
     let before_pipe = &tokens[..last_pipe_idx];
@@ -1276,10 +1270,7 @@ mod tests {
     fn test_preprocess_positional_replace_piped() {
         let input = "{{ Version | replace \"v\" \"\" }}";
         let result = preprocess(input);
-        assert_eq!(
-            result,
-            "{{ Version | replace(from=\"v\", to=\"\") }}"
-        );
+        assert_eq!(result, "{{ Version | replace(from=\"v\", to=\"\") }}");
     }
 
     #[test]
@@ -1390,20 +1381,14 @@ mod tests {
         // Tera whitespace control: {{- and -}}
         let input = "{{- replace Version \"v\" \"\" -}}";
         let result = preprocess(input);
-        assert_eq!(
-            result,
-            "{{- replace(s=Version, old=\"v\", new=\"\") -}}"
-        );
+        assert_eq!(result, "{{- replace(s=Version, old=\"v\", new=\"\") -}}");
     }
 
     #[test]
     fn test_positional_replace_whitespace_control_left_only() {
         let input = "{{- replace Version \"v\" \"\" }}";
         let result = preprocess(input);
-        assert_eq!(
-            result,
-            "{{- replace(s=Version, old=\"v\", new=\"\") }}"
-        );
+        assert_eq!(result, "{{- replace(s=Version, old=\"v\", new=\"\") }}");
     }
 
     #[test]
@@ -1427,10 +1412,7 @@ mod tests {
         // Pass 3: in ["a", "b", "c"] "b" → in(items=["a", "b", "c"], value="b")
         let input = "{{ in (list \"a\" \"b\" \"c\") \"b\" }}";
         let result = preprocess(input);
-        assert_eq!(
-            result,
-            "{{ in(items=[\"a\", \"b\", \"c\"], value=\"b\") }}"
-        );
+        assert_eq!(result, "{{ in(items=[\"a\", \"b\", \"c\"], value=\"b\") }}");
     }
 
     #[test]
@@ -1572,10 +1554,7 @@ mod tests {
         // (list 'it\'s' 'fine') should parse correctly
         let input = "{{ in (list 'it\\'s' 'fine') \"fine\" }}";
         let result = preprocess(input);
-        assert_eq!(
-            result,
-            "{{ in(items=['it\\'s', 'fine'], value=\"fine\") }}"
-        );
+        assert_eq!(result, "{{ in(items=['it\\'s', 'fine'], value=\"fine\") }}");
     }
 
     #[test]
@@ -1596,10 +1575,7 @@ mod tests {
         // (list .Os "windows") → after dot-strip: (list Os "windows") → [Os, "windows"]
         let input = "{{ in (list .Os \"windows\") \"linux\" }}";
         let result = preprocess(input);
-        assert_eq!(
-            result,
-            "{{ in(items=[Os, \"windows\"], value=\"linux\") }}"
-        );
+        assert_eq!(result, "{{ in(items=[Os, \"windows\"], value=\"linux\") }}");
     }
 
     #[test]
@@ -1618,10 +1594,7 @@ mod tests {
         // (list .Os .Arch) → after dot-strip: (list Os Arch) → [Os, Arch]
         let input = "{{ in (list .Os .Arch) \"linux\" }}";
         let result = preprocess(input);
-        assert_eq!(
-            result,
-            "{{ in(items=[Os, Arch], value=\"linux\") }}"
-        );
+        assert_eq!(result, "{{ in(items=[Os, Arch], value=\"linux\") }}");
     }
 
     #[test]
@@ -1642,10 +1615,7 @@ mod tests {
         // {{ .Now.Format "2006-01-02" }} → {{ Now | now_format(format="2006-01-02") }}
         let input = "{{ .Now.Format \"2006-01-02\" }}";
         let result = preprocess(input);
-        assert_eq!(
-            result,
-            "{{ Now | now_format(format=\"2006-01-02\") }}"
-        );
+        assert_eq!(result, "{{ Now | now_format(format=\"2006-01-02\") }}");
     }
 
     #[test]
@@ -1653,10 +1623,7 @@ mod tests {
         // {{ Now.Format "2006-01-02" }} (without leading dot) should also work
         let input = "{{ Now.Format \"2006-01-02\" }}";
         let result = preprocess(input);
-        assert_eq!(
-            result,
-            "{{ Now | now_format(format=\"2006-01-02\") }}"
-        );
+        assert_eq!(result, "{{ Now | now_format(format=\"2006-01-02\") }}");
     }
 
     #[test]
@@ -1675,10 +1642,7 @@ mod tests {
         // {{ .Now.Format '2006-01-02' }} (single quotes)
         let input = "{{ .Now.Format '2006-01-02' }}";
         let result = preprocess(input);
-        assert_eq!(
-            result,
-            "{{ Now | now_format(format='2006-01-02') }}"
-        );
+        assert_eq!(result, "{{ Now | now_format(format='2006-01-02') }}");
     }
 
     #[test]
@@ -1686,10 +1650,7 @@ mod tests {
         // {{- .Now.Format "2006-01-02" -}}
         let input = "{{- .Now.Format \"2006-01-02\" -}}";
         let result = preprocess(input);
-        assert_eq!(
-            result,
-            "{{- Now | now_format(format=\"2006-01-02\") -}}"
-        );
+        assert_eq!(result, "{{- Now | now_format(format=\"2006-01-02\") -}}");
     }
 
     #[test]
@@ -1697,10 +1658,7 @@ mod tests {
         // {{.Now.Format "2006-01-02"}} (no spaces after {{ or before }})
         let input = "{{.Now.Format \"2006-01-02\"}}";
         let result = preprocess(input);
-        assert_eq!(
-            result,
-            "{{Now | now_format(format=\"2006-01-02\")}}"
-        );
+        assert_eq!(result, "{{Now | now_format(format=\"2006-01-02\")}}");
     }
 
     #[test]
@@ -1747,7 +1705,10 @@ mod tests {
     fn test_go_range_bare() {
         let input = "{{ range .Maintainers }}# {{ . }}{{ end }}";
         let result = preprocess(input);
-        assert_eq!(result, "{% for val in Maintainers %}# {{ val }}{% endfor %}");
+        assert_eq!(
+            result,
+            "{% for val in Maintainers %}# {{ val }}{% endfor %}"
+        );
     }
 
     #[test]
@@ -1915,10 +1876,7 @@ mod tests {
         // Tera doesn't support comparison operators inside parens, so parens are stripped.
         let input = "{% if not (eq Os \"windows\") %}yes{% endif %}";
         let result = preprocess(input);
-        assert_eq!(
-            result,
-            "{% if not Os == \"windows\" %}yes{% endif %}"
-        );
+        assert_eq!(result, "{% if not Os == \"windows\" %}yes{% endif %}");
     }
 
     #[test]
@@ -1952,10 +1910,7 @@ mod tests {
         // eq Env.FOO "bar"
         let input = "{% if eq Env.FOO \"bar\" %}yes{% endif %}";
         let result = preprocess(input);
-        assert_eq!(
-            result,
-            "{% if Env.FOO == \"bar\" %}yes{% endif %}"
-        );
+        assert_eq!(result, "{% if Env.FOO == \"bar\" %}yes{% endif %}");
     }
 
     // --- and/or prefix to infix ---
@@ -2038,10 +1993,7 @@ mod tests {
     fn test_map_positional_four_args() {
         let input = "{{ map \"a\" \"1\" \"b\" \"2\" }}";
         let result = preprocess(input);
-        assert_eq!(
-            result,
-            "{{ map(pairs=[\"a\", \"1\", \"b\", \"2\"]) }}"
-        );
+        assert_eq!(result, "{{ map(pairs=[\"a\", \"1\", \"b\", \"2\"]) }}");
     }
 
     #[test]
@@ -2064,10 +2016,7 @@ mod tests {
     fn test_index_positional_two_args() {
         let input = "{{ index myMap \"key\" }}";
         let result = preprocess(input);
-        assert_eq!(
-            result,
-            "{{ index(collection=myMap, key=\"key\") }}"
-        );
+        assert_eq!(result, "{{ index(collection=myMap, key=\"key\") }}");
     }
 
     #[test]
@@ -2093,8 +2042,7 @@ mod tests {
     fn test_go_style_full_pipeline_eq_and_map() {
         // Full Go-style pipeline:
         // {{ $m := map "a" "1" }}{{ if eq (index $m "a") "1" }}yes{{ end }}
-        let input =
-            "{{ $m := map \"a\" \"1\" }}{{ if eq (index $m \"a\") \"1\" }}yes{{ end }}";
+        let input = "{{ $m := map \"a\" \"1\" }}{{ if eq (index $m \"a\") \"1\" }}yes{{ end }}";
         let result = preprocess(input);
         // Pass 2b rewrites `eq (index m "a") "1"` to `(index m "a") == "1"`.
         // Parens around `index m "a"` are kept (no comparison operator inside).

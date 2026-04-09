@@ -1,7 +1,7 @@
 use anodize_core::config::DockerHubFullDescription;
 use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
-use anyhow::{anyhow, bail, Context as _, Result};
+use anyhow::{Context as _, Result, anyhow, bail};
 
 // ---------------------------------------------------------------------------
 // resolve_full_description
@@ -63,10 +63,11 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
     for entry in entries {
         // Check disable flag.
         if let Some(ref d) = entry.disable
-            && d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
-                log.status("dockerhub: entry disabled, skipping");
-                continue;
-            }
+            && d.is_disabled(|tmpl| ctx.render_template(tmpl))
+        {
+            log.status("dockerhub: entry disabled, skipping");
+            continue;
+        }
 
         // Critical 1: Bail early when username is missing or empty (before
         // dry-run check so config errors surface even in dry-run mode).
@@ -77,10 +78,7 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
             }
         };
 
-        let images = entry
-            .images
-            .as_deref()
-            .unwrap_or_default();
+        let images = entry.images.as_deref().unwrap_or_default();
 
         if images.is_empty() {
             log.warn("dockerhub: no images configured, skipping entry");
@@ -136,16 +134,10 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
         }
 
         // Authenticate: POST to get JWT token.
-        let secret_name = entry
-            .secret_name
-            .as_deref()
-            .unwrap_or("DOCKER_PASSWORD");
+        let secret_name = entry.secret_name.as_deref().unwrap_or("DOCKER_PASSWORD");
 
         let password = std::env::var(secret_name).with_context(|| {
-            format!(
-                "dockerhub: environment variable '{}' not set",
-                secret_name
-            )
+            format!("dockerhub: environment variable '{}' not set", secret_name)
         })?;
 
         let login_body = serde_json::json!({
@@ -209,9 +201,7 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
                 .bearer_auth(token)
                 .json(&patch_body)
                 .send()
-                .with_context(|| {
-                    format!("dockerhub: failed to PATCH repository '{}'", image)
-                })?;
+                .with_context(|| format!("dockerhub: failed to PATCH repository '{}'", image))?;
 
             // Important 6: Include response body in PATCH error message.
             if !patch_resp.status().is_success() {
@@ -332,10 +322,7 @@ mod tests {
         let mut config = Config::default();
         config.dockerhub = Some(vec![DockerHubConfig {
             username: Some("testuser".to_string()),
-            images: Some(vec![
-                "myorg/app1".to_string(),
-                "myorg/app2".to_string(),
-            ]),
+            images: Some(vec!["myorg/app1".to_string(), "myorg/app2".to_string()]),
             description: Some("My app".to_string()),
             ..Default::default()
         }]);

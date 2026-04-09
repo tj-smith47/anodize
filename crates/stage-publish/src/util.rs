@@ -26,7 +26,11 @@ pub(crate) fn format_matches(filename: &str, formats: &[impl AsRef<str>]) -> boo
 pub(crate) fn matches_id_filter(artifact: &Artifact, ids: Option<&[String]>) -> bool {
     match ids {
         Some(id_list) if !id_list.is_empty() => {
-            let artifact_id = artifact.metadata.get("id").map(|s| s.as_str()).unwrap_or("");
+            let artifact_id = artifact
+                .metadata
+                .get("id")
+                .map(|s| s.as_str())
+                .unwrap_or("");
             id_list.iter().any(|id| id == artifact_id)
         }
         _ => true, // no filter = matches all
@@ -34,9 +38,14 @@ pub(crate) fn matches_id_filter(artifact: &Artifact, ids: Option<&[String]>) -> 
 }
 
 /// Resolve a secret/token env var name from config with template rendering.
-pub(crate) fn resolve_secret_name(ctx: &Context, secret_name: Option<&str>, default: &str) -> String {
+pub(crate) fn resolve_secret_name(
+    ctx: &Context,
+    secret_name: Option<&str>,
+    default: &str,
+) -> String {
     let name = secret_name.unwrap_or(default);
-    ctx.render_template(name).unwrap_or_else(|_| name.to_string())
+    ctx.render_template(name)
+        .unwrap_or_else(|_| name.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -379,13 +388,26 @@ fn create_pr_via_gh_cli(
     log: &StageLogger,
 ) {
     let mut args = vec![
-        "pr", "create", "--repo", upstream_repo, "--title", title, "--body", body, "--head", head,
-        "--base", base_branch,
+        "pr",
+        "create",
+        "--repo",
+        upstream_repo,
+        "--title",
+        title,
+        "--body",
+        body,
+        "--head",
+        head,
+        "--base",
+        base_branch,
     ];
     if draft {
         args.push("--draft");
     }
-    let pr_result = Command::new("gh").current_dir(repo_path).args(&args).output();
+    let pr_result = Command::new("gh")
+        .current_dir(repo_path)
+        .args(&args)
+        .output();
     match pr_result {
         Ok(output) if output.status.success() => {
             log.status(&format!("{label}: PR submitted via gh CLI"));
@@ -395,7 +417,11 @@ fn create_pr_via_gh_cli(
             log.warn(&format!(
                 "{label}: gh pr create exited with {} -- you may need to create the PR manually{}",
                 output.status,
-                if stderr.is_empty() { String::new() } else { format!("\n{}", stderr) }
+                if stderr.is_empty() {
+                    String::new()
+                } else {
+                    format!("\n{}", stderr)
+                }
             ));
         }
         Err(e) => {
@@ -412,10 +438,21 @@ fn create_pr_via_gh_cli(
 /// Uses `POST /repos/{owner}/{repo}/pulls` with token-based auth.
 #[allow(clippy::too_many_arguments)]
 fn create_pr_via_api(
-    upstream_owner: &str, upstream_name: &str, head: &str, base_branch: &str,
-    title: &str, body: &str, draft: bool, token: &str, label: &str, log: &StageLogger,
+    upstream_owner: &str,
+    upstream_name: &str,
+    head: &str,
+    base_branch: &str,
+    title: &str,
+    body: &str,
+    draft: bool,
+    token: &str,
+    label: &str,
+    log: &StageLogger,
 ) {
-    let url = format!("https://api.github.com/repos/{}/{}/pulls", upstream_owner, upstream_name);
+    let url = format!(
+        "https://api.github.com/repos/{}/{}/pulls",
+        upstream_owner, upstream_name
+    );
     let payload = serde_json::json!({
         "title": title, "head": head, "base": base_branch, "body": body, "draft": draft,
     });
@@ -477,7 +514,10 @@ pub(crate) fn maybe_submit_pr(
         _ => return,
     };
     let (upstream_owner, upstream_name) = if let Some(ref base) = pr_cfg.base {
-        (base.owner.as_deref().unwrap_or(repo_owner), base.name.as_deref().unwrap_or(repo_name))
+        (
+            base.owner.as_deref().unwrap_or(repo_owner),
+            base.name.as_deref().unwrap_or(repo_name),
+        )
     } else {
         (repo_owner, repo_name)
     };
@@ -485,31 +525,66 @@ pub(crate) fn maybe_submit_pr(
     let pr_body = pr_cfg.body.as_deref().unwrap_or(body);
     let head = format!("{}:{}", repo_owner, branch_name);
     let is_draft = pr_cfg.draft == Some(true);
-    let base_branch = pr_cfg.base.as_ref().and_then(|b| b.branch.as_deref()).unwrap_or("main");
-    let token = repo.and_then(|r| r.token.clone())
+    let base_branch = pr_cfg
+        .base
+        .as_ref()
+        .and_then(|b| b.branch.as_deref())
+        .unwrap_or("main");
+    let token = repo
+        .and_then(|r| r.token.clone())
         .or_else(|| std::env::var("ANODIZE_GITHUB_TOKEN").ok())
         .or_else(|| std::env::var("GITHUB_TOKEN").ok());
 
     // Fork sync: when the PR targets a different upstream repository, sync first.
     let is_cross_repo = upstream_owner != repo_owner || upstream_name != repo_name;
     if is_cross_repo {
-        let upstream_url = format!("https://github.com/{}/{}.git", upstream_owner, upstream_name);
+        let upstream_url = format!(
+            "https://github.com/{}/{}.git",
+            upstream_owner, upstream_name
+        );
         sync_fork(repo_path, &upstream_url, base_branch, label, log);
         if let Err(e) = run_cmd_in(
-            repo_path, "git", &["push", "--force-with-lease", "origin", branch_name],
+            repo_path,
+            "git",
+            &["push", "--force-with-lease", "origin", branch_name],
             &format!("{label}: git push (post-sync)"),
         ) {
-            log.warn(&format!("{label}: fork sync: force-push after rebase failed, PR may have conflicts: {e}"));
+            log.warn(&format!(
+                "{label}: fork sync: force-push after rebase failed, PR may have conflicts: {e}"
+            ));
         }
     }
 
     // PR creation: try gh CLI first, fall back to GitHub API.
     if gh_is_available() {
-        create_pr_via_gh_cli(repo_path, &upstream_slug, &head, base_branch, title, pr_body, is_draft, label, log);
+        create_pr_via_gh_cli(
+            repo_path,
+            &upstream_slug,
+            &head,
+            base_branch,
+            title,
+            pr_body,
+            is_draft,
+            label,
+            log,
+        );
     } else if let Some(ref tok) = token {
-        create_pr_via_api(upstream_owner, upstream_name, &head, base_branch, title, pr_body, is_draft, tok, label, log);
+        create_pr_via_api(
+            upstream_owner,
+            upstream_name,
+            &head,
+            base_branch,
+            title,
+            pr_body,
+            is_draft,
+            tok,
+            label,
+            log,
+        );
     } else {
-        log.warn(&format!("{label}: neither `gh` CLI nor a token is available -- cannot create PR automatically"));
+        log.warn(&format!(
+            "{label}: neither `gh` CLI nor a token is available -- cannot create PR automatically"
+        ));
     }
 }
 
@@ -694,17 +769,35 @@ pub(crate) fn submit_pr_via_gh(
     label: &str,
     log: &StageLogger,
 ) {
-    let token = std::env::var("ANODIZE_GITHUB_TOKEN").ok().or_else(|| std::env::var("GITHUB_TOKEN").ok());
+    let token = std::env::var("ANODIZE_GITHUB_TOKEN")
+        .ok()
+        .or_else(|| std::env::var("GITHUB_TOKEN").ok());
     if gh_is_available() {
-        create_pr_via_gh_cli(repo_path, upstream_repo, head, "main", title, body, false, label, log);
+        create_pr_via_gh_cli(
+            repo_path,
+            upstream_repo,
+            head,
+            "main",
+            title,
+            body,
+            false,
+            label,
+            log,
+        );
     } else if let Some(ref tok) = token {
         if let Some((owner, name)) = upstream_repo.split_once('/') {
-            create_pr_via_api(owner, name, head, "main", title, body, false, tok, label, log);
+            create_pr_via_api(
+                owner, name, head, "main", title, body, false, tok, label, log,
+            );
         } else {
-            log.warn(&format!("{label}: cannot parse upstream repo slug '{upstream_repo}' for API fallback"));
+            log.warn(&format!(
+                "{label}: cannot parse upstream repo slug '{upstream_repo}' for API fallback"
+            ));
         }
     } else {
-        log.warn(&format!("{label}: neither `gh` CLI nor a token is available -- cannot create PR automatically"));
+        log.warn(&format!(
+            "{label}: neither `gh` CLI nor a token is available -- cannot create PR automatically"
+        ));
     }
 }
 
@@ -934,7 +1027,10 @@ pub(crate) fn find_artifacts_by_os_with_goarch(
     );
     // OnlyReplacingUnibins: exclude universal binaries that didn't replace
     // single-arch variants (GoReleaser parity).
-    let all: Vec<_> = all.into_iter().filter(|a| a.only_replacing_unibins()).collect();
+    let all: Vec<_> = all
+        .into_iter()
+        .filter(|a| a.only_replacing_unibins())
+        .collect();
     let filtered = filter_by_ids(all, ids);
     let os_artifacts: Vec<OsArtifact> = filtered
         .into_iter()
@@ -994,7 +1090,10 @@ pub(crate) fn find_all_platform_artifacts_with_goarch(
     );
     // OnlyReplacingUnibins: exclude universal binaries that didn't replace
     // single-arch variants (GoReleaser parity).
-    let all: Vec<_> = all.into_iter().filter(|a| a.only_replacing_unibins()).collect();
+    let all: Vec<_> = all
+        .into_iter()
+        .filter(|a| a.only_replacing_unibins())
+        .collect();
     let filtered = filter_by_ids(all, ids);
     let os_artifacts: Vec<OsArtifact> = filtered
         .into_iter()
@@ -1023,15 +1122,18 @@ fn filter_by_goarch(
         .filter(|a| {
             // Filter amd64 artifacts by goamd64 config
             if a.arch == "amd64"
-                && let Some(want) = goamd64 {
-                    // Keep if artifact has no goamd64 (compat) or matches
-                    return a.goamd64.as_deref().is_none_or(|v| v == want);
-                }
+                && let Some(want) = goamd64
+            {
+                // Keep if artifact has no goamd64 (compat) or matches
+                return a.goamd64.as_deref().is_none_or(|v| v == want);
+            }
             // Filter arm artifacts by goarm config
-            if a.arch.starts_with("arm") && a.arch != "arm64"
-                && let Some(want) = goarm {
-                    return a.goarm.as_deref().is_none_or(|v| v == want);
-                }
+            if a.arch.starts_with("arm")
+                && a.arch != "arm64"
+                && let Some(want) = goarm
+            {
+                return a.goarm.as_deref().is_none_or(|v| v == want);
+            }
             true
         })
         .collect()
@@ -1496,14 +1598,22 @@ mod tests {
     fn test_filter_by_goarch_no_filter_passes_all() {
         let artifacts = vec![
             OsArtifact {
-                url: "u1".into(), sha256: "s".into(), os: "linux".into(),
-                arch: "amd64".into(), id: None,
-                goamd64: Some("v1".into()), goarm: None,
+                url: "u1".into(),
+                sha256: "s".into(),
+                os: "linux".into(),
+                arch: "amd64".into(),
+                id: None,
+                goamd64: Some("v1".into()),
+                goarm: None,
             },
             OsArtifact {
-                url: "u2".into(), sha256: "s".into(), os: "linux".into(),
-                arch: "amd64".into(), id: None,
-                goamd64: Some("v3".into()), goarm: None,
+                url: "u2".into(),
+                sha256: "s".into(),
+                os: "linux".into(),
+                arch: "amd64".into(),
+                id: None,
+                goamd64: Some("v3".into()),
+                goarm: None,
             },
         ];
         let result = filter_by_goarch(artifacts, None, None);
@@ -1514,19 +1624,31 @@ mod tests {
     fn test_filter_by_goarch_amd64_v1() {
         let artifacts = vec![
             OsArtifact {
-                url: "v1".into(), sha256: "s".into(), os: "linux".into(),
-                arch: "amd64".into(), id: None,
-                goamd64: Some("v1".into()), goarm: None,
+                url: "v1".into(),
+                sha256: "s".into(),
+                os: "linux".into(),
+                arch: "amd64".into(),
+                id: None,
+                goamd64: Some("v1".into()),
+                goarm: None,
             },
             OsArtifact {
-                url: "v3".into(), sha256: "s".into(), os: "linux".into(),
-                arch: "amd64".into(), id: None,
-                goamd64: Some("v3".into()), goarm: None,
+                url: "v3".into(),
+                sha256: "s".into(),
+                os: "linux".into(),
+                arch: "amd64".into(),
+                id: None,
+                goamd64: Some("v3".into()),
+                goarm: None,
             },
             OsArtifact {
-                url: "arm64".into(), sha256: "s".into(), os: "linux".into(),
-                arch: "arm64".into(), id: None,
-                goamd64: None, goarm: None,
+                url: "arm64".into(),
+                sha256: "s".into(),
+                os: "linux".into(),
+                arch: "arm64".into(),
+                id: None,
+                goamd64: None,
+                goarm: None,
             },
         ];
         let result = filter_by_goarch(artifacts, Some("v1"), None);
@@ -1539,9 +1661,13 @@ mod tests {
     fn test_filter_by_goarch_amd64_no_metadata_passes() {
         // Artifacts without goamd64 metadata pass through (backward compat).
         let artifacts = vec![OsArtifact {
-            url: "u1".into(), sha256: "s".into(), os: "linux".into(),
-            arch: "amd64".into(), id: None,
-            goamd64: None, goarm: None,
+            url: "u1".into(),
+            sha256: "s".into(),
+            os: "linux".into(),
+            arch: "amd64".into(),
+            id: None,
+            goamd64: None,
+            goarm: None,
         }];
         let result = filter_by_goarch(artifacts, Some("v1"), None);
         assert_eq!(result.len(), 1);
@@ -1551,14 +1677,22 @@ mod tests {
     fn test_filter_by_goarch_arm_filter() {
         let artifacts = vec![
             OsArtifact {
-                url: "arm6".into(), sha256: "s".into(), os: "linux".into(),
-                arch: "armv6".into(), id: None,
-                goamd64: None, goarm: Some("6".into()),
+                url: "arm6".into(),
+                sha256: "s".into(),
+                os: "linux".into(),
+                arch: "armv6".into(),
+                id: None,
+                goamd64: None,
+                goarm: Some("6".into()),
             },
             OsArtifact {
-                url: "arm7".into(), sha256: "s".into(), os: "linux".into(),
-                arch: "armv7".into(), id: None,
-                goamd64: None, goarm: Some("7".into()),
+                url: "arm7".into(),
+                sha256: "s".into(),
+                os: "linux".into(),
+                arch: "armv7".into(),
+                id: None,
+                goamd64: None,
+                goarm: Some("7".into()),
             },
         ];
         let result = filter_by_goarch(artifacts, None, Some("7"));
@@ -1570,24 +1704,40 @@ mod tests {
     fn test_filter_by_goarch_combined() {
         let artifacts = vec![
             OsArtifact {
-                url: "amd64-v1".into(), sha256: "s".into(), os: "linux".into(),
-                arch: "amd64".into(), id: None,
-                goamd64: Some("v1".into()), goarm: None,
+                url: "amd64-v1".into(),
+                sha256: "s".into(),
+                os: "linux".into(),
+                arch: "amd64".into(),
+                id: None,
+                goamd64: Some("v1".into()),
+                goarm: None,
             },
             OsArtifact {
-                url: "amd64-v3".into(), sha256: "s".into(), os: "linux".into(),
-                arch: "amd64".into(), id: None,
-                goamd64: Some("v3".into()), goarm: None,
+                url: "amd64-v3".into(),
+                sha256: "s".into(),
+                os: "linux".into(),
+                arch: "amd64".into(),
+                id: None,
+                goamd64: Some("v3".into()),
+                goarm: None,
             },
             OsArtifact {
-                url: "arm6".into(), sha256: "s".into(), os: "linux".into(),
-                arch: "armv6".into(), id: None,
-                goamd64: None, goarm: Some("6".into()),
+                url: "arm6".into(),
+                sha256: "s".into(),
+                os: "linux".into(),
+                arch: "armv6".into(),
+                id: None,
+                goamd64: None,
+                goarm: Some("6".into()),
             },
             OsArtifact {
-                url: "arm7".into(), sha256: "s".into(), os: "linux".into(),
-                arch: "armv7".into(), id: None,
-                goamd64: None, goarm: Some("7".into()),
+                url: "arm7".into(),
+                sha256: "s".into(),
+                os: "linux".into(),
+                arch: "armv7".into(),
+                id: None,
+                goamd64: None,
+                goarm: Some("7".into()),
             },
         ];
         let result = filter_by_goarch(artifacts, Some("v1"), Some("7"));

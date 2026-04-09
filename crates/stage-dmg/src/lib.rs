@@ -368,11 +368,15 @@ impl Stage for DmgStage {
 
                     // Process templated_extra_files: render and copy to staging dir
                     if let Some(ref tpl_specs) = dmg_cfg.templated_extra_files
-                        && !tpl_specs.is_empty() {
-                            anodize_core::templated_files::process_templated_extra_files(
-                                tpl_specs, ctx, staging_dir, "dmg",
-                            )?;
-                        }
+                        && !tpl_specs.is_empty()
+                    {
+                        anodize_core::templated_files::process_templated_extra_files(
+                            tpl_specs,
+                            ctx,
+                            staging_dir,
+                            "dmg",
+                        )?;
+                    }
 
                     // Apply mod_timestamp if set
                     if let Some(ts) = &dmg_cfg.mod_timestamp {
@@ -873,7 +877,10 @@ crates:
         assert_eq!(extras[1].glob(), "LICENSE");
         assert_eq!(dmg.replace, Some(true));
         assert_eq!(dmg.mod_timestamp.as_deref(), Some("{{ .CommitTimestamp }}"));
-        assert_eq!(dmg.disable, Some(anodize_core::config::StringOrBool::Bool(false)));
+        assert_eq!(
+            dmg.disable,
+            Some(anodize_core::config::StringOrBool::Bool(false))
+        );
     }
 
     #[test]
@@ -950,7 +957,9 @@ crates:
         fs::write(&extra_path, b"readme content").unwrap();
 
         let dmg_cfg = DmgConfig {
-            extra_files: Some(vec![anodize_core::config::ExtraFileSpec::Glob(extra_path.to_string_lossy().into_owned())]),
+            extra_files: Some(vec![anodize_core::config::ExtraFileSpec::Glob(
+                extra_path.to_string_lossy().into_owned(),
+            )]),
             ..Default::default()
         };
 

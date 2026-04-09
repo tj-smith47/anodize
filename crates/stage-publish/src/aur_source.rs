@@ -24,12 +24,12 @@ fn publish_aur_source_entry(
         .unwrap_or_else(|| "0.0.0".to_string())
         .replace('-', "_");
 
-    let raw_name = cfg
-        .name
-        .as_deref()
-        .unwrap_or(default_name);
+    let raw_name = cfg.name.as_deref().unwrap_or(default_name);
     let pkg_name = if strip_bin_suffix {
-        raw_name.strip_suffix("-bin").unwrap_or(raw_name).to_string()
+        raw_name
+            .strip_suffix("-bin")
+            .unwrap_or(raw_name)
+            .to_string()
     } else {
         raw_name.to_string()
     };
@@ -38,18 +38,10 @@ fn publish_aur_source_entry(
     let homepage = cfg.homepage.as_deref().unwrap_or("");
     let license = cfg.license.as_deref().unwrap_or("MIT");
 
-    let pkgrel: u32 = cfg
-        .rel
-        .as_deref()
-        .and_then(|r| r.parse().ok())
-        .unwrap_or(1);
+    let pkgrel: u32 = cfg.rel.as_deref().and_then(|r| r.parse().ok()).unwrap_or(1);
 
     // Source URL — use url_template or default release URL
-    let tag = ctx
-        .template_vars()
-        .get("Tag")
-        .cloned()
-        .unwrap_or_default();
+    let tag = ctx.template_vars().get("Tag").cloned().unwrap_or_default();
 
     let source_url = if let Some(ref tmpl) = cfg.url_template {
         ctx.render_template(tmpl)
@@ -85,9 +77,7 @@ fn publish_aur_source_entry(
                 label
             ));
         }
-        format!(
-            "https://github.com/{owner}/{project}/archive/refs/tags/{tag}.tar.gz",
-        )
+        format!("https://github.com/{owner}/{project}/archive/refs/tags/{tag}.tar.gz",)
     };
 
     let maintainers = cfg.maintainers.clone().unwrap_or_default();
@@ -232,16 +222,12 @@ fn publish_aur_source_entry(
             "package",
         );
         let commit_opts = util::resolve_commit_opts(cfg.commit_author.as_ref(), None, None);
-        util::commit_and_push_with_opts(
-            repo_path,
-            &["."],
-            &commit_msg,
-            None,
-            label,
-            &commit_opts,
-        )?;
+        util::commit_and_push_with_opts(repo_path, &["."], &commit_msg, None, label, &commit_opts)?;
 
-        log.status(&format!("{}: package '{}' pushed to {}", label, pkg_name, git_url));
+        log.status(&format!(
+            "{}: package '{}' pushed to {}",
+            label, pkg_name, git_url
+        ));
     }
 
     log.status(&format!("{}: published '{}'", label, pkg_name));
@@ -261,20 +247,31 @@ pub fn publish_to_aur_source(ctx: &mut Context, crate_name: &str, log: &StageLog
         .as_ref()
         .and_then(|p| p.aur_source.as_ref())
         .ok_or_else(|| {
-            anyhow::anyhow!("aur_source: no aur_source config for crate '{}'", crate_name)
+            anyhow::anyhow!(
+                "aur_source: no aur_source config for crate '{}'",
+                crate_name
+            )
         })?
         .clone();
 
     if let Some(ref d) = publish_cfg.disable
-        && d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
-            log.status(&format!("aur_source: skipping disabled config for crate '{}'", crate_name));
-            return Ok(());
-        }
+        && d.is_disabled(|tmpl| ctx.render_template(tmpl))
+    {
+        log.status(&format!(
+            "aur_source: skipping disabled config for crate '{}'",
+            crate_name
+        ));
+        return Ok(());
+    }
     if let Some(ref skip) = publish_cfg.skip_upload
-        && skip.is_disabled(|tmpl| ctx.render_template(tmpl)) {
-            log.status(&format!("aur_source: skipping upload for crate '{}' (skip_upload=true)", crate_name));
-            return Ok(());
-        }
+        && skip.is_disabled(|tmpl| ctx.render_template(tmpl))
+    {
+        log.status(&format!(
+            "aur_source: skipping upload for crate '{}' (skip_upload=true)",
+            crate_name
+        ));
+        return Ok(());
+    }
 
     publish_aur_source_entry(ctx, &publish_cfg, crate_name, false, "aur_source", log)
 }
@@ -300,15 +297,17 @@ pub fn publish_top_level_aur_sources(ctx: &mut Context, log: &StageLogger) -> Re
         let label = format!("aur_sources[{}]", i);
 
         if let Some(ref d) = cfg.disable
-            && d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
-                log.status(&format!("{}: skipping disabled entry", label));
-                continue;
-            }
+            && d.is_disabled(|tmpl| ctx.render_template(tmpl))
+        {
+            log.status(&format!("{}: skipping disabled entry", label));
+            continue;
+        }
         if let Some(ref skip) = cfg.skip_upload
-            && skip.is_disabled(|tmpl| ctx.render_template(tmpl)) {
-                log.status(&format!("{}: skipping upload (skip_upload=true)", label));
-                continue;
-            }
+            && skip.is_disabled(|tmpl| ctx.render_template(tmpl))
+        {
+            log.status(&format!("{}: skipping upload (skip_upload=true)", label));
+            continue;
+        }
 
         publish_aur_source_entry(ctx, cfg, &project_name, true, &label, log)?;
     }

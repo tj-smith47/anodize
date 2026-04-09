@@ -124,7 +124,9 @@ impl Stage for FlatpakStage {
             .get("Version")
             .cloned()
             .unwrap_or_else(|| {
-                log.warn("no Version template variable set; using 0.0.0 for Flatpak bundle version");
+                log.warn(
+                    "no Version template variable set; using 0.0.0 for Flatpak bundle version",
+                );
                 "0.0.0".to_string()
             });
 
@@ -166,10 +168,7 @@ impl Stage for FlatpakStage {
                     .as_deref()
                     .filter(|s| !s.is_empty())
                     .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "flatpak: app_id is required for crate '{}'",
-                            krate.name
-                        )
+                        anyhow::anyhow!("flatpak: app_id is required for crate '{}'", krate.name)
                     })?;
 
                 let runtime = flatpak_cfg
@@ -177,10 +176,7 @@ impl Stage for FlatpakStage {
                     .as_deref()
                     .filter(|s| !s.is_empty())
                     .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "flatpak: runtime is required for crate '{}'",
-                            krate.name
-                        )
+                        anyhow::anyhow!("flatpak: runtime is required for crate '{}'", krate.name)
                     })?;
 
                 let runtime_version = flatpak_cfg
@@ -199,10 +195,7 @@ impl Stage for FlatpakStage {
                     .as_deref()
                     .filter(|s| !s.is_empty())
                     .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "flatpak: sdk is required for crate '{}'",
-                            krate.name
-                        )
+                        anyhow::anyhow!("flatpak: sdk is required for crate '{}'", krate.name)
                     })?;
 
                 // Filter by build IDs if specified
@@ -245,11 +238,7 @@ impl Stage for FlatpakStage {
                     .filter_map(|b| {
                         let (_, arch) = os_arch_from_target(b.target.as_deref());
                         arch_to_flatpak(&arch).map(|flatpak_arch| {
-                            (
-                                b.target.clone(),
-                                b.path.clone(),
-                                flatpak_arch.to_string(),
-                            )
+                            (b.target.clone(), b.path.clone(), flatpak_arch.to_string())
                         })
                     })
                     .collect();
@@ -297,10 +286,7 @@ impl Stage for FlatpakStage {
                     let output_path = output_dir.join(&output_name);
 
                     // Build work happens in a separate subdirectory
-                    let work_dir = dist
-                        .join("flatpak")
-                        .join(&krate.name)
-                        .join(flatpak_arch);
+                    let work_dir = dist.join("flatpak").join(&krate.name).join(flatpak_arch);
 
                     // Derive the binary name from the file path
                     let binary_name = binary_path
@@ -309,16 +295,10 @@ impl Stage for FlatpakStage {
                         .unwrap_or(&krate.name);
 
                     // Determine command: config command or binary name
-                    let command = flatpak_cfg
-                        .command
-                        .as_deref()
-                        .unwrap_or(binary_name);
+                    let command = flatpak_cfg.command.as_deref().unwrap_or(binary_name);
 
                     // Build finish_args
-                    let finish_args = flatpak_cfg
-                        .finish_args
-                        .clone()
-                        .unwrap_or_default();
+                    let finish_args = flatpak_cfg.finish_args.clone().unwrap_or_default();
 
                     // Resolve extra_files globs to concrete file names
                     let mut extra_file_names: Vec<String> = Vec::new();
@@ -407,10 +387,8 @@ impl Stage for FlatpakStage {
                             target: target.clone(),
                             crate_name: krate.name.clone(),
                             metadata: {
-                                let mut m = HashMap::from([(
-                                    "format".to_string(),
-                                    "flatpak".to_string(),
-                                )]);
+                                let mut m =
+                                    HashMap::from([("format".to_string(), "flatpak".to_string())]);
                                 if let Some(id) = &flatpak_cfg.id {
                                     m.insert("id".to_string(), id.clone());
                                 }
@@ -512,7 +490,8 @@ impl Stage for FlatpakStage {
 
                     // Apply mod_timestamp if set (template-rendered, to work dir contents)
                     if let Some(ref ts_tmpl) = flatpak_cfg.mod_timestamp {
-                        let ts = ctx.render_template(ts_tmpl)
+                        let ts = ctx
+                            .render_template(ts_tmpl)
                             .with_context(|| "flatpak: render mod_timestamp template")?;
                         anodize_core::util::apply_mod_timestamp(&work_dir, &ts, &log)?;
                     }
@@ -572,7 +551,8 @@ impl Stage for FlatpakStage {
                     if let Some(ref ts_tmpl) = flatpak_cfg.mod_timestamp
                         && output_path.exists()
                     {
-                        let ts = ctx.render_template(ts_tmpl)
+                        let ts = ctx
+                            .render_template(ts_tmpl)
                             .with_context(|| "flatpak: render mod_timestamp template for output")?;
                         let mtime = anodize_core::util::parse_mod_timestamp(&ts)?;
                         anodize_core::util::set_file_mtime(&output_path, mtime)?;
@@ -594,10 +574,8 @@ impl Stage for FlatpakStage {
                         target: target.clone(),
                         crate_name: krate.name.clone(),
                         metadata: {
-                            let mut m = HashMap::from([(
-                                "format".to_string(),
-                                "flatpak".to_string(),
-                            )]);
+                            let mut m =
+                                HashMap::from([("format".to_string(), "flatpak".to_string())]);
                             if let Some(id) = &flatpak_cfg.id {
                                 m.insert("id".to_string(), id.clone());
                             }
@@ -608,13 +586,11 @@ impl Stage for FlatpakStage {
 
                     // If replace is set, mark archives for this crate+target for removal
                     if flatpak_cfg.replace.unwrap_or(false) {
-                        archives_to_remove.extend(
-                            anodize_core::util::collect_replace_archives(
-                                &ctx.artifacts,
-                                &krate.name,
-                                target.as_deref(),
-                            ),
-                        );
+                        archives_to_remove.extend(anodize_core::util::collect_replace_archives(
+                            &ctx.artifacts,
+                            &krate.name,
+                            target.as_deref(),
+                        ));
                     }
                 }
             }
@@ -682,9 +658,7 @@ mod tests {
             modules: vec![ManifestModule {
                 name: "org.example.MyApp".to_string(),
                 buildsystem: "simple".to_string(),
-                build_commands: vec![
-                    "install -Dm755 myapp /app/bin/myapp".to_string(),
-                ],
+                build_commands: vec!["install -Dm755 myapp /app/bin/myapp".to_string()],
                 sources: vec![ManifestSource {
                     type_: "file".to_string(),
                     path: "myapp".to_string(),
@@ -1172,10 +1146,7 @@ finish_args:
         stage.run(&mut ctx).unwrap();
 
         let flatpaks = ctx.artifacts.by_kind(ArtifactKind::Flatpak);
-        assert!(
-            flatpaks.is_empty(),
-            "should skip non-Linux binaries"
-        );
+        assert!(flatpaks.is_empty(), "should skip non-Linux binaries");
     }
 
     // -----------------------------------------------------------------------
@@ -1322,10 +1293,7 @@ finish_args:
         assert_eq!(flatpaks.len(), 1);
         assert_eq!(flatpaks[0].crate_name, "myapp");
         assert_eq!(flatpaks[0].metadata.get("format").unwrap(), "flatpak");
-        assert_eq!(
-            flatpaks[0].metadata.get("id").unwrap(),
-            "my-flatpak"
-        );
+        assert_eq!(flatpaks[0].metadata.get("id").unwrap(), "my-flatpak");
         assert_eq!(
             flatpaks[0].target.as_deref(),
             Some("x86_64-unknown-linux-gnu")

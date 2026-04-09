@@ -194,7 +194,11 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         log.status(&format!(
             "scoop: skipping upload for '{}' (skip_upload={})",
             crate_name,
-            scoop_cfg.skip_upload.as_ref().map(|v| v.as_str()).unwrap_or("")
+            scoop_cfg
+                .skip_upload
+                .as_ref()
+                .map(|v| v.as_str())
+                .unwrap_or("")
         ));
         return Ok(());
     }
@@ -271,9 +275,10 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
             let target = a.target.as_deref().unwrap_or("");
             let (_, arch) = anodize_core::target::map_target(target);
             if arch == "amd64"
-                && let Some(want) = goamd64 {
-                    return a.metadata.get("goamd64").is_none_or(|v| v == want);
-                }
+                && let Some(want) = goamd64
+            {
+                return a.metadata.get("goamd64").is_none_or(|v| v == want);
+            }
             true
         })
         .map(|a| {
@@ -437,7 +442,12 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
     // GoReleaser default: "Scoop update for {{ .ProjectName }} version {{ .Tag }}"
     let scoop_default = "Scoop update for {{ name }} version {{ version }}";
     let commit_msg = crate::homebrew::render_commit_msg(
-        Some(scoop_cfg.commit_msg_template.as_deref().unwrap_or(scoop_default)),
+        Some(
+            scoop_cfg
+                .commit_msg_template
+                .as_deref()
+                .unwrap_or(scoop_default),
+        ),
         manifest_name,
         &version,
         "manifest",
@@ -1173,7 +1183,9 @@ mod tests {
                             owner: "myorg".to_string(),
                             name: "scoop-bucket".to_string(),
                         }),
-                        skip_upload: Some(anodize_core::config::StringOrBool::String("true".to_string())),
+                        skip_upload: Some(anodize_core::config::StringOrBool::String(
+                            "true".to_string(),
+                        )),
                         ..Default::default()
                     }),
                     ..Default::default()
@@ -1205,7 +1217,9 @@ mod tests {
                             owner: "myorg".to_string(),
                             name: "scoop-bucket".to_string(),
                         }),
-                        skip_upload: Some(anodize_core::config::StringOrBool::String("auto".to_string())),
+                        skip_upload: Some(anodize_core::config::StringOrBool::String(
+                            "auto".to_string(),
+                        )),
                         ..Default::default()
                     }),
                     ..Default::default()
@@ -1293,7 +1307,8 @@ mod tests {
     fn test_scoop_commit_msg_default() {
         // GoReleaser default: "Scoop update for {{ .ProjectName }} version {{ .Tag }}"
         let scoop_default = "Scoop update for {{ name }} version {{ version }}";
-        let msg = crate::homebrew::render_commit_msg(Some(scoop_default), "mytool", "1.2.3", "manifest");
+        let msg =
+            crate::homebrew::render_commit_msg(Some(scoop_default), "mytool", "1.2.3", "manifest");
         assert_eq!(msg, "Scoop update for mytool version 1.2.3");
     }
 

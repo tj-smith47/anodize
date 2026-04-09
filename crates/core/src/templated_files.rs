@@ -6,7 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context as _};
+use anyhow::{Context as _, bail};
 
 use crate::config::TemplatedExtraFile;
 use crate::context::Context;
@@ -33,9 +33,7 @@ pub fn process_templated_extra_files_with_vars(
     output_dir: &Path,
     stage_name: &str,
 ) -> anyhow::Result<Vec<(PathBuf, String)>> {
-    let render_fn = |tmpl: &str| -> anyhow::Result<String> {
-        crate::template::render(tmpl, vars)
-    };
+    let render_fn = |tmpl: &str| -> anyhow::Result<String> { crate::template::render(tmpl, vars) };
 
     let mut results = Vec::new();
     for spec in specs {
@@ -55,9 +53,7 @@ pub fn process_templated_extra_files_with_vars(
                 .unwrap_or_default()
                 .to_string_lossy()
                 .to_string();
-            name.strip_suffix(".tpl")
-                .unwrap_or(&name)
-                .to_string()
+            name.strip_suffix(".tpl").unwrap_or(&name).to_string()
         };
 
         // Reject path traversal: dst must be a relative path with no ".." components
@@ -87,11 +83,8 @@ pub fn process_templated_extra_files_with_vars(
         if let Some(mode_str) = &spec.mode {
             if let Some(mode_val) = crate::config::parse_octal_mode(mode_str) {
                 use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(
-                    &output_path,
-                    std::fs::Permissions::from_mode(mode_val),
-                )
-                .with_context(|| {
+                std::fs::set_permissions(&output_path, std::fs::Permissions::from_mode(mode_val))
+                    .with_context(|| {
                     format!("{}: set mode on '{}'", stage_name, output_path.display())
                 })?;
             } else {
@@ -250,7 +243,10 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains(".."), "error should mention '..'");
-        assert!(err.contains("relative path"), "error should explain constraint");
+        assert!(
+            err.contains("relative path"),
+            "error should explain constraint"
+        );
     }
 
     #[test]
@@ -270,7 +266,10 @@ mod tests {
         let result = process_templated_extra_files(&specs, &ctx, &out_dir, "test");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("absolute"), "error should mention absolute paths");
+        assert!(
+            err.contains("absolute"),
+            "error should mention absolute paths"
+        );
     }
 
     #[test]
@@ -279,9 +278,7 @@ mod tests {
         let src = tmp.path().join("notes.tpl");
         std::fs::write(&src, "Release notes").unwrap();
 
-        let ctx = TestContextBuilder::new()
-            .project_name("myapp")
-            .build();
+        let ctx = TestContextBuilder::new().project_name("myapp").build();
         let out_dir = tmp.path().join("output");
 
         let specs = vec![TemplatedExtraFile {

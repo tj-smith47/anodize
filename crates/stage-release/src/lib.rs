@@ -45,11 +45,7 @@ fn percent_encode_path(s: &str) -> String {
 /// GoReleaser parity (github.go:checkRateLimit): proactively check GitHub API
 /// rate limits before making requests. If remaining calls are below the
 /// threshold, sleep until the reset time.
-async fn check_github_rate_limit(
-    client: &reqwest::Client,
-    token: &str,
-    threshold: u64,
-) {
+async fn check_github_rate_limit(client: &reqwest::Client, token: &str, threshold: u64) {
     let url = "https://api.github.com/rate_limit";
     let resp = match client
         .get(url)
@@ -194,11 +190,12 @@ async fn resolve_github_username(
     // 3. Check search rate limit before calling the API (30 req/min limit).
     //    Skip the search if we're running low on quota.
     if let Some((client, token)) = rate_limit_client
-        && !check_github_search_rate_limit(client, token, 5).await {
-            // Search rate limit too low — skip and cache None.
-            cache.insert(email.to_string(), None);
-            return None;
-        }
+        && !check_github_search_rate_limit(client, token, 5).await
+    {
+        // Search rate limit too low — skip and cache None.
+        cache.insert(email.to_string(), None);
+        return None;
+    }
 
     let query = format!("{}+in:email", email);
     let route = format!("/search/users?q={}&per_page=1", percent_encode_path(&query));
@@ -317,10 +314,7 @@ where
             Err(err) => {
                 last_err = Some(err);
                 if attempt < MAX_ATTEMPTS {
-                    let delay = std::cmp::min(
-                        INITIAL_DELAY * 2u32.pow(attempt - 1),
-                        MAX_DELAY,
-                    );
+                    let delay = std::cmp::min(INITIAL_DELAY * 2u32.pow(attempt - 1), MAX_DELAY);
                     tokio::time::sleep(delay).await;
                 }
             }
@@ -707,12 +701,8 @@ pub(crate) fn resolve_release_tag(
             )
         })
     } else {
-        ctx.render_template(tag_template).with_context(|| {
-            format!(
-                "release: render tag_template for crate '{}'",
-                crate_name
-            )
-        })
+        ctx.render_template(tag_template)
+            .with_context(|| format!("release: render tag_template for crate '{}'", crate_name))
     }
 }
 
@@ -746,8 +736,7 @@ fn build_octocrab_client(
         build_octocrab_client_insecure(token, github_urls)
     } else {
         // Normal path: use octocrab's built-in hyper client.
-        let mut builder = octocrab::Octocrab::builder()
-            .personal_token(token.to_owned());
+        let mut builder = octocrab::Octocrab::builder().personal_token(token.to_owned());
 
         if let Some(urls) = github_urls {
             if let Some(api) = &urls.api {
@@ -762,9 +751,7 @@ fn build_octocrab_client(
             }
         }
 
-        builder
-            .build()
-            .context("release: build octocrab client")
+        builder.build().context("release: build octocrab client")
     }
 }
 
@@ -795,14 +782,11 @@ fn build_octocrab_client_insecure(
         .enable_http1()
         .build();
 
-    let client = hyper_util::client::legacy::Client::builder(
-        hyper_util::rt::TokioExecutor::new(),
-    )
-    .build(connector);
+    let client = hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+        .build(connector);
 
     // Parse URIs the same way octocrab does.
-    let base_uri: http::Uri = if let Some(api) = github_urls.as_ref().and_then(|u| u.api.as_ref())
-    {
+    let base_uri: http::Uri = if let Some(api) = github_urls.as_ref().and_then(|u| u.api.as_ref()) {
         api.parse()
             .context("release: invalid github_urls.api URL")?
     } else {
@@ -1038,10 +1022,7 @@ impl Stage for ReleaseStage {
             )?;
 
             // Resolve release name (GoReleaser defaults to "{{.Tag}}").
-            let name_tmpl = release_cfg
-                .name_template
-                .as_deref()
-                .unwrap_or("{{ Tag }}");
+            let name_tmpl = release_cfg.name_template.as_deref().unwrap_or("{{ Tag }}");
             let release_name = ctx.render_template(name_tmpl).with_context(|| {
                 format!(
                     "release: render name_template for crate '{}'",
@@ -1171,15 +1152,16 @@ impl Stage for ReleaseStage {
             // release configs use the same dst name, later writes will overwrite earlier
             // ones. Users should ensure dst names are unique across configs.
             if let Some(ref tpl_specs) = release_cfg.templated_extra_files
-                && !tpl_specs.is_empty() {
-                    let dist_dir = &ctx.config.dist;
-                    let rendered = anodize_core::templated_files::process_templated_extra_files(
-                        tpl_specs, ctx, dist_dir, "release",
-                    )?;
-                    for (path, dst_name) in rendered {
-                        artifact_entries.push((path, Some(dst_name)));
-                    }
+                && !tpl_specs.is_empty()
+            {
+                let dist_dir = &ctx.config.dist;
+                let rendered = anodize_core::templated_files::process_templated_extra_files(
+                    tpl_specs, ctx, dist_dir, "release",
+                )?;
+                for (path, dst_name) in rendered {
+                    artifact_entries.push((path, Some(dst_name)));
                 }
+            }
 
             // include_meta: upload metadata.json and artifacts.json from dist dir.
             if include_meta {
@@ -1216,7 +1198,10 @@ impl Stage for ReleaseStage {
                                 log.status(&format!("(dry-run)   github_urls.upload = {}", upload));
                             }
                             if let Some(download) = &urls.download {
-                                log.status(&format!("(dry-run)   github_urls.download = {}", download));
+                                log.status(&format!(
+                                    "(dry-run)   github_urls.download = {}",
+                                    download
+                                ));
                             }
                             if urls.skip_tls_verify.unwrap_or(false) {
                                 log.status("(dry-run)   github_urls.skip_tls_verify = true");
@@ -1229,7 +1214,10 @@ impl Stage for ReleaseStage {
                                 log.status(&format!("(dry-run)   gitlab_urls.api = {}", api));
                             }
                             if let Some(download) = &urls.download {
-                                log.status(&format!("(dry-run)   gitlab_urls.download = {}", download));
+                                log.status(&format!(
+                                    "(dry-run)   gitlab_urls.download = {}",
+                                    download
+                                ));
                             }
                             if urls.skip_tls_verify.unwrap_or(false) {
                                 log.status("(dry-run)   gitlab_urls.skip_tls_verify = true");
@@ -1248,7 +1236,10 @@ impl Stage for ReleaseStage {
                                 log.status(&format!("(dry-run)   gitea_urls.api = {}", api));
                             }
                             if let Some(download) = &urls.download {
-                                log.status(&format!("(dry-run)   gitea_urls.download = {}", download));
+                                log.status(&format!(
+                                    "(dry-run)   gitea_urls.download = {}",
+                                    download
+                                ));
                             }
                             if urls.skip_tls_verify.unwrap_or(false) {
                                 log.status("(dry-run)   gitea_urls.skip_tls_verify = true");
@@ -1283,23 +1274,29 @@ impl Stage for ReleaseStage {
                 // Even in dry-run, populate artifact download URLs so publishers
                 // can generate manifests with correct URLs.
                 let dry_dl_base = match ctx.token_type {
-                    ScmTokenType::GitHub => {
-                        ctx.config.github_urls.as_ref()
-                            .and_then(|u| u.download.clone())
-                            .unwrap_or_else(|| "https://github.com".to_string())
-                    }
-                    ScmTokenType::GitLab => {
-                        ctx.config.gitlab_urls.as_ref()
-                            .and_then(|u| u.download.clone())
-                            .unwrap_or_else(|| "https://gitlab.com".to_string())
-                    }
+                    ScmTokenType::GitHub => ctx
+                        .config
+                        .github_urls
+                        .as_ref()
+                        .and_then(|u| u.download.clone())
+                        .unwrap_or_else(|| "https://github.com".to_string()),
+                    ScmTokenType::GitLab => ctx
+                        .config
+                        .gitlab_urls
+                        .as_ref()
+                        .and_then(|u| u.download.clone())
+                        .unwrap_or_else(|| "https://gitlab.com".to_string()),
                     ScmTokenType::Gitea => {
-                        ctx.config.gitea_urls.as_ref()
+                        ctx.config
+                            .gitea_urls
+                            .as_ref()
                             .and_then(|u| u.download.clone())
                             .unwrap_or_else(|| {
                                 // Derive download URL from API URL by stripping
                                 // /api/v1 suffix (GoReleaser defaults.go:29-36).
-                                ctx.config.gitea_urls.as_ref()
+                                ctx.config
+                                    .gitea_urls
+                                    .as_ref()
                                     .and_then(|u| u.api.as_deref())
                                     .map(|api| {
                                         api.trim_end_matches('/')
@@ -1311,17 +1308,35 @@ impl Stage for ReleaseStage {
                     }
                 };
                 let dry_owner = match ctx.token_type {
-                    ScmTokenType::GitLab => release_cfg.gitlab.as_ref().or(release_cfg.github.as_ref()),
-                    ScmTokenType::Gitea => release_cfg.gitea.as_ref().or(release_cfg.github.as_ref()),
+                    ScmTokenType::GitLab => {
+                        release_cfg.gitlab.as_ref().or(release_cfg.github.as_ref())
+                    }
+                    ScmTokenType::Gitea => {
+                        release_cfg.gitea.as_ref().or(release_cfg.github.as_ref())
+                    }
                     ScmTokenType::GitHub => release_cfg.github.as_ref(),
-                }.map(|r| r.owner.as_str()).unwrap_or("");
+                }
+                .map(|r| r.owner.as_str())
+                .unwrap_or("");
                 let dry_repo = match ctx.token_type {
-                    ScmTokenType::GitLab => release_cfg.gitlab.as_ref().or(release_cfg.github.as_ref()),
-                    ScmTokenType::Gitea => release_cfg.gitea.as_ref().or(release_cfg.github.as_ref()),
+                    ScmTokenType::GitLab => {
+                        release_cfg.gitlab.as_ref().or(release_cfg.github.as_ref())
+                    }
+                    ScmTokenType::Gitea => {
+                        release_cfg.gitea.as_ref().or(release_cfg.github.as_ref())
+                    }
                     ScmTokenType::GitHub => release_cfg.github.as_ref(),
-                }.map(|r| r.name.as_str()).unwrap_or("");
+                }
+                .map(|r| r.name.as_str())
+                .unwrap_or("");
                 populate_artifact_download_urls(
-                    ctx, &crate_name, ctx.token_type, &dry_dl_base, dry_owner, dry_repo, &tag,
+                    ctx,
+                    &crate_name,
+                    ctx.token_type,
+                    &dry_dl_base,
+                    dry_owner,
+                    dry_repo,
+                    &tag,
                 );
 
                 continue;
@@ -1333,319 +1348,333 @@ impl Stage for ReleaseStage {
             // Each backend arm returns (release_html_url, download_base, owner, repo)
             // so we can populate artifact metadata["url"] after the match.
             let (release_url, download_base, repo_owner, repo_name) = match ctx.token_type {
+                // ===============================================================
+                // GitLab backend
+                // ===============================================================
+                ScmTokenType::GitLab => {
+                    // Resolve the repo config: prefer release.gitlab, fall back to release.github.
+                    let repo_cfg = match release_cfg.gitlab.as_ref().or(release_cfg.github.as_ref())
+                    {
+                        Some(r) => r.clone(),
+                        None => {
+                            log.warn(&format!(
+                                "no gitlab config for crate '{}', skipping",
+                                crate_cfg.name
+                            ));
+                            continue;
+                        }
+                    };
 
-            // ===============================================================
-            // GitLab backend
-            // ===============================================================
-            ScmTokenType::GitLab => {
-                // Resolve the repo config: prefer release.gitlab, fall back to release.github.
-                let repo_cfg = match release_cfg.gitlab.as_ref().or(release_cfg.github.as_ref()) {
-                    Some(r) => r.clone(),
-                    None => {
-                        log.warn(&format!(
-                            "no gitlab config for crate '{}', skipping",
-                            crate_cfg.name
-                        ));
-                        continue;
-                    }
-                };
-
-                let token_str = match &token {
-                    Some(t) => t.clone(),
-                    None => {
-                        bail!(
-                            "release: no GitLab token available (set GITLAB_TOKEN, or pass --token)"
-                        );
-                    }
-                };
-
-                let gitlab_urls = ctx.config.gitlab_urls.clone().unwrap_or_default();
-                let api_url = gitlab_urls
-                    .api
-                    .unwrap_or_else(|| "https://gitlab.com/api/v4".to_string());
-                let download_url = gitlab_urls
-                    .download
-                    .unwrap_or_else(|| "https://gitlab.com".to_string());
-                let skip_tls = gitlab_urls.skip_tls_verify.unwrap_or(false);
-                let use_job_token = gitlab_urls.use_job_token.unwrap_or(false);
-                let use_pkg_registry = gitlab_urls.use_package_registry.unwrap_or(false) || use_job_token;
-
-                let project_id = gitlab::gitlab_project_id(&repo_cfg.owner, &repo_cfg.name);
-                let commit_sha = ctx
-                    .git_info
-                    .as_ref()
-                    .map(|g| g.commit.clone())
-                    .unwrap_or_default();
-
-                let project_name_for_pkg = ctx.config.project_name.clone();
-                let version_for_pkg = ctx
-                    .git_info
-                    .as_ref()
-                    .map(|g| {
-                        // Strip leading 'v' for package version (e.g. "v1.2.3" -> "1.2.3").
-                        g.tag.strip_prefix('v').unwrap_or(&g.tag).to_string()
-                    })
-                    .unwrap_or_else(|| "0.0.0".to_string());
-
-                // GitLab does not support draft releases — warn if draft options are set.
-                if replace_existing_draft {
-                    log.warn("replace_existing_draft has no effect on GitLab (draft releases are not supported)");
-                }
-                if use_existing_draft {
-                    log.warn("use_existing_draft has no effect on GitLab (draft releases are not supported)");
-                }
-
-                let url = rt.block_on(async {
-                    let client = gitlab::build_gitlab_client(&token_str, skip_tls, use_job_token)?;
-
-                    // Create or update the release.
-                    gitlab::gitlab_create_release(
-                        &client,
-                        &api_url,
-                        &project_id,
-                        &tag,
-                        &release_name,
-                        &release_body,
-                        &commit_sha,
-                        &release_mode,
-                    )
-                    .await?;
-
-                    log.status(&format!(
-                        "created GitLab Release '{}' (tag={}) on {}",
-                        release_name, tag, project_id
-                    ));
-
-                    // Upload artifacts with bounded parallelism (matching GitHub path).
-                    if skip_upload {
-                        log.status("skip_upload is set, skipping artifact uploads");
-                    } else {
-                        let upload_parallelism = std::cmp::max(ctx.options.parallelism, 1);
-                        let semaphore = Arc::new(
-                            tokio::sync::Semaphore::new(upload_parallelism),
-                        );
-
-                        // Prepare the list of uploadable entries (error on missing files).
-                        let mut missing_files = Vec::new();
-                        let prepared_entries: Vec<(std::path::PathBuf, String)> = artifact_entries
-                            .iter()
-                            .filter_map(|(path, custom_name)| {
-                                if !path.exists() {
-                                    missing_files.push(path.display().to_string());
-                                    return None;
-                                }
-                                let file_name = if let Some(name) = custom_name {
-                                    name.clone()
-                                } else {
-                                    path.file_name()
-                                        .map(|n| n.to_string_lossy().into_owned())
-                                        .unwrap_or_else(|| "artifact".to_string())
-                                };
-                                Some((path.clone(), file_name))
-                            })
-                            .collect();
-
-                        if !missing_files.is_empty() {
-                            anyhow::bail!(
-                                "the following artifact files are missing:\n  {}",
-                                missing_files.join("\n  ")
+                    let token_str = match &token {
+                        Some(t) => t.clone(),
+                        None => {
+                            bail!(
+                                "release: no GitLab token available (set GITLAB_TOKEN, or pass --token)"
                             );
                         }
+                    };
 
-                        let client = Arc::new(client);
-                        let mut join_set = tokio::task::JoinSet::new();
+                    let gitlab_urls = ctx.config.gitlab_urls.clone().unwrap_or_default();
+                    let api_url = gitlab_urls
+                        .api
+                        .unwrap_or_else(|| "https://gitlab.com/api/v4".to_string());
+                    let download_url = gitlab_urls
+                        .download
+                        .unwrap_or_else(|| "https://gitlab.com".to_string());
+                    let skip_tls = gitlab_urls.skip_tls_verify.unwrap_or(false);
+                    let use_job_token = gitlab_urls.use_job_token.unwrap_or(false);
+                    let use_pkg_registry =
+                        gitlab_urls.use_package_registry.unwrap_or(false) || use_job_token;
 
-                        for (path, file_name) in prepared_entries {
-                            let sem = semaphore.clone();
-                            let client = client.clone();
-                            let api_url = api_url.clone();
-                            let project_id = project_id.clone();
-                            let tag = tag.clone();
-                            let project_name_for_pkg = project_name_for_pkg.clone();
-                            let version_for_pkg = version_for_pkg.clone();
-                            let download_url = download_url.clone();
+                    let project_id = gitlab::gitlab_project_id(&repo_cfg.owner, &repo_cfg.name);
+                    let commit_sha = ctx
+                        .git_info
+                        .as_ref()
+                        .map(|g| g.commit.clone())
+                        .unwrap_or_default();
 
-                            join_set.spawn(async move {
-                                let _permit = sem.acquire().await
-                                    .map_err(|e| anyhow::anyhow!("semaphore closed: {}", e))?;
+                    let project_name_for_pkg = ctx.config.project_name.clone();
+                    let version_for_pkg = ctx
+                        .git_info
+                        .as_ref()
+                        .map(|g| {
+                            // Strip leading 'v' for package version (e.g. "v1.2.3" -> "1.2.3").
+                            g.tag.strip_prefix('v').unwrap_or(&g.tag).to_string()
+                        })
+                        .unwrap_or_else(|| "0.0.0".to_string());
 
-                                let op_name = format!("gitlab: upload '{}'", file_name);
-                                retry_upload(&op_name, || {
-                                    gitlab::gitlab_upload_asset(
-                                        &client,
-                                        &api_url,
-                                        &project_id,
-                                        &tag,
-                                        &path,
-                                        &file_name,
-                                        &project_name_for_pkg,
-                                        &version_for_pkg,
-                                        use_pkg_registry,
-                                        &download_url,
-                                        replace_existing_artifacts,
-                                    )
-                                })
-                                .await
-                                .with_context(|| {
-                                    format!(
-                                        "release: upload artifact '{}' to GitLab release '{}'",
-                                        file_name, tag
-                                    )
-                                })?;
-
-                                Ok::<String, anyhow::Error>(file_name)
-                            });
-                        }
-
-                        while let Some(result) = join_set.join_next().await {
-                            let file_name = result
-                                .context("gitlab: upload task panicked")?
-                                .context("gitlab: upload task failed")?;
-                            log.verbose(&format!("uploaded artifact: {}", file_name));
-                        }
+                    // GitLab does not support draft releases — warn if draft options are set.
+                    if replace_existing_draft {
+                        log.warn("replace_existing_draft has no effect on GitLab (draft releases are not supported)");
+                    }
+                    if use_existing_draft {
+                        log.warn("use_existing_draft has no effect on GitLab (draft releases are not supported)");
                     }
 
-                    // GitLab does not support draft releases — publish is a no-op.
+                    let url = rt.block_on(async {
+                        let client =
+                            gitlab::build_gitlab_client(&token_str, skip_tls, use_job_token)?;
 
-                    let html_url = gitlab::gitlab_release_url(
-                        &download_url,
-                        &repo_cfg.owner,
-                        &repo_cfg.name,
-                        &tag,
-                    );
-                    Ok::<String, anyhow::Error>(html_url)
-                })?;
+                        // Create or update the release.
+                        gitlab::gitlab_create_release(
+                            &client,
+                            &api_url,
+                            &project_id,
+                            &tag,
+                            &release_name,
+                            &release_body,
+                            &commit_sha,
+                            &release_mode,
+                        )
+                        .await?;
 
-                (url, download_url, repo_cfg.owner.clone(), repo_cfg.name.clone())
-            }
-
-            // ===============================================================
-            // Gitea backend
-            // ===============================================================
-            ScmTokenType::Gitea => {
-                // Resolve the repo config: prefer release.gitea, fall back to release.github.
-                let repo_cfg = match release_cfg.gitea.as_ref().or(release_cfg.github.as_ref()) {
-                    Some(r) => r.clone(),
-                    None => {
-                        log.warn(&format!(
-                            "no gitea config for crate '{}', skipping",
-                            crate_cfg.name
+                        log.status(&format!(
+                            "created GitLab Release '{}' (tag={}) on {}",
+                            release_name, tag, project_id
                         ));
-                        continue;
-                    }
-                };
 
-                let token_str = match &token {
-                    Some(t) => t.clone(),
-                    None => {
-                        bail!(
-                            "release: no Gitea token available (set GITEA_TOKEN, or pass --token)"
+                        // Upload artifacts with bounded parallelism (matching GitHub path).
+                        if skip_upload {
+                            log.status("skip_upload is set, skipping artifact uploads");
+                        } else {
+                            let upload_parallelism = std::cmp::max(ctx.options.parallelism, 1);
+                            let semaphore =
+                                Arc::new(tokio::sync::Semaphore::new(upload_parallelism));
+
+                            // Prepare the list of uploadable entries (error on missing files).
+                            let mut missing_files = Vec::new();
+                            let prepared_entries: Vec<(std::path::PathBuf, String)> =
+                                artifact_entries
+                                    .iter()
+                                    .filter_map(|(path, custom_name)| {
+                                        if !path.exists() {
+                                            missing_files.push(path.display().to_string());
+                                            return None;
+                                        }
+                                        let file_name = if let Some(name) = custom_name {
+                                            name.clone()
+                                        } else {
+                                            path.file_name()
+                                                .map(|n| n.to_string_lossy().into_owned())
+                                                .unwrap_or_else(|| "artifact".to_string())
+                                        };
+                                        Some((path.clone(), file_name))
+                                    })
+                                    .collect();
+
+                            if !missing_files.is_empty() {
+                                anyhow::bail!(
+                                    "the following artifact files are missing:\n  {}",
+                                    missing_files.join("\n  ")
+                                );
+                            }
+
+                            let client = Arc::new(client);
+                            let mut join_set = tokio::task::JoinSet::new();
+
+                            for (path, file_name) in prepared_entries {
+                                let sem = semaphore.clone();
+                                let client = client.clone();
+                                let api_url = api_url.clone();
+                                let project_id = project_id.clone();
+                                let tag = tag.clone();
+                                let project_name_for_pkg = project_name_for_pkg.clone();
+                                let version_for_pkg = version_for_pkg.clone();
+                                let download_url = download_url.clone();
+
+                                join_set.spawn(async move {
+                                    let _permit = sem
+                                        .acquire()
+                                        .await
+                                        .map_err(|e| anyhow::anyhow!("semaphore closed: {}", e))?;
+
+                                    let op_name = format!("gitlab: upload '{}'", file_name);
+                                    retry_upload(&op_name, || {
+                                        gitlab::gitlab_upload_asset(
+                                            &client,
+                                            &api_url,
+                                            &project_id,
+                                            &tag,
+                                            &path,
+                                            &file_name,
+                                            &project_name_for_pkg,
+                                            &version_for_pkg,
+                                            use_pkg_registry,
+                                            &download_url,
+                                            replace_existing_artifacts,
+                                        )
+                                    })
+                                    .await
+                                    .with_context(|| {
+                                        format!(
+                                            "release: upload artifact '{}' to GitLab release '{}'",
+                                            file_name, tag
+                                        )
+                                    })?;
+
+                                    Ok::<String, anyhow::Error>(file_name)
+                                });
+                            }
+
+                            while let Some(result) = join_set.join_next().await {
+                                let file_name = result
+                                    .context("gitlab: upload task panicked")?
+                                    .context("gitlab: upload task failed")?;
+                                log.verbose(&format!("uploaded artifact: {}", file_name));
+                            }
+                        }
+
+                        // GitLab does not support draft releases — publish is a no-op.
+
+                        let html_url = gitlab::gitlab_release_url(
+                            &download_url,
+                            &repo_cfg.owner,
+                            &repo_cfg.name,
+                            &tag,
                         );
-                    }
-                };
+                        Ok::<String, anyhow::Error>(html_url)
+                    })?;
 
-                let gitea_urls = ctx.config.gitea_urls.clone().unwrap_or_default();
-                let api_url = gitea_urls
-                    .api
-                    .unwrap_or_else(|| "https://gitea.com/api/v1".to_string());
-                let download_url = gitea_urls
-                    .download
-                    .unwrap_or_else(|| "https://gitea.com".to_string());
-                let skip_tls = gitea_urls.skip_tls_verify.unwrap_or(false);
-
-                let commit_sha = ctx
-                    .git_info
-                    .as_ref()
-                    .map(|g| g.commit.clone())
-                    .unwrap_or_default();
-
-                // Gitea does not support draft releases robustly — warn if draft options are set.
-                if replace_existing_draft {
-                    log.warn("replace_existing_draft has no effect on Gitea (draft support is limited)");
-                }
-                if use_existing_draft {
-                    log.warn("use_existing_draft has no effect on Gitea (draft support is limited)");
-                }
-
-                let url = rt.block_on(async {
-                    let client = gitea::build_gitea_client(&token_str, skip_tls)?;
-
-                    // Create or update the release.
-                    let release_id = gitea::gitea_create_release(
-                        &client,
-                        &api_url,
-                        &repo_cfg.owner,
-                        &repo_cfg.name,
-                        &tag,
-                        &commit_sha,
-                        &release_name,
-                        &release_body,
-                        draft,
-                        prerelease,
-                        &release_mode,
+                    (
+                        url,
+                        download_url,
+                        repo_cfg.owner.clone(),
+                        repo_cfg.name.clone(),
                     )
-                    .await?;
+                }
 
-                    log.status(&format!(
-                        "created Gitea Release '{}' (id={}, tag={}) on {}/{}",
-                        release_name, release_id, tag, repo_cfg.owner, repo_cfg.name
-                    ));
+                // ===============================================================
+                // Gitea backend
+                // ===============================================================
+                ScmTokenType::Gitea => {
+                    // Resolve the repo config: prefer release.gitea, fall back to release.github.
+                    let repo_cfg = match release_cfg.gitea.as_ref().or(release_cfg.github.as_ref())
+                    {
+                        Some(r) => r.clone(),
+                        None => {
+                            log.warn(&format!(
+                                "no gitea config for crate '{}', skipping",
+                                crate_cfg.name
+                            ));
+                            continue;
+                        }
+                    };
 
-                    // Upload artifacts with bounded parallelism (matching GitLab pattern).
-                    if skip_upload {
-                        log.status("skip_upload is set, skipping artifact uploads");
-                    } else {
-                        let upload_parallelism = std::cmp::max(ctx.options.parallelism, 1);
-                        let semaphore = Arc::new(
-                            tokio::sync::Semaphore::new(upload_parallelism),
-                        );
-
-                        // Prepare the list of uploadable entries (error on missing files).
-                        let mut missing_files = Vec::new();
-                        let prepared_entries: Vec<(std::path::PathBuf, String)> = artifact_entries
-                            .iter()
-                            .filter_map(|(path, custom_name)| {
-                                if !path.exists() {
-                                    missing_files.push(path.display().to_string());
-                                    return None;
-                                }
-                                let file_name = if let Some(name) = custom_name {
-                                    name.clone()
-                                } else {
-                                    path.file_name()
-                                        .map(|n| n.to_string_lossy().into_owned())
-                                        .unwrap_or_else(|| "artifact".to_string())
-                                };
-                                Some((path.clone(), file_name))
-                            })
-                            .collect();
-
-                        if !missing_files.is_empty() {
-                            anyhow::bail!(
-                                "the following artifact files are missing:\n  {}",
-                                missing_files.join("\n  ")
+                    let token_str = match &token {
+                        Some(t) => t.clone(),
+                        None => {
+                            bail!(
+                                "release: no Gitea token available (set GITEA_TOKEN, or pass --token)"
                             );
                         }
+                    };
 
-                        let client = Arc::new(client);
-                        let mut join_set = tokio::task::JoinSet::new();
+                    let gitea_urls = ctx.config.gitea_urls.clone().unwrap_or_default();
+                    let api_url = gitea_urls
+                        .api
+                        .unwrap_or_else(|| "https://gitea.com/api/v1".to_string());
+                    let download_url = gitea_urls
+                        .download
+                        .unwrap_or_else(|| "https://gitea.com".to_string());
+                    let skip_tls = gitea_urls.skip_tls_verify.unwrap_or(false);
 
-                        for (path, file_name) in prepared_entries {
-                            let sem = semaphore.clone();
-                            let client = client.clone();
-                            let api_url = api_url.clone();
-                            let owner = repo_cfg.owner.clone();
-                            let repo = repo_cfg.name.clone();
-                            let tag = tag.clone();
+                    let commit_sha = ctx
+                        .git_info
+                        .as_ref()
+                        .map(|g| g.commit.clone())
+                        .unwrap_or_default();
 
-                            join_set.spawn(async move {
-                                let _permit = sem.acquire().await
-                                    .map_err(|e| anyhow::anyhow!("semaphore closed: {}", e))?;
+                    // Gitea does not support draft releases robustly — warn if draft options are set.
+                    if replace_existing_draft {
+                        log.warn("replace_existing_draft has no effect on Gitea (draft support is limited)");
+                    }
+                    if use_existing_draft {
+                        log.warn(
+                            "use_existing_draft has no effect on Gitea (draft support is limited)",
+                        );
+                    }
 
-                                // Handle replace_existing_artifacts: if an asset with the
-                                // same name exists, delete it before uploading.
-                                if replace_existing_artifacts {
-                                    gitea::gitea_delete_asset_by_name(
+                    let url = rt.block_on(async {
+                        let client = gitea::build_gitea_client(&token_str, skip_tls)?;
+
+                        // Create or update the release.
+                        let release_id = gitea::gitea_create_release(
+                            &client,
+                            &api_url,
+                            &repo_cfg.owner,
+                            &repo_cfg.name,
+                            &tag,
+                            &commit_sha,
+                            &release_name,
+                            &release_body,
+                            draft,
+                            prerelease,
+                            &release_mode,
+                        )
+                        .await?;
+
+                        log.status(&format!(
+                            "created Gitea Release '{}' (id={}, tag={}) on {}/{}",
+                            release_name, release_id, tag, repo_cfg.owner, repo_cfg.name
+                        ));
+
+                        // Upload artifacts with bounded parallelism (matching GitLab pattern).
+                        if skip_upload {
+                            log.status("skip_upload is set, skipping artifact uploads");
+                        } else {
+                            let upload_parallelism = std::cmp::max(ctx.options.parallelism, 1);
+                            let semaphore =
+                                Arc::new(tokio::sync::Semaphore::new(upload_parallelism));
+
+                            // Prepare the list of uploadable entries (error on missing files).
+                            let mut missing_files = Vec::new();
+                            let prepared_entries: Vec<(std::path::PathBuf, String)> =
+                                artifact_entries
+                                    .iter()
+                                    .filter_map(|(path, custom_name)| {
+                                        if !path.exists() {
+                                            missing_files.push(path.display().to_string());
+                                            return None;
+                                        }
+                                        let file_name = if let Some(name) = custom_name {
+                                            name.clone()
+                                        } else {
+                                            path.file_name()
+                                                .map(|n| n.to_string_lossy().into_owned())
+                                                .unwrap_or_else(|| "artifact".to_string())
+                                        };
+                                        Some((path.clone(), file_name))
+                                    })
+                                    .collect();
+
+                            if !missing_files.is_empty() {
+                                anyhow::bail!(
+                                    "the following artifact files are missing:\n  {}",
+                                    missing_files.join("\n  ")
+                                );
+                            }
+
+                            let client = Arc::new(client);
+                            let mut join_set = tokio::task::JoinSet::new();
+
+                            for (path, file_name) in prepared_entries {
+                                let sem = semaphore.clone();
+                                let client = client.clone();
+                                let api_url = api_url.clone();
+                                let owner = repo_cfg.owner.clone();
+                                let repo = repo_cfg.name.clone();
+                                let tag = tag.clone();
+
+                                join_set.spawn(async move {
+                                    let _permit = sem
+                                        .acquire()
+                                        .await
+                                        .map_err(|e| anyhow::anyhow!("semaphore closed: {}", e))?;
+
+                                    // Handle replace_existing_artifacts: if an asset with the
+                                    // same name exists, delete it before uploading.
+                                    if replace_existing_artifacts {
+                                        gitea::gitea_delete_asset_by_name(
                                         &client,
                                         &api_url,
                                         &owner,
@@ -1660,91 +1689,91 @@ impl Stage for ReleaseStage {
                                             file_name, release_id
                                         )
                                     })?;
-                                }
+                                    }
 
-                                let op_name = format!("gitea: upload '{}'", file_name);
-                                retry_upload(&op_name, || {
-                                    gitea::gitea_upload_asset(
-                                        &client,
-                                        &api_url,
-                                        &owner,
-                                        &repo,
-                                        release_id,
-                                        &path,
-                                        &file_name,
-                                    )
-                                })
-                                .await
-                                .with_context(|| {
-                                    format!(
-                                        "release: upload artifact '{}' to Gitea release '{}'",
-                                        file_name, tag
-                                    )
-                                })?;
+                                    let op_name = format!("gitea: upload '{}'", file_name);
+                                    retry_upload(&op_name, || {
+                                        gitea::gitea_upload_asset(
+                                            &client, &api_url, &owner, &repo, release_id, &path,
+                                            &file_name,
+                                        )
+                                    })
+                                    .await
+                                    .with_context(|| {
+                                        format!(
+                                            "release: upload artifact '{}' to Gitea release '{}'",
+                                            file_name, tag
+                                        )
+                                    })?;
 
-                                Ok::<String, anyhow::Error>(file_name)
-                            });
+                                    Ok::<String, anyhow::Error>(file_name)
+                                });
+                            }
+
+                            while let Some(result) = join_set.join_next().await {
+                                let file_name = result
+                                    .context("gitea: upload task panicked")?
+                                    .context("gitea: upload task failed")?;
+                                log.verbose(&format!("uploaded artifact: {}", file_name));
+                            }
                         }
 
-                        while let Some(result) = join_set.join_next().await {
-                            let file_name = result
-                                .context("gitea: upload task panicked")?
-                                .context("gitea: upload task failed")?;
-                            log.verbose(&format!("uploaded artifact: {}", file_name));
-                        }
-                    }
+                        // Gitea PublishRelease is a no-op (matching GoReleaser).
 
-                    // Gitea PublishRelease is a no-op (matching GoReleaser).
-
-                    let html_url = gitea::gitea_release_url(
-                        &download_url,
-                        &repo_cfg.owner,
-                        &repo_cfg.name,
-                        &tag,
-                    );
-                    Ok::<String, anyhow::Error>(html_url)
-                })?;
-
-                (url, download_url, repo_cfg.owner.clone(), repo_cfg.name.clone())
-            }
-
-            // ===============================================================
-            // GitHub backend (existing octocrab implementation)
-            // ===============================================================
-            ScmTokenType::GitHub => {
-                // Require a GitHub config block.
-                let github = match &release_cfg.github {
-                    Some(g) => g.clone(),
-                    None => {
-                        log.warn(&format!(
-                            "no github config for crate '{}', skipping",
-                            crate_cfg.name
-                        ));
-                        continue;
-                    }
-                };
-
-                // Require a token for real API calls.
-                let token_str = match &token {
-                    Some(t) => t.clone(),
-                    None => {
-                        anyhow::bail!(
-                            "release: no GitHub token available (set GITHUB_TOKEN or ANODIZE_GITHUB_TOKEN, or pass --token)"
+                        let html_url = gitea::gitea_release_url(
+                            &download_url,
+                            &repo_cfg.owner,
+                            &repo_cfg.name,
+                            &tag,
                         );
-                    }
-                };
+                        Ok::<String, anyhow::Error>(html_url)
+                    })?;
 
-                // Extract github_urls config for GitHub Enterprise support.
-                let github_urls = ctx.config.github_urls.clone();
-                // Default download URL to "https://github.com" (matches GoReleaser's DefaultGitHubDownloadURL).
-                let gh_download_base = github_urls
-                    .as_ref()
-                    .and_then(|u| u.download.clone())
-                    .unwrap_or_else(|| "https://github.com".to_string());
+                    (
+                        url,
+                        download_url,
+                        repo_cfg.owner.clone(),
+                        repo_cfg.name.clone(),
+                    )
+                }
 
-                // Build the octocrab instance and perform async API calls inside a
-                // dedicated tokio runtime (the Stage trait is synchronous).
-                let url = rt.block_on(async {
+                // ===============================================================
+                // GitHub backend (existing octocrab implementation)
+                // ===============================================================
+                ScmTokenType::GitHub => {
+                    // Require a GitHub config block.
+                    let github = match &release_cfg.github {
+                        Some(g) => g.clone(),
+                        None => {
+                            log.warn(&format!(
+                                "no github config for crate '{}', skipping",
+                                crate_cfg.name
+                            ));
+                            continue;
+                        }
+                    };
+
+                    // Require a token for real API calls.
+                    let token_str = match &token {
+                        Some(t) => t.clone(),
+                        None => {
+                            anyhow::bail!(
+                                "release: no GitHub token available (set GITHUB_TOKEN or ANODIZE_GITHUB_TOKEN, or pass --token)"
+                            );
+                        }
+                    };
+
+                    // Extract github_urls config for GitHub Enterprise support.
+                    let github_urls = ctx.config.github_urls.clone();
+                    // Default download URL to "https://github.com" (matches GoReleaser's DefaultGitHubDownloadURL).
+                    let gh_download_base = github_urls
+                        .as_ref()
+                        .and_then(|u| u.download.clone())
+                        .unwrap_or_else(|| "https://github.com".to_string());
+
+                    // Build the octocrab instance and perform async API calls inside a
+                    // dedicated tokio runtime (the Stage trait is synchronous).
+                    let url = rt.block_on(async {
                     let octo = build_octocrab_client(&token_str, &github_urls)?;
                     let rate_limit_client = reqwest::Client::new();
 
@@ -2217,9 +2246,13 @@ impl Stage for ReleaseStage {
                     Ok::<String, anyhow::Error>(html_url)
                 })?;
 
-                (url, gh_download_base, github.owner.clone(), github.name.clone())
-            }
-
+                    (
+                        url,
+                        gh_download_base,
+                        github.owner.clone(),
+                        github.name.clone(),
+                    )
+                }
             }; // end match ctx.token_type
 
             // Populate artifact metadata["url"] for all uploadable artifacts
@@ -2228,7 +2261,13 @@ impl Stage for ReleaseStage {
             // Matches GoReleaser's ReleaseURLTemplate() pattern.
             if !skip_upload {
                 populate_artifact_download_urls(
-                    ctx, &crate_name, ctx.token_type, &download_base, &repo_owner, &repo_name, &tag,
+                    ctx,
+                    &crate_name,
+                    ctx.token_type,
+                    &download_base,
+                    &repo_owner,
+                    &repo_name,
+                    &tag,
                 );
             }
 
@@ -2334,12 +2373,22 @@ mod tests {
             "v1.0.0",
         );
 
-        let archive = ctx.artifacts.all().iter().find(|a| a.name == "myapp_1.0.0_linux_amd64.tar.gz").unwrap();
+        let archive = ctx
+            .artifacts
+            .all()
+            .iter()
+            .find(|a| a.name == "myapp_1.0.0_linux_amd64.tar.gz")
+            .unwrap();
         assert_eq!(
             archive.metadata.get("url").unwrap(),
             "https://github.com/octocat/hello/releases/download/v1.0.0/myapp_1.0.0_linux_amd64.tar.gz"
         );
-        let checksum = ctx.artifacts.all().iter().find(|a| a.name == "checksums.txt").unwrap();
+        let checksum = ctx
+            .artifacts
+            .all()
+            .iter()
+            .find(|a| a.name == "checksums.txt")
+            .unwrap();
         assert_eq!(
             checksum.metadata.get("url").unwrap(),
             "https://github.com/octocat/hello/releases/download/v1.0.0/checksums.txt"
@@ -2371,7 +2420,12 @@ mod tests {
             "v2.0.0",
         );
 
-        let a = ctx.artifacts.all().iter().find(|a| a.name == "myapp.tar.gz").unwrap();
+        let a = ctx
+            .artifacts
+            .all()
+            .iter()
+            .find(|a| a.name == "myapp.tar.gz")
+            .unwrap();
         assert_eq!(
             a.metadata.get("url").unwrap(),
             "https://github.example.com/org/repo/releases/download/v2.0.0/myapp.tar.gz"
@@ -2403,7 +2457,12 @@ mod tests {
             "v1.0.0",
         );
 
-        let a = ctx.artifacts.all().iter().find(|a| a.name == "app.tar.gz").unwrap();
+        let a = ctx
+            .artifacts
+            .all()
+            .iter()
+            .find(|a| a.name == "app.tar.gz")
+            .unwrap();
         assert_eq!(
             a.metadata.get("url").unwrap(),
             "https://gitlab.com/group/project/-/releases/v1.0.0/downloads/app.tar.gz"
@@ -2435,7 +2494,12 @@ mod tests {
             "v3.0.0",
         );
 
-        let a = ctx.artifacts.all().iter().find(|a| a.name == "tool.tar.gz").unwrap();
+        let a = ctx
+            .artifacts
+            .all()
+            .iter()
+            .find(|a| a.name == "tool.tar.gz")
+            .unwrap();
         assert_eq!(
             a.metadata.get("url").unwrap(),
             "https://gitea.example.com/owner/repo/releases/download/v3.0.0/tool.tar.gz"
@@ -2469,7 +2533,11 @@ mod tests {
 
         let a = ctx.artifacts.all().first().unwrap();
         let url = a.metadata.get("url").unwrap();
-        assert!(url.contains("my%20app.tar.gz"), "spaces should be percent-encoded: {}", url);
+        assert!(
+            url.contains("my%20app.tar.gz"),
+            "spaces should be percent-encoded: {}",
+            url
+        );
     }
 
     #[test]
@@ -2498,7 +2566,10 @@ mod tests {
         );
 
         let a = ctx.artifacts.all().first().unwrap();
-        assert!(a.metadata.get("url").is_none(), "should not set URL for different crate");
+        assert!(
+            !a.metadata.contains_key("url"),
+            "should not set URL for different crate"
+        );
     }
 
     // ---- retry_upload tests ----
@@ -2721,21 +2792,30 @@ mod tests {
 
     #[test]
     fn test_resolve_make_latest_template_string_true() {
-        let ml = resolve_make_latest(&Some(MakeLatestConfig::String("true".to_string())), noop_render);
+        let ml = resolve_make_latest(
+            &Some(MakeLatestConfig::String("true".to_string())),
+            noop_render,
+        );
         assert!(ml.is_some());
         assert_eq!(ml.unwrap().to_string(), "true");
     }
 
     #[test]
     fn test_resolve_make_latest_template_string_false() {
-        let ml = resolve_make_latest(&Some(MakeLatestConfig::String("false".to_string())), noop_render);
+        let ml = resolve_make_latest(
+            &Some(MakeLatestConfig::String("false".to_string())),
+            noop_render,
+        );
         assert!(ml.is_some());
         assert_eq!(ml.unwrap().to_string(), "false");
     }
 
     #[test]
     fn test_resolve_make_latest_template_string_auto() {
-        let ml = resolve_make_latest(&Some(MakeLatestConfig::String("auto".to_string())), noop_render);
+        let ml = resolve_make_latest(
+            &Some(MakeLatestConfig::String("auto".to_string())),
+            noop_render,
+        );
         assert!(ml.is_some());
         assert_eq!(ml.unwrap().to_string(), "legacy");
     }
@@ -2864,7 +2944,10 @@ mod tests {
         // release tag instead of crate_cfg.tag_template.
         let ctx = TestContextBuilder::new().build();
         let tag = resolve_release_tag(&ctx, "myapp/v1.0.0", Some("v1.0.0"), "testcrate").unwrap();
-        assert_eq!(tag, "v1.0.0", "release.tag override must take precedence over tag_template");
+        assert_eq!(
+            tag, "v1.0.0",
+            "release.tag override must take precedence over tag_template"
+        );
     }
 
     #[test]
@@ -2873,7 +2956,10 @@ mod tests {
         let ctx = TestContextBuilder::new().tag("v2.5.0").build();
         let tag = resolve_release_tag(&ctx, "prefix/{{ .Tag }}", Some("{{ .Tag }}"), "testcrate")
             .unwrap();
-        assert_eq!(tag, "v2.5.0", "release.tag template must render to the git tag value");
+        assert_eq!(
+            tag, "v2.5.0",
+            "release.tag template must render to the git tag value"
+        );
     }
 
     #[test]
@@ -2881,7 +2967,10 @@ mod tests {
         // When release.tag is None, the crate's tag_template is used as before.
         let ctx = TestContextBuilder::new().build();
         let tag = resolve_release_tag(&ctx, "v1.0.0", None, "testcrate").unwrap();
-        assert_eq!(tag, "v1.0.0", "with no release.tag, tag_template must be used");
+        assert_eq!(
+            tag, "v1.0.0",
+            "with no release.tag, tag_template must be used"
+        );
     }
 
     #[test]
@@ -2929,7 +3018,10 @@ mod tests {
         assert!(result.is_err(), "release without token should fail");
         let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("GITHUB_TOKEN") || err.contains("ANODIZE_GITHUB_TOKEN") || err.contains("--token") || err.contains("release"),
+            err.contains("GITHUB_TOKEN")
+                || err.contains("ANODIZE_GITHUB_TOKEN")
+                || err.contains("--token")
+                || err.contains("release"),
             "error should mention GITHUB_TOKEN, ANODIZE_GITHUB_TOKEN, --token, or release failure, got: {err}"
         );
     }
@@ -3128,11 +3220,13 @@ mod tests {
     #[test]
     fn test_make_latest_values_resolve_correctly() {
         // Bool(true) -> MakeLatest::True
-        let ml_true = resolve_make_latest(&Some(MakeLatestConfig::Bool(true)), noop_render).unwrap();
+        let ml_true =
+            resolve_make_latest(&Some(MakeLatestConfig::Bool(true)), noop_render).unwrap();
         assert_eq!(ml_true.to_string(), "true");
 
         // Bool(false) -> MakeLatest::False
-        let ml_false = resolve_make_latest(&Some(MakeLatestConfig::Bool(false)), noop_render).unwrap();
+        let ml_false =
+            resolve_make_latest(&Some(MakeLatestConfig::Bool(false)), noop_render).unwrap();
         assert_eq!(ml_false.to_string(), "false");
 
         // Auto -> MakeLatest::Legacy
@@ -3897,9 +3991,9 @@ draft: true
         use std::collections::HashMap;
         use std::path::PathBuf;
 
-        let ids = vec!["linux-amd64".to_string(), "windows-amd64".to_string()];
+        let ids = ["linux-amd64".to_string(), "windows-amd64".to_string()];
 
-        let artifacts = vec![
+        let artifacts = [
             Artifact {
                 kind: ArtifactKind::Archive,
                 name: String::new(),
@@ -3964,7 +4058,7 @@ draft: true
         use std::collections::HashMap;
         use std::path::PathBuf;
 
-        let ids = vec!["linux-amd64".to_string()];
+        let ids = ["linux-amd64".to_string()];
 
         let artifact_no_id = Artifact {
             kind: ArtifactKind::Archive,
@@ -4629,7 +4723,7 @@ draft: true
             &None,
             false,
         );
-        assert_eq!(json["draft"].as_bool().unwrap(), true);
+        assert!(json["draft"].as_bool().unwrap());
     }
 
     #[test]
@@ -4645,7 +4739,7 @@ draft: true
             &None,
             false,
         );
-        assert_eq!(json["draft"].as_bool().unwrap(), false);
+        assert!(!json["draft"].as_bool().unwrap());
     }
 
     #[test]
@@ -4715,7 +4809,10 @@ draft: true
         // with standard GitHub.com endpoints.
         with_tokio(|| {
             let client = build_octocrab_client("ghp_fake_token_123", &None);
-            assert!(client.is_ok(), "default client (no github_urls) should build successfully");
+            assert!(
+                client.is_ok(),
+                "default client (no github_urls) should build successfully"
+            );
         });
     }
 
@@ -5161,13 +5258,8 @@ draft: true
                 "cached@example.com".to_string(),
                 Some("cached-user".to_string()),
             );
-            let result = resolve_github_username(
-                &octo,
-                "cached@example.com",
-                &mut cache,
-                None,
-            )
-            .await;
+            let result =
+                resolve_github_username(&octo, "cached@example.com", &mut cache, None).await;
             assert_eq!(result, Some("cached-user".to_string()));
         });
     }
@@ -5184,13 +5276,8 @@ draft: true
                 .unwrap();
             let mut cache = HashMap::new();
             cache.insert("unknown@example.com".to_string(), None);
-            let result = resolve_github_username(
-                &octo,
-                "unknown@example.com",
-                &mut cache,
-                None,
-            )
-            .await;
+            let result =
+                resolve_github_username(&octo, "unknown@example.com", &mut cache, None).await;
             assert_eq!(result, None);
         });
     }
@@ -5230,13 +5317,7 @@ draft: true
             let mut cache = HashMap::new();
             // This will try the API and fail (no real token), so it should
             // cache None and return None.
-            let result = resolve_github_username(
-                &octo,
-                "user@example.com",
-                &mut cache,
-                None,
-            )
-            .await;
+            let result = resolve_github_username(&octo, "user@example.com", &mut cache, None).await;
             // With a fake token, the API call will fail, resulting in None.
             assert_eq!(result, None);
             // Verify it was cached

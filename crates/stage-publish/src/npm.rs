@@ -1,6 +1,6 @@
 use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -80,10 +80,7 @@ pub fn generate_package_json(params: &PackageJsonParams<'_>) -> serde_json::Valu
     }
 
     if let Some(bugs_url) = params.bugs {
-        obj.insert(
-            "bugs".to_string(),
-            serde_json::json!({ "url": bugs_url }),
-        );
+        obj.insert("bugs".to_string(), serde_json::json!({ "url": bugs_url }));
     }
 
     if let Some(kw) = params.keywords {
@@ -227,7 +224,11 @@ pub fn publish_to_npm(ctx: &Context, log: &StageLogger) -> Result<()> {
 
     for entry in entries {
         // Check disable flag.
-        if entry.disable.as_ref().is_some_and(|d| d.is_disabled(|tmpl| ctx.render_template(tmpl))) {
+        if entry
+            .disable
+            .as_ref()
+            .is_some_and(|d| d.is_disabled(|tmpl| ctx.render_template(tmpl)))
+        {
             log.status("npm: entry disabled, skipping");
             continue;
         }
@@ -370,7 +371,10 @@ pub fn publish_to_npm(ctx: &Context, log: &StageLogger) -> Result<()> {
                 log.status(&format!("(dry-run) extra_files: {} entries", ef.len()));
             }
             if let Some(ref tef) = entry.templated_extra_files {
-                log.status(&format!("(dry-run) templated_extra_files: {} entries", tef.len()));
+                log.status(&format!(
+                    "(dry-run) templated_extra_files: {} entries",
+                    tef.len()
+                ));
             }
             if let Some(ref extra) = entry.extra {
                 log.status(&format!("(dry-run) extra package.json fields: {:?}", extra));
@@ -418,8 +422,7 @@ pub fn publish_to_npm(ctx: &Context, log: &StageLogger) -> Result<()> {
 
         // Create a temp directory, write package.json and postinstall.js, run
         // `npm publish`.
-        let tmp_dir = tempfile::tempdir()
-            .context("npm: failed to create temporary directory")?;
+        let tmp_dir = tempfile::tempdir().context("npm: failed to create temporary directory")?;
 
         // Copy extra_files into the npm package temp directory.
         if let Some(ref ef) = entry.extra_files {
@@ -428,20 +431,23 @@ pub fn publish_to_npm(ctx: &Context, log: &StageLogger) -> Result<()> {
 
         // Render and write templated_extra_files into the npm package temp directory.
         if let Some(ref tef) = entry.templated_extra_files
-            && !tef.is_empty() {
-                let rendered =
-                    anodize_core::templated_files::process_templated_extra_files(
-                        tef, ctx, tmp_dir.path(), "npm",
-                    )?;
-                log.status(&format!(
-                    "npm: rendered {} templated_extra_files",
-                    rendered.len()
-                ));
-            }
+            && !tef.is_empty()
+        {
+            let rendered = anodize_core::templated_files::process_templated_extra_files(
+                tef,
+                ctx,
+                tmp_dir.path(),
+                "npm",
+            )?;
+            log.status(&format!(
+                "npm: rendered {} templated_extra_files",
+                rendered.len()
+            ));
+        }
 
         let pkg_json_path = tmp_dir.path().join("package.json");
-        let pkg_json_str = serde_json::to_string_pretty(&pkg)
-            .context("npm: failed to serialize package.json")?;
+        let pkg_json_str =
+            serde_json::to_string_pretty(&pkg).context("npm: failed to serialize package.json")?;
         std::fs::write(&pkg_json_path, &pkg_json_str)
             .context("npm: failed to write package.json")?;
 
@@ -451,7 +457,10 @@ pub fn publish_to_npm(ctx: &Context, log: &StageLogger) -> Result<()> {
         let postinstall_js = format!(
             "const {{ execSync }} = require('child_process');\n\
              execSync(`{}`, {{ stdio: 'inherit' }});\n",
-            postinstall.replace('\\', "\\\\").replace('`', "\\`").replace('$', "\\$")
+            postinstall
+                .replace('\\', "\\\\")
+                .replace('`', "\\`")
+                .replace('$', "\\$")
         );
         std::fs::write(&postinstall_path, &postinstall_js)
             .context("npm: failed to write postinstall.js")?;
@@ -469,9 +478,7 @@ pub fn publish_to_npm(ctx: &Context, log: &StageLogger) -> Result<()> {
 
         log.status(&format!("npm: publishing '{}' v{} ...", name, version));
 
-        let output = cmd
-            .output()
-            .context("npm: failed to run 'npm publish'")?;
+        let output = cmd.output().context("npm: failed to run 'npm publish'")?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -754,8 +761,14 @@ mod tests {
         assert_eq!(pkg["author"], "Jane Doe");
         assert_eq!(pkg["homepage"], "https://example.com");
         assert_eq!(pkg["repository"]["type"], "git");
-        assert_eq!(pkg["repository"]["url"], "https://github.com/myorg/mypackage");
-        assert_eq!(pkg["bugs"]["url"], "https://github.com/myorg/mypackage/issues");
+        assert_eq!(
+            pkg["repository"]["url"],
+            "https://github.com/myorg/mypackage"
+        );
+        assert_eq!(
+            pkg["bugs"]["url"],
+            "https://github.com/myorg/mypackage/issues"
+        );
         assert_eq!(pkg["keywords"][0], "cli");
         assert_eq!(pkg["keywords"][1], "tool");
         assert_eq!(pkg["publishConfig"]["access"], "public");
@@ -768,10 +781,7 @@ mod tests {
             "bin".to_string(),
             serde_json::json!({"mytool": "./bin/mytool"}),
         );
-        extra.insert(
-            "engines".to_string(),
-            serde_json::json!({"node": ">=14"}),
-        );
+        extra.insert("engines".to_string(), serde_json::json!({"node": ">=14"}));
         let pkg = generate_package_json(&PackageJsonParams {
             name: "@myorg/mypackage",
             version: "1.0.0",
@@ -830,11 +840,8 @@ mod tests {
 
     #[test]
     fn test_npm_postinstall_uses_binary_name() {
-        let script = generate_postinstall_script(
-            "https://example.com/download/",
-            "mytool",
-            "tar.gz",
-        );
+        let script =
+            generate_postinstall_script("https://example.com/download/", "mytool", "tar.gz");
         // Should download to the binary name, not generic "bin".
         assert!(script.contains("-o mytool"));
         assert!(script.contains("chmod +x mytool"));
@@ -843,25 +850,16 @@ mod tests {
 
     #[test]
     fn test_npm_postinstall_includes_extension() {
-        let script = generate_postinstall_script(
-            "https://example.com/download/",
-            "mytool",
-            "tar.gz",
-        );
+        let script =
+            generate_postinstall_script("https://example.com/download/", "mytool", "tar.gz");
         assert!(script.contains(".tar.gz"));
 
-        let script_zip = generate_postinstall_script(
-            "https://example.com/download/",
-            "mytool",
-            "zip",
-        );
+        let script_zip =
+            generate_postinstall_script("https://example.com/download/", "mytool", "zip");
         assert!(script_zip.contains(".zip"));
 
-        let script_none = generate_postinstall_script(
-            "https://example.com/download/",
-            "mytool",
-            "",
-        );
+        let script_none =
+            generate_postinstall_script("https://example.com/download/", "mytool", "");
         // Empty extension should not add a dot.
         assert!(!script_none.contains("${ARCH}."));
     }
@@ -872,15 +870,15 @@ mod tests {
         // ${ARCH}.  When wrapped in a JS template literal (backticks), the
         // `${}` syntax would be interpreted as JavaScript template
         // expressions.  Verify that `$` is escaped to `\$` in the JS output.
-        let script = generate_postinstall_script(
-            "https://example.com/download/",
-            "mytool",
-            "tar.gz",
-        );
+        let script =
+            generate_postinstall_script("https://example.com/download/", "mytool", "tar.gz");
         let js = format!(
             "const {{ execSync }} = require('child_process');\n\
              execSync(`{}`, {{ stdio: 'inherit' }});\n",
-            script.replace('\\', "\\\\").replace('`', "\\`").replace('$', "\\$")
+            script
+                .replace('\\', "\\\\")
+                .replace('`', "\\`")
+                .replace('$', "\\$")
         );
         // Every `$` in the JS output should be preceded by `\` to prevent
         // JavaScript template literal interpolation.  Check that no bare
@@ -944,7 +942,9 @@ mod tests {
             tag: Some("latest".to_string()),
             format: Some("tgz".to_string()),
             ids: Some(vec!["build1".to_string()]),
-            url_template: Some("https://github.com/myorg/mypackage/releases/download/v1.0.0/".to_string()),
+            url_template: Some(
+                "https://github.com/myorg/mypackage/releases/download/v1.0.0/".to_string(),
+            ),
             extra: Some(extra),
             ..Default::default()
         }]);
@@ -1079,10 +1079,7 @@ mod tests {
         // No Tag set — should derive from version
         let ctx = dry_run_ctx(config);
         let url = derive_github_download_url(&ctx, "1.5.0");
-        assert_eq!(
-            url,
-            "https://github.com/org/repo/releases/download/v1.5.0/"
-        );
+        assert_eq!(url, "https://github.com/org/repo/releases/download/v1.5.0/");
     }
 
     #[test]
@@ -1142,9 +1139,7 @@ mod tests {
         use anodize_core::config::ExtraFileSpec;
         let dest_dir = tempfile::tempdir().unwrap();
 
-        let specs = vec![ExtraFileSpec::Glob(
-            "/nonexistent/path/*.xyz".to_string(),
-        )];
+        let specs = vec![ExtraFileSpec::Glob("/nonexistent/path/*.xyz".to_string())];
 
         let config = Config::default();
         let ctx = dry_run_ctx(config);

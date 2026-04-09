@@ -203,10 +203,7 @@ mod tests {
             resolve_token_type(None, Some("GitLab")),
             ScmTokenType::GitLab
         );
-        assert_eq!(
-            resolve_token_type(None, Some("GITEA")),
-            ScmTokenType::Gitea
-        );
+        assert_eq!(resolve_token_type(None, Some("GITEA")), ScmTokenType::Gitea);
     }
 
     #[test]
@@ -263,12 +260,7 @@ mod tests {
 
     #[test]
     fn release_template_github() {
-        let tpl = release_url_template(
-            ScmTokenType::GitHub,
-            "owner",
-            "repo",
-            "https://github.com",
-        );
+        let tpl = release_url_template(ScmTokenType::GitHub, "owner", "repo", "https://github.com");
         assert_eq!(
             tpl,
             "https://github.com/owner/repo/releases/download/{{ urlPathEscape .Tag }}/{{ .ArtifactName }}"
@@ -314,12 +306,7 @@ mod tests {
 
     #[test]
     fn release_template_trailing_slash_stripped() {
-        let tpl = release_url_template(
-            ScmTokenType::GitHub,
-            "o",
-            "r",
-            "https://github.com/",
-        );
+        let tpl = release_url_template(ScmTokenType::GitHub, "o", "r", "https://github.com/");
         assert_eq!(
             tpl,
             "https://github.com/o/r/releases/download/{{ urlPathEscape .Tag }}/{{ .ArtifactName }}"

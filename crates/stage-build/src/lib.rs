@@ -360,9 +360,16 @@ fn build_universal_binary(
     // Execute pre-hooks if configured
     let template_vars = ctx.template_vars().clone();
     if let Some(ref hooks) = ub.hooks
-        && let Some(ref pre) = hooks.pre {
-            run_hooks(pre, "pre-universal-binary", dry_run, &log, Some(&template_vars))?;
-        }
+        && let Some(ref pre) = hooks.pre
+    {
+        run_hooks(
+            pre,
+            "pre-universal-binary",
+            dry_run,
+            &log,
+            Some(&template_vars),
+        )?;
+    }
 
     if dry_run {
         log.status(&format!(
@@ -415,9 +422,16 @@ fn build_universal_binary(
 
     // Execute post-hooks if configured
     if let Some(ref hooks) = ub.hooks
-        && let Some(ref post) = hooks.post {
-            run_hooks(post, "post-universal-binary", dry_run, &log, Some(&template_vars))?;
-        }
+        && let Some(ref post) = hooks.post
+    {
+        run_hooks(
+            post,
+            "post-universal-binary",
+            dry_run,
+            &log,
+            Some(&template_vars),
+        )?;
+    }
 
     // Apply mod_timestamp if configured
     if let Some(ref ts) = ub.mod_timestamp
@@ -697,8 +711,7 @@ fn expand_env_vars(input: &str) -> String {
                 // $VAR form — consume alphanumeric + underscore
                 let start = i + 1;
                 let mut end = start;
-                while end < chars.len()
-                    && (chars[end].is_ascii_alphanumeric() || chars[end] == '_')
+                while end < chars.len() && (chars[end].is_ascii_alphanumeric() || chars[end] == '_')
                 {
                     end += 1;
                 }
@@ -832,24 +845,25 @@ fn check_workspace_package(crate_path: &str, flags: Option<&str>) -> Result<()> 
 
     // Check for [workspace] with members
     if let Some(ws) = doc.get("workspace")
-        && ws.get("members").is_some() {
-            // Check if flags contain --package or -p
-            let has_package = flags.is_some_and(|f| {
-                let tokens: Vec<&str> = f.split_whitespace().collect();
-                tokens.iter().any(|t| {
-                    *t == "-p"
-                        || t.starts_with("--package")
-                        || t.starts_with("-p=")
-                        || t.starts_with("--package=")
-                })
-            });
-            if !has_package {
-                anyhow::bail!(
-                    "you need to specify which workspace package to build, \
+        && ws.get("members").is_some()
+    {
+        // Check if flags contain --package or -p
+        let has_package = flags.is_some_and(|f| {
+            let tokens: Vec<&str> = f.split_whitespace().collect();
+            tokens.iter().any(|t| {
+                *t == "-p"
+                    || t.starts_with("--package")
+                    || t.starts_with("-p=")
+                    || t.starts_with("--package=")
+            })
+        });
+        if !has_package {
+            anyhow::bail!(
+                "you need to specify which workspace package to build, \
                      please add '--package=<name>' to your build flags"
-                );
-            }
+            );
         }
+    }
 
     Ok(())
 }
@@ -1215,13 +1229,14 @@ impl Stage for BuildStage {
                 let mut seen_ids: HashSet<&str> = HashSet::new();
                 for build in &builds {
                     if let Some(ref id) = build.id
-                        && !seen_ids.insert(id.as_str()) {
-                            anyhow::bail!(
-                                "found 2 builds with the ID '{}' in crate '{}'",
-                                id,
-                                crate_cfg.name
-                            );
-                        }
+                        && !seen_ids.insert(id.as_str())
+                    {
+                        anyhow::bail!(
+                            "found 2 builds with the ID '{}' in crate '{}'",
+                            id,
+                            crate_cfg.name
+                        );
+                    }
                 }
             }
 
@@ -1404,11 +1419,13 @@ impl Stage for BuildStage {
                     // This allows flags like `--cfg={{ .Os }}` to be resolved.
                     // Filter out empty results after rendering.
                     let effective_flags: Option<String> = effective_flags.and_then(|f| {
-                        let rendered = ctx
-                            .render_template(&f)
-                            .unwrap_or_else(|_| f.clone());
+                        let rendered = ctx.render_template(&f).unwrap_or_else(|_| f.clone());
                         let trimmed = rendered.trim().to_string();
-                        if trimmed.is_empty() { None } else { Some(trimmed) }
+                        if trimmed.is_empty() {
+                            None
+                        } else {
+                            Some(trimmed)
+                        }
                     });
 
                     // Determine the binary path
@@ -3317,7 +3334,8 @@ crate_type = ["dylib"]
 
     #[test]
     fn test_resolve_build_program_cross_tool_overrides() {
-        let (prog, sub) = resolve_build_program(&CrossStrategy::Zigbuild, Some("/usr/bin/custom"), None);
+        let (prog, sub) =
+            resolve_build_program(&CrossStrategy::Zigbuild, Some("/usr/bin/custom"), None);
         assert_eq!(prog, "/usr/bin/custom");
         assert_eq!(sub, "build");
     }
@@ -3485,21 +3503,14 @@ crates:
         .unwrap();
         let result = check_workspace_package(tmp.path().to_str().unwrap(), Some("--release"));
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("--package=<name>"));
+        assert!(result.unwrap_err().to_string().contains("--package=<name>"));
     }
 
     #[test]
     fn test_check_workspace_package_workspace_with_package_flag() {
         let tmp = tempfile::tempdir().unwrap();
         let cargo_toml = tmp.path().join("Cargo.toml");
-        std::fs::write(
-            &cargo_toml,
-            "[workspace]\nmembers = [\"crates/a\"]\n",
-        )
-        .unwrap();
+        std::fs::write(&cargo_toml, "[workspace]\nmembers = [\"crates/a\"]\n").unwrap();
         let result = check_workspace_package(
             tmp.path().to_str().unwrap(),
             Some("--release --package=myapp"),
@@ -3511,15 +3522,9 @@ crates:
     fn test_check_workspace_package_workspace_with_p_flag() {
         let tmp = tempfile::tempdir().unwrap();
         let cargo_toml = tmp.path().join("Cargo.toml");
-        std::fs::write(
-            &cargo_toml,
-            "[workspace]\nmembers = [\"crates/a\"]\n",
-        )
-        .unwrap();
-        let result = check_workspace_package(
-            tmp.path().to_str().unwrap(),
-            Some("--release -p myapp"),
-        );
+        std::fs::write(&cargo_toml, "[workspace]\nmembers = [\"crates/a\"]\n").unwrap();
+        let result =
+            check_workspace_package(tmp.path().to_str().unwrap(), Some("--release -p myapp"));
         assert!(result.is_ok());
     }
 
@@ -3628,10 +3633,11 @@ crates:
         let stage = BuildStage;
         assert!(stage.run(&mut ctx).is_ok());
         // No artifacts should be registered since the build was skipped
-        let binaries = ctx
-            .artifacts
-            .by_kind(ArtifactKind::Binary);
-        assert!(binaries.is_empty(), "skipped build should produce no artifacts");
+        let binaries = ctx.artifacts.by_kind(ArtifactKind::Binary);
+        assert!(
+            binaries.is_empty(),
+            "skipped build should produce no artifacts"
+        );
     }
 
     #[test]
@@ -3657,7 +3663,8 @@ crates:
 
     #[test]
     fn test_resolve_build_program_with_command_override() {
-        let (prog, sub) = resolve_build_program(&CrossStrategy::Cargo, None, Some("auditable build"));
+        let (prog, sub) =
+            resolve_build_program(&CrossStrategy::Cargo, None, Some("auditable build"));
         assert_eq!(prog, "cargo");
         assert_eq!(sub, "auditable build");
     }

@@ -481,7 +481,9 @@ pub fn find_latest_tag_matching_with_prefix(
             let tag_for_ignore = monorepo_prefix
                 .map(|pfx| strip_monorepo_prefix(t, pfx))
                 .unwrap_or(t);
-            !ignore_tag_globs.iter().any(|pat| pat.matches(tag_for_ignore))
+            !ignore_tag_globs
+                .iter()
+                .any(|pat| pat.matches(tag_for_ignore))
         })
         // Apply ignore_tag_prefixes: exclude tags starting with any prefix
         // (template-rendered). In monorepo mode, match against stripped tag.
@@ -489,7 +491,9 @@ pub fn find_latest_tag_matching_with_prefix(
             let tag_for_ignore = monorepo_prefix
                 .map(|pfx| strip_monorepo_prefix(t, pfx))
                 .unwrap_or(t);
-            !rendered_ignore_prefixes.iter().any(|pfx| tag_for_ignore.starts_with(pfx.as_str()))
+            !rendered_ignore_prefixes
+                .iter()
+                .any(|pfx| tag_for_ignore.starts_with(pfx.as_str()))
         })
         // For SemVer parsing: strip the monorepo prefix before parsing.
         .filter_map(|t| {
@@ -545,7 +549,14 @@ fn parse_commit_output(output: &str) -> Vec<Commit> {
 
 /// Get commits between two refs, optionally filtered to a path.
 pub fn get_commits_between(from: &str, to: &str, path_filter: Option<&str>) -> Result<Vec<Commit>> {
-    get_commits_between_paths(from, to, &path_filter.into_iter().map(String::from).collect::<Vec<_>>())
+    get_commits_between_paths(
+        from,
+        to,
+        &path_filter
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>(),
+    )
 }
 
 /// Get commits between two refs, filtered to multiple paths (git log -- path1 path2 ...).
@@ -572,7 +583,12 @@ pub fn get_commits_between_paths(from: &str, to: &str, paths: &[String]) -> Resu
 /// Get all commits reachable from HEAD, optionally filtered to a path.
 /// Used for initial releases where there is no previous tag.
 pub fn get_all_commits(path_filter: Option<&str>) -> Result<Vec<Commit>> {
-    get_all_commits_paths(&path_filter.into_iter().map(String::from).collect::<Vec<_>>())
+    get_all_commits_paths(
+        &path_filter
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>(),
+    )
 }
 
 /// Get all commits reachable from HEAD, filtered to multiple paths.
@@ -946,9 +962,7 @@ pub fn parse_remote_owner_repo(url: &str) -> Option<(String, String)> {
             url.strip_prefix("http://")?
         };
         // Strip any credentials (user:pass@host or user@host)
-        let after_host = after_scheme
-            .find('/')
-            .map(|i| &after_scheme[i + 1..])?;
+        let after_host = after_scheme.find('/').map(|i| &after_scheme[i + 1..])?;
         // For nested groups (e.g. group/subgroup/repo), the owner is everything
         // up to the last slash.
         let last_slash = after_host.rfind('/')?;
@@ -983,9 +997,8 @@ pub fn parse_remote_owner_repo(url: &str) -> Option<(String, String)> {
 /// (GitHub, GitLab, Gitea, etc.).
 pub fn detect_owner_repo() -> Result<(String, String)> {
     let url = git_output(&["remote", "get-url", "origin"])?;
-    parse_remote_owner_repo(&url).ok_or_else(|| {
-        anyhow::anyhow!("could not parse owner/repo from remote URL: {}", url)
-    })
+    parse_remote_owner_repo(&url)
+        .ok_or_else(|| anyhow::anyhow!("could not parse owner/repo from remote URL: {}", url))
 }
 
 /// Find the tag immediately before `current_tag` in commit history.
@@ -1590,7 +1603,12 @@ mod tests {
         let dir = tmp.path();
         init_repo_with_tags(
             dir,
-            &["myapp-v1.0.0", "myapp-v2.0.0", "myapp-v3.0.0", "other-v9.0.0"],
+            &[
+                "myapp-v1.0.0",
+                "myapp-v2.0.0",
+                "myapp-v3.0.0",
+                "other-v9.0.0",
+            ],
         );
 
         let orig = std::env::current_dir().unwrap();
@@ -1696,7 +1714,10 @@ mod tests {
         // v1.1.1-rc.1 would be first. But the key point is that git-delegated
         // sort IS being used (prerelease_suffix triggers it).
         let result_both = find_latest_tag_matching("v{{ .Version }}", Some(&gc), None).unwrap();
-        assert!(result_both.is_some(), "should find a tag with both release and rc present");
+        assert!(
+            result_both.is_some(),
+            "should find a tag with both release and rc present"
+        );
 
         std::env::set_current_dir(orig).unwrap();
     }
@@ -1848,7 +1869,10 @@ mod tests {
 
     #[test]
     fn test_strip_monorepo_prefix_with_match() {
-        assert_eq!(strip_monorepo_prefix("subproject1/v1.2.3", "subproject1/"), "v1.2.3");
+        assert_eq!(
+            strip_monorepo_prefix("subproject1/v1.2.3", "subproject1/"),
+            "v1.2.3"
+        );
     }
 
     #[test]
@@ -1864,7 +1888,10 @@ mod tests {
     #[test]
     fn test_strip_monorepo_prefix_partial_match() {
         // "sub" is a prefix of "subproject1/" but not the full prefix.
-        assert_eq!(strip_monorepo_prefix("subproject1/v1.2.3", "sub"), "project1/v1.2.3");
+        assert_eq!(
+            strip_monorepo_prefix("subproject1/v1.2.3", "sub"),
+            "project1/v1.2.3"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1913,25 +1940,14 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
         // Versions should be compared using the stripped tag
-        init_repo_with_tags(
-            dir,
-            &[
-                "myapp/v1.0.0",
-                "myapp/v2.0.0",
-                "myapp/v1.5.0",
-            ],
-        );
+        init_repo_with_tags(dir, &["myapp/v1.0.0", "myapp/v2.0.0", "myapp/v1.5.0"]);
 
         let orig = std::env::current_dir().unwrap();
         std::env::set_current_dir(dir).unwrap();
 
-        let result = find_latest_tag_matching_with_prefix(
-            "v{{ .Version }}",
-            None,
-            None,
-            Some("myapp/"),
-        )
-        .unwrap();
+        let result =
+            find_latest_tag_matching_with_prefix("v{{ .Version }}", None, None, Some("myapp/"))
+                .unwrap();
         assert_eq!(
             result,
             Some("myapp/v2.0.0".to_string()),
@@ -1952,13 +1968,9 @@ mod tests {
         std::env::set_current_dir(dir).unwrap();
 
         // No tags start with "myapp/" so result should be None.
-        let result = find_latest_tag_matching_with_prefix(
-            "v{{ .Version }}",
-            None,
-            None,
-            Some("myapp/"),
-        )
-        .unwrap();
+        let result =
+            find_latest_tag_matching_with_prefix("v{{ .Version }}", None, None, Some("myapp/"))
+                .unwrap();
         assert_eq!(result, None);
 
         std::env::set_current_dir(orig).unwrap();
@@ -1975,19 +1987,9 @@ mod tests {
         std::env::set_current_dir(dir).unwrap();
 
         // Without monorepo prefix, should behave exactly like find_latest_tag_matching.
-        let result_with_prefix = find_latest_tag_matching_with_prefix(
-            "v{{ .Version }}",
-            None,
-            None,
-            None,
-        )
-        .unwrap();
-        let result_original = find_latest_tag_matching(
-            "v{{ .Version }}",
-            None,
-            None,
-        )
-        .unwrap();
+        let result_with_prefix =
+            find_latest_tag_matching_with_prefix("v{{ .Version }}", None, None, None).unwrap();
+        let result_original = find_latest_tag_matching("v{{ .Version }}", None, None).unwrap();
         assert_eq!(result_with_prefix, result_original);
         assert_eq!(result_with_prefix, Some("v2.0.0".to_string()));
 
@@ -1999,25 +2001,14 @@ mod tests {
     fn test_find_latest_tag_with_monorepo_prefix_and_prerelease() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
-        init_repo_with_tags(
-            dir,
-            &[
-                "svc/v1.0.0",
-                "svc/v1.1.0-rc.1",
-                "svc/v1.1.0",
-            ],
-        );
+        init_repo_with_tags(dir, &["svc/v1.0.0", "svc/v1.1.0-rc.1", "svc/v1.1.0"]);
 
         let orig = std::env::current_dir().unwrap();
         std::env::set_current_dir(dir).unwrap();
 
-        let result = find_latest_tag_matching_with_prefix(
-            "v{{ .Version }}",
-            None,
-            None,
-            Some("svc/"),
-        )
-        .unwrap();
+        let result =
+            find_latest_tag_matching_with_prefix("v{{ .Version }}", None, None, Some("svc/"))
+                .unwrap();
         assert_eq!(
             result,
             Some("svc/v1.1.0".to_string()),

@@ -67,18 +67,15 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
     // (GoReleaser project.go:22-43 infers from Cargo.toml/go.mod/git remote).
     if config.project_name.is_empty()
         && let Ok(cargo_toml) = std::fs::read_to_string("Cargo.toml")
-            && let Ok(doc) = cargo_toml.parse::<toml_edit::DocumentMut>()
-                && let Some(name) = doc
-                    .get("package")
-                    .and_then(|p| p.get("name"))
-                    .and_then(|n| n.as_str())
-                {
-                    config.project_name = name.to_string();
-                    log.verbose(&format!(
-                        "inferred project_name '{}' from Cargo.toml",
-                        name
-                    ));
-                }
+        && let Ok(doc) = cargo_toml.parse::<toml_edit::DocumentMut>()
+        && let Some(name) = doc
+            .get("package")
+            .and_then(|p| p.get("name"))
+            .and_then(|n| n.as_str())
+    {
+        config.project_name = name.to_string();
+        log.verbose(&format!("inferred project_name '{}' from Cargo.toml", name));
+    }
 
     // Auto-detect GitHub owner/name from git remote
     helpers::auto_detect_github(&mut config, &log);
@@ -147,12 +144,13 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
         let dist = &config.dist;
         if dist.exists()
             && let Ok(mut entries) = dist.read_dir()
-                && entries.next().is_some() {
-                    anyhow::bail!(
-                        "dist directory '{}' is not empty; use --clean to remove it first",
-                        dist.display()
-                    );
-                }
+            && entries.next().is_some()
+        {
+            anyhow::bail!(
+                "dist directory '{}' is not empty; use --clean to remove it first",
+                dist.display()
+            );
+        }
     }
 
     // Determine selected crates
@@ -241,12 +239,17 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
     // that template variables (Env.*, ProjectName, etc.) are available,
     // but BEFORE git context resolution (matching GoReleaser ordering).
     // Skip in --merge mode: the split jobs already validated the code.
-    if !opts.merge {
-        if let Some(before) = &config.before
-            && let Some(ref hooks) = before.pre
-        {
-            pipeline::run_hooks(hooks, "before", opts.dry_run, &log, Some(ctx.template_vars()))?;
-        }
+    if !opts.merge
+        && let Some(before) = &config.before
+        && let Some(ref hooks) = before.pre
+    {
+        pipeline::run_hooks(
+            hooks,
+            "before",
+            opts.dry_run,
+            &log,
+            Some(ctx.template_vars()),
+        )?;
     }
 
     // Resolve tag and populate git variables before running the pipeline.
@@ -427,11 +430,7 @@ fn run_post_pipeline(
     let goos = anodize_core::context::map_os_to_goos(std::env::consts::OS);
     let goarch = anodize_core::context::map_arch_to_goarch(std::env::consts::ARCH);
 
-    let tag = ctx
-        .template_vars()
-        .get("Tag")
-        .cloned()
-        .unwrap_or_default();
+    let tag = ctx.template_vars().get("Tag").cloned().unwrap_or_default();
     let previous_tag = ctx
         .template_vars()
         .get("PreviousTag")
@@ -496,12 +495,7 @@ fn run_post_pipeline(
             .context("failed to render metadata.mod_timestamp template")?;
         if !rendered.is_empty() {
             let mtime = anodize_core::util::parse_mod_timestamp(&rendered)
-                .with_context(|| {
-                    format!(
-                        "invalid metadata.mod_timestamp value: {:?}",
-                        rendered
-                    )
-                })?;
+                .with_context(|| format!("invalid metadata.mod_timestamp value: {:?}", rendered))?;
             anodize_core::util::set_file_mtime(&metadata_path, mtime)?;
             anodize_core::util::set_file_mtime(&artifacts_path, mtime)?;
             log.status(&format!(
@@ -633,10 +627,9 @@ fn close_milestones(
             }
             Err(e) => {
                 if milestone_cfg.fail_on_error.unwrap_or(false) {
-                    return Err(e.context(format!(
-                        "milestone: failed to close '{}'",
-                        milestone_name
-                    )));
+                    return Err(
+                        e.context(format!("milestone: failed to close '{}'", milestone_name))
+                    );
                 }
                 log.warn(&format!(
                     "milestone: could not close '{}': {}",
@@ -653,9 +646,11 @@ fn resolve_milestone_repo(
     config: &Config,
 ) -> (String, String) {
     if let Some(ref repo_cfg) = milestone_cfg.repo
-        && !repo_cfg.owner.is_empty() && !repo_cfg.name.is_empty() {
-            return (repo_cfg.owner.clone(), repo_cfg.name.clone());
-        }
+        && !repo_cfg.owner.is_empty()
+        && !repo_cfg.name.is_empty()
+    {
+        return (repo_cfg.owner.clone(), repo_cfg.name.clone());
+    }
 
     // Fall back to the first crate's release config
     for crate_cfg in &config.crates {
@@ -796,11 +791,7 @@ fn close_milestone_github(
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!(
-                "milestone: close failed (HTTP {}): {}",
-                status,
-                body
-            );
+            anyhow::bail!("milestone: close failed (HTTP {}): {}", status, body);
         }
 
         Ok(())
@@ -830,16 +821,18 @@ fn resolve_milestone_api_url(
 ) -> Option<String> {
     // Check top-level gitlab_urls / gitea_urls config
     if let Some(ref gitlab) = config.gitlab_urls
-        && let Some(ref api) = gitlab.api {
-            // Strip trailing /api/v4/ to get base URL
-            let base = api.trim_end_matches('/').trim_end_matches("/api/v4");
-            return Some(base.to_string());
-        }
+        && let Some(ref api) = gitlab.api
+    {
+        // Strip trailing /api/v4/ to get base URL
+        let base = api.trim_end_matches('/').trim_end_matches("/api/v4");
+        return Some(base.to_string());
+    }
     if let Some(ref gitea) = config.gitea_urls
-        && let Some(ref api) = gitea.api {
-            let base = api.trim_end_matches('/').trim_end_matches("/api/v1");
-            return Some(base.to_string());
-        }
+        && let Some(ref api) = gitea.api
+    {
+        let base = api.trim_end_matches('/').trim_end_matches("/api/v1");
+        return Some(base.to_string());
+    }
     None
 }
 
@@ -923,11 +916,7 @@ fn close_milestone_gitlab(
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!(
-                "milestone: GitLab close failed (HTTP {}): {}",
-                status,
-                body
-            );
+            anyhow::bail!("milestone: GitLab close failed (HTTP {}): {}", status, body);
         }
         Ok(())
     })
@@ -1016,11 +1005,7 @@ fn close_milestone_gitea(
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!(
-                "milestone: Gitea close failed (HTTP {}): {}",
-                status,
-                body
-            );
+            anyhow::bail!("milestone: Gitea close failed (HTTP {}): {}", status, body);
         }
         Ok(())
     })
@@ -1056,7 +1041,12 @@ fn detect_changed_crates(
     let mut oldest_tag: Option<String> = None;
 
     for c in crates {
-        let latest_tag = git::find_latest_tag_matching_with_prefix(&c.tag_template, git_config, None, monorepo_prefix)?;
+        let latest_tag = git::find_latest_tag_matching_with_prefix(
+            &c.tag_template,
+            git_config,
+            None,
+            monorepo_prefix,
+        )?;
         match &latest_tag {
             None => {
                 // No tag at all → always include

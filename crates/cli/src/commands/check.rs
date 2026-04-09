@@ -336,9 +336,20 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
     // 13. Validate sbom configs
     for (i, sbom) in config.sboms.iter().enumerate() {
         let idx_str = i.to_string();
-        let label = sbom.id.as_deref().unwrap_or_else(|| if i == 0 { "default" } else { &idx_str });
+        let label = sbom
+            .id
+            .as_deref()
+            .unwrap_or_else(|| if i == 0 { "default" } else { &idx_str });
         if let Some(ref artifacts) = sbom.artifacts {
-            let valid = ["source", "archive", "binary", "package", "diskimage", "installer", "any"];
+            let valid = [
+                "source",
+                "archive",
+                "binary",
+                "package",
+                "diskimage",
+                "installer",
+                "any",
+            ];
             if !valid.contains(&artifacts.as_str()) {
                 errors.push(format!(
                     "sboms[{}]: invalid artifacts type '{}' (valid: {})",
@@ -1089,7 +1100,15 @@ mod tests {
     #[test]
     fn test_valid_sbom_artifacts_pass() {
         use anodize_core::config::SbomConfig;
-        for art in &["source", "archive", "binary", "package", "diskimage", "installer", "any"] {
+        for art in &[
+            "source",
+            "archive",
+            "binary",
+            "package",
+            "diskimage",
+            "installer",
+            "any",
+        ] {
             let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
             config.sboms = vec![SbomConfig {
                 artifacts: Some(art.to_string()),

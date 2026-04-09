@@ -2,7 +2,7 @@ use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use base64::Engine as _;
 
 use anodize_core::artifact::{Artifact, ArtifactKind};
@@ -301,9 +301,10 @@ fn build_s3_store(
     // azurekeyvault://) use client-side encryption — the data is encrypted before
     // upload, so we must NOT also request server-side encryption.
     if let Some(ref kms_key) = config.kms_key
-        && parse_kms_provider(kms_key) == KmsProvider::ServerSide {
-            builder = builder.with_sse_kms_encryption(kms_key);
-        }
+        && parse_kms_provider(kms_key) == KmsProvider::ServerSide
+    {
+        builder = builder.with_sse_kms_encryption(kms_key);
+    }
 
     // S3 canned ACL via x-amz-acl header.
     // We set it as a default header on the client — since each blob config
@@ -621,11 +622,9 @@ fn upload_files(params: &UploadParams<'_>) -> Result<()> {
                 // This runs the CLI tool in a blocking spawn to avoid blocking
                 // the async runtime.
                 let upload_data = if let Some((kms_key, provider)) = client_kms {
-                    tokio::task::spawn_blocking(move || {
-                        encrypt_with_kms(&data, &kms_key, provider)
-                    })
-                    .await
-                    .map_err(|e| anyhow::anyhow!("KMS encryption task panicked: {}", e))??
+                    tokio::task::spawn_blocking(move || encrypt_with_kms(&data, &kms_key, provider))
+                        .await
+                        .map_err(|e| anyhow::anyhow!("KMS encryption task panicked: {}", e))??
                 } else {
                     data
                 };
@@ -814,16 +813,16 @@ impl Stage for BlobStage {
                 // blob configs use the same dst name, later writes will overwrite earlier
                 // ones. Users should ensure dst names are unique across configs.
                 if let Some(ref tpl_specs) = blob_cfg.templated_extra_files
-                    && !tpl_specs.is_empty() {
-                        let rendered =
-                            anodize_core::templated_files::process_templated_extra_files(
-                                tpl_specs,
-                                ctx,
-                                &ctx.config.dist,
-                                "blobs",
-                            )?;
-                        upload_items.extend(rendered);
-                    }
+                    && !tpl_specs.is_empty()
+                {
+                    let rendered = anodize_core::templated_files::process_templated_extra_files(
+                        tpl_specs,
+                        ctx,
+                        &ctx.config.dist,
+                        "blobs",
+                    )?;
+                    upload_items.extend(rendered);
+                }
 
                 // Note: metadata files are already handled by collect_artifacts()
                 // when include_meta is true — it includes ArtifactKind::Metadata
@@ -906,6 +905,7 @@ impl Stage for BlobStage {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use anodize_core::config::BlobConfig;
@@ -1202,10 +1202,7 @@ mod tests {
             KmsProvider::ServerSide
         );
         // Alias without scheme
-        assert_eq!(
-            parse_kms_provider("alias/my-key"),
-            KmsProvider::ServerSide
-        );
+        assert_eq!(parse_kms_provider("alias/my-key"), KmsProvider::ServerSide);
     }
 
     #[test]
@@ -1265,10 +1262,7 @@ mod tests {
     fn test_handle_upload_error_generic() {
         let err = object_store::Error::Generic {
             store: "S3",
-            source: Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "network timeout",
-            )),
+            source: Box::new(std::io::Error::other("network timeout")),
         };
         let anyhow_err = handle_upload_error(err, "a.tar.gz", "r/a.tar.gz");
         assert!(anyhow_err.to_string().contains("upload failed"));

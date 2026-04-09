@@ -61,13 +61,14 @@ pub fn run_publishers(
 
         // Check template-conditional disable
         if let Some(ref d) = publisher.disable
-            && d.is_disabled(|tmpl| template::render(tmpl, base_vars)) {
-                log.verbose(&format!(
-                    "[publisher] skipping {} -- disabled by template",
-                    label
-                ));
-                continue;
-            }
+            && d.is_disabled(|tmpl| template::render(tmpl, base_vars))
+        {
+            log.verbose(&format!(
+                "[publisher] skipping {} -- disabled by template",
+                label
+            ));
+            continue;
+        }
 
         if publisher.cmd.is_empty() {
             log.verbose(&format!("[publisher] skipping {} -- empty cmd", label));
@@ -78,8 +79,8 @@ pub fn run_publishers(
         let mut extra_artifacts: Vec<Artifact> = Vec::new();
         if let Some(ref extra_files) = publisher.extra_files {
             for ef in extra_files {
-                let rendered_glob = template::render(&ef.glob, base_vars)
-                    .unwrap_or_else(|_| ef.glob.clone());
+                let rendered_glob =
+                    template::render(&ef.glob, base_vars).unwrap_or_else(|_| ef.glob.clone());
                 let paths: Vec<PathBuf> = glob::glob(&rendered_glob)
                     .into_iter()
                     .flat_map(|entries| entries.filter_map(|e| e.ok()))
@@ -97,14 +98,15 @@ pub fn run_publishers(
                 if ef.name.is_some() && paths.len() > 1 {
                     anyhow::bail!(
                         "publisher {}: extra_files glob '{}' matched {} files but name_template is set (requires exactly 1 match)",
-                        label, rendered_glob, paths.len()
+                        label,
+                        rendered_glob,
+                        paths.len()
                     );
                 }
 
                 for path in paths {
                     let name = if let Some(ref name_tmpl) = ef.name {
-                        template::render(name_tmpl, base_vars)
-                            .unwrap_or_else(|_| name_tmpl.clone())
+                        template::render(name_tmpl, base_vars).unwrap_or_else(|_| name_tmpl.clone())
                     } else {
                         path.file_name()
                             .map(|n| n.to_string_lossy().to_string())
@@ -133,7 +135,10 @@ pub fn run_publishers(
                     .context("publisher: create temp dir for templated files")?;
                 let rendered =
                     anodize_core::templated_files::process_templated_extra_files_with_vars(
-                        tpl_specs, base_vars, tpl_dir.path(), &format!("publisher[{}]", label),
+                        tpl_specs,
+                        base_vars,
+                        tpl_dir.path(),
+                        &format!("publisher[{}]", label),
                     )?;
                 for (path, name) in rendered {
                     extra_artifacts.push(Artifact {
@@ -356,7 +361,11 @@ pub fn build_publisher_command(
     // Set ArtifactID from artifact metadata "id" key (Pro addition)
     vars.set(
         "ArtifactID",
-        artifact.metadata.get("id").map(|s| s.as_str()).unwrap_or(""),
+        artifact
+            .metadata
+            .get("id")
+            .map(|s| s.as_str())
+            .unwrap_or(""),
     );
 
     // Expose per-artifact Os, Arch, and Target template variables

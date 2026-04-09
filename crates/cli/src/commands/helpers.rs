@@ -122,14 +122,15 @@ pub fn resolve_git_context(
         let is_synthetic_tag = tag == "v0.0.0" && tag_override.is_none();
         if !is_synthetic_tag
             && let Ok(false) = git::tag_points_at_head(&tag)
-                && !ctx.options.snapshot {
-                    let head = git::get_short_commit().unwrap_or_else(|_| "unknown".to_string());
-                    anyhow::bail!(
-                        "tag {} does not point at HEAD ({}). Check out the tag or use --snapshot to skip this check.",
-                        tag,
-                        head
-                    );
-                }
+            && !ctx.options.snapshot
+        {
+            let head = git::get_short_commit().unwrap_or_else(|_| "unknown".to_string());
+            anyhow::bail!(
+                "tag {} does not point at HEAD ({}). Check out the tag or use --snapshot to skip this check.",
+                tag,
+                head
+            );
+        }
 
         match git::detect_git_info(&tag, ctx.skip_validate()) {
             Ok(mut git_info) => {
@@ -137,9 +138,7 @@ pub fn resolve_git_context(
                 // matching GoReleaser's CheckDirty behavior.
                 if git_info.dirty && !ctx.options.snapshot {
                     if ctx.options.dry_run {
-                        log.warn(
-                            "git is in a dirty state; run `git status` to see what changed."
-                        );
+                        log.warn("git is in a dirty state; run `git status` to see what changed.");
                     } else {
                         anyhow::bail!(
                             "git is in a dirty state; run `git status` to see what changed. \
@@ -325,8 +324,8 @@ pub fn setup_env(
     // Multiple-token detection (GoReleaser env.go:88-101 ErrMultipleTokens).
     // When multiple SCM tokens are set without force_token, error early.
     if resolved_force.is_none() {
-        let has_github = std::env::var("GITHUB_TOKEN").is_ok()
-            || std::env::var("ANODIZE_GITHUB_TOKEN").is_ok();
+        let has_github =
+            std::env::var("GITHUB_TOKEN").is_ok() || std::env::var("ANODIZE_GITHUB_TOKEN").is_ok();
         let has_gitlab = std::env::var("GITLAB_TOKEN").is_ok();
         let has_gitea = std::env::var("GITEA_TOKEN").is_ok();
         let count = [has_github, has_gitlab, has_gitea]
@@ -338,8 +337,16 @@ pub fn setup_env(
                 "multiple SCM tokens set simultaneously ({}). Set force_token in config \
                  or ANODIZE_FORCE_TOKEN env var to specify which to use.",
                 [
-                    if has_github { Some("GITHUB_TOKEN") } else { None },
-                    if has_gitlab { Some("GITLAB_TOKEN") } else { None },
+                    if has_github {
+                        Some("GITHUB_TOKEN")
+                    } else {
+                        None
+                    },
+                    if has_gitlab {
+                        Some("GITLAB_TOKEN")
+                    } else {
+                        None
+                    },
                     if has_gitea { Some("GITEA_TOKEN") } else { None },
                 ]
                 .into_iter()
@@ -354,9 +361,11 @@ pub fn setup_env(
     // Error early if no SCM token and the pipeline needs one.
     // Snapshot mode, dry-run, and release.disable can proceed without a token.
     if ctx.options.token.is_none() && !ctx.is_snapshot() && !ctx.is_dry_run() {
-        let release_disabled = config.crates.first().and_then(|c| {
-            c.release.as_ref()?.disable.as_ref()
-        }).is_some_and(|d| d.is_disabled(|t| ctx.render_template(t)));
+        let release_disabled = config
+            .crates
+            .first()
+            .and_then(|c| c.release.as_ref()?.disable.as_ref())
+            .is_some_and(|d| d.is_disabled(|t| ctx.render_template(t)));
         let needs_token = config.crates.iter().any(|c| c.release.is_some())
             && !ctx.should_skip("release")
             && !release_disabled;
@@ -365,9 +374,7 @@ pub fn setup_env(
                 anodize_core::scm::ScmTokenType::GitLab => {
                     "no GitLab token found. Set GITLAB_TOKEN."
                 }
-                anodize_core::scm::ScmTokenType::Gitea => {
-                    "no Gitea token found. Set GITEA_TOKEN."
-                }
+                anodize_core::scm::ScmTokenType::Gitea => "no Gitea token found. Set GITEA_TOKEN.",
                 anodize_core::scm::ScmTokenType::GitHub => {
                     "no GitHub token found. Set GITHUB_TOKEN or ANODIZE_GITHUB_TOKEN."
                 }
@@ -682,12 +689,22 @@ mod tests {
 
         assert_eq!(all[0].kind, ArtifactKind::Binary);
         assert_eq!(all[0].name, "myapp");
-        assert_eq!(all[0].size, Some(4096), "size should be preserved from JSON");
+        assert_eq!(
+            all[0].size,
+            Some(4096),
+            "size should be preserved from JSON"
+        );
 
         assert_eq!(all[1].kind, ArtifactKind::Archive);
         assert_eq!(all[1].name, "myapp.tar.gz");
-        assert_eq!(all[1].metadata.get("format").map(|s| s.as_str()), Some("tar.gz"));
-        assert_eq!(all[1].size, None, "size should be None when absent from JSON");
+        assert_eq!(
+            all[1].metadata.get("format").map(|s| s.as_str()),
+            Some("tar.gz")
+        );
+        assert_eq!(
+            all[1].size, None,
+            "size should be None when absent from JSON"
+        );
     }
 
     #[test]

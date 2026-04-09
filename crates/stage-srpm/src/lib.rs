@@ -30,10 +30,11 @@ impl Stage for SrpmStage {
 
         // Check disable
         if let Some(ref d) = srpm_cfg.disable
-            && d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
-                log.verbose("skipping disabled SRPM config");
-                return Ok(());
-            }
+            && d.is_disabled(|tmpl| ctx.render_template(tmpl))
+        {
+            log.verbose("skipping disabled SRPM config");
+            return Ok(());
+        }
 
         // GoReleaser parity: when global skip_sign is active, clear signature config
         let skip_sign = ctx.should_skip("sign");
@@ -67,38 +68,25 @@ impl Stage for SrpmStage {
         }
 
         let source_archive = &source_archives[0];
-        let package_name = srpm_cfg
-            .package_name
-            .as_deref()
-            .unwrap_or(&project_name);
+        let package_name = srpm_cfg.package_name.as_deref().unwrap_or(&project_name);
 
         // Read and render the spec file template
-        let spec_file = srpm_cfg
-            .spec_file
-            .as_deref()
-            .unwrap_or({
-                // No spec file configured — we'll generate a minimal one
-                ""
-            });
+        let spec_file = srpm_cfg.spec_file.as_deref().unwrap_or({
+            // No spec file configured — we'll generate a minimal one
+            ""
+        });
 
         let spec_contents = if spec_file.is_empty() {
             // Generate a minimal spec file
-            generate_default_spec(
-                package_name,
-                &version,
-                &srpm_cfg,
-                &source_archive.name,
-            )
+            generate_default_spec(package_name, &version, &srpm_cfg, &source_archive.name)
         } else {
             // Read the user-provided spec template and render it
             let template = fs::read_to_string(spec_file)
                 .with_context(|| format!("srpm: read spec file '{}'", spec_file))?;
 
             // Set SRPM-specific template vars
-            ctx.template_vars_mut()
-                .set("PackageName", package_name);
-            ctx.template_vars_mut()
-                .set("Source", &source_archive.name);
+            ctx.template_vars_mut().set("PackageName", package_name);
+            ctx.template_vars_mut().set("Source", &source_archive.name);
             if let Some(ref summary) = srpm_cfg.summary {
                 ctx.template_vars_mut().set("Summary", summary);
             }
@@ -134,8 +122,7 @@ impl Stage for SrpmStage {
             .as_deref()
             .unwrap_or("{{ PackageName }}-{{ Version }}.src.rpm");
 
-        ctx.template_vars_mut()
-            .set("PackageName", package_name);
+        ctx.template_vars_mut().set("PackageName", package_name);
 
         let package_filename = ctx
             .render_template(file_name_template)
@@ -181,8 +168,7 @@ impl Stage for SrpmStage {
 
         // Copy spec file to SPECS
         let spec_dest = specs_dir.join(format!("{}.spec", package_name));
-        fs::copy(&spec_path, &spec_dest)
-            .with_context(|| "srpm: copy spec to rpmbuild SPECS")?;
+        fs::copy(&spec_path, &spec_dest).with_context(|| "srpm: copy spec to rpmbuild SPECS")?;
 
         // Resolve signature configuration (GoReleaser parity: skip_sign + SRPM_PASSPHRASE)
         let effective_signature = if skip_sign {
@@ -200,19 +186,23 @@ impl Stage for SrpmStage {
 
         // Wire signing options when signature config is present
         if let Some(sig) = effective_signature
-            && let Some(ref key_file) = sig.key_file {
-                rpmbuild_cmd.arg("--define").arg(format!("_gpg_name {}", key_file));
-                rpmbuild_cmd.arg("--sign");
+            && let Some(ref key_file) = sig.key_file
+        {
+            rpmbuild_cmd
+                .arg("--define")
+                .arg(format!("_gpg_name {}", key_file));
+            rpmbuild_cmd.arg("--sign");
 
-                // GoReleaser parity: read SRPM_PASSPHRASE env var when no
-                // passphrase is configured inline.
-                if let Some(ref passphrase) = sig.passphrase {
-                    rpmbuild_cmd.env("GPG_PASSPHRASE", passphrase);
-                } else if let Ok(passphrase) = std::env::var("SRPM_PASSPHRASE")
-                    && !passphrase.is_empty() {
-                        rpmbuild_cmd.env("GPG_PASSPHRASE", &passphrase);
-                    }
+            // GoReleaser parity: read SRPM_PASSPHRASE env var when no
+            // passphrase is configured inline.
+            if let Some(ref passphrase) = sig.passphrase {
+                rpmbuild_cmd.env("GPG_PASSPHRASE", passphrase);
+            } else if let Ok(passphrase) = std::env::var("SRPM_PASSPHRASE")
+                && !passphrase.is_empty()
+            {
+                rpmbuild_cmd.env("GPG_PASSPHRASE", &passphrase);
             }
+        }
 
         rpmbuild_cmd.arg(&spec_dest);
         let output = rpmbuild_cmd
@@ -222,11 +212,7 @@ impl Stage for SrpmStage {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
-            anyhow::bail!(
-                "rpmbuild -bs failed:\n{}{}",
-                stdout,
-                stderr
-            );
+            anyhow::bail!("rpmbuild -bs failed:\n{}{}", stdout, stderr);
         }
 
         // Find the generated SRPM in SRPMS/
@@ -235,13 +221,18 @@ impl Stage for SrpmStage {
             .flat_map(|entries| entries.filter_map(|e| e.ok()))
             .collect();
 
-        let generated_path = generated
-            .first()
-            .ok_or_else(|| anyhow::anyhow!("srpm: rpmbuild succeeded but no .src.rpm found in SRPMS/"))?;
+        let generated_path = generated.first().ok_or_else(|| {
+            anyhow::anyhow!("srpm: rpmbuild succeeded but no .src.rpm found in SRPMS/")
+        })?;
 
         // Move to dist with the desired filename
-        fs::copy(generated_path, &srpm_path)
-            .with_context(|| format!("srpm: copy {} -> {}", generated_path.display(), srpm_path.display()))?;
+        fs::copy(generated_path, &srpm_path).with_context(|| {
+            format!(
+                "srpm: copy {} -> {}",
+                generated_path.display(),
+                srpm_path.display()
+            )
+        })?;
 
         // Register artifact
         let mut metadata = HashMap::new();
@@ -268,16 +259,10 @@ fn generate_default_spec(
     cfg: &SrpmConfig,
     source_name: &str,
 ) -> String {
-    let summary = cfg
-        .summary
-        .as_deref()
-        .unwrap_or(package_name);
+    let summary = cfg.summary.as_deref().unwrap_or(package_name);
     let license = cfg.license.as_deref().unwrap_or("MIT");
     let url = cfg.url.as_deref().unwrap_or("");
-    let description = cfg
-        .description
-        .as_deref()
-        .unwrap_or(package_name);
+    let description = cfg.description.as_deref().unwrap_or(package_name);
 
     let maintainer = cfg.maintainer.as_deref().unwrap_or(package_name);
     format!(
@@ -356,7 +341,10 @@ mod tests {
         let result = stage.run(&mut ctx);
         assert!(result.is_err());
         assert!(
-            result.unwrap_err().to_string().contains("no source archives"),
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("no source archives"),
             "should require source archive"
         );
     }

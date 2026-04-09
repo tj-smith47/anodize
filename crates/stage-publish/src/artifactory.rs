@@ -1,7 +1,7 @@
 use anodize_core::artifact::{Artifact, ArtifactKind};
 use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
@@ -106,12 +106,16 @@ pub fn collect_upload_artifacts<'a>(
             }
             // Extension filter
             if let Some(ext_list) = exts
-                && !ext_list.is_empty() {
-                    let name = a.name();
-                    if !ext_list.iter().any(|ext| name.ends_with(&format!(".{}", ext))) {
-                        return false;
-                    }
+                && !ext_list.is_empty()
+            {
+                let name = a.name();
+                if !ext_list
+                    .iter()
+                    .any(|ext| name.ends_with(&format!(".{}", ext)))
+                {
+                    return false;
                 }
+            }
             true
         })
         .collect();
@@ -155,8 +159,7 @@ pub fn build_reqwest_client(
     client_key_path: Option<&str>,
     trusted_certs_pem: Option<&str>,
 ) -> Result<reqwest::blocking::Client> {
-    let mut builder = reqwest::blocking::ClientBuilder::new()
-        .user_agent("anodize/1.0");
+    let mut builder = reqwest::blocking::ClientBuilder::new().user_agent("anodize/1.0");
 
     // mTLS client certificate
     if let (Some(cert_path), Some(key_path)) = (client_cert_path, client_key_path) {
@@ -182,7 +185,9 @@ pub fn build_reqwest_client(
         }
     }
 
-    builder.build().context("artifactory: failed to build HTTP client")
+    builder
+        .build()
+        .context("artifactory: failed to build HTTP client")
 }
 
 // ---------------------------------------------------------------------------
@@ -199,7 +204,8 @@ fn render_artifact_url(
     custom_artifact_name: bool,
 ) -> Result<String> {
     // First pass: render global vars through the template engine
-    let mut rendered = ctx.render_template(template)
+    let mut rendered = ctx
+        .render_template(template)
         .with_context(|| "artifactory: failed to render target URL template")?;
 
     // Replace artifact-specific placeholders that the global renderer doesn't know
@@ -248,10 +254,7 @@ pub fn upload_single_artifact(
 ) -> Result<()> {
     let path = &artifact.path;
     if !path.exists() {
-        bail!(
-            "artifactory: artifact file not found: {}",
-            path.display()
-        );
+        bail!("artifactory: artifact file not found: {}", path.display());
     }
     if path.is_dir() {
         bail!(
@@ -369,10 +372,11 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
     for entry in entries {
         // Check skip flag.
         if let Some(ref s) = entry.skip
-            && s.is_disabled(|tmpl| ctx.render_template(tmpl)) {
-                log.status("artifactory: entry skipped");
-                continue;
-            }
+            && s.is_disabled(|tmpl| ctx.render_template(tmpl))
+        {
+            log.status("artifactory: entry skipped");
+            continue;
+        }
 
         // Name is required.
         let name = match entry.name {
@@ -402,9 +406,9 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
         let name_upper = name.to_uppercase().replace('-', "_");
         let username_env_var = format!("ARTIFACTORY_{}_USERNAME", name_upper);
         let username = match entry.username {
-            Some(ref u) => ctx
-                .render_template(u)
-                .with_context(|| format!("artifactory: failed to render username for '{}'", name))?,
+            Some(ref u) => ctx.render_template(u).with_context(|| {
+                format!("artifactory: failed to render username for '{}'", name)
+            })?,
             None => std::env::var(&username_env_var).unwrap_or_default(),
         };
         let named_env_var = format!("ARTIFACTORY_{}_SECRET", name_upper);
@@ -413,9 +417,10 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
             .ok()
             .or_else(|| std::env::var(generic_env_var).ok())
             .or_else(|| {
-                entry.password.as_ref().and_then(|p| {
-                    ctx.render_template(p).ok()
-                })
+                entry
+                    .password
+                    .as_ref()
+                    .and_then(|p| ctx.render_template(p).ok())
             })
             .unwrap_or_default();
 
@@ -438,8 +443,9 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
 
         // --- Dry-run logging ---
         if ctx.is_dry_run() {
-            let target_url = ctx.render_template(target_template)
-                .with_context(|| format!("artifactory: failed to render target URL for '{}'", name))?;
+            let target_url = ctx.render_template(target_template).with_context(|| {
+                format!("artifactory: failed to render target URL for '{}'", name)
+            })?;
             log.status(&format!(
                 "(dry-run) would upload artifacts to Artifactory '{}' at {} (mode={}, method={}, user={})",
                 name, target_url, mode, method, username
@@ -459,10 +465,7 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
             if entry.trusted_certificates.is_some() {
                 log.status("(dry-run) using custom trusted certificates");
             }
-            log.status(&format!(
-                "(dry-run) checksum header: {}",
-                checksum_header
-            ));
+            log.status(&format!("(dry-run) checksum header: {}", checksum_header));
             if let Some(ref ids) = entry.ids {
                 log.status(&format!("(dry-run) build ID filter: {:?}", ids));
             }
@@ -584,10 +587,7 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
             )?;
         }
 
-        log.status(&format!(
-            "artifactory: upload complete for '{}'",
-            name
-        ));
+        log.status(&format!("artifactory: upload complete for '{}'", name));
     }
 
     Ok(())
@@ -908,7 +908,9 @@ mod tests {
         config.artifactories = Some(vec![ArtifactoryConfig {
             name: Some("test".to_string()),
             target: Some("https://art.example.com/repo/".to_string()),
-            trusted_certificates: Some("-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----".to_string()),
+            trusted_certificates: Some(
+                "-----BEGIN CERTIFICATE-----\nfake\n-----END CERTIFICATE-----".to_string(),
+            ),
             ..Default::default()
         }]);
         let ctx = dry_run_ctx(config);
@@ -987,12 +989,14 @@ mod tests {
         });
 
         // Archive mode should find archive but not binary
-        let archive_arts = collect_upload_artifacts(&ctx, "archive", None, None, false, false, false, false);
+        let archive_arts =
+            collect_upload_artifacts(&ctx, "archive", None, None, false, false, false, false);
         assert_eq!(archive_arts.len(), 1);
         assert_eq!(archive_arts[0].kind, ArtifactKind::Archive);
 
         // Binary mode should find binary but not archive
-        let binary_arts = collect_upload_artifacts(&ctx, "binary", None, None, false, false, false, false);
+        let binary_arts =
+            collect_upload_artifacts(&ctx, "binary", None, None, false, false, false, false);
         assert_eq!(binary_arts.len(), 1);
         assert_eq!(binary_arts[0].kind, ArtifactKind::UploadableBinary);
     }
@@ -1023,7 +1027,16 @@ mod tests {
         });
 
         let exts = vec!["zip".to_string()];
-        let arts = collect_upload_artifacts(&ctx, "archive", None, Some(&exts), false, false, false, false);
+        let arts = collect_upload_artifacts(
+            &ctx,
+            "archive",
+            None,
+            Some(&exts),
+            false,
+            false,
+            false,
+            false,
+        );
         assert_eq!(arts.len(), 1);
         assert!(arts[0].name().ends_with(".zip"));
     }
@@ -1054,7 +1067,8 @@ mod tests {
         });
 
         // Without include_checksum
-        let arts = collect_upload_artifacts(&ctx, "archive", None, None, false, false, false, false);
+        let arts =
+            collect_upload_artifacts(&ctx, "archive", None, None, false, false, false, false);
         assert_eq!(arts.len(), 1);
 
         // With include_checksum
@@ -1077,11 +1091,13 @@ mod tests {
         };
 
         // Without custom_artifact_name, appends artifact name to URL
-        let url = render_artifact_url(&ctx, "https://art.example.com/repo", &artifact, false).unwrap();
+        let url =
+            render_artifact_url(&ctx, "https://art.example.com/repo", &artifact, false).unwrap();
         assert!(url.ends_with("/myapp-1.0.0.tar.gz"));
 
         // With custom_artifact_name, does NOT append
-        let url = render_artifact_url(&ctx, "https://art.example.com/repo", &artifact, true).unwrap();
+        let url =
+            render_artifact_url(&ctx, "https://art.example.com/repo", &artifact, true).unwrap();
         assert!(!url.ends_with("/myapp-1.0.0.tar.gz"));
     }
 

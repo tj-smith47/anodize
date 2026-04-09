@@ -23,7 +23,6 @@ use anyhow::Result;
 use artifactory::publish_to_artifactory;
 use aur::publish_to_aur;
 use aur_source::{publish_to_aur_source, publish_top_level_aur_sources};
-use upload::publish_to_upload;
 use chocolatey::publish_to_chocolatey;
 use cloudsmith::publish_to_cloudsmith;
 use crates_io::publish_to_crates_io;
@@ -34,6 +33,7 @@ use krew::publish_to_krew;
 use nix::publish_to_nix;
 use npm::publish_to_npm;
 use scoop::publish_to_scoop;
+use upload::publish_to_upload;
 use winget::publish_to_winget;
 
 /// Collect crate names that match the selection filter and have a specific

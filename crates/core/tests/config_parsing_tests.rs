@@ -2511,7 +2511,10 @@ crates: []
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let discord = config.announce.as_ref().unwrap().discord.as_ref().unwrap();
-    assert_eq!(discord.enabled, Some(anodize_core::config::StringOrBool::Bool(true)));
+    assert_eq!(
+        discord.enabled,
+        Some(anodize_core::config::StringOrBool::Bool(true))
+    );
     assert_eq!(
         discord.webhook_url,
         Some("https://discord.com/api/webhooks/123/abc".to_string())
@@ -2534,7 +2537,10 @@ crates: []
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let slack = config.announce.as_ref().unwrap().slack.as_ref().unwrap();
-    assert_eq!(slack.enabled, Some(anodize_core::config::StringOrBool::Bool(true)));
+    assert_eq!(
+        slack.enabled,
+        Some(anodize_core::config::StringOrBool::Bool(true))
+    );
 }
 
 #[test]
@@ -2553,7 +2559,10 @@ crates: []
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let webhook = config.announce.as_ref().unwrap().webhook.as_ref().unwrap();
-    assert_eq!(webhook.enabled, Some(anodize_core::config::StringOrBool::Bool(true)));
+    assert_eq!(
+        webhook.enabled,
+        Some(anodize_core::config::StringOrBool::Bool(true))
+    );
     assert_eq!(
         webhook.endpoint_url,
         Some("https://api.example.com/webhook".to_string())
@@ -3697,7 +3706,10 @@ crates: []
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let discord = config.announce.as_ref().unwrap().discord.as_ref().unwrap();
-    assert_eq!(discord.enabled, Some(anodize_core::config::StringOrBool::Bool(false)));
+    assert_eq!(
+        discord.enabled,
+        Some(anodize_core::config::StringOrBool::Bool(false))
+    );
 }
 
 // ---- DockerSignConfig all fields ----
@@ -4389,7 +4401,9 @@ crates: []
 monorepo: {}
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    let mono = config.monorepo.expect("monorepo should be Some with defaults");
+    let mono = config
+        .monorepo
+        .expect("monorepo should be Some with defaults");
     assert!(mono.tag_prefix.is_none());
     assert!(mono.dir.is_none());
 }

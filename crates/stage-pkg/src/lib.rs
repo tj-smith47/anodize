@@ -984,7 +984,9 @@ crates:
 
         let pkg_cfg = PkgConfig {
             identifier: Some("com.example.myapp".to_string()),
-            extra_files: Some(vec![ExtraFileSpec::Glob(extra_path.to_string_lossy().into_owned())]),
+            extra_files: Some(vec![ExtraFileSpec::Glob(
+                extra_path.to_string_lossy().into_owned(),
+            )]),
             ..Default::default()
         };
 
@@ -1318,7 +1320,11 @@ crates:
         PkgStage.run(&mut ctx).unwrap();
 
         let pkgs = ctx.artifacts.by_kind(ArtifactKind::MacOsPackage);
-        assert_eq!(pkgs.len(), 1, "default use mode should select darwin binaries");
+        assert_eq!(
+            pkgs.len(),
+            1,
+            "default use mode should select darwin binaries"
+        );
     }
 
     #[test]

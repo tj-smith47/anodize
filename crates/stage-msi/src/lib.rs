@@ -409,12 +409,10 @@ impl Stage for MsiStage {
 
                     // Render WiX extensions through the template engine, filtering
                     // out empty strings (templates that evaluate to nothing).
-                    let rendered_extensions: Vec<String> = if let Some(ref exts) =
-                        msi_cfg.extensions
-                    {
-                        exts.iter()
-                            .filter_map(|ext_tmpl| {
-                                match ctx.render_template(ext_tmpl) {
+                    let rendered_extensions: Vec<String> =
+                        if let Some(ref exts) = msi_cfg.extensions {
+                            exts.iter()
+                                .filter_map(|ext_tmpl| match ctx.render_template(ext_tmpl) {
                                     Ok(rendered) => {
                                         let trimmed = rendered.trim().to_string();
                                         if trimmed.is_empty() {
@@ -430,12 +428,11 @@ impl Stage for MsiStage {
                                         ));
                                         None
                                     }
-                                }
-                            })
-                            .collect()
-                    } else {
-                        Vec::new()
-                    };
+                                })
+                                .collect()
+                        } else {
+                            Vec::new()
+                        };
 
                     if dry_run {
                         log.status(&format!(
@@ -459,9 +456,7 @@ impl Stage for MsiStage {
 
                         // Log extensions in dry-run mode
                         for ext in &rendered_extensions {
-                            log.status(&format!(
-                                "(dry-run) would add WiX extension: -ext {ext}"
-                            ));
+                            log.status(&format!("(dry-run) would add WiX extension: -ext {ext}"));
                         }
 
                         new_artifacts.push(make_msi_artifact(
@@ -500,10 +495,7 @@ impl Stage for MsiStage {
                         for filename in extras {
                             let src = PathBuf::from(filename);
                             if !src.exists() {
-                                anyhow::bail!(
-                                    "msi: extra_file '{}' does not exist",
-                                    filename
-                                );
+                                anyhow::bail!("msi: extra_file '{}' does not exist", filename);
                             }
                             let dest_name = src
                                 .file_name()
@@ -1766,7 +1758,9 @@ crates:
         let msis = config.crates[0].msis.as_ref().unwrap();
         assert_eq!(
             msis[0].disable,
-            Some(anodize_core::config::StringOrBool::String("true".to_string()))
+            Some(anodize_core::config::StringOrBool::String(
+                "true".to_string()
+            ))
         );
     }
 
@@ -1794,9 +1788,9 @@ crates:
 
     #[test]
     fn test_stage_disable_with_string_true() {
+        use anodize_core::artifact::Artifact;
         use anodize_core::config::{Config, CrateConfig, MsiConfig, StringOrBool};
         use anodize_core::context::{Context, ContextOptions};
-        use anodize_core::artifact::Artifact;
 
         let tmp = TempDir::new().unwrap();
         let wxs_path = tmp.path().join("app.wxs");
@@ -1971,7 +1965,11 @@ crates:
         stage.run(&mut ctx).unwrap();
 
         let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
-        assert_eq!(installers.len(), 1, "should produce MSI artifact even with extra_files");
+        assert_eq!(
+            installers.len(),
+            1,
+            "should produce MSI artifact even with extra_files"
+        );
     }
 
     // -----------------------------------------------------------------------

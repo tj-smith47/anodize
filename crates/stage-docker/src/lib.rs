@@ -24,8 +24,12 @@ fn levenshtein_distance(a: &str, b: &str) -> usize {
     let b_chars: Vec<char> = b.chars().collect();
     let a_len = a_chars.len();
     let b_len = b_chars.len();
-    if a_len == 0 { return b_len; }
-    if b_len == 0 { return a_len; }
+    if a_len == 0 {
+        return b_len;
+    }
+    if b_len == 0 {
+        return a_len;
+    }
 
     let mut prev: Vec<usize> = (0..=b_len).collect();
     let mut curr = vec![0usize; b_len + 1];
@@ -34,9 +38,7 @@ fn levenshtein_distance(a: &str, b: &str) -> usize {
         curr[0] = i + 1;
         for (j, cb) in b_chars.iter().enumerate() {
             let cost = if ca == cb { 0 } else { 1 };
-            curr[j + 1] = (prev[j] + cost)
-                .min(prev[j + 1] + 1)
-                .min(curr[j] + 1);
+            curr[j + 1] = (prev[j] + cost).min(prev[j + 1] + 1).min(curr[j] + 1);
         }
         std::mem::swap(&mut prev, &mut curr);
     }
@@ -185,9 +187,7 @@ fn is_docker_daemon_available() -> bool {
 /// check ensures users know their setup may not work for multi-platform builds.
 fn check_buildx_driver(log: &StageLogger) {
     // Capability probe — no context env injection needed (reads driver info only).
-    let output = Command::new("docker")
-        .args(["buildx", "inspect"])
-        .output();
+    let output = Command::new("docker").args(["buildx", "inspect"]).output();
     match output {
         Ok(o) => {
             let stdout = String::from_utf8_lossy(&o.stdout);
@@ -614,7 +614,11 @@ fn resolve_digest_config(
             let rendered = ctx.render_template(tmpl).with_context(|| {
                 format!("docker: failed to render digest name_template '{}'", tmpl)
             })?;
-            if rendered.is_empty() { None } else { Some(rendered) }
+            if rendered.is_empty() {
+                None
+            } else {
+                Some(rendered)
+            }
         }
         None => None,
     };
@@ -680,11 +684,7 @@ pub fn resolve_skip_push(skip_push: &Option<SkipPushConfig>, ctx: &Context) -> b
 /// Recursively list files in the staging directory for COPY/ADD failure
 /// diagnostics.  Logs each entry as a warning so users can see exactly which
 /// files are staged.
-fn list_staging_dir_recursive(
-    dir: &std::path::Path,
-    root: &std::path::Path,
-    log: &StageLogger,
-) {
+fn list_staging_dir_recursive(dir: &std::path::Path, root: &std::path::Path, log: &StageLogger) {
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return,
@@ -712,10 +712,12 @@ fn list_staging_dir_recursive(
 fn find_sha256_digest(text: &str) -> Option<&str> {
     for word in text.split_whitespace() {
         if let Some(rest) = word.strip_prefix("sha256:")
-            && rest.len() >= 64 && rest[..64].chars().all(|c| c.is_ascii_hexdigit()) {
-                // Return exactly "sha256:" + 64 hex chars (ignore trailing chars)
-                return Some(&word[..71]);
-            }
+            && rest.len() >= 64
+            && rest[..64].chars().all(|c| c.is_ascii_hexdigit())
+        {
+            // Return exactly "sha256:" + 64 hex chars (ignore trailing chars)
+            return Some(&word[..71]);
+        }
     }
     None
 }
@@ -789,7 +791,10 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
     for attempt in 1..=job.max_attempts {
         if attempt > 1 {
             let multiplier = 2u64.saturating_pow(attempt - 2);
-            let delay_ms = job.base_delay.as_millis().saturating_mul(multiplier as u128);
+            let delay_ms = job
+                .base_delay
+                .as_millis()
+                .saturating_mul(multiplier as u128);
             let mut delay = Duration::from_millis(delay_ms as u64);
             if let Some(cap) = job.max_delay
                 && delay > cap
@@ -813,17 +818,17 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
         for (key, value) in &job.env_vars {
             cmd.env(key, value);
         }
-        let mut output = cmd.output()
-            .with_context(|| {
-                format!(
-                    "docker: execute {} for crate {} index {} (attempt {}/{})",
-                    job.backend_label, job.crate_name, job.idx, attempt, job.max_attempts
-                )
-            })?;
+        let mut output = cmd.output().with_context(|| {
+            format!(
+                "docker: execute {} for crate {} index {} (attempt {}/{})",
+                job.backend_label, job.crate_name, job.idx, attempt, job.max_attempts
+            )
+        })?;
 
         // Redact secrets from stdout/stderr before any output or logging.
         // This ensures secrets don't leak through error messages or diagnostics.
-        let env_pairs: Vec<(String, String)> = job.env_vars
+        let env_pairs: Vec<(String, String)> = job
+            .env_vars
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .chain(std::env::vars())
@@ -831,12 +836,16 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
 
         if !output.stdout.is_empty() {
             let redacted = anodize_core::redact::redact_string(
-                &String::from_utf8_lossy(&output.stdout), &env_pairs);
+                &String::from_utf8_lossy(&output.stdout),
+                &env_pairs,
+            );
             output.stdout = redacted.into_bytes();
         }
         if !output.stderr.is_empty() {
             let redacted = anodize_core::redact::redact_string(
-                &String::from_utf8_lossy(&output.stderr), &env_pairs);
+                &String::from_utf8_lossy(&output.stderr),
+                &env_pairs,
+            );
             output.stderr = redacted.into_bytes();
         }
 
@@ -879,8 +888,7 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
                     }
                     // Diagnostic: buildx context / TLS errors
                     if stderr_text.contains("could not read certificates")
-                        || stderr_text
-                            .contains("server gave HTTP response to HTTPS client")
+                        || stderr_text.contains("server gave HTTP response to HTTPS client")
                     {
                         log.warn(
                             "this may be a Docker context issue — \
@@ -920,7 +928,11 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
     let mut push_stdout_digests: HashMap<String, String> = HashMap::new();
 
     if job.should_push && !job.is_v2 && job.backend_label != "buildx" {
-        let push_bin = if job.backend_label == "podman" { "podman" } else { "docker" };
+        let push_bin = if job.backend_label == "podman" {
+            "podman"
+        } else {
+            "docker"
+        };
         for tag in &job.rendered_tags {
             log.status(&format!("pushing {}", tag));
 
@@ -928,7 +940,10 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
             for attempt in 1..=job.max_attempts {
                 if attempt > 1 {
                     let multiplier = 2u64.saturating_pow(attempt - 2);
-                    let delay_ms = job.base_delay.as_millis().saturating_mul(multiplier as u128);
+                    let delay_ms = job
+                        .base_delay
+                        .as_millis()
+                        .saturating_mul(multiplier as u128);
                     let mut delay = Duration::from_millis(delay_ms as u64);
                     if let Some(cap) = job.max_delay
                         && delay > cap
@@ -937,7 +952,10 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
                     }
                     log.warn(&format!(
                         "push attempt {}/{} for {} failed, retrying in {:?}…",
-                        attempt - 1, job.max_attempts, tag, delay,
+                        attempt - 1,
+                        job.max_attempts,
+                        tag,
+                        delay,
                     ));
                     std::thread::sleep(delay);
                 }
@@ -963,7 +981,8 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
                 })?;
 
                 // Redact secrets from push output
-                let env_pairs: Vec<(String, String)> = job.env_vars
+                let env_pairs: Vec<(String, String)> = job
+                    .env_vars
                     .iter()
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .chain(std::env::vars())
@@ -972,12 +991,16 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
                 let mut stderr_bytes = push_output.stderr;
                 if !stdout_bytes.is_empty() {
                     let redacted = anodize_core::redact::redact_string(
-                        &String::from_utf8_lossy(&stdout_bytes), &env_pairs);
+                        &String::from_utf8_lossy(&stdout_bytes),
+                        &env_pairs,
+                    );
                     stdout_bytes = redacted.into_bytes();
                 }
                 if !stderr_bytes.is_empty() {
                     let redacted = anodize_core::redact::redact_string(
-                        &String::from_utf8_lossy(&stderr_bytes), &env_pairs);
+                        &String::from_utf8_lossy(&stderr_bytes),
+                        &env_pairs,
+                    );
                     stderr_bytes = redacted.into_bytes();
                 }
 
@@ -1124,7 +1147,10 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
         }
     }
 
-    Ok(DockerBuildResult { tag_digests, digest_files })
+    Ok(DockerBuildResult {
+        tag_digests,
+        digest_files,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1379,18 +1405,26 @@ fn copy_dockerfile(
 
 /// Project root markers that likely don't belong in Docker images.
 const PROJECT_MARKERS: &[&str] = &[
-    "go.mod", "go.sum", "Cargo.toml", "Cargo.lock",
-    "pyproject.toml", "setup.py", "setup.cfg",
-    "package.json", "package-lock.json", "yarn.lock",
-    "Gemfile", "Gemfile.lock", "Makefile", "CMakeLists.txt",
-    "pom.xml", "build.gradle", "build.gradle.kts",
+    "go.mod",
+    "go.sum",
+    "Cargo.toml",
+    "Cargo.lock",
+    "pyproject.toml",
+    "setup.py",
+    "setup.cfg",
+    "package.json",
+    "package-lock.json",
+    "yarn.lock",
+    "Gemfile",
+    "Gemfile.lock",
+    "Makefile",
+    "CMakeLists.txt",
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
 ];
 
-fn warn_project_markers_in_extra_files(
-    extra_files: &[String],
-    log: &StageLogger,
-    label: &str,
-) {
+fn warn_project_markers_in_extra_files(extra_files: &[String], log: &StageLogger, label: &str) {
     for file in extra_files {
         let filename = std::path::Path::new(file)
             .file_name()
@@ -1493,9 +1527,7 @@ impl Stage for DockerStage {
             .crates
             .iter()
             .filter(|c| selected.is_empty() || selected.contains(&c.name))
-            .filter(|c| {
-                c.docker.is_some() || c.docker_v2.is_some() || c.docker_manifests.is_some()
-            })
+            .filter(|c| c.docker.is_some() || c.docker_v2.is_some() || c.docker_manifests.is_some())
             .cloned()
             .collect();
 
@@ -1511,13 +1543,14 @@ impl Stage for DockerStage {
                 if let Some(ref v2_cfgs) = krate.docker_v2 {
                     for v2_cfg in v2_cfgs {
                         if let Some(ref id) = v2_cfg.id
-                            && !seen_ids.insert(id.clone()) {
-                                log.warn(&format!(
-                                    "duplicate docker_v2 config id '{}' — \
+                            && !seen_ids.insert(id.clone())
+                        {
+                            log.warn(&format!(
+                                "duplicate docker_v2 config id '{}' — \
                                      each config should have a unique id",
-                                    id
-                                ));
-                            }
+                                id
+                            ));
+                        }
                     }
                 }
             }
@@ -1547,15 +1580,16 @@ impl Stage for DockerStage {
             for (idx, docker_cfg) in docker_configs.iter().enumerate() {
                 // Check disable (template-aware) before doing any work.
                 if let Some(ref d) = docker_cfg.disable
-                    && d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
-                        let fallback = format!("index {}", idx);
-                        let label = docker_cfg.id.as_deref().unwrap_or(&fallback);
-                        log.status(&format!(
-                            "docker: skipping disabled config '{}' for crate {}",
-                            label, krate.name
-                        ));
-                        continue;
-                    }
+                    && d.is_disabled(|tmpl| ctx.render_template(tmpl))
+                {
+                    let fallback = format!("index {}", idx);
+                    let label = docker_cfg.id.as_deref().unwrap_or(&fallback);
+                    log.status(&format!(
+                        "docker: skipping disabled config '{}' for crate {}",
+                        label, krate.name
+                    ));
+                    continue;
+                }
 
                 // Determine platforms (default: empty = use host platform, no --platform flag).
                 // GoReleaser omits --platform when unset, letting Docker use the host platform.
@@ -1607,8 +1641,10 @@ impl Stage for DockerStage {
                 } else {
                     &docker_cfg.dockerfile
                 };
-                let rendered_dockerfile = ctx.render_template(dockerfile_raw)
-                    .with_context(|| format!("docker: render dockerfile path '{}'", dockerfile_raw))?;
+                let rendered_dockerfile =
+                    ctx.render_template(dockerfile_raw).with_context(|| {
+                        format!("docker: render dockerfile path '{}'", dockerfile_raw)
+                    })?;
                 copy_dockerfile(&rendered_dockerfile, &staging_dir, dry_run, &log, "docker")?;
 
                 if let Some(ref extra_files) = docker_cfg.extra_files {
@@ -1618,11 +1654,15 @@ impl Stage for DockerStage {
 
                 // Process templated_extra_files: render and copy to staging dir
                 if let Some(ref tpl_specs) = docker_cfg.templated_extra_files
-                    && !tpl_specs.is_empty() {
-                        anodize_core::templated_files::process_templated_extra_files(
-                            tpl_specs, ctx, &staging_dir, "docker",
-                        )?;
-                    }
+                    && !tpl_specs.is_empty()
+                {
+                    anodize_core::templated_files::process_templated_extra_files(
+                        tpl_specs,
+                        ctx,
+                        &staging_dir,
+                        "docker",
+                    )?;
+                }
 
                 // ------------------------------------------------------------------
                 // Render image tag templates
@@ -1841,9 +1881,7 @@ impl Stage for DockerStage {
                     .clone()
                     .unwrap_or_default()
                     .into_iter()
-                    .filter_map(|p| {
-                        ctx.render_template(&p).ok().filter(|r| !r.is_empty())
-                    })
+                    .filter_map(|p| ctx.render_template(&p).ok().filter(|r| !r.is_empty()))
                     .collect();
 
                 // V2 always uses buildx
@@ -1874,14 +1912,20 @@ impl Stage for DockerStage {
                 )?;
 
                 // Template-render the Dockerfile path (GoReleaser does this via tmpl.New(ctx).Apply)
-                let rendered_dockerfile = ctx.render_template(&v2_cfg.dockerfile)
-                    .with_context(|| {
+                let rendered_dockerfile =
+                    ctx.render_template(&v2_cfg.dockerfile).with_context(|| {
                         format!(
                             "docker_v2: render dockerfile path '{}' for crate {}",
                             v2_cfg.dockerfile, krate.name
                         )
                     })?;
-                copy_dockerfile(&rendered_dockerfile, &staging_dir, dry_run, &log, "docker_v2")?;
+                copy_dockerfile(
+                    &rendered_dockerfile,
+                    &staging_dir,
+                    dry_run,
+                    &log,
+                    "docker_v2",
+                )?;
 
                 if let Some(ref extra_files) = v2_cfg.extra_files {
                     warn_project_markers_in_extra_files(extra_files, &log, "docker_v2");
@@ -1921,11 +1965,12 @@ impl Stage for DockerStage {
                 // For snapshot builds, GoReleaser splits multi-platform configs
                 // into per-platform builds with --load (no push) and tag suffix.
                 // This builds each platform separately so images are available locally.
-                let snapshot_platforms: Vec<Vec<String>> = if ctx.is_snapshot() && platforms.len() > 1 {
-                    platforms.iter().map(|p| vec![p.clone()]).collect()
-                } else {
-                    vec![platforms.clone()]
-                };
+                let snapshot_platforms: Vec<Vec<String>> =
+                    if ctx.is_snapshot() && platforms.len() > 1 {
+                        platforms.iter().map(|p| vec![p.clone()]).collect()
+                    } else {
+                        vec![platforms.clone()]
+                    };
 
                 for snapshot_plats in &snapshot_platforms {
                     let mut per_plat_tags = rendered_tags.clone();
@@ -1939,201 +1984,208 @@ impl Stage for DockerStage {
                         }
                     }
 
-                // Generate image:tag combinations
-                let image_tags = generate_v2_image_tags(&rendered_images, &per_plat_tags);
+                    // Generate image:tag combinations
+                    let image_tags = generate_v2_image_tags(&rendered_images, &per_plat_tags);
 
-                if image_tags.is_empty() {
-                    log.warn(&format!(
+                    if image_tags.is_empty() {
+                        log.warn(&format!(
                         "docker_v2[{}]: no image tags produced for crate {} (images or tags resolved to empty); skipping",
                         idx, krate.name
                     ));
-                    continue;
-                }
+                        continue;
+                    }
 
-                // Render build_args (template-aware keys and values, matching GoReleaser's tplMapFlags)
-                let mut rendered_build_args: Vec<(String, String)> = Vec::new();
-                if let Some(ref args_map) = v2_cfg.build_args {
-                    for (key_tmpl, value_tmpl) in args_map {
-                        let rendered_key = ctx.render_template(key_tmpl).with_context(|| {
-                            format!("docker_v2: render build_arg key '{}'", key_tmpl)
-                        })?;
-                        let rendered_value = ctx.render_template(value_tmpl).with_context(|| {
-                            format!("docker_v2: render build_arg value for '{}'", key_tmpl)
-                        })?;
-                        // Skip entries where key or value is empty after templating
-                        if !rendered_key.is_empty() && !rendered_value.is_empty() {
-                            rendered_build_args.push((rendered_key, rendered_value));
+                    // Render build_args (template-aware keys and values, matching GoReleaser's tplMapFlags)
+                    let mut rendered_build_args: Vec<(String, String)> = Vec::new();
+                    if let Some(ref args_map) = v2_cfg.build_args {
+                        for (key_tmpl, value_tmpl) in args_map {
+                            let rendered_key =
+                                ctx.render_template(key_tmpl).with_context(|| {
+                                    format!("docker_v2: render build_arg key '{}'", key_tmpl)
+                                })?;
+                            let rendered_value =
+                                ctx.render_template(value_tmpl).with_context(|| {
+                                    format!("docker_v2: render build_arg value for '{}'", key_tmpl)
+                                })?;
+                            // Skip entries where key or value is empty after templating
+                            if !rendered_key.is_empty() && !rendered_value.is_empty() {
+                                rendered_build_args.push((rendered_key, rendered_value));
+                            }
+                        }
+                        rendered_build_args.sort_by(|a, b| a.0.cmp(&b.0));
+                    }
+
+                    // Render annotations (template-aware keys and values)
+                    let mut rendered_annotations: Vec<(String, String)> = Vec::new();
+                    if let Some(ref ann_map) = v2_cfg.annotations {
+                        for (key_tmpl, value_tmpl) in ann_map {
+                            let rendered_key =
+                                ctx.render_template(key_tmpl).with_context(|| {
+                                    format!("docker_v2: render annotation key '{}'", key_tmpl)
+                                })?;
+                            let rendered_value =
+                                ctx.render_template(value_tmpl).with_context(|| {
+                                    format!("docker_v2: render annotation value for '{}'", key_tmpl)
+                                })?;
+                            if !rendered_key.is_empty() && !rendered_value.is_empty() {
+                                rendered_annotations.push((rendered_key, rendered_value));
+                            }
+                        }
+                        rendered_annotations.sort_by(|a, b| a.0.cmp(&b.0));
+                    }
+
+                    // Render labels (template-aware keys and values)
+                    let mut rendered_labels: Vec<(String, String)> = Vec::new();
+                    if let Some(ref label_map) = v2_cfg.labels {
+                        for (key_tmpl, value_tmpl) in label_map {
+                            let rendered_key =
+                                ctx.render_template(key_tmpl).with_context(|| {
+                                    format!("docker_v2: render label key '{}'", key_tmpl)
+                                })?;
+                            let rendered_value =
+                                ctx.render_template(value_tmpl).with_context(|| {
+                                    format!("docker_v2: render label value for '{}'", key_tmpl)
+                                })?;
+                            if !rendered_key.is_empty() && !rendered_value.is_empty() {
+                                rendered_labels.push((rendered_key, rendered_value));
+                            }
+                        }
+                        rendered_labels.sort_by(|a, b| a.0.cmp(&b.0));
+                    }
+
+                    // Render flags (template-aware, filter empty results)
+                    let mut rendered_flags: Vec<String> = Vec::new();
+                    if let Some(ref flag_list) = v2_cfg.flags {
+                        for flag_tmpl in flag_list {
+                            let rendered = ctx.render_template(flag_tmpl).with_context(|| {
+                                format!("docker_v2: render flag '{}'", flag_tmpl)
+                            })?;
+                            if !rendered.is_empty() {
+                                rendered_flags.push(rendered);
+                            }
                         }
                     }
-                    rendered_build_args.sort_by(|a, b| a.0.cmp(&b.0));
-                }
 
-                // Render annotations (template-aware keys and values)
-                let mut rendered_annotations: Vec<(String, String)> = Vec::new();
-                if let Some(ref ann_map) = v2_cfg.annotations {
-                    for (key_tmpl, value_tmpl) in ann_map {
-                        let rendered_key = ctx.render_template(key_tmpl).with_context(|| {
-                            format!("docker_v2: render annotation key '{}'", key_tmpl)
-                        })?;
-                        let rendered_value = ctx.render_template(value_tmpl).with_context(|| {
-                            format!("docker_v2: render annotation value for '{}'", key_tmpl)
-                        })?;
-                        if !rendered_key.is_empty() && !rendered_value.is_empty() {
-                            rendered_annotations.push((rendered_key, rendered_value));
-                        }
-                    }
-                    rendered_annotations.sort_by(|a, b| a.0.cmp(&b.0));
-                }
-
-                // Render labels (template-aware keys and values)
-                let mut rendered_labels: Vec<(String, String)> = Vec::new();
-                if let Some(ref label_map) = v2_cfg.labels {
-                    for (key_tmpl, value_tmpl) in label_map {
-                        let rendered_key = ctx.render_template(key_tmpl).with_context(|| {
-                            format!("docker_v2: render label key '{}'", key_tmpl)
-                        })?;
-                        let rendered_value = ctx.render_template(value_tmpl).with_context(|| {
-                            format!("docker_v2: render label value for '{}'", key_tmpl)
-                        })?;
-                        if !rendered_key.is_empty() && !rendered_value.is_empty() {
-                            rendered_labels.push((rendered_key, rendered_value));
-                        }
-                    }
-                    rendered_labels.sort_by(|a, b| a.0.cmp(&b.0));
-                }
-
-                // Render flags (template-aware, filter empty results)
-                let mut rendered_flags: Vec<String> = Vec::new();
-                if let Some(ref flag_list) = v2_cfg.flags {
-                    for flag_tmpl in flag_list {
-                        let rendered = ctx.render_template(flag_tmpl).with_context(|| {
-                            format!("docker_v2: render flag '{}'", flag_tmpl)
-                        })?;
-                        if !rendered.is_empty() {
-                            rendered_flags.push(rendered);
-                        }
-                    }
-                }
-
-                // Evaluate sbom — GoReleaser only adds SBOM in the Publish path (not snapshot).
-                let sbom_enabled = if ctx.is_snapshot() {
-                    false
-                } else {
-                    is_docker_v2_sbom_enabled(&v2_cfg.sbom, ctx)
-                };
-
-                let platform_refs: Vec<&str> = snapshot_plats.iter().map(|s| s.as_str()).collect();
-                let staging_str = staging_dir.to_string_lossy().into_owned();
-
-                // Snapshot builds never push (GoReleaser uses --load per-platform).
-                // Non-snapshot: push unless skip_push is set.
-                let should_push = if ctx.is_snapshot() {
-                    false
-                } else {
-                    let v2_skip_push = match &v2_cfg.skip_push {
-                        None => false,
-                        Some(s) => s.evaluates_to_true(|tmpl| ctx.render_template(tmpl)),
+                    // Evaluate sbom — GoReleaser only adds SBOM in the Publish path (not snapshot).
+                    let sbom_enabled = if ctx.is_snapshot() {
+                        false
+                    } else {
+                        is_docker_v2_sbom_enabled(&v2_cfg.sbom, ctx)
                     };
-                    !dry_run && !v2_skip_push
-                };
 
-                // Determine whether --load is safe (requires a running daemon).
-                // In snapshot mode, warn if daemon is unavailable and skip --load.
-                let should_load = if ctx.is_snapshot() {
-                    let daemon_ok = is_docker_daemon_available();
-                    if !daemon_ok {
-                        log.warn(
-                            "docker daemon not available; snapshot build will skip --load \
-                             (image won't be loaded into local daemon)"
-                        );
-                    }
-                    daemon_ok
-                } else {
-                    true
-                };
+                    let platform_refs: Vec<&str> =
+                        snapshot_plats.iter().map(|s| s.as_str()).collect();
+                    let staging_str = staging_dir.to_string_lossy().into_owned();
 
-                let cmd_args = build_docker_v2_command(
-                    &staging_str,
-                    &platform_refs,
-                    &image_tags,
-                    &rendered_build_args,
-                    &rendered_annotations,
-                    &rendered_labels,
-                    &rendered_flags,
-                    sbom_enabled,
-                    should_push,
-                    should_load,
-                )?;
+                    // Snapshot builds never push (GoReleaser uses --load per-platform).
+                    // Non-snapshot: push unless skip_push is set.
+                    let should_push = if ctx.is_snapshot() {
+                        false
+                    } else {
+                        let v2_skip_push = match &v2_cfg.skip_push {
+                            None => false,
+                            Some(s) => s.evaluates_to_true(|tmpl| ctx.render_template(tmpl)),
+                        };
+                        !dry_run && !v2_skip_push
+                    };
 
-                // Resolve retry configuration
-                let (max_attempts, base_delay, max_delay) =
-                    resolve_retry_params(&v2_cfg.retry).with_context(|| {
-                        format!(
-                            "docker_v2: invalid retry config for crate {} index {}",
-                            krate.name, idx
-                        )
-                    })?;
+                    // Determine whether --load is safe (requires a running daemon).
+                    // In snapshot mode, warn if daemon is unavailable and skip --load.
+                    let should_load = if ctx.is_snapshot() {
+                        let daemon_ok = is_docker_daemon_available();
+                        if !daemon_ok {
+                            log.warn(
+                                "docker daemon not available; snapshot build will skip --load \
+                             (image won't be loaded into local daemon)",
+                            );
+                        }
+                        daemon_ok
+                    } else {
+                        true
+                    };
 
-                if dry_run {
-                    log.status(&format!("(dry-run) would run: {}", cmd_args.join(" ")));
-                    if max_attempts > 1 {
-                        log.status(&format!(
-                            "(dry-run) retry: up to {} attempts, base delay {:?}{}",
+                    let cmd_args = build_docker_v2_command(
+                        &staging_str,
+                        &platform_refs,
+                        &image_tags,
+                        &rendered_build_args,
+                        &rendered_annotations,
+                        &rendered_labels,
+                        &rendered_flags,
+                        sbom_enabled,
+                        should_push,
+                        should_load,
+                    )?;
+
+                    // Resolve retry configuration
+                    let (max_attempts, base_delay, max_delay) = resolve_retry_params(&v2_cfg.retry)
+                        .with_context(|| {
+                            format!(
+                                "docker_v2: invalid retry config for crate {} index {}",
+                                krate.name, idx
+                            )
+                        })?;
+
+                    if dry_run {
+                        log.status(&format!("(dry-run) would run: {}", cmd_args.join(" ")));
+                        if max_attempts > 1 {
+                            log.status(&format!(
+                                "(dry-run) retry: up to {} attempts, base delay {:?}{}",
+                                max_attempts,
+                                base_delay,
+                                match max_delay {
+                                    Some(d) => format!(", max delay {:?}", d),
+                                    None => String::new(),
+                                }
+                            ));
+                        }
+                        // Register artifacts in dry-run
+                        for tag in &image_tags {
+                            let mut meta = HashMap::new();
+                            meta.insert("tag".to_string(), tag.clone());
+                            meta.insert("platforms".to_string(), snapshot_plats.join(","));
+                            meta.insert("api".to_string(), "v2".to_string());
+                            meta.insert("use".to_string(), "buildx".to_string());
+                            if let Some(ref id) = v2_cfg.id {
+                                meta.insert("id".to_string(), id.clone());
+                            }
+                            new_artifacts.push(Artifact {
+                                kind: ArtifactKind::DockerImageV2,
+                                name: tag.clone(),
+                                path: PathBuf::from(tag),
+                                target: None,
+                                crate_name: krate.name.clone(),
+                                metadata: meta,
+                                size: None,
+                            });
+                        }
+                    } else {
+                        // Resolve docker_digest config from the crate
+                        let (digest_disabled, digest_name_template) =
+                            resolve_digest_config(krate.docker_digest.as_ref(), ctx)?;
+
+                        build_jobs.push(DockerBuildJob {
+                            cmd_args,
+                            backend_label: "buildx".to_string(),
+                            crate_name: krate.name.clone(),
+                            idx,
                             max_attempts,
                             base_delay,
-                            match max_delay {
-                                Some(d) => format!(", max delay {:?}", d),
-                                None => String::new(),
-                            }
-                        ));
-                    }
-                    // Register artifacts in dry-run
-                    for tag in &image_tags {
-                        let mut meta = HashMap::new();
-                        meta.insert("tag".to_string(), tag.clone());
-                        meta.insert("platforms".to_string(), snapshot_plats.join(","));
-                        meta.insert("api".to_string(), "v2".to_string());
-                        meta.insert("use".to_string(), "buildx".to_string());
-                        if let Some(ref id) = v2_cfg.id {
-                            meta.insert("id".to_string(), id.clone());
-                        }
-                        new_artifacts.push(Artifact {
-                            kind: ArtifactKind::DockerImageV2,
-                            name: tag.clone(),
-                            path: PathBuf::from(tag),
-                            target: None,
-                            crate_name: krate.name.clone(),
-                            metadata: meta,
-                            size: None,
+                            max_delay,
+                            should_push,
+                            rendered_tags: image_tags,
+                            platforms_str: snapshot_plats.join(","),
+                            staging_dir: staging_dir.clone(),
+                            id: v2_cfg.id.clone(),
+                            use_backend: Some("buildx".to_string()),
+                            dist: dist.clone(),
+                            is_v2: true,
+                            digest_disabled,
+                            digest_name_template,
+                            env_vars: ctx.template_vars().all_env().clone(),
+                            push_flags: Vec::new(), // V2 always uses buildx; push flags baked into cmd_args
                         });
                     }
-                } else {
-                    // Resolve docker_digest config from the crate
-                    let (digest_disabled, digest_name_template) =
-                        resolve_digest_config(krate.docker_digest.as_ref(), ctx)?;
-
-                    build_jobs.push(DockerBuildJob {
-                        cmd_args,
-                        backend_label: "buildx".to_string(),
-                        crate_name: krate.name.clone(),
-                        idx,
-                        max_attempts,
-                        base_delay,
-                        max_delay,
-                        should_push,
-                        rendered_tags: image_tags,
-                        platforms_str: snapshot_plats.join(","),
-                        staging_dir: staging_dir.clone(),
-                        id: v2_cfg.id.clone(),
-                        use_backend: Some("buildx".to_string()),
-                        dist: dist.clone(),
-                        is_v2: true,
-                        digest_disabled,
-                        digest_name_template,
-                        env_vars: ctx.template_vars().all_env().clone(),
-                        push_flags: Vec::new(), // V2 always uses buildx; push flags baked into cmd_args
-                    });
-                }
                 } // end for snapshot_plats
             }
         }
@@ -2172,28 +2224,27 @@ impl Stage for DockerStage {
             // Collect results in order (indexed by job position).
             let job_count = build_jobs.len();
             let log_ref = &log;
-            let results: Vec<Result<DockerBuildResult>> =
-                std::thread::scope(|scope| {
-                    let mut handles = Vec::with_capacity(job_count);
+            let results: Vec<Result<DockerBuildResult>> = std::thread::scope(|scope| {
+                let mut handles = Vec::with_capacity(job_count);
 
-                    for job in &build_jobs {
-                        // Acquire a semaphore token (blocks if all slots are busy).
-                        let _ = sem_rx.recv();
-                        let sem_tx_ref = &sem_tx;
+                for job in &build_jobs {
+                    // Acquire a semaphore token (blocks if all slots are busy).
+                    let _ = sem_rx.recv();
+                    let sem_tx_ref = &sem_tx;
 
-                        let handle = scope.spawn(move || {
-                            // Guard returns the token on drop (including panic).
-                            let _guard = SemaphoreGuard { sender: sem_tx_ref };
-                            execute_docker_build(job, log_ref)
-                        });
-                        handles.push(handle);
-                    }
+                    let handle = scope.spawn(move || {
+                        // Guard returns the token on drop (including panic).
+                        let _guard = SemaphoreGuard { sender: sem_tx_ref };
+                        execute_docker_build(job, log_ref)
+                    });
+                    handles.push(handle);
+                }
 
-                    handles
-                        .into_iter()
-                        .map(|h| h.join().expect("docker build thread panicked"))
-                        .collect()
-                });
+                handles
+                    .into_iter()
+                    .map(|h| h.join().expect("docker build thread panicked"))
+                    .collect()
+            });
 
             // ==================================================================
             // Phase 3: Collect results and register artifacts
@@ -2215,7 +2266,11 @@ impl Stage for DockerStage {
                     }
                     // V2 builds register as DockerImageV2; legacy as DockerImage.
                     new_artifacts.push(Artifact {
-                        kind: if job.is_v2 { ArtifactKind::DockerImageV2 } else { ArtifactKind::DockerImage },
+                        kind: if job.is_v2 {
+                            ArtifactKind::DockerImageV2
+                        } else {
+                            ArtifactKind::DockerImage
+                        },
                         name: tag.clone(),
                         path: PathBuf::from(tag),
                         target: None,
@@ -2263,15 +2318,16 @@ impl Stage for DockerStage {
                 for (midx, manifest_cfg) in manifest_configs.iter().enumerate() {
                     // Check disable (template-aware) before doing any work.
                     if let Some(ref d) = manifest_cfg.disable
-                        && d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
-                            let fallback = format!("index {}", midx);
-                            let label = manifest_cfg.id.as_deref().unwrap_or(&fallback);
-                            log.status(&format!(
-                                "docker: skipping disabled manifest '{}' for crate {}",
-                                label, krate.name
-                            ));
-                            continue;
-                        }
+                        && d.is_disabled(|tmpl| ctx.render_template(tmpl))
+                    {
+                        let fallback = format!("index {}", midx);
+                        let label = manifest_cfg.id.as_deref().unwrap_or(&fallback);
+                        log.status(&format!(
+                            "docker: skipping disabled manifest '{}' for crate {}",
+                            label, krate.name
+                        ));
+                        continue;
+                    }
 
                     // Validate: image_templates must not be empty — a manifest
                     // with zero images is always a configuration error.
@@ -2359,12 +2415,17 @@ impl Stage for DockerStage {
                             // "Did you mean?" — find closest matching image by edit distance
                             let all_image_names: Vec<&str> = new_artifacts
                                 .iter()
-                                .filter(|a| matches!(a.kind,
-                                    ArtifactKind::DockerImage | ArtifactKind::DockerImageV2))
+                                .filter(|a| {
+                                    matches!(
+                                        a.kind,
+                                        ArtifactKind::DockerImage | ArtifactKind::DockerImageV2
+                                    )
+                                })
                                 .filter_map(|a| a.metadata.get("tag").map(|s| s.as_str()))
                                 .collect();
 
-                            if let Some((suggestion, dist)) = all_image_names.iter()
+                            if let Some((suggestion, dist)) = all_image_names
+                                .iter()
                                 .map(|name| (name, levenshtein_distance(img, name)))
                                 .min_by_key(|&(_, d)| d)
                                 .filter(|&(_, d)| d <= img.len() / 2)
@@ -2374,7 +2435,10 @@ impl Stage for DockerStage {
                                     img, suggestion, dist
                                 ));
                             } else {
-                                log.warn(&format!("no digest found for {}, using tag reference", img));
+                                log.warn(&format!(
+                                    "no digest found for {}, using tag reference",
+                                    img
+                                ));
                             }
                             create_cmd.push(img.clone());
                         }
@@ -2417,21 +2481,19 @@ impl Stage for DockerStage {
                                 rm_cmd.env(key, value);
                             }
                             rm_cmd.output()
-                        }
-                            && !rm_output.status.success() {
-                                let stderr =
-                                    String::from_utf8_lossy(&rm_output.stderr).to_lowercase();
-                                if !stderr.contains("no such manifest")
-                                    && !stderr.contains("not found")
-                                {
-                                    let stderr_full = String::from_utf8_lossy(&rm_output.stderr);
-                                    anyhow::bail!(
-                                        "docker manifest rm {} failed: {}",
-                                        manifest_name,
-                                        stderr_full.trim()
-                                    );
-                                }
+                        } && !rm_output.status.success()
+                        {
+                            let stderr = String::from_utf8_lossy(&rm_output.stderr).to_lowercase();
+                            if !stderr.contains("no such manifest") && !stderr.contains("not found")
+                            {
+                                let stderr_full = String::from_utf8_lossy(&rm_output.stderr);
+                                anyhow::bail!(
+                                    "docker manifest rm {} failed: {}",
+                                    manifest_name,
+                                    stderr_full.trim()
+                                );
                             }
+                        }
 
                         // Manifest create/push with retry logic — registry
                         // operations can fail transiently. Uses the
@@ -2554,7 +2616,8 @@ impl Stage for DockerStage {
                                         )
                                     })?;
                                 // Capture stdout for digest extraction before checking status
-                                let push_stdout = String::from_utf8_lossy(&output.stdout).to_string();
+                                let push_stdout =
+                                    String::from_utf8_lossy(&output.stdout).to_string();
                                 match log.check_output(output, "docker manifest push") {
                                     Ok(_) => {
                                         if attempt > 1 {
@@ -2568,7 +2631,9 @@ impl Stage for DockerStage {
                                             let candidate = &push_stdout[start..];
                                             // sha256: (7 chars) + 64 hex chars = 71
                                             if candidate.len() >= 71
-                                                && candidate[7..71].chars().all(|c| c.is_ascii_hexdigit())
+                                                && candidate[7..71]
+                                                    .chars()
+                                                    .all(|c| c.is_ascii_hexdigit())
                                             {
                                                 manifest_digest = Some(candidate[..71].to_string());
                                             }
@@ -4538,10 +4603,8 @@ use: podman
 
     #[test]
     fn test_generate_v2_image_tags_single() {
-        let result = generate_v2_image_tags(
-            &["ghcr.io/owner/app".to_string()],
-            &["latest".to_string()],
-        );
+        let result =
+            generate_v2_image_tags(&["ghcr.io/owner/app".to_string()], &["latest".to_string()]);
         assert_eq!(result, vec!["ghcr.io/owner/app:latest"]);
     }
 
@@ -4611,13 +4674,7 @@ use: podman
         let ba_positions: Vec<usize> = cmd
             .iter()
             .enumerate()
-            .filter_map(|(i, t)| {
-                if t == "--build-arg" {
-                    Some(i)
-                } else {
-                    None
-                }
-            })
+            .filter_map(|(i, t)| if t == "--build-arg" { Some(i) } else { None })
             .collect();
         assert_eq!(ba_positions.len(), 2);
         assert_eq!(cmd[ba_positions[0] + 1], "APP_VERSION=1.0.0");
@@ -4653,13 +4710,7 @@ use: podman
         let ann_positions: Vec<usize> = cmd
             .iter()
             .enumerate()
-            .filter_map(|(i, t)| {
-                if t == "--annotation" {
-                    Some(i)
-                } else {
-                    None
-                }
-            })
+            .filter_map(|(i, t)| if t == "--annotation" { Some(i) } else { None })
             .collect();
         assert_eq!(ann_positions.len(), 2);
         assert_eq!(
@@ -4881,7 +4932,10 @@ use: podman
             cmd
         );
         // --iidfile should come before the staging dir (last arg)
-        let iidfile_pos = cmd.iter().position(|a| a.starts_with("--iidfile=")).unwrap();
+        let iidfile_pos = cmd
+            .iter()
+            .position(|a| a.starts_with("--iidfile="))
+            .unwrap();
         assert_eq!(
             iidfile_pos,
             cmd.len() - 2,
@@ -4944,9 +4998,7 @@ retry:
 
         let annotations = cfg.annotations.unwrap();
         assert_eq!(
-            annotations
-                .get("org.opencontainers.image.source")
-                .unwrap(),
+            annotations.get("org.opencontainers.image.source").unwrap(),
             "https://github.com/owner/app"
         );
 
@@ -5324,9 +5376,7 @@ crates:
 
         let annotations = v2_configs[0].annotations.as_ref().unwrap();
         assert_eq!(
-            annotations
-                .get("org.opencontainers.image.source")
-                .unwrap(),
+            annotations.get("org.opencontainers.image.source").unwrap(),
             "https://github.com/owner/app"
         );
 
@@ -5348,10 +5398,7 @@ crates:
         use anodize_core::context::{Context, ContextOptions};
 
         let ctx = Context::new(Config::default(), ContextOptions::default());
-        assert!(is_docker_v2_disabled(
-            &Some(StringOrBool::Bool(true)),
-            &ctx
-        ));
+        assert!(is_docker_v2_disabled(&Some(StringOrBool::Bool(true)), &ctx));
     }
 
     #[test]
@@ -5560,10 +5607,7 @@ crates:
         // The stage ran in dry-run mode, so it registered artifacts
         let images = ctx.artifacts.by_kind(ArtifactKind::DockerImageV2);
         assert_eq!(images.len(), 1);
-        assert_eq!(
-            images[0].metadata.get("tag").unwrap(),
-            "img:latest"
-        );
+        assert_eq!(images[0].metadata.get("tag").unwrap(), "img:latest");
     }
 
     #[test]
@@ -5640,11 +5684,7 @@ crates:
 
         // Create a source template file
         let tpl_src = tmp.path().join("config.yaml.tpl");
-        fs::write(
-            &tpl_src,
-            "app: {{ .ProjectName }}\nversion: {{ .Version }}",
-        )
-        .unwrap();
+        fs::write(&tpl_src, "app: {{ .ProjectName }}\nversion: {{ .Version }}").unwrap();
 
         let mut vars = TemplateVars::new();
         vars.set("ProjectName", "myapp");
@@ -5656,18 +5696,23 @@ crates:
             mode: None,
         }];
 
-        let results =
-            anodize_core::templated_files::process_templated_extra_files_with_vars(
-                &specs, &vars, &staging_dir, "docker",
-            )
-            .unwrap();
+        let results = anodize_core::templated_files::process_templated_extra_files_with_vars(
+            &specs,
+            &vars,
+            &staging_dir,
+            "docker",
+        )
+        .unwrap();
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].1, "config.yaml");
 
         // Verify the file was written to the staging directory
         let output_path = staging_dir.join("config.yaml");
-        assert!(output_path.exists(), "templated file should exist in staging dir");
+        assert!(
+            output_path.exists(),
+            "templated file should exist in staging dir"
+        );
         let content = fs::read_to_string(&output_path).unwrap();
         assert_eq!(content, "app: myapp\nversion: 1.0.0");
     }
@@ -5955,7 +6000,10 @@ disable: "{{ .IsSnapshot }}"
         assert_eq!(levenshtein_distance("", "abc"), 3);
         assert_eq!(levenshtein_distance("abc", ""), 3);
         assert_eq!(levenshtein_distance("abc", "abc"), 0);
-        assert_eq!(levenshtein_distance("ghcr.io/owner/app:latest", "ghcr.io/owner/app:latset"), 2);
+        assert_eq!(
+            levenshtein_distance("ghcr.io/owner/app:latest", "ghcr.io/owner/app:latset"),
+            2
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -5966,7 +6014,11 @@ disable: "{{ .IsSnapshot }}"
     fn test_project_marker_detection() {
         let markers = ["go.mod", "Cargo.toml", "package.json", "pom.xml"];
         for m in &markers {
-            assert!(PROJECT_MARKERS.contains(m), "{} should be a project marker", m);
+            assert!(
+                PROJECT_MARKERS.contains(m),
+                "{} should be a project marker",
+                m
+            );
         }
         assert!(!PROJECT_MARKERS.contains(&"myapp.conf"));
         assert!(!PROJECT_MARKERS.contains(&"config.yaml"));
@@ -6042,8 +6094,10 @@ disable: "{{ .IsSnapshot }}"
             Some("docker"),
         )
         .unwrap();
-        assert!(!cmd.contains(&"--push".to_string()),
-            "plain docker backend should not have --push in build command");
+        assert!(
+            !cmd.contains(&"--push".to_string()),
+            "plain docker backend should not have --push in build command"
+        );
         // Should not have --load either (that's buildx-only)
         assert!(!cmd.contains(&"--load".to_string()));
     }
@@ -6062,8 +6116,10 @@ disable: "{{ .IsSnapshot }}"
             Some("podman"),
         )
         .unwrap();
-        assert!(!cmd.contains(&"--push".to_string()),
-            "podman backend should not have --push in build command");
+        assert!(
+            !cmd.contains(&"--push".to_string()),
+            "podman backend should not have --push in build command"
+        );
     }
 
     #[test]
@@ -6080,8 +6136,10 @@ disable: "{{ .IsSnapshot }}"
             Some("buildx"),
         )
         .unwrap();
-        assert!(cmd.contains(&"--push".to_string()),
-            "buildx backend should have --push in build command");
+        assert!(
+            cmd.contains(&"--push".to_string()),
+            "buildx backend should have --push in build command"
+        );
     }
 
     #[test]
@@ -6100,10 +6158,14 @@ disable: "{{ .IsSnapshot }}"
             None,
         )
         .unwrap();
-        assert!(!cmd.contains(&"--push".to_string()),
-            "plain docker (default) should NOT have --push");
-        assert!(cmd.contains(&"--platform=linux/amd64,linux/arm64".to_string()),
-            "platforms should still be set");
+        assert!(
+            !cmd.contains(&"--push".to_string()),
+            "plain docker (default) should NOT have --push"
+        );
+        assert!(
+            cmd.contains(&"--platform=linux/amd64,linux/arm64".to_string()),
+            "platforms should still be set"
+        );
     }
 
     #[test]
@@ -6120,8 +6182,10 @@ disable: "{{ .IsSnapshot }}"
             Some("buildx"),
         )
         .unwrap();
-        assert!(cmd.contains(&"--push".to_string()),
-            "explicit buildx should have --push");
+        assert!(
+            cmd.contains(&"--push".to_string()),
+            "explicit buildx should have --push"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -6206,7 +6270,8 @@ disable: "{{ .IsSnapshot }}"
     #[test]
     fn test_find_sha256_digest_embedded_in_text() {
         // Digest as a standalone word
-        let text = "pushed sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef done";
+        let text =
+            "pushed sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef done";
         assert_eq!(
             find_sha256_digest(text),
             Some("sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
@@ -6226,7 +6291,8 @@ disable: "{{ .IsSnapshot }}"
     #[test]
     fn test_find_sha256_digest_with_trailing_chars() {
         // Digest word with trailing punctuation — should still extract 71 chars
-        let text = "digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,";
+        let text =
+            "digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,";
         // The word is "sha256:aaa...aaa," — strip_prefix("sha256:") gives "aaa...," which has
         // 64 hex chars before the comma, so [..64].all(hexdigit) should be true.
         let result = find_sha256_digest(text);

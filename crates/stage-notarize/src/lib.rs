@@ -3,9 +3,7 @@ use std::process::Command;
 use anyhow::{Context as _, Result, bail};
 
 use anodize_core::artifact::{Artifact, ArtifactKind};
-use anodize_core::config::{
-    MacOSNativeSignNotarizeConfig, MacOSSignNotarizeConfig, StringOrBool,
-};
+use anodize_core::config::{MacOSNativeSignNotarizeConfig, MacOSSignNotarizeConfig, StringOrBool};
 use anodize_core::context::Context;
 use anodize_core::stage::Stage;
 
@@ -58,9 +56,7 @@ fn refresh_artifact_checksums(ctx: &mut Context, log: &anodize_core::log::StageL
                     }
                 }
                 let new_sha = format!("{:x}", hasher.finalize());
-                artifact
-                    .metadata
-                    .insert("sha256".to_string(), new_sha);
+                artifact.metadata.insert("sha256".to_string(), new_sha);
             }
             Err(e) => {
                 log.warn(&format!(
@@ -195,7 +191,10 @@ fn check_notarize_output(
 
     // Non-zero exit: differentiate error type from output
     if combined_lower.contains("status: invalid") || combined_lower.contains("invalid submission") {
-        bail!("notarize: {}: invalid — the submitted artifact did not pass Apple's checks", label);
+        bail!(
+            "notarize: {}: invalid — the submitted artifact did not pass Apple's checks",
+            label
+        );
     }
     if combined_lower.contains("status: rejected") || combined_lower.contains("submission rejected")
     {
@@ -283,21 +282,18 @@ fn run_cross_platform(
     }
 
     // Validate and render sign config
-    let sign = cfg.sign.as_ref().ok_or_else(|| {
-        anyhow::anyhow!("notarize: macos[{idx}] requires a 'sign' configuration")
-    })?;
+    let sign = cfg
+        .sign
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("notarize: macos[{idx}] requires a 'sign' configuration"))?;
 
     let certificate = render_opt(ctx, &sign.certificate)
         .with_context(|| format!("notarize: macos[{idx}] render sign.certificate"))?
-        .ok_or_else(|| {
-            anyhow::anyhow!("notarize: macos[{idx}] sign.certificate is required")
-        })?;
+        .ok_or_else(|| anyhow::anyhow!("notarize: macos[{idx}] sign.certificate is required"))?;
 
     let password = render_opt(ctx, &sign.password)
         .with_context(|| format!("notarize: macos[{idx}] render sign.password"))?
-        .ok_or_else(|| {
-            anyhow::anyhow!("notarize: macos[{idx}] sign.password is required")
-        })?;
+        .ok_or_else(|| anyhow::anyhow!("notarize: macos[{idx}] sign.password is required"))?;
 
     let entitlements = render_opt(ctx, &sign.entitlements)
         .with_context(|| format!("notarize: macos[{idx}] render sign.entitlements"))?;
@@ -312,7 +308,9 @@ fn run_cross_platform(
         let key = render_opt(ctx, &ncfg.key)
             .with_context(|| format!("notarize: macos[{idx}] render notarize.key"))?
             .ok_or_else(|| {
-                anyhow::anyhow!("notarize: macos[{idx}] notarize.key is required when notarize block is present")
+                anyhow::anyhow!(
+                    "notarize: macos[{idx}] notarize.key is required when notarize block is present"
+                )
             })?;
         let key_id = render_opt(ctx, &ncfg.key_id)
             .with_context(|| format!("notarize: macos[{idx}] render notarize.key_id"))?
@@ -393,7 +391,10 @@ fn run_cross_platform(
                 .args(&sign_args[1..])
                 .status()
                 .with_context(|| {
-                    format!("notarize: failed to execute rcodesign sign for {}", artifact.name())
+                    format!(
+                        "notarize: failed to execute rcodesign sign for {}",
+                        artifact.name()
+                    )
                 })?;
             if !status.success() {
                 bail!(
@@ -515,13 +516,9 @@ fn run_native(
     })?;
 
     let profile_name = render_opt(ctx, &notarize.profile_name)
-        .with_context(|| {
-            format!("notarize: macos_native[{idx}] render notarize.profile_name")
-        })?
+        .with_context(|| format!("notarize: macos_native[{idx}] render notarize.profile_name"))?
         .ok_or_else(|| {
-            anyhow::anyhow!(
-                "notarize: macos_native[{idx}] notarize.profile_name is required"
-            )
+            anyhow::anyhow!("notarize: macos_native[{idx}] notarize.profile_name is required")
         })?;
 
     let wait = notarize.wait.unwrap_or(false);
@@ -636,10 +633,7 @@ fn run_native_dmg(
                 .args(&codesign_args[1..])
                 .status()
                 .with_context(|| {
-                    format!(
-                        "notarize: failed to execute codesign for {}",
-                        bundle.name()
-                    )
+                    format!("notarize: failed to execute codesign for {}", bundle.name())
                 })?;
             if !status.success() {
                 bail!(
@@ -818,19 +812,13 @@ fn run_native_pkg(
         ));
 
         if dry_run {
-            log.status(&format!(
-                "  [dry-run] would run: {}",
-                sign_args.join(" ")
-            ));
+            log.status(&format!("  [dry-run] would run: {}", sign_args.join(" ")));
         } else {
             let status = Command::new(&sign_args[0])
                 .args(&sign_args[1..])
                 .status()
                 .with_context(|| {
-                    format!(
-                        "notarize: failed to execute productsign for {}",
-                        pkg.name()
-                    )
+                    format!("notarize: failed to execute productsign for {}", pkg.name())
                 })?;
             if !status.success() {
                 bail!(
@@ -841,13 +829,12 @@ fn run_native_pkg(
             }
 
             // Replace the original with the signed version
-            std::fs::rename(&signed_path, pkg_path.as_ref())
-                .with_context(|| {
-                    format!(
-                        "notarize: failed to replace {} with signed version",
-                        pkg.name()
-                    )
-                })?;
+            std::fs::rename(&signed_path, pkg_path.as_ref()).with_context(|| {
+                format!(
+                    "notarize: failed to replace {} with signed version",
+                    pkg.name()
+                )
+            })?;
         }
 
         // Notarize with xcrun notarytool
@@ -932,6 +919,7 @@ fn run_native_pkg(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use std::collections::HashMap;
@@ -939,9 +927,9 @@ mod tests {
 
     use anodize_core::artifact::{Artifact, ArtifactKind};
     use anodize_core::config::{
-        Config, MacOSNativeNotarizeConfig, MacOSNativeSignConfig,
-        MacOSNativeSignNotarizeConfig, MacOSNotarizeApiConfig, MacOSSignConfig,
-        MacOSSignNotarizeConfig, NotarizeConfig, StringOrBool,
+        Config, MacOSNativeNotarizeConfig, MacOSNativeSignConfig, MacOSNativeSignNotarizeConfig,
+        MacOSNotarizeApiConfig, MacOSSignConfig, MacOSSignNotarizeConfig, NotarizeConfig,
+        StringOrBool,
     };
     use anodize_core::context::{Context, ContextOptions};
 
@@ -1214,7 +1202,10 @@ notarize: {}
         let result = stage.run(&mut ctx);
         assert!(result.is_err());
         assert!(
-            result.unwrap_err().to_string().contains("requires a 'sign'"),
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("requires a 'sign'"),
             "error should mention missing sign config"
         );
     }
@@ -1296,7 +1287,10 @@ notarize: {}
         let result = stage.run(&mut ctx);
         assert!(result.is_err());
         assert!(
-            result.unwrap_err().to_string().contains("requires a 'sign'"),
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("requires a 'sign'"),
         );
     }
 
@@ -1437,7 +1431,6 @@ notarize: {}
                     certificate: Some("cert.p12".to_string()),
                     password: Some("pass".to_string()),
                     entitlements: Some("ent.xml".to_string()),
-                    ..Default::default()
                 }),
                 notarize: Some(MacOSNotarizeApiConfig {
                     issuer_id: Some("issuer-123".to_string()),
@@ -1590,7 +1583,6 @@ notarize: {}
                     keychain: Some("/path/to/kc".to_string()),
                     options: Some(vec!["runtime".to_string()]),
                     entitlements: Some("ent.xml".to_string()),
-                    ..Default::default()
                 }),
                 notarize: Some(MacOSNativeNotarizeConfig {
                     profile_name: Some("my-profile".to_string()),
@@ -1824,14 +1816,8 @@ notarize: {}
             size: None,
         };
 
-        assert!(matches_ids(
-            &artifact,
-            &Some(vec!["myapp".to_string()])
-        ));
-        assert!(!matches_ids(
-            &artifact,
-            &Some(vec!["other".to_string()])
-        ));
+        assert!(matches_ids(&artifact, &Some(vec!["myapp".to_string()])));
+        assert!(!matches_ids(&artifact, &Some(vec!["other".to_string()])));
     }
 
     #[test]
@@ -1846,14 +1832,8 @@ notarize: {}
             size: None,
         };
 
-        assert!(matches_ids(
-            &artifact,
-            &Some(vec!["build-arm".to_string()])
-        ));
-        assert!(!matches_ids(
-            &artifact,
-            &Some(vec!["myapp".to_string()])
-        ));
+        assert!(matches_ids(&artifact, &Some(vec!["build-arm".to_string()])));
+        assert!(!matches_ids(&artifact, &Some(vec!["myapp".to_string()])));
     }
 
     #[test]

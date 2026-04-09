@@ -68,7 +68,9 @@ fn extract_archive_extension(url: &str) -> &str {
     let path = url.split('?').next().unwrap_or(url);
     let path = path.split('#').next().unwrap_or(path);
     let filename = path.rsplit('/').next().unwrap_or(path);
-    for ext in &[".tar.gz", ".tar.xz", ".tar.bz2", ".tar.zst", ".tar.lz4", ".tar.sz"] {
+    for ext in &[
+        ".tar.gz", ".tar.xz", ".tar.bz2", ".tar.zst", ".tar.lz4", ".tar.sz",
+    ] {
         if filename.ends_with(ext) {
             return &ext[1..];
         }
@@ -158,8 +160,14 @@ pub fn generate_pkgbuild(params: &PkgbuildParams<'_>) -> String {
             let format = extract_archive_extension(url);
             let rename = format!(
                 "{}_{}_{}{}",
-                params.name, "${pkgver}", arch,
-                if format.is_empty() { String::new() } else { format!(".{}", format) }
+                params.name,
+                "${pkgver}",
+                arch,
+                if format.is_empty() {
+                    String::new()
+                } else {
+                    format!(".{}", format)
+                }
             );
             (arch.clone(), substituted_url, hash.clone(), rename)
         })
@@ -242,8 +250,14 @@ pub fn generate_srcinfo(params: &PkgbuildParams<'_>) -> String {
             let format = extract_archive_extension(url);
             let rename = format!(
                 "{}_{}_{}{}",
-                params.name, params.version, arch,
-                if format.is_empty() { String::new() } else { format!(".{}", format) }
+                params.name,
+                params.version,
+                arch,
+                if format.is_empty() {
+                    String::new()
+                } else {
+                    format!(".{}", format)
+                }
             );
             (arch.clone(), url.clone(), hash.clone(), rename)
         })
@@ -279,17 +293,22 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
 
     // Check disable before doing any work.
     if let Some(ref d) = aur_cfg.disable
-        && d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
-            log.status(&format!("aur: disabled for '{}'", crate_name));
-            return Ok(());
-        }
+        && d.is_disabled(|tmpl| ctx.render_template(tmpl))
+    {
+        log.status(&format!("aur: disabled for '{}'", crate_name));
+        return Ok(());
+    }
 
     // Check skip_upload before doing any work.
     if crate::homebrew::should_skip_upload(aur_cfg.skip_upload.as_ref(), ctx) {
         log.status(&format!(
             "aur: skipping upload for '{}' (skip_upload={})",
             crate_name,
-            aur_cfg.skip_upload.as_ref().map(|v| v.as_str()).unwrap_or("")
+            aur_cfg
+                .skip_upload
+                .as_ref()
+                .map(|v| v.as_str())
+                .unwrap_or("")
         ));
         return Ok(());
     }
@@ -372,7 +391,12 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     let ids_filter = aur_cfg.ids.as_deref();
     let goamd64 = aur_cfg.goamd64.as_deref().or(Some("v1"));
     let linux_artifacts = util::find_artifacts_by_os_with_goarch(
-        ctx, crate_name, "linux", ids_filter, goamd64, Some("7"),
+        ctx,
+        crate_name,
+        "linux",
+        ids_filter,
+        goamd64,
+        Some("7"),
     );
 
     let url_template = aur_cfg.url_template.as_deref();

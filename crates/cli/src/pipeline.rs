@@ -136,7 +136,8 @@ fn load_yaml_config_with_includes(path: &Path, content: &str) -> Result<Config> 
 
     let include_entries: Vec<serde_yaml_ng::Value> = base
         .get("includes")
-        .and_then(|v| v.as_sequence()).cloned()
+        .and_then(|v| v.as_sequence())
+        .cloned()
         .unwrap_or_default();
 
     // Accumulate all included files into a merged defaults value.
@@ -325,15 +326,16 @@ fn fetch_url_as_yaml(
 
     // Check Content-Length header if available to reject obviously oversized responses.
     if let Some(content_length) = response.content_length()
-        && content_length > MAX_INCLUDE_BODY_SIZE {
-            bail!(
-                "include URL '{}' response too large ({} bytes, max {} bytes) (referenced from {})",
-                url,
-                content_length,
-                MAX_INCLUDE_BODY_SIZE,
-                config_path.display()
-            );
-        }
+        && content_length > MAX_INCLUDE_BODY_SIZE
+    {
+        bail!(
+            "include URL '{}' response too large ({} bytes, max {} bytes) (referenced from {})",
+            url,
+            content_length,
+            MAX_INCLUDE_BODY_SIZE,
+            config_path.display()
+        );
+    }
 
     let body = response.text().with_context(|| {
         format!(
@@ -571,6 +573,7 @@ impl Pipeline {
 /// Build the full release pipeline with all stages in order
 pub fn build_release_pipeline() -> Pipeline {
     use anodize_stage_announce::AnnounceStage;
+    use anodize_stage_appbundle::AppBundleStage;
     use anodize_stage_archive::ArchiveStage;
     use anodize_stage_blob::BlobStage;
     use anodize_stage_build::BuildStage;
@@ -578,23 +581,22 @@ pub fn build_release_pipeline() -> Pipeline {
     use anodize_stage_checksum::ChecksumStage;
     use anodize_stage_dmg::DmgStage;
     use anodize_stage_docker::DockerStage;
+    use anodize_stage_flatpak::FlatpakStage;
+    use anodize_stage_makeself::MakeselfStage;
     use anodize_stage_msi::MsiStage;
     use anodize_stage_nfpm::NfpmStage;
+    use anodize_stage_notarize::NotarizeStage;
     use anodize_stage_nsis::NsisStage;
     use anodize_stage_pkg::PkgStage;
     use anodize_stage_publish::PublishStage;
     use anodize_stage_release::ReleaseStage;
+    use anodize_stage_sbom::SbomStage;
     use anodize_stage_sign::SignStage;
     use anodize_stage_snapcraft::{SnapcraftPublishStage, SnapcraftStage};
     use anodize_stage_source::SourceStage;
-    use anodize_stage_sbom::SbomStage;
-    use anodize_stage_upx::UpxStage;
-    use anodize_stage_appbundle::AppBundleStage;
-    use anodize_stage_flatpak::FlatpakStage;
-    use anodize_stage_notarize::NotarizeStage;
-    use anodize_stage_templatefiles::TemplateFilesStage;
-    use anodize_stage_makeself::MakeselfStage;
     use anodize_stage_srpm::SrpmStage;
+    use anodize_stage_templatefiles::TemplateFilesStage;
+    use anodize_stage_upx::UpxStage;
 
     let mut p = Pipeline::new();
     p.add(Box::new(BuildStage));
@@ -671,28 +673,28 @@ pub fn build_announce_pipeline() -> Pipeline {
 /// Build a pipeline for --merge mode: all post-build stages.
 pub fn build_merge_pipeline() -> Pipeline {
     use anodize_stage_announce::AnnounceStage;
+    use anodize_stage_appbundle::AppBundleStage;
     use anodize_stage_archive::ArchiveStage;
     use anodize_stage_blob::BlobStage;
     use anodize_stage_changelog::ChangelogStage;
     use anodize_stage_checksum::ChecksumStage;
     use anodize_stage_dmg::DmgStage;
     use anodize_stage_docker::DockerStage;
+    use anodize_stage_flatpak::FlatpakStage;
+    use anodize_stage_makeself::MakeselfStage;
     use anodize_stage_msi::MsiStage;
     use anodize_stage_nfpm::NfpmStage;
+    use anodize_stage_notarize::NotarizeStage;
     use anodize_stage_nsis::NsisStage;
     use anodize_stage_pkg::PkgStage;
     use anodize_stage_publish::PublishStage;
     use anodize_stage_release::ReleaseStage;
+    use anodize_stage_sbom::SbomStage;
     use anodize_stage_sign::SignStage;
     use anodize_stage_snapcraft::{SnapcraftPublishStage, SnapcraftStage};
     use anodize_stage_source::SourceStage;
-    use anodize_stage_sbom::SbomStage;
-    use anodize_stage_appbundle::AppBundleStage;
-    use anodize_stage_flatpak::FlatpakStage;
-    use anodize_stage_notarize::NotarizeStage;
-    use anodize_stage_templatefiles::TemplateFilesStage;
-    use anodize_stage_makeself::MakeselfStage;
     use anodize_stage_srpm::SrpmStage;
+    use anodize_stage_templatefiles::TemplateFilesStage;
 
     let mut p = Pipeline::new();
     // Changelog runs before archive so release notes are available for archive naming.
@@ -1014,7 +1016,9 @@ mod tests {
         .unwrap();
         let config = load_config(&cfg_path).unwrap();
         let env_files = config.env_files.unwrap();
-        let tokens = env_files.as_token_files().expect("expected TokenFiles variant");
+        let tokens = env_files
+            .as_token_files()
+            .expect("expected TokenFiles variant");
         assert_eq!(tokens.github_token.as_deref(), Some("/tmp/gh_token"));
         assert_eq!(tokens.gitlab_token.as_deref(), Some("/tmp/gl_token"));
         assert!(tokens.gitea_token.is_none());
@@ -1143,7 +1147,9 @@ crates: []
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(
-            msg.contains("invalid entry") || msg.contains("missing field") || msg.contains("from_file"),
+            msg.contains("invalid entry")
+                || msg.contains("missing field")
+                || msg.contains("from_file"),
             "expected invalid entry error, got: {}",
             msg
         );
@@ -1328,7 +1334,10 @@ path = "shared.yaml"
         // Verify: expanding the key would change it, but we don't expand keys.
         let key = "$KEY_LITERAL";
         let value = "${ANODIZE_HDR_VAL}";
-        assert_eq!(key, "$KEY_LITERAL", "header key must be preserved literally");
+        assert_eq!(
+            key, "$KEY_LITERAL",
+            "header key must be preserved literally"
+        );
         assert_eq!(
             expand_env_vars(value),
             "expanded_val",
@@ -1373,7 +1382,10 @@ path = "shared.yaml"
     #[test]
     fn test_expand_env_vars_trailing_dollar() {
         let result = expand_env_vars("price$");
-        assert_eq!(result, "price$", "trailing dollar should be preserved literally");
+        assert_eq!(
+            result, "price$",
+            "trailing dollar should be preserved literally"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1434,6 +1446,9 @@ url = "https://example.com/config.yaml"
     #[test]
     fn test_expand_env_vars_unclosed_brace_empty() {
         let result = expand_env_vars("end${");
-        assert_eq!(result, "end${", "unclosed empty brace should preserve literal text");
+        assert_eq!(
+            result, "end${",
+            "unclosed empty brace should preserve literal text"
+        );
     }
 }

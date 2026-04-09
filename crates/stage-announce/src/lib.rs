@@ -174,7 +174,11 @@ impl Stage for AnnounceStage {
                             None
                         } else {
                             Some(trimmed.parse::<u32>().map_err(|e| {
-                                anyhow::anyhow!("announce.discord: invalid color {:?}: {}", trimmed, e)
+                                anyhow::anyhow!(
+                                    "announce.discord: invalid color {:?}: {}",
+                                    trimmed,
+                                    e
+                                )
                             })?)
                         }
                     }
@@ -257,8 +261,7 @@ impl Stage for AnnounceStage {
                 let message = render_message(ctx, cfg.message_template.as_deref())?;
                 let channel = render_optional(ctx, cfg.channel.as_deref())?;
                 // Default username to "anodize" (GoReleaser defaults to "GoReleaser").
-                let username =
-                    render_optional(ctx, cfg.username.as_deref().or(Some("anodize")))?;
+                let username = render_optional(ctx, cfg.username.as_deref().or(Some("anodize")))?;
                 let icon_emoji = cfg.icon_emoji.clone();
                 let icon_url = cfg.icon_url.clone();
                 // Convert typed blocks/attachments to serde_json::Value for template rendering

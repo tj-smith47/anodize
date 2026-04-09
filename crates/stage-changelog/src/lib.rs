@@ -230,8 +230,7 @@ fn group_commits_inner(
     // Compile regexes once in CONFIG order for matching. Invalid patterns are
     // hard errors. GoReleaser matches commits against groups in config order,
     // then sorts by `order` for display only.
-    let mut compiled: Vec<(Option<Regex>, &ChangelogGroup)> =
-        Vec::with_capacity(groups.len());
+    let mut compiled: Vec<(Option<Regex>, &ChangelogGroup)> = Vec::with_capacity(groups.len());
     for g in groups {
         let re = match g.regexp.as_deref() {
             Some(p) => {
@@ -299,11 +298,14 @@ fn group_commits_inner(
             Vec::new()
         };
         let order_key = group.order.unwrap_or(i32::MAX);
-        result.push((order_key, GroupedCommits {
-            title: group.title.clone(),
-            commits: own_commits,
-            subgroups,
-        }));
+        result.push((
+            order_key,
+            GroupedCommits {
+                title: group.title.clone(),
+                commits: own_commits,
+                subgroups,
+            },
+        ));
     }
     // Sort by the `order` field for display (stable sort preserves config order
     // for groups with equal order values).
@@ -345,7 +347,16 @@ pub(crate) fn render_changelog(
     title: Option<&str>,
     divider: Option<&str>,
 ) -> String {
-    render_changelog_with_provider(grouped, abbrev, format_template, logins, use_source, title, divider, None)
+    render_changelog_with_provider(
+        grouped,
+        abbrev,
+        format_template,
+        logins,
+        use_source,
+        title,
+        divider,
+        None,
+    )
 }
 
 /// Inner render function that accepts an optional SCM provider override for
@@ -367,7 +378,9 @@ pub(crate) fn render_changelog_with_provider(
         "{{ Message }}"
     } else {
         match use_source {
-            "github" | "gitlab" | "gitea" => "{{ ShortSHA }}: {{ Message }} ({% if Login %}@{{ Login }}{% else %}{{ AuthorName }} <{{ AuthorEmail }}>{% endif %})",
+            "github" | "gitlab" | "gitea" => {
+                "{{ ShortSHA }}: {{ Message }} ({% if Login %}@{{ Login }}{% else %}{{ AuthorName }} <{{ AuthorEmail }}>{% endif %})"
+            }
             // GoReleaser default: `{{ .SHA }} {{ .Message }}` (full hash).
             _ => "{{ SHA }} {{ Message }}",
         }
@@ -412,10 +425,11 @@ fn render_groups(
     for (i, group) in groups.iter().enumerate() {
         // Insert divider between groups (not before the first one).
         if i > 0
-            && let Some(div) = divider {
-                out.push_str(div);
-                out.push('\n');
-            }
+            && let Some(div) = divider
+        {
+            out.push_str(div);
+            out.push('\n');
+        }
         // Only emit a heading when the group has a non-empty title.
         // When no changelog groups are configured, the default group has an
         // empty title so commits render as a plain bullet list without a
@@ -428,7 +442,16 @@ fn render_groups(
         }
         // Render nested subgroups one level deeper (no divider at subgroup level).
         if !group.subgroups.is_empty() {
-            render_groups(out, &group.subgroups, abbrev, tmpl, logins, None, newline, depth + 1);
+            render_groups(
+                out,
+                &group.subgroups,
+                abbrev,
+                tmpl,
+                logins,
+                None,
+                newline,
+                depth + 1,
+            );
         }
         // Add trailing newline after commits. Skip if this group has subgroups
         // (they add their own spacing) and no direct commits.
@@ -602,9 +625,7 @@ impl Stage for ChangelogStage {
         let footer: Option<String> = cfg.and_then(|c| c.footer.clone());
         let abbrev: i32 = cfg.and_then(|c| c.abbrev).unwrap_or(0);
         let format_template: Option<String> = cfg.and_then(|c| c.format.clone());
-        let changelog_paths: Vec<String> = cfg
-            .and_then(|c| c.paths.clone())
-            .unwrap_or_default();
+        let changelog_paths: Vec<String> = cfg.and_then(|c| c.paths.clone()).unwrap_or_default();
         let changelog_title: Option<String> = cfg.and_then(|c| c.title.clone());
         let changelog_divider: Option<String> = cfg.and_then(|c| c.divider.clone());
 
@@ -630,7 +651,9 @@ impl Stage for ChangelogStage {
         // Render divider template if configured.
         let changelog_divider = changelog_divider.map(|d| {
             ctx.render_template(&d).unwrap_or_else(|e| {
-                log.warn(&format!("changelog: failed to render divider template: {e}"));
+                log.warn(&format!(
+                    "changelog: failed to render divider template: {e}"
+                ));
                 d
             })
         });
@@ -930,8 +953,9 @@ fn fetch_github_commits(
             let mut encoded = String::with_capacity(first_path.len());
             for b in first_path.bytes() {
                 match b {
-                    b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9'
-                    | b'-' | b'_' | b'.' | b'~' | b'/' => encoded.push(b as char),
+                    b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+                        encoded.push(b as char)
+                    }
                     _ => encoded.push_str(&format!("%{:02X}", b)),
                 }
             }
@@ -952,25 +976,24 @@ fn fetch_github_commits(
     // This is a coarser filter than the `git log -- path1 path2` approach used
     // by the git backend, which filters at the per-commit level. For precise
     // multi-path filtering, users should prefer `use: git` over `use: github`.
-    let filtered_shas: Option<std::collections::HashSet<String>> =
-        if !paths.is_empty() {
-            if let Some(ref files) = compare_files {
-                let has_matching_files = files.iter().any(|f| {
-                    f.get("filename")
-                        .and_then(|v| v.as_str())
-                        .is_some_and(|name| paths.iter().any(|p| name.starts_with(p.as_str())))
-                });
-                if !has_matching_files {
-                    Some(std::collections::HashSet::new()) // empty set = filter out all
-                } else {
-                    None // no filtering needed, all commits are relevant
-                }
+    let filtered_shas: Option<std::collections::HashSet<String>> = if !paths.is_empty() {
+        if let Some(ref files) = compare_files {
+            let has_matching_files = files.iter().any(|f| {
+                f.get("filename")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|name| paths.iter().any(|p| name.starts_with(p.as_str())))
+            });
+            if !has_matching_files {
+                Some(std::collections::HashSet::new()) // empty set = filter out all
             } else {
-                None
+                None // no filtering needed, all commits are relevant
             }
         } else {
             None
-        };
+        }
+    } else {
+        None
+    };
 
     let mut logins = BTreeSet::new();
     let mut all_commit_infos = Vec::new();
@@ -1215,10 +1238,7 @@ fn fetch_gitea_commits(
 
     let url = if let Some(prev) = prev_tag {
         // Compare endpoint: GET /api/v1/repos/:owner/:repo/compare/:base...:head
-        format!(
-            "{}/repos/{}/{}/compare/{}...HEAD",
-            api, owner, repo, prev
-        )
+        format!("{}/repos/{}/{}/compare/{}...HEAD", api, owner, repo, prev)
     } else {
         // No previous tag — list recent commits via the Commits API (not
         // /git/commits which returns a different JSON shape without the
@@ -1271,10 +1291,7 @@ fn fetch_gitea_commits(
     for item in &commits_arr {
         // Gitea compare response: commits have "sha", "commit.message",
         // "author.full_name", "author.email", "author.login".
-        let sha = item
-            .get("sha")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
+        let sha = item.get("sha").and_then(|v| v.as_str()).unwrap_or_default();
         let short_sha = if sha.len() >= 7 { &sha[..7] } else { sha };
         let message = item
             .pointer("/commit/message")
@@ -1365,21 +1382,24 @@ mod tests {
 
     #[test]
     fn test_extract_co_authors_basic() {
-        let msg = "feat: add feature\n\nSome details.\n\nCo-Authored-By: Alice Smith <alice@example.com>";
+        let msg =
+            "feat: add feature\n\nSome details.\n\nCo-Authored-By: Alice Smith <alice@example.com>";
         let authors = extract_co_authors(msg);
         assert_eq!(authors, vec!["Alice Smith"]);
     }
 
     #[test]
     fn test_extract_co_authors_multiple() {
-        let msg = "fix: bug\n\nCo-Authored-By: Alice <a@x.com>\nCo-Authored-By: Bob Jones <b@x.com>";
+        let msg =
+            "fix: bug\n\nCo-Authored-By: Alice <a@x.com>\nCo-Authored-By: Bob Jones <b@x.com>";
         let authors = extract_co_authors(msg);
         assert_eq!(authors, vec!["Alice", "Bob Jones"]);
     }
 
     #[test]
     fn test_extract_co_authors_case_insensitive() {
-        let msg = "feat: thing\n\nco-authored-by: Jane <jane@x.com>\nCO-AUTHORED-BY: Joe <joe@x.com>";
+        let msg =
+            "feat: thing\n\nco-authored-by: Jane <jane@x.com>\nCO-AUTHORED-BY: Joe <joe@x.com>";
         let authors = extract_co_authors(msg);
         assert_eq!(authors, vec!["Jane", "Joe"]);
     }
@@ -1992,7 +2012,11 @@ abbrev: 10
         let grouped = group_commits(&sorted, &groups, &test_logger()).unwrap();
 
         // Verify grouping — unmatched "chore" commit is silently dropped (GoReleaser behavior)
-        assert_eq!(grouped.len(), 2, "should have Features and Bug Fixes groups only");
+        assert_eq!(
+            grouped.len(),
+            2,
+            "should have Features and Bug Fixes groups only"
+        );
         assert_eq!(grouped[0].title, "Features");
         assert_eq!(grouped[0].commits.len(), 3, "3 feat commits");
         assert_eq!(grouped[1].title, "Bug Fixes");
@@ -2161,7 +2185,9 @@ abbrev: 10
 
         // Body includes default "## Changelog" title (matching GoReleaser).
         // Default format uses `{{ SHA }}` (full hash).
-        assert!(final_md.starts_with("# Release v1.0.0\n\n## Changelog\n\n* abc1234 initial release"));
+        assert!(
+            final_md.starts_with("# Release v1.0.0\n\n## Changelog\n\n* abc1234 initial release")
+        );
         assert!(final_md.contains("* abc1234 initial release"));
         assert!(final_md.contains("* def5678 typo in config"));
         assert!(final_md.ends_with("compare/v0.9.0...v1.0.0\n"));
@@ -3272,35 +3298,79 @@ format: "{{ ShortSHA }} {{ Message }} @{{ Logins }}"
 
     #[test]
     fn test_gitlab_newline_handling() {
-        let grouped = vec![GroupedCommits::new("", vec![
-            ci("feat: feature A", "feat", "feature A", "abc1234"),
-            ci("fix: bug B", "fix", "bug B", "def5678"),
-        ])];
+        let grouped = vec![GroupedCommits::new(
+            "",
+            vec![
+                ci("feat: feature A", "feat", "feature A", "abc1234"),
+                ci("fix: bug B", "fix", "bug B", "def5678"),
+            ],
+        )];
         // Use explicit format to keep assertions simple.
-        let md = render_changelog(&grouped, 7, Some("{{ ShortSHA }} {{ Message }}"), "", "gitlab", None, None);
+        let md = render_changelog(
+            &grouped,
+            7,
+            Some("{{ ShortSHA }} {{ Message }}"),
+            "",
+            "gitlab",
+            None,
+            None,
+        );
         // GitLab should use 3-space + newline for markdown line breaks.
-        assert!(md.contains("* abc1234 feature A   \n"), "GitLab should use '   \\n' for line breaks, got: {md}");
-        assert!(md.contains("* def5678 bug B   \n"), "GitLab should use '   \\n' for line breaks, got: {md}");
+        assert!(
+            md.contains("* abc1234 feature A   \n"),
+            "GitLab should use '   \\n' for line breaks, got: {md}"
+        );
+        assert!(
+            md.contains("* def5678 bug B   \n"),
+            "GitLab should use '   \\n' for line breaks, got: {md}"
+        );
     }
 
     #[test]
     fn test_gitea_newline_handling() {
-        let grouped = vec![GroupedCommits::new("", vec![
-            ci("feat: x", "feat", "x", "aaa1111"),
-        ])];
-        let md = render_changelog(&grouped, 7, Some("{{ ShortSHA }} {{ Message }}"), "", "gitea", None, None);
-        assert!(md.contains("* aaa1111 x   \n"), "Gitea should use '   \\n' for line breaks, got: {md}");
+        let grouped = vec![GroupedCommits::new(
+            "",
+            vec![ci("feat: x", "feat", "x", "aaa1111")],
+        )];
+        let md = render_changelog(
+            &grouped,
+            7,
+            Some("{{ ShortSHA }} {{ Message }}"),
+            "",
+            "gitea",
+            None,
+            None,
+        );
+        assert!(
+            md.contains("* aaa1111 x   \n"),
+            "Gitea should use '   \\n' for line breaks, got: {md}"
+        );
     }
 
     #[test]
     fn test_github_newline_handling() {
-        let grouped = vec![GroupedCommits::new("", vec![
-            ci("feat: y", "feat", "y", "bbb2222"),
-        ])];
-        let md = render_changelog(&grouped, 7, Some("{{ ShortSHA }} {{ Message }}"), "", "github", None, None);
+        let grouped = vec![GroupedCommits::new(
+            "",
+            vec![ci("feat: y", "feat", "y", "bbb2222")],
+        )];
+        let md = render_changelog(
+            &grouped,
+            7,
+            Some("{{ ShortSHA }} {{ Message }}"),
+            "",
+            "github",
+            None,
+            None,
+        );
         // GitHub should NOT use 3-space newlines.
-        assert!(md.contains("* bbb2222 y\n"), "GitHub should use plain newline, got: {md}");
-        assert!(!md.contains("   \n"), "GitHub should NOT use '   \\n', got: {md}");
+        assert!(
+            md.contains("* bbb2222 y\n"),
+            "GitHub should use plain newline, got: {md}"
+        );
+        assert!(
+            !md.contains("   \n"),
+            "GitHub should NOT use '   \\n', got: {md}"
+        );
     }
 
     #[test]
@@ -3380,7 +3450,15 @@ format: "{{ ShortSHA }} {{ Message }} @{{ Logins }}"
         commit.full_hash = "abc1234567890def1234567890abc1234567890de".to_string();
         let grouped = vec![GroupedCommits::new("", vec![commit])];
         // Custom format referencing ShortSHA should get the full SHA when abbrev=0
-        let md = render_changelog(&grouped, 0, Some("{{ ShortSHA }}|{{ Message }}"), "", "git", None, None);
+        let md = render_changelog(
+            &grouped,
+            0,
+            Some("{{ ShortSHA }}|{{ Message }}"),
+            "",
+            "git",
+            None,
+            None,
+        );
         assert!(
             md.contains("* abc1234567890def1234567890abc1234567890de|test"),
             "ShortSHA should be full SHA with abbrev=0, got: {md}"
@@ -3398,8 +3476,14 @@ format: "{{ ShortSHA }} {{ Message }} @{{ Logins }}"
             vec![ci("feat: add X", "feat", "add X", "abc1234")],
         )];
         let md = render_changelog(&grouped, 7, None, "", "git", Some("Release Notes"), None);
-        assert!(md.starts_with("## Release Notes\n\n"), "custom title should replace default 'Changelog': {md}");
-        assert!(md.contains("### Features"), "groups should be at depth 3: {md}");
+        assert!(
+            md.starts_with("## Release Notes\n\n"),
+            "custom title should replace default 'Changelog': {md}"
+        );
+        assert!(
+            md.contains("### Features"),
+            "groups should be at depth 3: {md}"
+        );
     }
 
     #[test]
@@ -3410,20 +3494,38 @@ format: "{{ ShortSHA }} {{ Message }} @{{ Logins }}"
         )];
         // Default format uses `{{ SHA }}` (full hash).
         let md = render_changelog(&grouped, 7, None, "", "git", Some(""), None);
-        assert!(!md.contains("## "), "empty title should suppress title heading: {md}");
-        assert!(md.starts_with("* abc1234 add X"), "commits should start immediately: {md}");
+        assert!(
+            !md.contains("## "),
+            "empty title should suppress title heading: {md}"
+        );
+        assert!(
+            md.starts_with("* abc1234 add X"),
+            "commits should start immediately: {md}"
+        );
     }
 
     #[test]
     fn test_divider_between_groups() {
         let grouped = vec![
-            GroupedCommits::new("Features", vec![ci("feat: add X", "feat", "add X", "abc1234")]),
-            GroupedCommits::new("Bug Fixes", vec![ci("fix: fix Y", "fix", "fix Y", "def5678")]),
+            GroupedCommits::new(
+                "Features",
+                vec![ci("feat: add X", "feat", "add X", "abc1234")],
+            ),
+            GroupedCommits::new(
+                "Bug Fixes",
+                vec![ci("fix: fix Y", "fix", "fix Y", "def5678")],
+            ),
         ];
         let md = render_changelog(&grouped, 7, None, "", "git", None, Some("---"));
-        assert!(md.contains("---\n### Bug Fixes"), "divider should appear between groups: {md}");
+        assert!(
+            md.contains("---\n### Bug Fixes"),
+            "divider should appear between groups: {md}"
+        );
         // Divider should NOT appear before the first group
-        assert!(!md.starts_with("---"), "divider should not appear before first group: {md}");
+        assert!(
+            !md.starts_with("---"),
+            "divider should not appear before first group: {md}"
+        );
     }
 
     #[test]
@@ -3433,18 +3535,41 @@ format: "{{ ShortSHA }} {{ Message }} @{{ Logins }}"
             vec![ci("feat: add X", "feat", "add X", "abc1234")],
         )];
         let md = render_changelog(&grouped, 7, None, "", "git", None, Some("---"));
-        assert!(!md.contains("---"), "divider should not appear with only one group: {md}");
+        assert!(
+            !md.contains("---"),
+            "divider should not appear with only one group: {md}"
+        );
     }
 
     #[test]
     fn test_title_and_divider_combined() {
         let grouped = vec![
-            GroupedCommits::new("Features", vec![ci("feat: add X", "feat", "add X", "abc1234")]),
-            GroupedCommits::new("Bug Fixes", vec![ci("fix: fix Y", "fix", "fix Y", "def5678")]),
+            GroupedCommits::new(
+                "Features",
+                vec![ci("feat: add X", "feat", "add X", "abc1234")],
+            ),
+            GroupedCommits::new(
+                "Bug Fixes",
+                vec![ci("fix: fix Y", "fix", "fix Y", "def5678")],
+            ),
         ];
-        let md = render_changelog(&grouped, 7, None, "", "git", Some("What's Changed"), Some("---"));
-        assert!(md.starts_with("## What's Changed\n\n"), "custom title should be present: {md}");
-        assert!(md.contains("---\n### Bug Fixes"), "divider between groups: {md}");
+        let md = render_changelog(
+            &grouped,
+            7,
+            None,
+            "",
+            "git",
+            Some("What's Changed"),
+            Some("---"),
+        );
+        assert!(
+            md.starts_with("## What's Changed\n\n"),
+            "custom title should be present: {md}"
+        );
+        assert!(
+            md.contains("---\n### Bug Fixes"),
+            "divider between groups: {md}"
+        );
     }
 
     #[test]
@@ -3464,7 +3589,10 @@ paths:
         let cfg: ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.title.as_deref(), Some("Release Notes"));
         assert_eq!(cfg.divider.as_deref(), Some("---"));
-        assert_eq!(cfg.paths.as_deref(), Some(&["src/".to_string(), "lib/".to_string()][..]));
+        assert_eq!(
+            cfg.paths.as_deref(),
+            Some(&["src/".to_string(), "lib/".to_string()][..])
+        );
         let ai = cfg.ai.unwrap();
         assert_eq!(ai.provider.as_deref(), Some("anthropic"));
         assert_eq!(ai.model.as_deref(), Some("claude-sonnet-4-20250514"));
@@ -3519,10 +3647,19 @@ prompt:
         match cfg.prompt.unwrap() {
             ChangelogAiPrompt::Source(src) => {
                 let from_url = src.from_url.unwrap();
-                assert_eq!(from_url.url.as_deref(), Some("https://example.com/prompt.txt"));
+                assert_eq!(
+                    from_url.url.as_deref(),
+                    Some("https://example.com/prompt.txt")
+                );
                 let headers = from_url.headers.unwrap();
-                assert_eq!(headers.get("Authorization").map(|s| s.as_str()), Some("Bearer token123"));
-                assert_eq!(headers.get("Accept").map(|s| s.as_str()), Some("text/plain"));
+                assert_eq!(
+                    headers.get("Authorization").map(|s| s.as_str()),
+                    Some("Bearer token123")
+                );
+                assert_eq!(
+                    headers.get("Accept").map(|s| s.as_str()),
+                    Some("text/plain")
+                );
                 assert!(src.from_file.is_none());
             }
             other => panic!("expected Source prompt, got: {:?}", other),
@@ -3531,10 +3668,17 @@ prompt:
 
     #[test]
     fn test_resolve_prompt_source_file_overrides_url() {
-        use anodize_core::config::{ChangelogAiPromptSource, ContentFromFile, ContentFromUrl, ResolvedPromptSource};
+        use anodize_core::config::{
+            ChangelogAiPromptSource, ContentFromFile, ContentFromUrl, ResolvedPromptSource,
+        };
         let src = ChangelogAiPromptSource {
-            from_file: Some(ContentFromFile { path: Some("./prompt.md".to_string()) }),
-            from_url: Some(ContentFromUrl { url: Some("https://example.com/p".to_string()), headers: None }),
+            from_file: Some(ContentFromFile {
+                path: Some("./prompt.md".to_string()),
+            }),
+            from_url: Some(ContentFromUrl {
+                url: Some("https://example.com/p".to_string()),
+                headers: None,
+            }),
         };
         match src.resolve() {
             ResolvedPromptSource::File(p) => assert_eq!(p, "./prompt.md"),
@@ -3549,12 +3693,18 @@ prompt:
         headers.insert("Auth".to_string(), "Bearer x".to_string());
         let src = ChangelogAiPromptSource {
             from_file: None,
-            from_url: Some(ContentFromUrl { url: Some("https://example.com/p".to_string()), headers: Some(headers) }),
+            from_url: Some(ContentFromUrl {
+                url: Some("https://example.com/p".to_string()),
+                headers: Some(headers),
+            }),
         };
         match src.resolve() {
             ResolvedPromptSource::Url { url, headers } => {
                 assert_eq!(url, "https://example.com/p");
-                assert_eq!(headers.unwrap().get("Auth").map(|s| s.as_str()), Some("Bearer x"));
+                assert_eq!(
+                    headers.unwrap().get("Auth").map(|s| s.as_str()),
+                    Some("Bearer x")
+                );
             }
             other => panic!("expected Url, got: {:?}", other),
         }
@@ -3563,16 +3713,24 @@ prompt:
     #[test]
     fn test_resolve_prompt_source_none() {
         use anodize_core::config::{ChangelogAiPromptSource, ResolvedPromptSource};
-        let src = ChangelogAiPromptSource { from_file: None, from_url: None };
+        let src = ChangelogAiPromptSource {
+            from_file: None,
+            from_url: None,
+        };
         assert!(matches!(src.resolve(), ResolvedPromptSource::None));
     }
 
     #[test]
     fn test_resolve_prompt_source_file_with_empty_path_falls_through() {
-        use anodize_core::config::{ChangelogAiPromptSource, ContentFromFile, ContentFromUrl, ResolvedPromptSource};
+        use anodize_core::config::{
+            ChangelogAiPromptSource, ContentFromFile, ContentFromUrl, ResolvedPromptSource,
+        };
         let src = ChangelogAiPromptSource {
             from_file: Some(ContentFromFile { path: None }),
-            from_url: Some(ContentFromUrl { url: Some("https://fallback.com".to_string()), headers: None }),
+            from_url: Some(ContentFromUrl {
+                url: Some("https://fallback.com".to_string()),
+                headers: None,
+            }),
         };
         match src.resolve() {
             ResolvedPromptSource::Url { url, .. } => assert_eq!(url, "https://fallback.com"),
@@ -3679,7 +3837,11 @@ use: gitea
         // with git fallback or produce a git-based changelog.
         let result = stage.run(&mut ctx);
         // The stage should succeed (git fallback works in test git repo context).
-        assert!(result.is_ok(), "gitlab with no token should fall back to git: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "gitlab with no token should fall back to git: {:?}",
+            result.err()
+        );
     }
 
     #[test]
@@ -3708,7 +3870,11 @@ use: gitea
 
         let stage = ChangelogStage;
         let result = stage.run(&mut ctx);
-        assert!(result.is_ok(), "gitea with no token should fall back to git: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "gitea with no token should fall back to git: {:?}",
+            result.err()
+        );
     }
 
     #[test]

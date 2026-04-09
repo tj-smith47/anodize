@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 
 use anodize_core::artifact::{Artifact, ArtifactKind};
 use anodize_core::config::parse_octal_mode;
@@ -26,16 +26,20 @@ impl Stage for TemplateFilesStage {
 
         let log = ctx.logger("templatefiles");
         let dist = ctx.config.dist.clone();
-        std::fs::create_dir_all(&dist)
-            .with_context(|| format!("templatefiles: failed to create dist dir: {}", dist.display()))?;
+        std::fs::create_dir_all(&dist).with_context(|| {
+            format!(
+                "templatefiles: failed to create dist dir: {}",
+                dist.display()
+            )
+        })?;
 
         for entry in &entries {
             let id = entry.id.as_deref().unwrap_or("default");
 
             // Render the src path through the template engine
-            let rendered_src = ctx
-                .render_template(&entry.src)
-                .with_context(|| format!("templatefiles: failed to render src path for id '{}'", id))?;
+            let rendered_src = ctx.render_template(&entry.src).with_context(|| {
+                format!("templatefiles: failed to render src path for id '{}'", id)
+            })?;
 
             // Read the source file
             let src_path = PathBuf::from(&rendered_src);
@@ -48,14 +52,18 @@ impl Stage for TemplateFilesStage {
             })?;
 
             // Render the file contents through the template engine
-            let rendered_contents = ctx
-                .render_template(&src_contents)
-                .with_context(|| format!("templatefiles: failed to render contents of '{}' (id: '{}')", src_path.display(), id))?;
+            let rendered_contents = ctx.render_template(&src_contents).with_context(|| {
+                format!(
+                    "templatefiles: failed to render contents of '{}' (id: '{}')",
+                    src_path.display(),
+                    id
+                )
+            })?;
 
             // Render the dst path through the template engine
-            let rendered_dst = ctx
-                .render_template(&entry.dst)
-                .with_context(|| format!("templatefiles: failed to render dst path for id '{}'", id))?;
+            let rendered_dst = ctx.render_template(&entry.dst).with_context(|| {
+                format!("templatefiles: failed to render dst path for id '{}'", id)
+            })?;
 
             // Reject path traversal attempts
             if rendered_dst.contains("..") || Path::new(&rendered_dst).is_absolute() {
@@ -76,10 +84,7 @@ impl Stage for TemplateFilesStage {
                 })?;
             }
             std::fs::write(&output_path, &rendered_contents).with_context(|| {
-                format!(
-                    "templatefiles: failed to write '{}'",
-                    output_path.display()
-                )
+                format!("templatefiles: failed to write '{}'", output_path.display())
             })?;
 
             // Set file permissions
@@ -153,16 +158,18 @@ mod tests {
 
         // Create a template source file with template variables
         let src_path = tmp.path().join("greeting.txt.tpl");
-        fs::write(&src_path, "Hello from {{ .ProjectName }} version {{ .Version }}!").unwrap();
+        fs::write(
+            &src_path,
+            "Hello from {{ .ProjectName }} version {{ .Version }}!",
+        )
+        .unwrap();
 
-        ctx.config.template_files = Some(vec![
-            anodize_core::config::TemplateFileConfig {
-                id: Some("greeting".to_string()),
-                src: src_path.to_string_lossy().to_string(),
-                dst: "greeting.txt".to_string(),
-                mode: None,
-            },
-        ]);
+        ctx.config.template_files = Some(vec![anodize_core::config::TemplateFileConfig {
+            id: Some("greeting".to_string()),
+            src: src_path.to_string_lossy().to_string(),
+            dst: "greeting.txt".to_string(),
+            mode: None,
+        }]);
 
         let stage = TemplateFilesStage;
         stage.run(&mut ctx).unwrap();
@@ -181,14 +188,12 @@ mod tests {
         let src_path = tmp.path().join("input.tpl");
         fs::write(&src_path, "static content").unwrap();
 
-        ctx.config.template_files = Some(vec![
-            anodize_core::config::TemplateFileConfig {
-                id: None,
-                src: src_path.to_string_lossy().to_string(),
-                dst: "subdir/output.txt".to_string(),
-                mode: None,
-            },
-        ]);
+        ctx.config.template_files = Some(vec![anodize_core::config::TemplateFileConfig {
+            id: None,
+            src: src_path.to_string_lossy().to_string(),
+            dst: "subdir/output.txt".to_string(),
+            mode: None,
+        }]);
 
         let stage = TemplateFilesStage;
         stage.run(&mut ctx).unwrap();
@@ -206,14 +211,12 @@ mod tests {
         let src_path = tmp.path().join("script.tpl");
         fs::write(&src_path, "#!/bin/sh\necho hi").unwrap();
 
-        ctx.config.template_files = Some(vec![
-            anodize_core::config::TemplateFileConfig {
-                id: None,
-                src: src_path.to_string_lossy().to_string(),
-                dst: "script.sh".to_string(),
-                mode: None,
-            },
-        ]);
+        ctx.config.template_files = Some(vec![anodize_core::config::TemplateFileConfig {
+            id: None,
+            src: src_path.to_string_lossy().to_string(),
+            dst: "script.sh".to_string(),
+            mode: None,
+        }]);
 
         let stage = TemplateFilesStage;
         stage.run(&mut ctx).unwrap();
@@ -223,11 +226,7 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             let output = ctx.config.dist.join("script.sh");
             let perms = fs::metadata(&output).unwrap().permissions();
-            assert_eq!(
-                perms.mode() & 0o7777,
-                0o655,
-                "default mode should be 0o655"
-            );
+            assert_eq!(perms.mode() & 0o7777, 0o655, "default mode should be 0o655");
         }
     }
 
@@ -239,14 +238,12 @@ mod tests {
         let src_path = tmp.path().join("exec.tpl");
         fs::write(&src_path, "#!/bin/bash").unwrap();
 
-        ctx.config.template_files = Some(vec![
-            anodize_core::config::TemplateFileConfig {
-                id: None,
-                src: src_path.to_string_lossy().to_string(),
-                dst: "exec.sh".to_string(),
-                mode: Some("0755".to_string()),
-            },
-        ]);
+        ctx.config.template_files = Some(vec![anodize_core::config::TemplateFileConfig {
+            id: None,
+            src: src_path.to_string_lossy().to_string(),
+            dst: "exec.sh".to_string(),
+            mode: Some("0755".to_string()),
+        }]);
 
         let stage = TemplateFilesStage;
         stage.run(&mut ctx).unwrap();
@@ -274,15 +271,16 @@ mod tests {
         fs::write(&src_path, "install {{ .Tag }}").unwrap();
 
         // Use template expressions in both src and dst
-        let src_template = format!("{}/{{{{ .ProjectName }}}}-install.tpl", tmp.path().display());
-        ctx.config.template_files = Some(vec![
-            anodize_core::config::TemplateFileConfig {
-                id: None,
-                src: src_template,
-                dst: "{{ .ProjectName }}-{{ .Version }}-install.sh".to_string(),
-                mode: None,
-            },
-        ]);
+        let src_template = format!(
+            "{}/{{{{ .ProjectName }}}}-install.tpl",
+            tmp.path().display()
+        );
+        ctx.config.template_files = Some(vec![anodize_core::config::TemplateFileConfig {
+            id: None,
+            src: src_template,
+            dst: "{{ .ProjectName }}-{{ .Version }}-install.sh".to_string(),
+            mode: None,
+        }]);
 
         let stage = TemplateFilesStage;
         stage.run(&mut ctx).unwrap();
@@ -322,14 +320,12 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mut ctx = build_ctx(&tmp);
 
-        ctx.config.template_files = Some(vec![
-            anodize_core::config::TemplateFileConfig {
-                id: Some("missing".to_string()),
-                src: "/nonexistent/path/template.tpl".to_string(),
-                dst: "output.txt".to_string(),
-                mode: None,
-            },
-        ]);
+        ctx.config.template_files = Some(vec![anodize_core::config::TemplateFileConfig {
+            id: Some("missing".to_string()),
+            src: "/nonexistent/path/template.tpl".to_string(),
+            dst: "output.txt".to_string(),
+            mode: None,
+        }]);
 
         let stage = TemplateFilesStage;
         let result = stage.run(&mut ctx);
@@ -350,14 +346,12 @@ mod tests {
         let src_path = tmp.path().join("data.tpl");
         fs::write(&src_path, "some data").unwrap();
 
-        ctx.config.template_files = Some(vec![
-            anodize_core::config::TemplateFileConfig {
-                id: Some("my-file".to_string()),
-                src: src_path.to_string_lossy().to_string(),
-                dst: "data.txt".to_string(),
-                mode: None,
-            },
-        ]);
+        ctx.config.template_files = Some(vec![anodize_core::config::TemplateFileConfig {
+            id: Some("my-file".to_string()),
+            src: src_path.to_string_lossy().to_string(),
+            dst: "data.txt".to_string(),
+            mode: None,
+        }]);
 
         let stage = TemplateFilesStage;
         stage.run(&mut ctx).unwrap();
@@ -377,14 +371,12 @@ mod tests {
         let src_path = tmp.path().join("file.tpl");
         fs::write(&src_path, "content").unwrap();
 
-        ctx.config.template_files = Some(vec![
-            anodize_core::config::TemplateFileConfig {
-                id: None,
-                src: src_path.to_string_lossy().to_string(),
-                dst: "file.txt".to_string(),
-                mode: None,
-            },
-        ]);
+        ctx.config.template_files = Some(vec![anodize_core::config::TemplateFileConfig {
+            id: None,
+            src: src_path.to_string_lossy().to_string(),
+            dst: "file.txt".to_string(),
+            mode: None,
+        }]);
 
         let stage = TemplateFilesStage;
         stage.run(&mut ctx).unwrap();
@@ -464,18 +456,19 @@ mod tests {
         let src_path = tmp.path().join("bad.tpl");
         fs::write(&src_path, "Hello {{ invalid").unwrap();
 
-        ctx.config.template_files = Some(vec![
-            anodize_core::config::TemplateFileConfig {
-                id: Some("bad-template".to_string()),
-                src: src_path.to_string_lossy().to_string(),
-                dst: "bad.txt".to_string(),
-                mode: None,
-            },
-        ]);
+        ctx.config.template_files = Some(vec![anodize_core::config::TemplateFileConfig {
+            id: Some("bad-template".to_string()),
+            src: src_path.to_string_lossy().to_string(),
+            dst: "bad.txt".to_string(),
+            mode: None,
+        }]);
 
         let stage = TemplateFilesStage;
         let result = stage.run(&mut ctx);
-        assert!(result.is_err(), "malformed template should produce an error");
+        assert!(
+            result.is_err(),
+            "malformed template should produce an error"
+        );
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("failed to render") || err.contains("template"),
@@ -492,14 +485,12 @@ mod tests {
         let src_path = tmp.path().join("escape.tpl");
         fs::write(&src_path, "trying to escape").unwrap();
 
-        ctx.config.template_files = Some(vec![
-            anodize_core::config::TemplateFileConfig {
-                id: None,
-                src: src_path.to_string_lossy().to_string(),
-                dst: "../escaped.txt".to_string(),
-                mode: None,
-            },
-        ]);
+        ctx.config.template_files = Some(vec![anodize_core::config::TemplateFileConfig {
+            id: None,
+            src: src_path.to_string_lossy().to_string(),
+            dst: "../escaped.txt".to_string(),
+            mode: None,
+        }]);
 
         let stage = TemplateFilesStage;
         let result = stage.run(&mut ctx);
@@ -520,14 +511,12 @@ mod tests {
         let src_path = tmp.path().join("abs.tpl");
         fs::write(&src_path, "content").unwrap();
 
-        ctx.config.template_files = Some(vec![
-            anodize_core::config::TemplateFileConfig {
-                id: None,
-                src: src_path.to_string_lossy().to_string(),
-                dst: "/etc/evil.txt".to_string(),
-                mode: None,
-            },
-        ]);
+        ctx.config.template_files = Some(vec![anodize_core::config::TemplateFileConfig {
+            id: None,
+            src: src_path.to_string_lossy().to_string(),
+            dst: "/etc/evil.txt".to_string(),
+            mode: None,
+        }]);
 
         let stage = TemplateFilesStage;
         let result = stage.run(&mut ctx);

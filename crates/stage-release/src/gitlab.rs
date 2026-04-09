@@ -23,17 +23,11 @@ use crate::compose_body_for_mode;
 /// Characters that must be percent-encoded in a GitLab project path segment.
 /// GitLab requires the full project path (e.g. `group/project`) to be encoded
 /// so that `/` becomes `%2F`.
-const PATH_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
-    .remove(b'-')
-    .remove(b'_')
-    .remove(b'.');
+const PATH_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC.remove(b'-').remove(b'_').remove(b'.');
 
 /// Characters safe in a single URL path segment (no `/`).
 /// Used for tag names, package names, versions, and file names in URLs.
-const SEGMENT_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
-    .remove(b'-')
-    .remove(b'_')
-    .remove(b'.');
+const SEGMENT_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC.remove(b'-').remove(b'_').remove(b'.');
 
 /// Percent-encode a GitLab project ID path segment.
 ///
@@ -72,12 +66,7 @@ pub(crate) fn gitlab_project_id(owner: &str, name: &str) -> String {
 }
 
 /// Build the release page URL on the GitLab web UI.
-pub(crate) fn gitlab_release_url(
-    download_url: &str,
-    owner: &str,
-    name: &str,
-    tag: &str,
-) -> String {
+pub(crate) fn gitlab_release_url(download_url: &str, owner: &str, name: &str, tag: &str) -> String {
     let base = download_url.trim_end_matches('/');
     if owner.is_empty() {
         format!("{}/{}/-/releases/{}", base, name, tag)
@@ -152,9 +141,11 @@ pub(crate) async fn gitlab_create_release(
 
     // Try to get the existing release for this tag.
     let get_url = format!("{}/projects/{}/releases/{}", api, encoded, encoded_tag);
-    let get_resp = client.get(&get_url).send().await.context(
-        "gitlab: GET release by tag",
-    )?;
+    let get_resp = client
+        .get(&get_url)
+        .send()
+        .await
+        .context("gitlab: GET release by tag")?;
 
     let status = get_resp.status().as_u16();
 
@@ -178,11 +169,7 @@ pub(crate) async fn gitlab_create_release(
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            bail!(
-                "gitlab: create release failed (HTTP {}): {}",
-                status,
-                text
-            );
+            bail!("gitlab: create release failed (HTTP {}): {}", status, text);
         }
     } else if get_resp.status().is_success() {
         // Release exists — update it with mode-based body composition.
@@ -209,11 +196,7 @@ pub(crate) async fn gitlab_create_release(
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            bail!(
-                "gitlab: update release failed (HTTP {}): {}",
-                status,
-                text
-            );
+            bail!("gitlab: update release failed (HTTP {}): {}", status, text);
         }
     } else {
         // Unexpected error.
@@ -262,8 +245,16 @@ pub(crate) async fn gitlab_upload_asset(
     let encoded_tag = encode_tag(tag);
 
     let link_url = if use_package_registry {
-        upload_via_package_registry(client, api, &encoded, project_name, version, file_name, file_path)
-            .await?
+        upload_via_package_registry(
+            client,
+            api,
+            &encoded,
+            project_name,
+            version,
+            file_name,
+            file_path,
+        )
+        .await?
     } else {
         upload_via_project_uploads(client, api, &encoded, file_path, file_name, download_url)
             .await?
@@ -322,29 +313,25 @@ pub(crate) async fn gitlab_upload_asset(
 
             for link in &links {
                 if link["name"].as_str() == Some(file_name)
-                    && let Some(link_id) = link["id"].as_u64() {
-                        let delete_url =
-                            format!("{}/{}", links_api, link_id);
-                        let del_resp = client
-                            .delete(&delete_url)
-                            .send()
-                            .await
-                            .with_context(|| {
-                                format!(
-                                    "gitlab: DELETE existing release link '{}' (id={})",
-                                    file_name, link_id
-                                )
-                            })?;
-                        if !del_resp.status().is_success() {
-                            bail!(
-                                "gitlab: delete existing link '{}' failed (HTTP {}): {}",
-                                file_name,
-                                del_resp.status(),
-                                del_resp.text().await.unwrap_or_default()
-                            );
-                        }
-                        break;
+                    && let Some(link_id) = link["id"].as_u64()
+                {
+                    let delete_url = format!("{}/{}", links_api, link_id);
+                    let del_resp = client.delete(&delete_url).send().await.with_context(|| {
+                        format!(
+                            "gitlab: DELETE existing release link '{}' (id={})",
+                            file_name, link_id
+                        )
+                    })?;
+                    if !del_resp.status().is_success() {
+                        bail!(
+                            "gitlab: delete existing link '{}' failed (HTTP {}): {}",
+                            file_name,
+                            del_resp.status(),
+                            del_resp.text().await.unwrap_or_default()
+                        );
                     }
+                    break;
+                }
             }
         } else {
             // Could not list links — report the original error.
@@ -406,9 +393,10 @@ async fn detect_pre_v17_gitlab(client: &Client, api_url: &str) -> bool {
     match client.get(&version_url).send().await {
         Ok(resp) if resp.status().is_success() => {
             if let Ok(body) = resp.json::<serde_json::Value>().await
-                && let Some(version_str) = body["version"].as_str() {
-                    return is_pre_v17(version_str);
-                }
+                && let Some(version_str) = body["version"].as_str()
+            {
+                return is_pre_v17(version_str);
+            }
             // Could not parse version — default to pre-v17 (conservative).
             true
         }
@@ -421,9 +409,10 @@ async fn detect_pre_v17_gitlab(client: &Client, api_url: &str) -> bool {
 fn is_pre_v17(version_str: &str) -> bool {
     // CI_SERVER_VERSION is like "16.11.0" or "17.0.0"
     if let Some(major_str) = version_str.split('.').next()
-        && let Ok(major) = major_str.parse::<u32>() {
-            return major < 17;
-        }
+        && let Ok(major) = major_str.parse::<u32>()
+    {
+        return major < 17;
+    }
     false
 }
 
@@ -555,7 +544,10 @@ mod tests {
 
     #[test]
     fn project_id_with_owner_and_name() {
-        assert_eq!(gitlab_project_id("mygroup", "myproject"), "mygroup/myproject");
+        assert_eq!(
+            gitlab_project_id("mygroup", "myproject"),
+            "mygroup/myproject"
+        );
     }
 
     #[test]
@@ -575,7 +567,10 @@ mod tests {
 
     #[test]
     fn encode_simple_project_id() {
-        assert_eq!(encode_project_id("mygroup/myproject"), "mygroup%2Fmyproject");
+        assert_eq!(
+            encode_project_id("mygroup/myproject"),
+            "mygroup%2Fmyproject"
+        );
     }
 
     #[test]
@@ -680,10 +675,7 @@ mod tests {
     #[test]
     fn release_url_trailing_slash_stripped() {
         let url = gitlab_release_url("https://gitlab.example.com/", "org", "repo", "v2.0.0");
-        assert_eq!(
-            url,
-            "https://gitlab.example.com/org/repo/-/releases/v2.0.0"
-        );
+        assert_eq!(url, "https://gitlab.example.com/org/repo/-/releases/v2.0.0");
     }
 
     // -- build_gitlab_client -------------------------------------------------

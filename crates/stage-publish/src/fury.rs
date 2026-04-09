@@ -1,7 +1,7 @@
 use anodize_core::artifact::ArtifactKind;
 use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 
 // ---------------------------------------------------------------------------
 // Helper functions
@@ -40,10 +40,11 @@ pub fn publish_to_fury(ctx: &Context, log: &StageLogger) -> Result<()> {
     for entry in entries {
         // Check disable flag.
         if let Some(ref d) = entry.disable
-            && d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
-                log.status("fury: entry disabled, skipping");
-                continue;
-            }
+            && d.is_disabled(|tmpl| ctx.render_template(tmpl))
+        {
+            log.status("fury: entry disabled, skipping");
+            continue;
+        }
 
         // Account is required — bail before dry-run so config errors surface
         // even in dry-run mode.
@@ -54,13 +55,13 @@ pub fn publish_to_fury(ctx: &Context, log: &StageLogger) -> Result<()> {
 
         // Render account through template engine in case it contains
         // template expressions (e.g. `{{ .Env.FURY_ACCOUNT }}`).
-        let account = ctx.render_template(account_raw)
+        let account = ctx
+            .render_template(account_raw)
             .with_context(|| format!("fury: failed to render account '{}'", account_raw))?;
 
         // Resolve the secret env-var name (default: FURY_TOKEN).
-        let secret_name_rendered = crate::util::resolve_secret_name(
-            ctx, entry.secret_name.as_deref(), "FURY_TOKEN",
-        );
+        let secret_name_rendered =
+            crate::util::resolve_secret_name(ctx, entry.secret_name.as_deref(), "FURY_TOKEN");
 
         // Determine formats filter.
         let formats: Vec<String> = match entry.formats {
@@ -81,10 +82,8 @@ pub fn publish_to_fury(ctx: &Context, log: &StageLogger) -> Result<()> {
             .iter()
             .filter(|a| {
                 // Only package-like artifacts
-                let valid_kind = matches!(
-                    a.kind,
-                    ArtifactKind::LinuxPackage | ArtifactKind::Archive
-                );
+                let valid_kind =
+                    matches!(a.kind, ArtifactKind::LinuxPackage | ArtifactKind::Archive);
                 if !valid_kind {
                     return false;
                 }
@@ -103,10 +102,7 @@ pub fn publish_to_fury(ctx: &Context, log: &StageLogger) -> Result<()> {
                 "(dry-run) would push packages to GemFury account '{}' at {}",
                 account, push_url
             ));
-            log.status(&format!(
-                "(dry-run) formats filter: {:?}",
-                formats
-            ));
+            log.status(&format!("(dry-run) formats filter: {:?}", formats));
             if let Some(ref ids) = entry.ids {
                 log.status(&format!("(dry-run) build ID filter: {:?}", ids));
             }
@@ -126,8 +122,7 @@ pub fn publish_to_fury(ctx: &Context, log: &StageLogger) -> Result<()> {
         let token = std::env::var(&secret_name_rendered).with_context(|| {
             format!(
                 "fury: environment variable '{}' not set (needed for account '{}')",
-                secret_name_rendered,
-                account
+                secret_name_rendered, account
             )
         })?;
 
@@ -173,9 +168,7 @@ pub fn publish_to_fury(ctx: &Context, log: &StageLogger) -> Result<()> {
                 .header("Content-Length", body.len().to_string())
                 .body(body)
                 .send()
-                .with_context(|| {
-                    format!("fury: HTTP request failed for '{}'", artifact.name())
-                })?;
+                .with_context(|| format!("fury: HTTP request failed for '{}'", artifact.name()))?;
 
             let status = resp.status();
             if !status.is_success() {
@@ -192,10 +185,7 @@ pub fn publish_to_fury(ctx: &Context, log: &StageLogger) -> Result<()> {
             log.status(&format!("pushed {} ({})", artifact.name(), status));
         }
 
-        log.status(&format!(
-            "fury: push complete for account '{}'",
-            account
-        ));
+        log.status(&format!("fury: push complete for account '{}'", account));
     }
 
     Ok(())

@@ -130,10 +130,7 @@ mod tests {
     #[test]
     fn test_webhook_body_json_with_charset() {
         // "application/json; charset=utf-8" (the default) should still trigger JSON handling.
-        let body = webhook_body(
-            r#"{"tag":"v1.0"}"#,
-            "application/json; charset=utf-8",
-        );
+        let body = webhook_body(r#"{"tag":"v1.0"}"#, "application/json; charset=utf-8");
         let json: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(json["tag"], "v1.0");
 

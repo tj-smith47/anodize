@@ -286,9 +286,8 @@ impl Stage for SbomStage {
 
         let dist = ctx.config.dist.clone();
         if !ctx.is_dry_run() {
-            std::fs::create_dir_all(&dist).with_context(|| {
-                format!("sbom: failed to create dist dir: {}", dist.display())
-            })?;
+            std::fs::create_dir_all(&dist)
+                .with_context(|| format!("sbom: failed to create dist dir: {}", dist.display()))?;
         }
 
         // Validate ID uniqueness
@@ -296,7 +295,10 @@ impl Stage for SbomStage {
         for cfg in &ctx.config.sboms {
             let id = cfg.id.as_deref().unwrap_or("default");
             if !seen_ids.insert(id.to_string()) {
-                bail!("found multiple sboms with the ID '{}', please fix your config", id);
+                bail!(
+                    "found multiple sboms with the ID '{}', please fix your config",
+                    id
+                );
             }
         }
 
@@ -341,18 +343,27 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
     let artifacts_type = sbom_cfg.artifacts.as_deref().unwrap_or("archive");
 
     // Default documents based on artifacts type
-    let documents = sbom_cfg.documents.clone().unwrap_or_else(|| {
-        match artifacts_type {
-            "binary" => vec!["{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}.sbom.json".to_string()],
+    let documents = sbom_cfg
+        .documents
+        .clone()
+        .unwrap_or_else(|| match artifacts_type {
+            "binary" => {
+                vec!["{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}.sbom.json".to_string()]
+            }
             "any" => vec![],
             _ => vec!["{{ .ArtifactName }}.sbom.json".to_string()],
-        }
-    });
+        });
 
     // Default args for syft
     let args = sbom_cfg.args.clone().unwrap_or_else(|| {
         if cmd == "syft" {
-            vec!["$artifact".to_string(), "--output".to_string(), "spdx-json=$document".to_string(), "--enrich".to_string(), "all".to_string()]
+            vec![
+                "$artifact".to_string(),
+                "--output".to_string(),
+                "spdx-json=$document".to_string(),
+                "--enrich".to_string(),
+                "all".to_string(),
+            ]
         } else {
             vec![]
         }
@@ -362,7 +373,10 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
     let env_vars: HashMap<String, String> = sbom_cfg.env.clone().unwrap_or_else(|| {
         if cmd == "syft" && matches!(artifacts_type, "source" | "archive") {
             let mut m = HashMap::new();
-            m.insert("SYFT_FILE_METADATA_CATALOGER_ENABLED".to_string(), "true".to_string());
+            m.insert(
+                "SYFT_FILE_METADATA_CATALOGER_ENABLED".to_string(),
+                "true".to_string(),
+            );
             m
         } else {
             HashMap::new()
@@ -370,55 +384,56 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
     });
 
     // Filter artifacts from the registry based on artifacts type
-    let matching_artifacts: Vec<(PathBuf, HashMap<String, String>, Option<String>)> = match artifacts_type {
-        "any" => vec![],
-        _ => {
-            let kind = match artifacts_type {
-                "source" => ArtifactKind::SourceArchive,
-                "archive" => ArtifactKind::Archive,
-                "binary" => ArtifactKind::Binary,
-                "package" => ArtifactKind::LinuxPackage,
-                "diskimage" => ArtifactKind::DiskImage,
-                "installer" => ArtifactKind::Installer,
-                _ => {
-                    log.warn(&format!(
-                        "sbom[{}]: unknown artifacts type '{}', defaulting to archive",
+    let matching_artifacts: Vec<(PathBuf, HashMap<String, String>, Option<String>)> =
+        match artifacts_type {
+            "any" => vec![],
+            _ => {
+                let kind = match artifacts_type {
+                    "source" => ArtifactKind::SourceArchive,
+                    "archive" => ArtifactKind::Archive,
+                    "binary" => ArtifactKind::Binary,
+                    "package" => ArtifactKind::LinuxPackage,
+                    "diskimage" => ArtifactKind::DiskImage,
+                    "installer" => ArtifactKind::Installer,
+                    _ => {
+                        log.warn(&format!(
+                            "sbom[{}]: unknown artifacts type '{}', defaulting to archive",
+                            id, artifacts_type
+                        ));
+                        ArtifactKind::Archive
+                    }
+                };
+
+                let matched: Vec<(PathBuf, HashMap<String, String>, Option<String>)> = ctx
+                    .artifacts
+                    .all()
+                    .iter()
+                    .filter(|a| a.kind == kind)
+                    .filter(|a| {
+                        if let Some(ref ids) = sbom_cfg.ids {
+                            if let Some(art_id) = a.metadata.get("id") {
+                                ids.contains(art_id)
+                            } else {
+                                false
+                            }
+                        } else {
+                            true
+                        }
+                    })
+                    .map(|a| (a.path.clone(), a.metadata.clone(), a.target.clone()))
+                    .collect();
+
+                if matched.is_empty() {
+                    log.status(&format!(
+                        "sbom[{}]: no matching '{}' artifacts found, skipping",
                         id, artifacts_type
                     ));
-                    ArtifactKind::Archive
+                    return Ok(());
                 }
-            };
 
-            let matched: Vec<(PathBuf, HashMap<String, String>, Option<String>)> = ctx
-                .artifacts
-                .all()
-                .iter()
-                .filter(|a| a.kind == kind)
-                .filter(|a| {
-                    if let Some(ref ids) = sbom_cfg.ids {
-                        if let Some(art_id) = a.metadata.get("id") {
-                            ids.contains(art_id)
-                        } else {
-                            false
-                        }
-                    } else {
-                        true
-                    }
-                })
-                .map(|a| (a.path.clone(), a.metadata.clone(), a.target.clone()))
-                .collect();
-
-            if matched.is_empty() {
-                log.status(&format!(
-                    "sbom[{}]: no matching '{}' artifacts found, skipping",
-                    id, artifacts_type
-                ));
-                return Ok(());
+                matched
             }
-
-            matched
-        }
-    };
+        };
 
     if ctx.is_dry_run() {
         if artifacts_type == "any" {
@@ -439,11 +454,12 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
         return Ok(());
     }
 
-    let artifact_list: Vec<(PathBuf, HashMap<String, String>, Option<String>)> = if artifacts_type == "any" {
-        vec![(PathBuf::new(), HashMap::new(), None)]
-    } else {
-        matching_artifacts
-    };
+    let artifact_list: Vec<(PathBuf, HashMap<String, String>, Option<String>)> =
+        if artifacts_type == "any" {
+            vec![(PathBuf::new(), HashMap::new(), None)]
+        } else {
+            matching_artifacts
+        };
 
     for (artifact_path, artifact_meta, artifact_target) in &artifact_list {
         let artifact_rel = if artifact_path.as_os_str().is_empty() {
@@ -484,8 +500,12 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
 
         let mut rendered_docs: Vec<String> = Vec::new();
         for doc_tpl in &documents {
-            let rendered = ctx.render_template(doc_tpl)
-                .with_context(|| format!("sbom[{}]: failed to render document template '{}'", id, doc_tpl))?;
+            let rendered = ctx.render_template(doc_tpl).with_context(|| {
+                format!(
+                    "sbom[{}]: failed to render document template '{}'",
+                    id, doc_tpl
+                )
+            })?;
             rendered_docs.push(rendered);
         }
 
@@ -500,25 +520,41 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
                 s = s.replace(&format!("$document{}", i), doc);
             }
             s = s.replace("$document", &first_doc);
-            let rendered_arg = ctx.render_template(&s)
+            let rendered_arg = ctx
+                .render_template(&s)
                 .with_context(|| format!("sbom[{}]: failed to render arg template '{}'", id, s))?;
             rendered_args.push(rendered_arg);
         }
 
         let mut rendered_env: Vec<(String, String)> = Vec::with_capacity(env_vars.len());
         for (k, v) in &env_vars {
-            let rendered_val = ctx.render_template(v)
+            let rendered_val = ctx
+                .render_template(v)
                 .with_context(|| format!("sbom[{}]: failed to render env template '{}'", id, v))?;
             rendered_env.push((k.clone(), rendered_val));
         }
 
-        log.status(&format!("sbom[{}]: running {} {}", id, cmd, rendered_args.join(" ")));
+        log.status(&format!(
+            "sbom[{}]: running {} {}",
+            id,
+            cmd,
+            rendered_args.join(" ")
+        ));
 
         let mut command = Command::new(cmd);
         command.args(&rendered_args);
         command.current_dir(dist);
         command.env_clear();
-        for key in &["HOME", "USER", "USERPROFILE", "TMPDIR", "TMP", "TEMP", "PATH", "LOCALAPPDATA"] {
+        for key in &[
+            "HOME",
+            "USER",
+            "USERPROFILE",
+            "TMPDIR",
+            "TMP",
+            "TEMP",
+            "PATH",
+            "LOCALAPPDATA",
+        ] {
             if let Ok(val) = std::env::var(key) {
                 command.env(key, val);
             }
@@ -541,9 +577,7 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
             let full_path = dist.join(doc_path);
             if full_path.exists() {
                 // Check the file is non-empty — a zero-byte SBOM is useless
-                let file_len = std::fs::metadata(&full_path)
-                    .map(|m| m.len())
-                    .unwrap_or(0);
+                let file_len = std::fs::metadata(&full_path).map(|m| m.len()).unwrap_or(0);
                 if file_len == 0 {
                     bail!(
                         "sbom[{}]: command succeeded but produced empty output file '{}'",
@@ -621,16 +655,33 @@ fn run_sbom_builtin(
         .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let cargo_lock_path = find_cargo_lock(&search_dir)?;
     let cargo_lock_content = std::fs::read_to_string(&cargo_lock_path).with_context(|| {
-        format!("sbom: failed to read Cargo.lock at {}", cargo_lock_path.display())
+        format!(
+            "sbom: failed to read Cargo.lock at {}",
+            cargo_lock_path.display()
+        )
     })?;
 
     let packages = parse_cargo_lock(&cargo_lock_content)?;
-    log.status(&format!("sbom[{}]: parsed {} packages from Cargo.lock", id, packages.len()));
+    log.status(&format!(
+        "sbom[{}]: parsed {} packages from Cargo.lock",
+        id,
+        packages.len()
+    ));
 
     let (sbom_json, extension) = match format {
-        "cyclonedx" => (generate_cyclonedx(project_name, version, &packages)?, "cdx.json"),
-        "spdx" => (generate_spdx(project_name, version, &packages)?, "spdx.json"),
-        _ => bail!("sbom[{}]: unsupported format '{}' (use cyclonedx or spdx)", id, format),
+        "cyclonedx" => (
+            generate_cyclonedx(project_name, version, &packages)?,
+            "cdx.json",
+        ),
+        "spdx" => (
+            generate_spdx(project_name, version, &packages)?,
+            "spdx.json",
+        ),
+        _ => bail!(
+            "sbom[{}]: unsupported format '{}' (use cyclonedx or spdx)",
+            id,
+            format
+        ),
     };
 
     let filename = format!("{}-{}.{}", project_name, version, extension);

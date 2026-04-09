@@ -46,7 +46,10 @@ pub enum Commands {
             help = "Skip stages (comma-separated, e.g. docker,announce)"
         )]
         skip: Vec<String>,
-        #[arg(long, help = "GitHub token (overrides ANODIZE_GITHUB_TOKEN / GITHUB_TOKEN env vars)")]
+        #[arg(
+            long,
+            help = "GitHub token (overrides ANODIZE_GITHUB_TOKEN / GITHUB_TOKEN env vars)"
+        )]
         token: Option<String>,
         #[arg(
             long,
@@ -71,11 +74,17 @@ pub enum Commands {
         draft: bool,
         #[arg(long, help = "Path to a file containing custom release header text")]
         release_header: Option<PathBuf>,
-        #[arg(long, help = "Path to a template file for release header (rendered with template variables)")]
+        #[arg(
+            long,
+            help = "Path to a template file for release header (rendered with template variables)"
+        )]
         release_header_tmpl: Option<PathBuf>,
         #[arg(long, help = "Path to a file containing custom release footer text")]
         release_footer: Option<PathBuf>,
-        #[arg(long, help = "Path to a template file for release footer (rendered with template variables)")]
+        #[arg(
+            long,
+            help = "Path to a template file for release footer (rendered with template variables)"
+        )]
         release_footer_tmpl: Option<PathBuf>,
         #[arg(
             long,
@@ -177,14 +186,20 @@ pub enum Commands {
             help = "Skip stages (comma-separated, e.g. docker,announce)"
         )]
         skip: Vec<String>,
-        #[arg(long, help = "GitHub token (overrides ANODIZE_GITHUB_TOKEN / GITHUB_TOKEN env vars)")]
+        #[arg(
+            long,
+            help = "GitHub token (overrides ANODIZE_GITHUB_TOKEN / GITHUB_TOKEN env vars)"
+        )]
         token: Option<String>,
     },
     /// Run only the publish stages (release, publish, blob) from a completed dist/
     Publish {
         #[arg(long, help = "Run full pipeline without side effects")]
         dry_run: bool,
-        #[arg(long, help = "GitHub token (overrides ANODIZE_GITHUB_TOKEN / GITHUB_TOKEN env vars)")]
+        #[arg(
+            long,
+            help = "GitHub token (overrides ANODIZE_GITHUB_TOKEN / GITHUB_TOKEN env vars)"
+        )]
         token: Option<String>,
         #[arg(long, help = "Custom dist directory (overrides config)")]
         dist: Option<PathBuf>,
@@ -195,7 +210,10 @@ pub enum Commands {
         dry_run: bool,
         #[arg(long, help = "Custom dist directory (overrides config)")]
         dist: Option<PathBuf>,
-        #[arg(long, help = "GitHub token (overrides ANODIZE_GITHUB_TOKEN / GITHUB_TOKEN env vars)")]
+        #[arg(
+            long,
+            help = "GitHub token (overrides ANODIZE_GITHUB_TOKEN / GITHUB_TOKEN env vars)"
+        )]
         token: Option<String>,
         #[arg(long, value_delimiter = ',', help = "Skip stages (comma-separated)")]
         skip: Vec<String>,

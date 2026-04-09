@@ -21,10 +21,7 @@ use crate::compose_body_for_mode;
 
 /// Characters safe in a single URL path segment (no `/`).
 /// Used for owner, repo, tag names, and file names in URLs.
-const SEGMENT_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
-    .remove(b'-')
-    .remove(b'_')
-    .remove(b'.');
+const SEGMENT_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC.remove(b'-').remove(b'_').remove(b'.');
 
 /// Percent-encode a single URL path component.
 ///
@@ -42,12 +39,7 @@ fn encode_segment(segment: &str) -> String {
 /// Build the release page URL on the Gitea web UI.
 ///
 /// Returns `{download}/{owner}/{repo}/releases/tag/{tag}`.
-pub(crate) fn gitea_release_url(
-    download_url: &str,
-    owner: &str,
-    repo: &str,
-    tag: &str,
-) -> String {
+pub(crate) fn gitea_release_url(download_url: &str, owner: &str, repo: &str, tag: &str) -> String {
     let base = download_url.trim_end_matches('/');
     format!(
         "{}/{}/{}/releases/tag/{}",
@@ -64,10 +56,7 @@ pub(crate) fn gitea_release_url(
 /// - `skip_tls_verify`: when true, disable TLS certificate verification.
 ///
 /// Gitea uses `Authorization: token {value}` for all API requests.
-pub(crate) fn build_gitea_client(
-    token: &str,
-    skip_tls_verify: bool,
-) -> Result<Client> {
+pub(crate) fn build_gitea_client(token: &str, skip_tls_verify: bool) -> Result<Client> {
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert(
         reqwest::header::AUTHORIZATION,
@@ -143,20 +132,13 @@ pub(crate) async fn gitea_create_release(
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            bail!(
-                "gitea: update release failed (HTTP {}): {}",
-                status,
-                text
-            );
+            bail!("gitea: update release failed (HTTP {}): {}", status, text);
         }
 
         Ok(release_id)
     } else {
         // Release does not exist — create it.
-        let create_url = format!(
-            "{}/api/v1/repos/{}/{}/releases",
-            api, enc_owner, enc_repo
-        );
+        let create_url = format!("{}/api/v1/repos/{}/{}/releases", api, enc_owner, enc_repo);
         let payload = serde_json::json!({
             "tag_name": tag,
             "target_commitish": commit,
@@ -176,11 +158,7 @@ pub(crate) async fn gitea_create_release(
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            bail!(
-                "gitea: create release failed (HTTP {}): {}",
-                status,
-                text
-            );
+            bail!("gitea: create release failed (HTTP {}): {}", status, text);
         }
 
         let json: serde_json::Value = resp
@@ -229,11 +207,7 @@ async fn find_release_by_tag(
         if !resp.status().is_success() {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
-            bail!(
-                "gitea: list releases failed (HTTP {}): {}",
-                status,
-                text
-            );
+            bail!("gitea: list releases failed (HTTP {}): {}", status, text);
         }
 
         let releases: Vec<serde_json::Value> = resp
@@ -307,7 +281,12 @@ pub(crate) async fn gitea_upload_asset(
         .multipart(form)
         .send()
         .await
-        .with_context(|| format!("gitea: POST upload '{}' to release {}", file_name, release_id))?;
+        .with_context(|| {
+            format!(
+                "gitea: POST upload '{}' to release {}",
+                file_name, release_id
+            )
+        })?;
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -377,16 +356,12 @@ pub(crate) async fn gitea_delete_asset_by_name(
                 api, enc_owner, enc_repo, release_id, asset_id
             );
 
-            let del_resp = client
-                .delete(&delete_url)
-                .send()
-                .await
-                .with_context(|| {
-                    format!(
-                        "gitea: DELETE asset '{}' (id={}) from release {}",
-                        file_name, asset_id, release_id
-                    )
-                })?;
+            let del_resp = client.delete(&delete_url).send().await.with_context(|| {
+                format!(
+                    "gitea: DELETE asset '{}' (id={}) from release {}",
+                    file_name, asset_id, release_id
+                )
+            })?;
 
             if !del_resp.status().is_success() {
                 bail!(
@@ -416,12 +391,7 @@ mod tests {
 
     #[test]
     fn release_url_basic() {
-        let url = gitea_release_url(
-            "https://gitea.example.com",
-            "myorg",
-            "myapp",
-            "v1.0.0",
-        );
+        let url = gitea_release_url("https://gitea.example.com", "myorg", "myapp", "v1.0.0");
         assert_eq!(
             url,
             "https://gitea.example.com/myorg/myapp/releases/tag/v1.0.0"
@@ -430,12 +400,7 @@ mod tests {
 
     #[test]
     fn release_url_trailing_slash_stripped() {
-        let url = gitea_release_url(
-            "https://gitea.example.com/",
-            "org",
-            "repo",
-            "v2.0.0",
-        );
+        let url = gitea_release_url("https://gitea.example.com/", "org", "repo", "v2.0.0");
         assert_eq!(
             url,
             "https://gitea.example.com/org/repo/releases/tag/v2.0.0"
@@ -458,12 +423,7 @@ mod tests {
 
     #[test]
     fn release_url_special_chars_in_owner_and_repo() {
-        let url = gitea_release_url(
-            "https://gitea.example.com",
-            "my org",
-            "my repo",
-            "v1.0.0",
-        );
+        let url = gitea_release_url("https://gitea.example.com", "my org", "my repo", "v1.0.0");
         assert!(url.contains("my%20org"), "owner should be percent-encoded");
         assert!(url.contains("my%20repo"), "repo should be percent-encoded");
     }
@@ -518,8 +478,7 @@ mod tests {
         // We can't directly inspect reqwest's default headers, but we can verify
         // the format by testing the construction doesn't fail with the token format.
         // The real verification is that the header value "token my-gitea-token" is valid.
-        let header_value =
-            reqwest::header::HeaderValue::from_str(&expected_header).unwrap();
+        let header_value = reqwest::header::HeaderValue::from_str(&expected_header).unwrap();
         assert_eq!(
             header_value.to_str().unwrap(),
             "token my-gitea-token",

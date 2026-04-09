@@ -1,6 +1,6 @@
 use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use std::collections::HashMap;
 
 use crate::artifactory::{self, validate_upload_mode};
@@ -20,16 +20,14 @@ pub fn publish_to_upload(ctx: &Context, log: &StageLogger) -> Result<()> {
     for entry in entries {
         // Check disable flag
         if let Some(ref d) = entry.disable
-            && d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
-                log.status("upload: entry skipped (disabled)");
-                continue;
-            }
+            && d.is_disabled(|tmpl| ctx.render_template(tmpl))
+        {
+            log.status("upload: entry skipped (disabled)");
+            continue;
+        }
 
         // Name defaults to "upload" for env var naming
-        let name = entry
-            .name
-            .as_deref()
-            .unwrap_or("upload");
+        let name = entry.name.as_deref().unwrap_or("upload");
 
         // Validate mode (default: "archive")
         let mode = entry.mode.as_deref().unwrap_or("archive");
@@ -37,10 +35,7 @@ pub fn publish_to_upload(ctx: &Context, log: &StageLogger) -> Result<()> {
 
         // Target URL is required
         if entry.target.is_empty() {
-            bail!(
-                "upload: entry '{}' is missing required 'target' URL",
-                name
-            );
+            bail!("upload: entry '{}' is missing required 'target' URL", name);
         }
         let target_template = &entry.target;
 
@@ -61,7 +56,10 @@ pub fn publish_to_upload(ctx: &Context, log: &StageLogger) -> Result<()> {
         let password = std::env::var(format!("UPLOAD_{}_SECRET", name_upper))
             .ok()
             .or_else(|| {
-                entry.password.as_ref().and_then(|p| ctx.render_template(p).ok())
+                entry
+                    .password
+                    .as_ref()
+                    .and_then(|p| ctx.render_template(p).ok())
             })
             .unwrap_or_default();
 

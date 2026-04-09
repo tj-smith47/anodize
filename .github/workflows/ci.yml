@@ -86,3 +86,26 @@ jobs:
         run: |
           cargo build --release -p anodize
           ./target/release/anodize release --snapshot --single-target --clean --dry-run
+
+  tag:
+    name: Auto-tag
+    if: github.ref == 'refs/heads/master'
+    needs: [fmt, clippy, test, docs-check, package, snapshot]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GH_PAT }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build anodize
+        run: cargo build --release -p anodize
+      - name: Auto-tag release
+        run: |
+          ./target/release/anodize tag
+          git push --tags
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}

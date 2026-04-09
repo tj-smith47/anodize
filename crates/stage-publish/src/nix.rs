@@ -695,7 +695,11 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         log.status(&format!(
             "nix: skipping upload for '{}' (skip_upload={})",
             crate_name,
-            nix_cfg.skip_upload.as_ref().map(|v| v.as_str()).unwrap_or("")
+            nix_cfg
+                .skip_upload
+                .as_ref()
+                .map(|v| v.as_str())
+                .unwrap_or("")
         ));
         return Ok(());
     }
@@ -705,7 +709,9 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     let (repo_owner_raw, repo_name_raw) =
         crate::util::resolve_repo_owner_name(nix_cfg.repository.as_ref(), None, None)
             .ok_or_else(|| anyhow::anyhow!("nix: no repository config for '{}'", crate_name))?;
-    let repo_owner = ctx.render_template(&repo_owner_raw).unwrap_or(repo_owner_raw);
+    let repo_owner = ctx
+        .render_template(&repo_owner_raw)
+        .unwrap_or(repo_owner_raw);
     let repo_name = ctx.render_template(&repo_name_raw).unwrap_or(repo_name_raw);
 
     let name_raw = nix_cfg.name.as_deref().unwrap_or(crate_name);
@@ -743,9 +749,8 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     // Find artifacts for Linux and Darwin platforms, applying IDs + goamd64 filter.
     let ids_filter = nix_cfg.ids.as_deref();
     let goamd64 = nix_cfg.goamd64.as_deref().or(Some("v1"));
-    let all_artifacts = util::find_all_platform_artifacts_with_goarch(
-        ctx, crate_name, ids_filter, goamd64, None,
-    );
+    let all_artifacts =
+        util::find_all_platform_artifacts_with_goarch(ctx, crate_name, ids_filter, goamd64, None);
 
     let url_template = nix_cfg.url_template.as_deref();
 
@@ -817,12 +822,7 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
             let mut names: Vec<String> = _crate_cfg
                 .builds
                 .as_ref()
-                .map(|builds| {
-                    builds
-                        .iter()
-                        .map(|b| b.binary.clone())
-                        .collect::<Vec<_>>()
-                })
+                .map(|builds| builds.iter().map(|b| b.binary.clone()).collect::<Vec<_>>())
                 .unwrap_or_default();
             // Deduplicate while preserving order.
             let mut seen = std::collections::HashSet::new();
@@ -1447,16 +1447,12 @@ mod tests {
             "output must use nix base32 alphabet"
         );
         // Cross-check: both conversions come from the same 32-byte hash
-        let sri = hex_sha256_to_sri(
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        )
-        .unwrap();
+        let sri =
+            hex_sha256_to_sri("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+                .unwrap();
         assert_eq!(sri, "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=");
         // Both encode the same underlying hash, just in different formats
-        assert_eq!(
-            hash,
-            "0mdqa9w1p6cmli6976v4wi0sw9r4p5prkj7lzfd1877wk11c9c73"
-        );
+        assert_eq!(hash, "0mdqa9w1p6cmli6976v4wi0sw9r4p5prkj7lzfd1877wk11c9c73");
     }
 
     #[test]

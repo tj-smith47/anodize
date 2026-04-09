@@ -1,7 +1,7 @@
 use anodize_core::artifact::ArtifactKind;
 use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
@@ -58,10 +58,11 @@ pub fn publish_to_cloudsmith(ctx: &Context, log: &StageLogger) -> Result<()> {
     for entry in entries {
         // Check skip flag.
         if let Some(ref s) = entry.skip
-            && s.is_disabled(|tmpl| ctx.render_template(tmpl)) {
-                log.status("cloudsmith: entry skipped");
-                continue;
-            }
+            && s.is_disabled(|tmpl| ctx.render_template(tmpl))
+        {
+            log.status("cloudsmith: entry skipped");
+            continue;
+        }
 
         // Organization is required — bail before dry-run so config errors
         // surface even in dry-run mode.
@@ -87,9 +88,8 @@ pub fn publish_to_cloudsmith(ctx: &Context, log: &StageLogger) -> Result<()> {
             .with_context(|| format!("cloudsmith: failed to render repository '{}'", repo_raw))?;
 
         // Resolve the secret env-var name (default: CLOUDSMITH_TOKEN).
-        let secret_name_rendered = crate::util::resolve_secret_name(
-            ctx, entry.secret_name.as_deref(), "CLOUDSMITH_TOKEN",
-        );
+        let secret_name_rendered =
+            crate::util::resolve_secret_name(ctx, entry.secret_name.as_deref(), "CLOUDSMITH_TOKEN");
 
         // Determine formats filter.
         let formats: Vec<String> = match entry.formats {
@@ -116,14 +116,17 @@ pub fn publish_to_cloudsmith(ctx: &Context, log: &StageLogger) -> Result<()> {
         };
 
         // Resolve component (optional, used for deb).
-        let component = entry.component.as_ref().map(|c| {
-            ctx.render_template(c).unwrap_or_else(|_| c.clone())
-        });
+        let component = entry
+            .component
+            .as_ref()
+            .map(|c| ctx.render_template(c).unwrap_or_else(|_| c.clone()));
 
         // Check republish flag.
-        let republish = entry.republish.as_ref().map(|r| {
-            r.evaluates_to_true(|tmpl| ctx.render_template(tmpl))
-        }).unwrap_or(false);
+        let republish = entry
+            .republish
+            .as_ref()
+            .map(|r| r.evaluates_to_true(|tmpl| ctx.render_template(tmpl)))
+            .unwrap_or(false);
 
         // Collect matching artifacts.
         let artifacts: Vec<_> = ctx
@@ -131,10 +134,8 @@ pub fn publish_to_cloudsmith(ctx: &Context, log: &StageLogger) -> Result<()> {
             .all()
             .iter()
             .filter(|a| {
-                let valid_kind = matches!(
-                    a.kind,
-                    ArtifactKind::LinuxPackage | ArtifactKind::Archive
-                );
+                let valid_kind =
+                    matches!(a.kind, ArtifactKind::LinuxPackage | ArtifactKind::Archive);
                 if !valid_kind {
                     return false;
                 }
@@ -147,15 +148,13 @@ pub fn publish_to_cloudsmith(ctx: &Context, log: &StageLogger) -> Result<()> {
 
         // --- Dry-run logging ---
         if ctx.is_dry_run() {
-            let sample_url = cloudsmith_upload_url(&organization, &repository, "{format}", "{distribution}");
+            let sample_url =
+                cloudsmith_upload_url(&organization, &repository, "{format}", "{distribution}");
             log.status(&format!(
                 "(dry-run) would upload packages to CloudSmith org '{}' repo '{}' at {}",
                 organization, repository, sample_url
             ));
-            log.status(&format!(
-                "(dry-run) formats filter: {:?}",
-                formats
-            ));
+            log.status(&format!("(dry-run) formats filter: {:?}", formats));
             if let Some(ref ids) = entry.ids {
                 log.status(&format!("(dry-run) build ID filter: {:?}", ids));
             }
@@ -233,8 +232,8 @@ pub fn publish_to_cloudsmith(ctx: &Context, log: &StageLogger) -> Result<()> {
                 .mime_str("application/octet-stream")
                 .context("cloudsmith: failed to build multipart")?;
 
-            let mut form = reqwest::blocking::multipart::Form::new()
-                .part("package_file", file_part);
+            let mut form =
+                reqwest::blocking::multipart::Form::new().part("package_file", file_part);
 
             if !distro.is_empty() {
                 form = form.text("distribution", distro.clone());
@@ -261,9 +260,7 @@ pub fn publish_to_cloudsmith(ctx: &Context, log: &StageLogger) -> Result<()> {
                 .header("X-Api-Key", &token)
                 .multipart(form)
                 .send()
-                .with_context(|| {
-                    format!("cloudsmith: HTTP request failed for '{}'", art_name)
-                })?;
+                .with_context(|| format!("cloudsmith: HTTP request failed for '{}'", art_name))?;
 
             let status = resp.status();
             if !status.is_success() {
@@ -597,7 +594,10 @@ mod tests {
     fn test_cloudsmith_format_matches() {
         let formats = vec!["deb".to_string(), "rpm".to_string()];
         assert!(cloudsmith_format_matches("myapp_1.0.0_amd64.deb", &formats));
-        assert!(cloudsmith_format_matches("myapp-1.0.0.x86_64.rpm", &formats));
+        assert!(cloudsmith_format_matches(
+            "myapp-1.0.0.x86_64.rpm",
+            &formats
+        ));
         assert!(!cloudsmith_format_matches("myapp-1.0.0.tar.gz", &formats));
     }
 

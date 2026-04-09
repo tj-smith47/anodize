@@ -57,17 +57,14 @@ fn create_source_archive(
 
     let mut cmd = Command::new("git");
     cmd.current_dir(repo_root);
-    cmd.arg("archive")
-        .arg("--format")
-        .arg(initial_format);
+    cmd.arg("archive").arg("--format").arg(initial_format);
 
     // Only pass --prefix when prefix is non-empty; GoReleaser omits it when unset.
     if !prefix.is_empty() {
         cmd.arg(format!("--prefix={}/", prefix));
     }
 
-    cmd.arg("--output")
-        .arg(&initial_path);
+    cmd.arg("--output").arg(&initial_path);
 
     // For zip format with extra files, we create the base archive first via
     // git archive, then append extra files under the prefix using the zip crate.
@@ -135,7 +132,10 @@ fn create_source_archive(
                 };
 
                 if !src.exists() {
-                    log.warn(&format!("source: extra file '{}' not found, skipping", file_entry.src));
+                    log.warn(&format!(
+                        "source: extra file '{}' not found, skipping",
+                        file_entry.src
+                    ));
                     continue;
                 }
 
@@ -163,8 +163,7 @@ fn create_source_archive(
         use std::io::Read as _;
 
         // Read the git-archive tar into memory
-        let existing_tar_data =
-            std::fs::read(&initial_path).context("source: read initial tar")?;
+        let existing_tar_data = std::fs::read(&initial_path).context("source: read initial tar")?;
 
         // Build a new tar with existing entries + extra files
         let mut new_tar_data = Vec::new();
@@ -194,10 +193,7 @@ fn create_source_archive(
                 let dest_rel: PathBuf = if let Some(ref dst) = entry.dst {
                     if do_strip {
                         let fname = src.file_name().ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "source: extra file has no filename: {}",
-                                entry.src
-                            )
+                            anyhow::anyhow!("source: extra file has no filename: {}", entry.src)
                         })?;
                         PathBuf::from(dst).join(fname)
                     } else {
@@ -205,10 +201,7 @@ fn create_source_archive(
                     }
                 } else {
                     let fname = src.file_name().ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "source: extra file has no filename: {}",
-                            entry.src
-                        )
+                        anyhow::anyhow!("source: extra file has no filename: {}", entry.src)
                     })?;
                     PathBuf::from(fname)
                 };
@@ -289,16 +282,15 @@ fn create_source_archive(
 
         // Write final output (compressed or plain)
         if git_format == "tar.gz" {
-            let gz_file = std::fs::File::create(&output_path)
-                .context("source: create gzip output file")?;
+            let gz_file =
+                std::fs::File::create(&output_path).context("source: create gzip output file")?;
             let mut encoder =
                 flate2::write::GzEncoder::new(gz_file, flate2::Compression::default());
             std::io::Write::write_all(&mut encoder, &new_tar_data)
                 .context("source: write gzip data")?;
             encoder.finish().context("source: finish gzip")?;
         } else {
-            std::fs::write(&output_path, &new_tar_data)
-                .context("source: write tar output")?;
+            std::fs::write(&output_path, &new_tar_data).context("source: write tar output")?;
         }
         let _ = std::fs::remove_file(&initial_path);
     }
@@ -626,7 +618,9 @@ impl SourceStage {
             .files
             .iter()
             .map(|entry| {
-                let rendered_src = ctx.render_template(&entry.src).unwrap_or_else(|_| entry.src.clone());
+                let rendered_src = ctx
+                    .render_template(&entry.src)
+                    .unwrap_or_else(|_| entry.src.clone());
                 SourceFileEntry {
                     src: rendered_src,
                     dst: entry.dst.clone(),
@@ -647,7 +641,10 @@ impl SourceStage {
 
         log.status(&format!("creating {}.{} archive...", name, format));
 
-        let cwd = ctx.options.project_root.clone()
+        let cwd = ctx
+            .options
+            .project_root
+            .clone()
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."));
         let repo_root = get_repo_root(&cwd)?;
@@ -656,8 +653,16 @@ impl SourceStage {
             .as_ref()
             .map(|info| info.commit.as_str())
             .unwrap_or("HEAD");
-        let output_path =
-            create_source_archive(dist, &format, &name, &prefix, &extra_files, &repo_root, commit, &log)?;
+        let output_path = create_source_archive(
+            dist,
+            &format,
+            &name,
+            &prefix,
+            &extra_files,
+            &repo_root,
+            commit,
+            &log,
+        )?;
 
         // GoReleaser sets artifact name to the filename (e.g. "foo-1.0.0.tar.gz").
         let artifact_name = output_path
@@ -716,18 +721,27 @@ impl SourceStage {
         let artifacts_type = sbom_cfg.artifacts.as_deref().unwrap_or("archive");
 
         // Default documents based on artifacts type
-        let documents = sbom_cfg.documents.clone().unwrap_or_else(|| {
-            match artifacts_type {
-                "binary" => vec!["{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}.sbom.json".to_string()],
+        let documents = sbom_cfg
+            .documents
+            .clone()
+            .unwrap_or_else(|| match artifacts_type {
+                "binary" => {
+                    vec!["{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}.sbom.json".to_string()]
+                }
                 "any" => vec![],
                 _ => vec!["{{ .ArtifactName }}.sbom.json".to_string()],
-            }
-        });
+            });
 
         // Default args for syft
         let args = sbom_cfg.args.clone().unwrap_or_else(|| {
             if cmd == "syft" {
-                vec!["$artifact".to_string(), "--output".to_string(), "spdx-json=$document".to_string(), "--enrich".to_string(), "all".to_string()]
+                vec![
+                    "$artifact".to_string(),
+                    "--output".to_string(),
+                    "spdx-json=$document".to_string(),
+                    "--enrich".to_string(),
+                    "all".to_string(),
+                ]
             } else {
                 vec![]
             }
@@ -737,7 +751,10 @@ impl SourceStage {
         let env_vars: HashMap<String, String> = sbom_cfg.env.clone().unwrap_or_else(|| {
             if cmd == "syft" && matches!(artifacts_type, "source" | "archive") {
                 let mut m = HashMap::new();
-                m.insert("SYFT_FILE_METADATA_CATALOGER_ENABLED".to_string(), "true".to_string());
+                m.insert(
+                    "SYFT_FILE_METADATA_CATALOGER_ENABLED".to_string(),
+                    "true".to_string(),
+                );
                 m
             } else {
                 HashMap::new()
@@ -745,56 +762,57 @@ impl SourceStage {
         });
 
         // Filter artifacts from the registry based on artifacts type
-        let matching_artifacts: Vec<(PathBuf, HashMap<String, String>, Option<String>)> = match artifacts_type {
-            "any" => vec![], // "any" calls once with no specific artifact
-            _ => {
-                let kind = match artifacts_type {
-                    "source" => ArtifactKind::SourceArchive,
-                    "archive" => ArtifactKind::Archive,
-                    "binary" => ArtifactKind::Binary,
-                    "package" => ArtifactKind::LinuxPackage,
-                    "diskimage" => ArtifactKind::DiskImage,
-                    "installer" => ArtifactKind::Installer,
-                    _ => {
-                        log.warn(&format!(
-                            "sbom[{}]: unknown artifacts type '{}', defaulting to archive",
+        let matching_artifacts: Vec<(PathBuf, HashMap<String, String>, Option<String>)> =
+            match artifacts_type {
+                "any" => vec![], // "any" calls once with no specific artifact
+                _ => {
+                    let kind = match artifacts_type {
+                        "source" => ArtifactKind::SourceArchive,
+                        "archive" => ArtifactKind::Archive,
+                        "binary" => ArtifactKind::Binary,
+                        "package" => ArtifactKind::LinuxPackage,
+                        "diskimage" => ArtifactKind::DiskImage,
+                        "installer" => ArtifactKind::Installer,
+                        _ => {
+                            log.warn(&format!(
+                                "sbom[{}]: unknown artifacts type '{}', defaulting to archive",
+                                id, artifacts_type
+                            ));
+                            ArtifactKind::Archive
+                        }
+                    };
+
+                    let matched: Vec<(PathBuf, HashMap<String, String>, Option<String>)> = ctx
+                        .artifacts
+                        .all()
+                        .iter()
+                        .filter(|a| a.kind == kind)
+                        .filter(|a| {
+                            // Filter by ids if specified
+                            if let Some(ref ids) = sbom_cfg.ids {
+                                if let Some(art_id) = a.metadata.get("id") {
+                                    ids.contains(art_id)
+                                } else {
+                                    false
+                                }
+                            } else {
+                                true
+                            }
+                        })
+                        .map(|a| (a.path.clone(), a.metadata.clone(), a.target.clone()))
+                        .collect();
+
+                    if matched.is_empty() {
+                        log.status(&format!(
+                            "sbom[{}]: no matching '{}' artifacts found, skipping",
                             id, artifacts_type
                         ));
-                        ArtifactKind::Archive
+                        return Ok(());
                     }
-                };
 
-                let matched: Vec<(PathBuf, HashMap<String, String>, Option<String>)> = ctx
-                    .artifacts
-                    .all()
-                    .iter()
-                    .filter(|a| a.kind == kind)
-                    .filter(|a| {
-                        // Filter by ids if specified
-                        if let Some(ref ids) = sbom_cfg.ids {
-                            if let Some(art_id) = a.metadata.get("id") {
-                                ids.contains(art_id)
-                            } else {
-                                false
-                            }
-                        } else {
-                            true
-                        }
-                    })
-                    .map(|a| (a.path.clone(), a.metadata.clone(), a.target.clone()))
-                    .collect();
-
-                if matched.is_empty() {
-                    log.status(&format!(
-                        "sbom[{}]: no matching '{}' artifacts found, skipping",
-                        id, artifacts_type
-                    ));
-                    return Ok(());
+                    matched
                 }
-
-                matched
-            }
-        };
+            };
 
         if ctx.is_dry_run() {
             if artifacts_type == "any" {
@@ -816,11 +834,12 @@ impl SourceStage {
         }
 
         // For "any" type, run the command once with no specific artifact
-        let artifact_list: Vec<(PathBuf, HashMap<String, String>, Option<String>)> = if artifacts_type == "any" {
-            vec![(PathBuf::new(), HashMap::new(), None)]
-        } else {
-            matching_artifacts
-        };
+        let artifact_list: Vec<(PathBuf, HashMap<String, String>, Option<String>)> =
+            if artifacts_type == "any" {
+                vec![(PathBuf::new(), HashMap::new(), None)]
+            } else {
+                matching_artifacts
+            };
 
         for (artifact_path, artifact_meta, artifact_target) in &artifact_list {
             let artifact_rel = if artifact_path.as_os_str().is_empty() {
@@ -865,8 +884,12 @@ impl SourceStage {
             // Render document paths
             let mut rendered_docs: Vec<String> = Vec::new();
             for doc_tpl in &documents {
-                let rendered = ctx.render_template(doc_tpl)
-                    .with_context(|| format!("sbom[{}]: failed to render document template '{}'", id, doc_tpl))?;
+                let rendered = ctx.render_template(doc_tpl).with_context(|| {
+                    format!(
+                        "sbom[{}]: failed to render document template '{}'",
+                        id, doc_tpl
+                    )
+                })?;
                 rendered_docs.push(rendered);
             }
 
@@ -887,16 +910,18 @@ impl SourceStage {
                 // Then replace bare $document (won't match already-replaced $documentN)
                 s = s.replace("$document", &first_doc);
                 // Render template vars in args
-                let rendered_arg = ctx.render_template(&s)
-                    .with_context(|| format!("sbom[{}]: failed to render arg template '{}'", id, s))?;
+                let rendered_arg = ctx.render_template(&s).with_context(|| {
+                    format!("sbom[{}]: failed to render arg template '{}'", id, s)
+                })?;
                 rendered_args.push(rendered_arg);
             }
 
             // Render env vars
             let mut rendered_env: Vec<(String, String)> = Vec::with_capacity(env_vars.len());
             for (k, v) in &env_vars {
-                let rendered_val = ctx.render_template(v)
-                    .with_context(|| format!("sbom[{}]: failed to render env template '{}'", id, v))?;
+                let rendered_val = ctx.render_template(v).with_context(|| {
+                    format!("sbom[{}]: failed to render env template '{}'", id, v)
+                })?;
                 rendered_env.push((k.clone(), rendered_val));
             }
 
@@ -1004,11 +1029,13 @@ impl SourceStage {
         }
 
         // Find Cargo.lock starting from repo root (or CWD as fallback)
-        let fallback_cwd = ctx.options.project_root.clone()
+        let fallback_cwd = ctx
+            .options
+            .project_root
+            .clone()
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."));
-        let search_dir = get_repo_root(&fallback_cwd)
-            .unwrap_or(fallback_cwd);
+        let search_dir = get_repo_root(&fallback_cwd).unwrap_or(fallback_cwd);
         let cargo_lock_path = find_cargo_lock(&search_dir)?;
         let cargo_lock_content = std::fs::read_to_string(&cargo_lock_path).with_context(|| {
             format!(
@@ -1035,7 +1062,8 @@ impl SourceStage {
             }
             _ => bail!(
                 "sbom[{}]: unsupported format '{}' (use cyclonedx or spdx)",
-                id, format
+                id,
+                format
             ),
         };
 
@@ -1870,9 +1898,14 @@ dependencies = [
         // Create a nested file AFTER git init so it is NOT tracked by git archive
         let nested_dir = tmp.path().join("extras").join("deep").join("nested");
         std::fs::create_dir_all(&nested_dir).unwrap();
-        std::fs::write(nested_dir.join("config.toml"), "[settings]\nkey = \"value\"\n").unwrap();
+        std::fs::write(
+            nested_dir.join("config.toml"),
+            "[settings]\nkey = \"value\"\n",
+        )
+        .unwrap();
 
-        let log = anodize_core::log::StageLogger::new("source", anodize_core::log::Verbosity::Quiet);
+        let log =
+            anodize_core::log::StageLogger::new("source", anodize_core::log::Verbosity::Quiet);
 
         let extra_files = vec![SourceFileEntry {
             src: nested_dir.join("config.toml").to_string_lossy().to_string(),
@@ -1895,7 +1928,6 @@ dependencies = [
             &log,
         );
 
-
         let archive_path = result.expect("create_source_archive should succeed");
         assert!(archive_path.exists(), "archive should exist");
 
@@ -1916,7 +1948,9 @@ dependencies = [
 
         // Should contain "test-project-1.0.0/config.toml"
         assert!(
-            entries.iter().any(|e| e == "test-project-1.0.0/config.toml"),
+            entries
+                .iter()
+                .any(|e| e == "test-project-1.0.0/config.toml"),
             "expected 'test-project-1.0.0/config.toml' in archive, got entries: {:?}",
             entries
         );
@@ -1945,7 +1979,8 @@ dependencies = [
         std::fs::create_dir_all(&nested_dir).unwrap();
         std::fs::write(nested_dir.join("app.conf"), "port = 8080\n").unwrap();
 
-        let log = anodize_core::log::StageLogger::new("source", anodize_core::log::Verbosity::Quiet);
+        let log =
+            anodize_core::log::StageLogger::new("source", anodize_core::log::Verbosity::Quiet);
 
         // strip_parent=true + dst="etc" => file should appear as prefix/etc/app.conf
         let extra_files = vec![SourceFileEntry {
@@ -1954,7 +1989,6 @@ dependencies = [
             strip_parent: Some(true),
             info: None,
         }];
-
 
         std::env::set_current_dir(tmp.path()).unwrap();
 
@@ -1968,7 +2002,6 @@ dependencies = [
             "HEAD",
             &log,
         );
-
 
         let archive_path = result.expect("create_source_archive should succeed");
 
@@ -2009,7 +2042,8 @@ dependencies = [
         let extra_file = tmp.path().join("README.md");
         std::fs::write(&extra_file, "# Hello\n").unwrap();
 
-        let log = anodize_core::log::StageLogger::new("source", anodize_core::log::Verbosity::Quiet);
+        let log =
+            anodize_core::log::StageLogger::new("source", anodize_core::log::Verbosity::Quiet);
 
         // strip_parent=false (default) + dst="docs/README.txt" => literal rename
         let extra_files = vec![SourceFileEntry {
@@ -2018,7 +2052,6 @@ dependencies = [
             strip_parent: None,
             info: None,
         }];
-
 
         std::env::set_current_dir(tmp.path()).unwrap();
 
@@ -2032,7 +2065,6 @@ dependencies = [
             "HEAD",
             &log,
         );
-
 
         let archive_path = result.expect("create_source_archive should succeed");
 
@@ -2088,7 +2120,6 @@ dependencies = [
             }),
         }];
 
-
         std::env::set_current_dir(tmp.path()).unwrap();
 
         let result = create_source_archive(
@@ -2101,7 +2132,6 @@ dependencies = [
             "HEAD",
             &log,
         );
-
 
         assert!(result.is_ok(), "failed: {:?}", result.err());
 

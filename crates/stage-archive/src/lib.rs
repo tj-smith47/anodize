@@ -489,11 +489,10 @@ pub fn resolve_file_specs(specs: &[ArchiveFileSpec]) -> Result<Vec<ResolvedExtra
                             .unwrap_or(&p)
                             .to_string_lossy()
                             .to_string();
-                        let dest =
-                            std::path::PathBuf::from(dst_prefix)
-                                .join(&rel)
-                                .to_string_lossy()
-                                .to_string();
+                        let dest = std::path::PathBuf::from(dst_prefix)
+                            .join(&rel)
+                            .to_string_lossy()
+                            .to_string();
                         results.push(ResolvedExtraFile {
                             src: p,
                             dst: Some(dest),
@@ -1107,41 +1106,41 @@ impl Stage for ArchiveStage {
                     // (LICENSE*, README*, CHANGELOG*) matching GoReleaser defaults.
                     // GoReleaser renders file spec source patterns through the
                     // template engine before glob expansion.
-                    let extra_files: Vec<ResolvedExtraFile> =
-                        if let Some(file_specs) = &archive_cfg.files {
-                            let rendered_specs: Vec<ArchiveFileSpec> = file_specs
-                                .iter()
-                                .map(|spec| match spec {
-                                    ArchiveFileSpec::Glob(pattern) => {
-                                        let rendered = ctx
-                                            .render_template(pattern)
-                                            .unwrap_or_else(|_| pattern.clone());
-                                        ArchiveFileSpec::Glob(rendered)
-                                    }
+                    let extra_files: Vec<ResolvedExtraFile> = if let Some(file_specs) =
+                        &archive_cfg.files
+                    {
+                        let rendered_specs: Vec<ArchiveFileSpec> = file_specs
+                            .iter()
+                            .map(|spec| match spec {
+                                ArchiveFileSpec::Glob(pattern) => {
+                                    let rendered = ctx
+                                        .render_template(pattern)
+                                        .unwrap_or_else(|_| pattern.clone());
+                                    ArchiveFileSpec::Glob(rendered)
+                                }
+                                ArchiveFileSpec::Detailed {
+                                    src,
+                                    dst,
+                                    info,
+                                    strip_parent,
+                                } => {
+                                    let rendered_src =
+                                        ctx.render_template(src).unwrap_or_else(|_| src.clone());
                                     ArchiveFileSpec::Detailed {
-                                        src,
-                                        dst,
-                                        info,
-                                        strip_parent,
-                                    } => {
-                                        let rendered_src = ctx
-                                            .render_template(src)
-                                            .unwrap_or_else(|_| src.clone());
-                                        ArchiveFileSpec::Detailed {
-                                            src: rendered_src,
-                                            dst: dst.clone(),
-                                            info: info.clone(),
-                                            strip_parent: *strip_parent,
-                                        }
+                                        src: rendered_src,
+                                        dst: dst.clone(),
+                                        info: info.clone(),
+                                        strip_parent: *strip_parent,
                                     }
-                                })
-                                .collect();
-                            resolve_file_specs(&rendered_specs).with_context(|| {
-                                format!("resolve file specs for {crate_name}/{target}")
-                            })?
-                        } else {
-                            resolve_default_extra_files()
-                        };
+                                }
+                            })
+                            .collect();
+                        resolve_file_specs(&rendered_specs).with_context(|| {
+                            format!("resolve file specs for {crate_name}/{target}")
+                        })?
+                    } else {
+                        resolve_default_extra_files()
+                    };
 
                     // builds_info: permissions applied to binary entries.
                     // Default binary permissions to 0o755 (executable) when no
@@ -1438,10 +1437,7 @@ impl Stage for ArchiveStage {
                             anodize_core::template::extract_artifact_ext(&archive_filename),
                         );
                         // Set ArtifactID from archive config id (Pro addition)
-                        tvars.set(
-                            "ArtifactID",
-                            archive_cfg.id.as_deref().unwrap_or(""),
-                        );
+                        tvars.set("ArtifactID", archive_cfg.id.as_deref().unwrap_or(""));
 
                         let mut metadata = HashMap::from([
                             ("format".to_string(), format.clone()),
@@ -1467,21 +1463,13 @@ impl Stage for ArchiveStage {
                         let bin_names: Vec<String> = selected_bins
                             .iter()
                             .filter_map(|b| {
-                                b.metadata
-                                    .get("binary")
-                                    .cloned()
-                                    .or_else(|| {
-                                        b.path
-                                            .file_name()
-                                            .map(|n| n.to_string_lossy().to_string())
-                                    })
+                                b.metadata.get("binary").cloned().or_else(|| {
+                                    b.path.file_name().map(|n| n.to_string_lossy().to_string())
+                                })
                             })
                             .collect();
                         if !bin_names.is_empty() {
-                            metadata.insert(
-                                "extra_binaries".to_string(),
-                                bin_names.join(","),
-                            );
+                            metadata.insert("extra_binaries".to_string(), bin_names.join(","));
                         }
 
                         new_artifacts.push(Artifact {
@@ -4776,14 +4764,8 @@ crates:
         // LCP is "/tmp/.../file_" which is not a directory, so prefix_dir
         // falls back to the parent dir ("/tmp/.../"). Relative paths are
         // "file_alpha.txt" and "file_beta.txt".
-        assert_eq!(
-            resolved[0].dst.as_deref(),
-            Some("output/file_alpha.txt")
-        );
-        assert_eq!(
-            resolved[1].dst.as_deref(),
-            Some("output/file_beta.txt")
-        );
+        assert_eq!(resolved[0].dst.as_deref(), Some("output/file_alpha.txt"));
+        assert_eq!(resolved[1].dst.as_deref(), Some("output/file_beta.txt"));
     }
 
     // -----------------------------------------------------------------------

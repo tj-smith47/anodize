@@ -24,9 +24,7 @@ pub fn generate_info_plist(
     icon_filename: Option<&str>,
 ) -> String {
     let icon_entry = if let Some(icon) = icon_filename {
-        format!(
-            "\n    <key>CFBundleIconFile</key>\n    <string>{icon}</string>"
-        )
+        format!("\n    <key>CFBundleIconFile</key>\n    <string>{icon}</string>")
     } else {
         String::new()
     };
@@ -91,35 +89,34 @@ fn copy_extra_files(
 ) -> Result<()> {
     for spec in specs {
         match spec {
-            ArchiveFileSpec::Glob(pattern) => {
-                match glob::glob(pattern) {
-                    Ok(entries) => {
-                        for entry in entries.flatten() {
-                            if entry.is_file() {
-                                let dst_name = entry
-                                    .file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or("extra");
-                                let dst = app_dir.join("Contents/Resources").join(dst_name);
-                                fs::copy(&entry, &dst).with_context(|| {
-                                    format!(
-                                        "copy extra file {} to {}",
-                                        entry.display(),
-                                        dst.display()
-                                    )
-                                })?;
-                            }
+            ArchiveFileSpec::Glob(pattern) => match glob::glob(pattern) {
+                Ok(entries) => {
+                    for entry in entries.flatten() {
+                        if entry.is_file() {
+                            let dst_name = entry
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("extra");
+                            let dst = app_dir.join("Contents/Resources").join(dst_name);
+                            fs::copy(&entry, &dst).with_context(|| {
+                                format!("copy extra file {} to {}", entry.display(), dst.display())
+                            })?;
                         }
                     }
-                    Err(e) => {
-                        log.warn(&format!(
-                            "invalid extra_files glob pattern '{}': {}",
-                            pattern, e
-                        ));
-                    }
                 }
-            }
-            ArchiveFileSpec::Detailed { src, dst, strip_parent, .. } => {
+                Err(e) => {
+                    log.warn(&format!(
+                        "invalid extra_files glob pattern '{}': {}",
+                        pattern, e
+                    ));
+                }
+            },
+            ArchiveFileSpec::Detailed {
+                src,
+                dst,
+                strip_parent,
+                ..
+            } => {
                 if strip_parent == &Some(true) {
                     log.warn(&format!(
                         "strip_parent is not supported for app bundle extra files (src: '{}')",
@@ -198,10 +195,7 @@ fn apply_mod_timestamp_recursive(
         }
     }
 
-    log.status(&format!(
-        "applied mod_timestamp={raw} to {}",
-        dir.display()
-    ));
+    log.status(&format!("applied mod_timestamp={raw} to {}", dir.display()));
     Ok(())
 }
 
@@ -321,8 +315,7 @@ impl Stage for AppBundleStage {
                         .set("Target", target.as_deref().unwrap_or(""));
 
                     // Determine output bundle name from name template or default
-                    let name_template =
-                        bundle_cfg.name.as_deref().unwrap_or(DEFAULT_NAME_TEMPLATE);
+                    let name_template = bundle_cfg.name.as_deref().unwrap_or(DEFAULT_NAME_TEMPLATE);
 
                     let app_name = ctx.render_template(name_template).with_context(|| {
                         format!(
@@ -350,8 +343,9 @@ impl Stage for AppBundleStage {
 
                     // Determine the bundle identifier (template-rendered)
                     let bundle_id = if let Some(ref bundle_tmpl) = bundle_cfg.bundle {
-                        ctx.render_template(bundle_tmpl)
-                            .with_context(|| format!("appbundle: render bundle template for {}", krate.name))?
+                        ctx.render_template(bundle_tmpl).with_context(|| {
+                            format!("appbundle: render bundle template for {}", krate.name)
+                        })?
                     } else {
                         format!("com.anodize.{project_name}")
                     };
@@ -443,8 +437,12 @@ impl Stage for AppBundleStage {
                     {
                         use std::os::unix::fs::PermissionsExt;
                         let perms = std::fs::Permissions::from_mode(0o755);
-                        std::fs::set_permissions(&staged_binary, perms)
-                            .with_context(|| format!("appbundle: set executable permission on {}", staged_binary.display()))?;
+                        std::fs::set_permissions(&staged_binary, perms).with_context(|| {
+                            format!(
+                                "appbundle: set executable permission on {}",
+                                staged_binary.display()
+                            )
+                        })?;
                     }
 
                     // Copy icon into Contents/Resources/ if provided
@@ -453,11 +451,7 @@ impl Stage for AppBundleStage {
                         let icon_name = icon_filename.as_deref().unwrap_or("icon.icns");
                         let icon_dst = resources_dir.join(icon_name);
                         fs::copy(&icon_src, &icon_dst).with_context(|| {
-                            format!(
-                                "copy icon {} to {}",
-                                icon_src.display(),
-                                icon_dst.display()
-                            )
+                            format!("copy icon {} to {}", icon_src.display(), icon_dst.display())
                         })?;
                     }
 
@@ -470,9 +464,8 @@ impl Stage for AppBundleStage {
                         icon_filename.as_deref(),
                     );
                     let plist_path = app_dir.join("Contents/Info.plist");
-                    fs::write(&plist_path, &plist_content).with_context(|| {
-                        format!("write Info.plist to {}", plist_path.display())
-                    })?;
+                    fs::write(&plist_path, &plist_content)
+                        .with_context(|| format!("write Info.plist to {}", plist_path.display()))?;
 
                     // Copy extra files
                     if let Some(extra_files) = &bundle_cfg.extra_files {
@@ -481,16 +474,21 @@ impl Stage for AppBundleStage {
 
                     // Process templated_extra_files: render and copy into the app bundle
                     if let Some(ref tpl_specs) = bundle_cfg.templated_extra_files
-                        && !tpl_specs.is_empty() {
-                            let resources_dir = app_dir.join("Contents").join("Resources");
-                            anodize_core::templated_files::process_templated_extra_files(
-                                tpl_specs, ctx, &resources_dir, "appbundle",
-                            )?;
-                        }
+                        && !tpl_specs.is_empty()
+                    {
+                        let resources_dir = app_dir.join("Contents").join("Resources");
+                        anodize_core::templated_files::process_templated_extra_files(
+                            tpl_specs,
+                            ctx,
+                            &resources_dir,
+                            "appbundle",
+                        )?;
+                    }
 
                     // Apply mod_timestamp if set (template-rendered)
                     if let Some(ref ts_tmpl) = bundle_cfg.mod_timestamp {
-                        let ts = ctx.render_template(ts_tmpl)
+                        let ts = ctx
+                            .render_template(ts_tmpl)
                             .with_context(|| "appbundle: render mod_timestamp template")?;
                         apply_mod_timestamp_recursive(&app_dir, &ts, &log)?;
                     }
@@ -507,10 +505,8 @@ impl Stage for AppBundleStage {
                         target: target.clone(),
                         crate_name: krate.name.clone(),
                         metadata: {
-                            let mut m = HashMap::from([(
-                                "format".to_string(),
-                                "appbundle".to_string(),
-                            )]);
+                            let mut m =
+                                HashMap::from([("format".to_string(), "appbundle".to_string())]);
                             if let Some(id) = &bundle_cfg.id {
                                 m.insert("id".to_string(), id.clone());
                             }
@@ -521,13 +517,11 @@ impl Stage for AppBundleStage {
 
                     // If replace is set, mark archives for this crate+target for removal
                     if bundle_cfg.replace.unwrap_or(false) {
-                        archives_to_remove.extend(
-                            anodize_core::util::collect_replace_archives(
-                                &ctx.artifacts,
-                                &krate.name,
-                                target.as_deref(),
-                            ),
-                        );
+                        archives_to_remove.extend(anodize_core::util::collect_replace_archives(
+                            &ctx.artifacts,
+                            &krate.name,
+                            target.as_deref(),
+                        ));
                     }
                 }
             }
@@ -568,7 +562,13 @@ mod tests {
 
     #[test]
     fn test_info_plist_generation() {
-        let plist = generate_info_plist("myapp", "com.example.myapp", "MyApp", "1.2.3", Some("app.icns"));
+        let plist = generate_info_plist(
+            "myapp",
+            "com.example.myapp",
+            "MyApp",
+            "1.2.3",
+            Some("app.icns"),
+        );
 
         // Verify XML structure
         assert!(plist.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"));
@@ -1263,14 +1263,8 @@ crates:
         let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let bundles = config.crates[0].app_bundles.as_ref().unwrap();
         assert_eq!(bundles.len(), 1);
-        assert_eq!(
-            bundles[0].name.as_deref(),
-            Some("{{ ProjectName }}.app")
-        );
-        assert_eq!(
-            bundles[0].bundle.as_deref(),
-            Some("com.example.test")
-        );
+        assert_eq!(bundles[0].name.as_deref(), Some("{{ ProjectName }}.app"));
+        assert_eq!(bundles[0].bundle.as_deref(), Some("com.example.test"));
     }
 
     #[test]
@@ -1314,10 +1308,7 @@ crates:
         );
         assert_eq!(b.icon.as_deref(), Some("assets/app.icns"));
         assert_eq!(b.bundle.as_deref(), Some("com.example.myapp"));
-        assert_eq!(
-            b.mod_timestamp.as_deref(),
-            Some("{{ .CommitTimestamp }}")
-        );
+        assert_eq!(b.mod_timestamp.as_deref(), Some("{{ .CommitTimestamp }}"));
 
         // Verify extra_files
         let extras = b.extra_files.as_ref().unwrap();
@@ -1408,8 +1399,7 @@ crates:
             "expected a 'pro' app bundle, got: {names:?}"
         );
 
-        let ids: Vec<Option<&String>> =
-            installers.iter().map(|a| a.metadata.get("id")).collect();
+        let ids: Vec<Option<&String>> = installers.iter().map(|a| a.metadata.get("id")).collect();
         assert!(
             ids.contains(&Some(&"standard".to_string())),
             "expected id=standard in metadata"
@@ -1482,11 +1472,7 @@ crates:
             "disabled config should be skipped, only one artifact expected"
         );
 
-        let name = installers[0]
-            .path
-            .file_name()
-            .unwrap()
-            .to_string_lossy();
+        let name = installers[0].path.file_name().unwrap().to_string_lossy();
         assert!(
             name.contains("enabled"),
             "the produced artifact should be the enabled one, got: {name}"
@@ -1512,7 +1498,10 @@ crates:
         let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let bundles = config.crates[0].app_bundles.as_ref().unwrap();
         assert_eq!(bundles.len(), 1);
-        assert_eq!(bundles[0].disable, Some(anodize_core::config::StringOrBool::Bool(true)));
+        assert_eq!(
+            bundles[0].disable,
+            Some(anodize_core::config::StringOrBool::Bool(true))
+        );
     }
 
     #[test]

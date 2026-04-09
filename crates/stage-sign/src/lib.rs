@@ -111,10 +111,7 @@ fn resolve_signature_path(
     log: &StageLogger,
     default_template: Option<&str>,
 ) -> String {
-    let template = sign_cfg
-        .signature
-        .as_deref()
-        .or(default_template);
+    let template = sign_cfg.signature.as_deref().or(default_template);
 
     if let Some(sig_template) = template {
         // Set Artifact as a template variable so Tera can resolve it natively.
@@ -188,7 +185,8 @@ fn expand_shell_vars(s: &str, vars: &HashMap<&str, &str>) -> String {
     while i < len {
         if chars[i] == '$' {
             // Try `${var}` syntax first.
-            if i + 1 < len && chars[i + 1] == '{'
+            if i + 1 < len
+                && chars[i + 1] == '{'
                 && let Some(close) = chars[i + 2..].iter().position(|&c| c == '}')
             {
                 let var_name: String = chars[i + 2..i + 2 + close].iter().collect();
@@ -513,7 +511,12 @@ fn process_sign_configs(
                         continue;
                     }
                 }
-                matched.push((a.path.clone(), a.crate_name.clone(), a.metadata.clone(), a.target.clone()));
+                matched.push((
+                    a.path.clone(),
+                    a.crate_name.clone(),
+                    a.metadata.clone(),
+                    a.target.clone(),
+                ));
             }
             matched
         };
@@ -532,7 +535,9 @@ fn process_sign_configs(
             ArtifactFilter::FromConfig => None,
         };
 
-        for (artifact_path, artifact_crate_name, artifact_metadata, artifact_target) in &artifact_paths {
+        for (artifact_path, artifact_crate_name, artifact_metadata, artifact_target) in
+            &artifact_paths
+        {
             let artifact_str = artifact_path.to_string_lossy();
             let artifact_name = artifact_path
                 .file_name()
@@ -563,13 +568,19 @@ fn process_sign_configs(
                     // Default Amd64 to "v1" for amd64 targets (matching GoReleaser),
                     // overridden by build metadata if present.
                     let amd64 = if arch == "amd64" {
-                        artifact_metadata.get("amd64_level").map(|s| s.as_str()).unwrap_or("v1")
+                        artifact_metadata
+                            .get("amd64_level")
+                            .map(|s| s.as_str())
+                            .unwrap_or("v1")
                     } else {
                         ""
                     };
                     ctx.template_vars_mut().set("Amd64", amd64);
                     // Mips variant from build metadata if present.
-                    let mips = artifact_metadata.get("mips_variant").map(|s| s.as_str()).unwrap_or("");
+                    let mips = artifact_metadata
+                        .get("mips_variant")
+                        .map(|s| s.as_str())
+                        .unwrap_or("");
                     ctx.template_vars_mut().set("Mips", mips);
                 } else {
                     ctx.template_vars_mut().set("Os", "");
@@ -580,7 +591,8 @@ fn process_sign_configs(
                 }
             }
 
-            let signature_str = resolve_signature_path(sign_cfg, &artifact_str, ctx, log, default_sig_template);
+            let signature_str =
+                resolve_signature_path(sign_cfg, &artifact_str, ctx, log, default_sig_template);
 
             // Resolve the certificate path from template if configured.
             let certificate_str = sign_cfg.certificate.as_ref().map(|tmpl| {
@@ -745,7 +757,8 @@ fn process_sign_configs(
                 id_label: sign_cfg.id.as_deref().unwrap_or("default").to_string(),
                 artifact_display: artifact_str.to_string(),
                 signature_display: signature_str.clone(),
-                output_flag: sign_cfg.output
+                output_flag: sign_cfg
+                    .output
                     .as_ref()
                     .map(|s| s.evaluates_to_true(|tmpl| ctx.render_template(tmpl)))
                     .unwrap_or(false),
@@ -1141,10 +1154,13 @@ impl Stage for SignStage {
                     let stdout_raw = String::from_utf8_lossy(&output.stdout).to_string();
                     let stderr_raw = String::from_utf8_lossy(&output.stderr).to_string();
 
-                    let stdout_str = anodize_core::redact::redact_string(&stdout_raw, &docker_env_pairs);
-                    let stderr_str = anodize_core::redact::redact_string(&stderr_raw, &docker_env_pairs);
+                    let stdout_str =
+                        anodize_core::redact::redact_string(&stdout_raw, &docker_env_pairs);
+                    let stderr_str =
+                        anodize_core::redact::redact_string(&stderr_raw, &docker_env_pairs);
 
-                    let show_output = docker_sign_cfg.output
+                    let show_output = docker_sign_cfg
+                        .output
                         .as_ref()
                         .map(|s| s.evaluates_to_true(|tmpl| ctx.render_template(tmpl)))
                         .unwrap_or(true);
@@ -2935,9 +2951,7 @@ crates: []
 
     #[test]
     fn test_binary_signs_signature_includes_os_arch() {
-        let mut ctx = TestContextBuilder::new()
-            .dry_run(true)
-            .build();
+        let mut ctx = TestContextBuilder::new().dry_run(true).build();
         ctx.template_vars_mut().set("Os", "linux");
         ctx.template_vars_mut().set("Arch", "amd64");
         ctx.template_vars_mut().set("Arm", "");
@@ -2971,9 +2985,7 @@ crates: []
 
     #[test]
     fn test_binary_signs_signature_includes_arm_variant() {
-        let mut ctx = TestContextBuilder::new()
-            .dry_run(true)
-            .build();
+        let mut ctx = TestContextBuilder::new().dry_run(true).build();
         // GoReleaser splits ARM: Arch="arm", Arm="6" → rendered as "arm" + "v6" = "armv6"
         ctx.template_vars_mut().set("Os", "linux");
         ctx.template_vars_mut().set("Arch", "arm");
@@ -3008,9 +3020,7 @@ crates: []
 
     #[test]
     fn test_binary_signs_signature_includes_amd64_level() {
-        let mut ctx = TestContextBuilder::new()
-            .dry_run(true)
-            .build();
+        let mut ctx = TestContextBuilder::new().dry_run(true).build();
         ctx.template_vars_mut().set("Os", "linux");
         ctx.template_vars_mut().set("Arch", "amd64");
         ctx.template_vars_mut().set("Arm", "");
@@ -3044,9 +3054,7 @@ crates: []
 
     #[test]
     fn test_normal_signs_uses_simple_default() {
-        let ctx = TestContextBuilder::new()
-            .dry_run(true)
-            .build();
+        let ctx = TestContextBuilder::new().dry_run(true).build();
         let sign_cfg = SignConfig {
             id: None,
             artifacts: None,
@@ -3077,9 +3085,7 @@ crates: []
         // This verifies the code path — full integration tested via stage.run() above.
         use anodize_core::artifact::Artifact;
 
-        let mut ctx = TestContextBuilder::new()
-            .dry_run(true)
-            .build();
+        let mut ctx = TestContextBuilder::new().dry_run(true).build();
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::DockerImage,
             name: "legacy".to_string(),
@@ -3170,7 +3176,10 @@ crates: []
 
         // Template vars should be cleaned up after processing
         let os_val = ctx.render_template("{{ Os }}").unwrap_or_default();
-        assert_eq!(os_val, "", "Os template var should be cleared after binary_signs");
+        assert_eq!(
+            os_val, "",
+            "Os template var should be cleared after binary_signs"
+        );
     }
 
     #[test]
@@ -3410,7 +3419,10 @@ crates: []
 
         let stage = SignStage;
         let result = stage.run(&mut ctx);
-        assert!(result.is_err(), "duplicate docker_signs IDs should be rejected");
+        assert!(
+            result.is_err(),
+            "duplicate docker_signs IDs should be rejected"
+        );
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("docker_signs") && err.contains("signer"),
@@ -3459,7 +3471,10 @@ crates: []
 
         let stage = SignStage;
         let result = stage.run(&mut ctx);
-        assert!(result.is_err(), "duplicate default docker_signs IDs should be rejected");
+        assert!(
+            result.is_err(),
+            "duplicate default docker_signs IDs should be rejected"
+        );
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("default"),
@@ -3486,10 +3501,7 @@ crates: []
             cmd: Some("sh".to_string()),
             args: Some(vec![
                 "-c".to_string(),
-                format!(
-                    "echo \"{{{{ Digest }}}}\" > {}",
-                    marker_str
-                ),
+                format!("echo \"{{{{ Digest }}}}\" > {}", marker_str),
             ]),
             artifacts: Some("all".to_string()),
             ids: None,

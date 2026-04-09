@@ -143,16 +143,14 @@ impl Stage for MakeselfStage {
         for cfg in &configs {
             // Check disable
             if let Some(ref d) = cfg.disable
-                && d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
-                    log.verbose("skipping disabled makeself config");
-                    continue;
-                }
+                && d.is_disabled(|tmpl| ctx.render_template(tmpl))
+            {
+                log.verbose("skipping disabled makeself config");
+                continue;
+            }
 
             let id = cfg.id.as_deref().unwrap_or("default");
-            let name = cfg
-                .name
-                .as_deref()
-                .unwrap_or(&project_name);
+            let name = cfg.name.as_deref().unwrap_or(&project_name);
             let name_template = cfg.name_template.as_deref().unwrap_or("");
 
             let script = cfg.script.as_deref().unwrap_or("");
@@ -327,9 +325,8 @@ impl Stage for MakeselfStage {
                     continue;
                 }
 
-                fs::create_dir_all(&work_dir).with_context(|| {
-                    format!("makeself: create dir {}", work_dir.display())
-                })?;
+                fs::create_dir_all(&work_dir)
+                    .with_context(|| format!("makeself: create dir {}", work_dir.display()))?;
 
                 // Copy binaries
                 for binary in binaries {
@@ -366,11 +363,7 @@ impl Stage for MakeselfStage {
                             fs::create_dir_all(parent)?;
                         }
                         fs::copy(src, &dst).with_context(|| {
-                            format!(
-                                "makeself: copy file {} -> {}",
-                                src.display(),
-                                dst.display()
-                            )
+                            format!("makeself: copy file {} -> {}", src.display(), dst.display())
                         })?;
                     }
                 }
@@ -381,9 +374,8 @@ impl Stage for MakeselfStage {
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("setup.sh");
-                fs::copy(script_path, work_dir.join(script_basename)).with_context(|| {
-                    format!("makeself: copy script {}", script_path.display())
-                })?;
+                fs::copy(script_path, work_dir.join(script_basename))
+                    .with_context(|| format!("makeself: copy script {}", script_path.display()))?;
 
                 // Write LSM file
                 fs::write(work_dir.join("package.lsm"), lsm.render()).with_context(|| {
@@ -428,17 +420,19 @@ impl Stage for MakeselfStage {
                 // Move the generated archive from the work dir to the dist root
                 let built_path = work_dir.join(&filename);
                 let output_path = dist.join(&filename);
-                fs::rename(&built_path, &output_path).or_else(|_| {
-                    // rename fails across filesystems; fall back to copy+remove
-                    fs::copy(&built_path, &output_path)?;
-                    fs::remove_file(&built_path)
-                }).with_context(|| {
-                    format!(
-                        "makeself: move {} -> {}",
-                        built_path.display(),
-                        output_path.display()
-                    )
-                })?;
+                fs::rename(&built_path, &output_path)
+                    .or_else(|_| {
+                        // rename fails across filesystems; fall back to copy+remove
+                        fs::copy(&built_path, &output_path)?;
+                        fs::remove_file(&built_path)
+                    })
+                    .with_context(|| {
+                        format!(
+                            "makeself: move {} -> {}",
+                            built_path.display(),
+                            output_path.display()
+                        )
+                    })?;
 
                 // Register artifact
                 let mut metadata = HashMap::new();
@@ -474,8 +468,8 @@ impl Stage for MakeselfStage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use anodize_core::config::MakeselfConfig;
+    use std::path::PathBuf;
 
     #[test]
     fn test_lsm_render() {

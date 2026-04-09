@@ -218,16 +218,19 @@ impl Artifact {
     /// `replaces=true`, it supersedes the per-arch binaries for publisher consumption.
     /// Artifacts without the `replaces` metadata key default to `true` (included).
     pub fn only_replacing_unibins(&self) -> bool {
-        self.metadata
-            .get("replaces")
-            .is_none_or(|v| v != "false")
+        self.metadata.get("replaces").is_none_or(|v| v != "false")
     }
 
     /// Return the list of extra binary names bundled in this archive artifact.
     pub fn extra_binaries(&self) -> Vec<String> {
         self.metadata
             .get("extra_binaries")
-            .map(|v| v.split(',').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect())
+            .map(|v| {
+                v.split(',')
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -330,7 +333,11 @@ impl ArtifactRegistry {
         // Normalize backslashes in path fields to forward slashes.
         if let Some(arr) = val.as_array_mut() {
             for entry in arr {
-                if let Some(path) = entry.get("path").and_then(|p| p.as_str()).map(|s| s.replace('\\', "/")) {
+                if let Some(path) = entry
+                    .get("path")
+                    .and_then(|p| p.as_str())
+                    .map(|s| s.replace('\\', "/"))
+                {
                     entry["path"] = serde_json::Value::String(path);
                 }
             }
@@ -666,32 +673,110 @@ mod tests {
 
     #[test]
     fn test_artifact_kind_new_variants_serialize() {
-        assert_eq!(serde_json::to_value(ArtifactKind::UploadableBinary).unwrap(), "uploadable_binary");
-        assert_eq!(serde_json::to_value(ArtifactKind::UniversalBinary).unwrap(), "universal_binary");
-        assert_eq!(serde_json::to_value(ArtifactKind::Header).unwrap(), "header");
-        assert_eq!(serde_json::to_value(ArtifactKind::CArchive).unwrap(), "c_archive");
-        assert_eq!(serde_json::to_value(ArtifactKind::CShared).unwrap(), "c_shared");
-        assert_eq!(serde_json::to_value(ArtifactKind::PyWheel).unwrap(), "py_wheel");
-        assert_eq!(serde_json::to_value(ArtifactKind::PySdist).unwrap(), "py_sdist");
-        assert_eq!(serde_json::to_value(ArtifactKind::Makeself).unwrap(), "makeself");
-        assert_eq!(serde_json::to_value(ArtifactKind::DockerImageV2).unwrap(), "docker_image_v2");
-        assert_eq!(serde_json::to_value(ArtifactKind::PublishableDockerImage).unwrap(), "publishable_docker_image");
-        assert_eq!(serde_json::to_value(ArtifactKind::PublishableSnapcraft).unwrap(), "publishable_snapcraft");
-        assert_eq!(serde_json::to_value(ArtifactKind::SourceRpm).unwrap(), "source_rpm");
-        assert_eq!(serde_json::to_value(ArtifactKind::BrewFormula).unwrap(), "brew_formula");
-        assert_eq!(serde_json::to_value(ArtifactKind::BrewCask).unwrap(), "brew_cask");
-        assert_eq!(serde_json::to_value(ArtifactKind::Nixpkg).unwrap(), "nixpkg");
-        assert_eq!(serde_json::to_value(ArtifactKind::ScoopManifest).unwrap(), "scoop_manifest");
-        assert_eq!(serde_json::to_value(ArtifactKind::PublishableChocolatey).unwrap(), "publishable_chocolatey");
-        assert_eq!(serde_json::to_value(ArtifactKind::WingetInstaller).unwrap(), "winget_installer");
-        assert_eq!(serde_json::to_value(ArtifactKind::WingetDefaultLocale).unwrap(), "winget_default_locale");
-        assert_eq!(serde_json::to_value(ArtifactKind::WingetVersion).unwrap(), "winget_version");
-        assert_eq!(serde_json::to_value(ArtifactKind::PkgBuild).unwrap(), "pkg_build");
-        assert_eq!(serde_json::to_value(ArtifactKind::SrcInfo).unwrap(), "src_info");
-        assert_eq!(serde_json::to_value(ArtifactKind::SourcePkgBuild).unwrap(), "source_pkg_build");
-        assert_eq!(serde_json::to_value(ArtifactKind::SourceSrcInfo).unwrap(), "source_src_info");
-        assert_eq!(serde_json::to_value(ArtifactKind::KrewPluginManifest).unwrap(), "krew_plugin_manifest");
-        assert_eq!(serde_json::to_value(ArtifactKind::UploadableFile).unwrap(), "uploadable_file");
+        assert_eq!(
+            serde_json::to_value(ArtifactKind::UploadableBinary).unwrap(),
+            "uploadable_binary"
+        );
+        assert_eq!(
+            serde_json::to_value(ArtifactKind::UniversalBinary).unwrap(),
+            "universal_binary"
+        );
+        assert_eq!(
+            serde_json::to_value(ArtifactKind::Header).unwrap(),
+            "header"
+        );
+        assert_eq!(
+            serde_json::to_value(ArtifactKind::CArchive).unwrap(),
+            "c_archive"
+        );
+        assert_eq!(
+            serde_json::to_value(ArtifactKind::CShared).unwrap(),
+            "c_shared"
+        );
+        assert_eq!(
+            serde_json::to_value(ArtifactKind::PyWheel).unwrap(),
+            "py_wheel"
+        );
+        assert_eq!(
+            serde_json::to_value(ArtifactKind::PySdist).unwrap(),
+            "py_sdist"
+        );
+        assert_eq!(
+            serde_json::to_value(ArtifactKind::Makeself).unwrap(),
+            "makeself"
+        );
+        assert_eq!(
+            serde_json::to_value(ArtifactKind::DockerImageV2).unwrap(),
+            "docker_image_v2"
+        );
+        assert_eq!(
+            serde_json::to_value(ArtifactKind::PublishableDockerImage).unwrap(),
+            "publishable_docker_image"
+        );
+        assert_eq!(
+            serde_json::to_value(ArtifactKind::PublishableSnapcraft).unwrap(),
+            "publishable_snapcraft"
+        );
+        assert_eq!(
+            serde_json::to_value(ArtifactKind::SourceRpm).unwrap(),
+            "source_rpm"
+        );
+        assert_eq!(
+            serde_json::to_value(ArtifactKind::BrewFormula).unwrap(),
+            "brew_formula"
+        );
+        assert_eq!(
+            serde_json::to_value(ArtifactKind::BrewCask).unwrap(),
+            "brew_cask"
+        );
+        assert_eq!(
+            serde_json::to_value(ArtifactKind::Nixpkg).unwrap(),
+            "nixpkg"
+        );
+        assert_eq!(
+            serde_json::to_value(ArtifactKind::ScoopManifest).unwrap(),
+            "scoop_manifest"
+        );
+        assert_eq!(
+            serde_json::to_value(ArtifactKind::PublishableChocolatey).unwrap(),
+            "publishable_chocolatey"
+        );
+        assert_eq!(
+            serde_json::to_value(ArtifactKind::WingetInstaller).unwrap(),
+            "winget_installer"
+        );
+        assert_eq!(
+            serde_json::to_value(ArtifactKind::WingetDefaultLocale).unwrap(),
+            "winget_default_locale"
+        );
+        assert_eq!(
+            serde_json::to_value(ArtifactKind::WingetVersion).unwrap(),
+            "winget_version"
+        );
+        assert_eq!(
+            serde_json::to_value(ArtifactKind::PkgBuild).unwrap(),
+            "pkg_build"
+        );
+        assert_eq!(
+            serde_json::to_value(ArtifactKind::SrcInfo).unwrap(),
+            "src_info"
+        );
+        assert_eq!(
+            serde_json::to_value(ArtifactKind::SourcePkgBuild).unwrap(),
+            "source_pkg_build"
+        );
+        assert_eq!(
+            serde_json::to_value(ArtifactKind::SourceSrcInfo).unwrap(),
+            "source_src_info"
+        );
+        assert_eq!(
+            serde_json::to_value(ArtifactKind::KrewPluginManifest).unwrap(),
+            "krew_plugin_manifest"
+        );
+        assert_eq!(
+            serde_json::to_value(ArtifactKind::UploadableFile).unwrap(),
+            "uploadable_file"
+        );
     }
 
     #[test]
@@ -711,34 +796,55 @@ mod tests {
     #[test]
     fn test_artifact_kind_parse_roundtrip_all_variants() {
         let all_variants = [
-            ArtifactKind::Binary, ArtifactKind::UploadableBinary,
+            ArtifactKind::Binary,
+            ArtifactKind::UploadableBinary,
             ArtifactKind::UniversalBinary,
-            ArtifactKind::Library, ArtifactKind::Header,
-            ArtifactKind::CArchive, ArtifactKind::CShared,
-            ArtifactKind::Wasm, ArtifactKind::PyWheel,
-            ArtifactKind::PySdist, ArtifactKind::Archive,
-            ArtifactKind::SourceArchive, ArtifactKind::Makeself,
-            ArtifactKind::LinuxPackage, ArtifactKind::Snap,
-            ArtifactKind::PublishableSnapcraft, ArtifactKind::Flatpak,
-            ArtifactKind::SourceRpm, ArtifactKind::DiskImage,
-            ArtifactKind::Installer, ArtifactKind::MacOsPackage,
-            ArtifactKind::DockerImage, ArtifactKind::DockerImageV2,
-            ArtifactKind::PublishableDockerImage, ArtifactKind::DockerManifest,
-            ArtifactKind::BrewFormula, ArtifactKind::BrewCask,
-            ArtifactKind::Nixpkg, ArtifactKind::ScoopManifest,
-            ArtifactKind::PublishableChocolatey, ArtifactKind::WingetInstaller,
-            ArtifactKind::WingetDefaultLocale, ArtifactKind::WingetVersion,
-            ArtifactKind::PkgBuild, ArtifactKind::SrcInfo,
-            ArtifactKind::SourcePkgBuild, ArtifactKind::SourceSrcInfo,
-            ArtifactKind::KrewPluginManifest, ArtifactKind::Checksum,
-            ArtifactKind::Signature, ArtifactKind::Certificate,
-            ArtifactKind::Sbom, ArtifactKind::Metadata,
+            ArtifactKind::Library,
+            ArtifactKind::Header,
+            ArtifactKind::CArchive,
+            ArtifactKind::CShared,
+            ArtifactKind::Wasm,
+            ArtifactKind::PyWheel,
+            ArtifactKind::PySdist,
+            ArtifactKind::Archive,
+            ArtifactKind::SourceArchive,
+            ArtifactKind::Makeself,
+            ArtifactKind::LinuxPackage,
+            ArtifactKind::Snap,
+            ArtifactKind::PublishableSnapcraft,
+            ArtifactKind::Flatpak,
+            ArtifactKind::SourceRpm,
+            ArtifactKind::DiskImage,
+            ArtifactKind::Installer,
+            ArtifactKind::MacOsPackage,
+            ArtifactKind::DockerImage,
+            ArtifactKind::DockerImageV2,
+            ArtifactKind::PublishableDockerImage,
+            ArtifactKind::DockerManifest,
+            ArtifactKind::BrewFormula,
+            ArtifactKind::BrewCask,
+            ArtifactKind::Nixpkg,
+            ArtifactKind::ScoopManifest,
+            ArtifactKind::PublishableChocolatey,
+            ArtifactKind::WingetInstaller,
+            ArtifactKind::WingetDefaultLocale,
+            ArtifactKind::WingetVersion,
+            ArtifactKind::PkgBuild,
+            ArtifactKind::SrcInfo,
+            ArtifactKind::SourcePkgBuild,
+            ArtifactKind::SourceSrcInfo,
+            ArtifactKind::KrewPluginManifest,
+            ArtifactKind::Checksum,
+            ArtifactKind::Signature,
+            ArtifactKind::Certificate,
+            ArtifactKind::Sbom,
+            ArtifactKind::Metadata,
             ArtifactKind::UploadableFile,
         ];
         for variant in &all_variants {
             let s = variant.as_str();
-            let parsed = ArtifactKind::parse(s)
-                .unwrap_or_else(|| panic!("parse({:?}) returned None", s));
+            let parsed =
+                ArtifactKind::parse(s).unwrap_or_else(|| panic!("parse({:?}) returned None", s));
             assert_eq!(*variant, parsed, "roundtrip failed for {:?}", s);
         }
         assert_eq!(all_variants.len(), 44, "update test when adding variants");

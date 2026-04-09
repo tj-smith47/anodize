@@ -9,7 +9,15 @@ const SECRET_KEY_SUFFIXES: &[&str] = &["_KEY", "_SECRET", "_PASSWORD", "_TOKEN"]
 
 /// Value prefixes that indicate a secret regardless of key name.
 const SECRET_VALUE_PREFIXES: &[&str] = &[
-    "sk-", "ghp_", "ghs_", "gho_", "ghu_", "dckr_pat_", "glpat-", "AIZA", "xox",
+    "sk-",
+    "ghp_",
+    "ghs_",
+    "gho_",
+    "ghu_",
+    "dckr_pat_",
+    "glpat-",
+    "AIZA",
+    "xox",
 ];
 
 /// Minimum value length to consider for redaction.
@@ -52,7 +60,10 @@ mod tests {
     #[test]
     fn test_redact_by_key_suffix() {
         let env = vec![
-            ("DOCKER_PASSWORD".to_string(), "mysecretpassword123".to_string()),
+            (
+                "DOCKER_PASSWORD".to_string(),
+                "mysecretpassword123".to_string(),
+            ),
             ("PLAIN_VAR".to_string(), "not-a-secret".to_string()),
         ];
         let result = redact_string("Login with mysecretpassword123 succeeded", &env);
@@ -62,18 +73,14 @@ mod tests {
 
     #[test]
     fn test_redact_by_value_prefix() {
-        let env = vec![
-            ("MY_TOKEN".to_string(), "ghp_abc123def456ghi789".to_string()),
-        ];
+        let env = vec![("MY_TOKEN".to_string(), "ghp_abc123def456ghi789".to_string())];
         let result = redact_string("Using token ghp_abc123def456ghi789", &env);
         assert_eq!(result, "Using token $MY_TOKEN");
     }
 
     #[test]
     fn test_redact_ignores_short_values() {
-        let env = vec![
-            ("API_KEY".to_string(), "short".to_string()),
-        ];
+        let env = vec![("API_KEY".to_string(), "short".to_string())];
         let result = redact_string("Value is short", &env);
         assert_eq!(result, "Value is short");
     }
@@ -91,18 +98,17 @@ mod tests {
 
     #[test]
     fn test_redact_no_secrets() {
-        let env = vec![
-            ("PATH".to_string(), "/usr/bin:/usr/local/bin".to_string()),
-        ];
+        let env = vec![("PATH".to_string(), "/usr/bin:/usr/local/bin".to_string())];
         let result = redact_string("PATH is set", &env);
         assert_eq!(result, "PATH is set");
     }
 
     #[test]
     fn test_redact_multiple_occurrences() {
-        let env = vec![
-            ("REGISTRY_PASSWORD".to_string(), "supersecret123".to_string()),
-        ];
+        let env = vec![(
+            "REGISTRY_PASSWORD".to_string(),
+            "supersecret123".to_string(),
+        )];
         let result = redact_string("auth supersecret123 retry supersecret123", &env);
         assert_eq!(result, "auth $REGISTRY_PASSWORD retry $REGISTRY_PASSWORD");
     }
@@ -144,7 +150,10 @@ mod tests {
         // Longer values still replaced first, secondary sort by key is tiebreaker
         let env = vec![
             ("Z_TOKEN".to_string(), "short_secret_val".to_string()),
-            ("A_TOKEN".to_string(), "a_longer_secret_value_here".to_string()),
+            (
+                "A_TOKEN".to_string(),
+                "a_longer_secret_value_here".to_string(),
+            ),
         ];
         let result = redact_string("prefix a_longer_secret_value_here suffix", &env);
         assert_eq!(result, "prefix $A_TOKEN suffix");

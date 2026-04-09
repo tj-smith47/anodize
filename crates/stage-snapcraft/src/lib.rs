@@ -129,7 +129,6 @@ struct SnapcraftYamlLayout {
     type_: Option<String>,
 }
 
-
 // ---------------------------------------------------------------------------
 // triple_to_snap_arch — map target triple to snapcraft architecture name
 // ---------------------------------------------------------------------------
@@ -159,7 +158,10 @@ fn triple_to_snap_arch(triple: &str) -> &'static str {
 /// GoReleaser parity (snapcraft.go:isValidArch): check whether an architecture
 /// is supported by the snap store.  riscv64 is not in the list.
 fn is_valid_snap_arch(arch: &str) -> bool {
-    matches!(arch, "s390x" | "ppc64el" | "arm64" | "armhf" | "i386" | "amd64")
+    matches!(
+        arch,
+        "s390x" | "ppc64el" | "arm64" | "armhf" | "i386" | "amd64"
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -315,7 +317,7 @@ pub fn generate_snap_yaml(
         assumes: config.assumes.clone().unwrap_or_default(),
         architectures,
         apps,
-        plugs: config.plugs.clone().unwrap_or_default(),  // structured map (HashMap<String, Value>)
+        plugs: config.plugs.clone().unwrap_or_default(), // structured map (HashMap<String, Value>)
         slots: config.slots.clone().unwrap_or_default(),
         layouts,
         hooks: config.hooks.clone().unwrap_or_default(),
@@ -458,13 +460,14 @@ impl Stage for SnapcraftStage {
             for snap_cfg in snap_configs {
                 // Skip disabled configs
                 if let Some(ref d) = snap_cfg.disable
-                    && d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
-                        log.status(&format!(
-                            "skipping disabled snapcraft config for crate {}",
-                            krate.name
-                        ));
-                        continue;
-                    }
+                    && d.is_disabled(|tmpl| ctx.render_template(tmpl))
+                {
+                    log.status(&format!(
+                        "skipping disabled snapcraft config for crate {}",
+                        krate.name
+                    ));
+                    continue;
+                }
 
                 // Validate confinement value
                 if let Some(conf) = &snap_cfg.confinement {
@@ -637,8 +640,9 @@ impl Stage for SnapcraftStage {
                         tempfile::tempdir().context("create temp dir for snapcraft build")?;
                     let prime_dir = tmp_dir.path().join("prime");
                     let meta_dir = prime_dir.join("meta");
-                    fs::create_dir_all(&meta_dir)
-                        .with_context(|| format!("create prime/meta dir: {}", meta_dir.display()))?;
+                    fs::create_dir_all(&meta_dir).with_context(|| {
+                        format!("create prime/meta dir: {}", meta_dir.display())
+                    })?;
 
                     // Collect all binary names for this platform group
                     let all_binary_names: Vec<String> = target_binaries
@@ -663,9 +667,10 @@ impl Stage for SnapcraftStage {
                         })?);
                     }
                     if let Some(ref d) = rendered_cfg.description {
-                        rendered_cfg.description = Some(ctx.render_template(d).with_context(|| {
-                            format!("snapcraft: render description for crate {}", krate.name)
-                        })?);
+                        rendered_cfg.description =
+                            Some(ctx.render_template(d).with_context(|| {
+                                format!("snapcraft: render description for crate {}", krate.name)
+                            })?);
                     }
                     if let Some(ref g) = rendered_cfg.grade {
                         rendered_cfg.grade = Some(ctx.render_template(g).with_context(|| {
@@ -683,9 +688,8 @@ impl Stage for SnapcraftStage {
                         Some(project_name.as_str()),
                     )?;
                     let yaml_path = meta_dir.join("snap.yaml");
-                    fs::write(&yaml_path, &yaml_content).with_context(|| {
-                        format!("write snap.yaml to {}", yaml_path.display())
-                    })?;
+                    fs::write(&yaml_path, &yaml_content)
+                        .with_context(|| format!("write snap.yaml to {}", yaml_path.display()))?;
 
                     // GoReleaser parity (snapcraft.go:325-335): copy binaries
                     // directly into the prime directory root with mode 0555.
@@ -715,9 +719,7 @@ impl Stage for SnapcraftStage {
                     if let Some(extra_files) = &snap_cfg.extra_files {
                         for extra in extra_files {
                             let src = PathBuf::from(extra.source());
-                            let dest_rel = extra
-                                .destination()
-                                .unwrap_or_else(|| extra.source());
+                            let dest_rel = extra.destination().unwrap_or_else(|| extra.source());
                             let dest = prime_dir.join(dest_rel);
                             if let Some(parent) = dest.parent() {
                                 fs::create_dir_all(parent).with_context(|| {
@@ -779,14 +781,15 @@ impl Stage for SnapcraftStage {
 
                     // Process templated_extra_files: render and copy to prime dir
                     if let Some(ref tpl_specs) = snap_cfg.templated_extra_files
-                        && !tpl_specs.is_empty() {
-                            anodize_core::templated_files::process_templated_extra_files(
-                                tpl_specs,
-                                ctx,
-                                &prime_dir,
-                                "snapcraft",
-                            )?;
-                        }
+                        && !tpl_specs.is_empty()
+                    {
+                        anodize_core::templated_files::process_templated_extra_files(
+                            tpl_specs,
+                            ctx,
+                            &prime_dir,
+                            "snapcraft",
+                        )?;
+                    }
 
                     // Apply mod_timestamp if set
                     if let Some(ts) = &snap_cfg.mod_timestamp {
@@ -824,13 +827,11 @@ impl Stage for SnapcraftStage {
 
                     // If replace is set, mark archives for this crate+target for removal
                     if snap_cfg.replace.unwrap_or(false) {
-                        archives_to_remove.extend(
-                            anodize_core::util::collect_replace_archives(
-                                &ctx.artifacts,
-                                &krate.name,
-                                target.as_deref(),
-                            ),
-                        );
+                        archives_to_remove.extend(anodize_core::util::collect_replace_archives(
+                            &ctx.artifacts,
+                            &krate.name,
+                            target.as_deref(),
+                        ));
                     }
                 }
             }
@@ -906,9 +907,10 @@ impl Stage for SnapcraftPublishStage {
                 }
                 // Skip disabled configs
                 if let Some(ref d) = snap_cfg.disable
-                    && d.is_disabled(|tmpl| ctx.render_template(tmpl)) {
-                        continue;
-                    }
+                    && d.is_disabled(|tmpl| ctx.render_template(tmpl))
+                {
+                    continue;
+                }
 
                 // Find snap artifacts for this crate (optionally filtered by id)
                 let matching: Vec<_> = snap_artifacts
@@ -953,10 +955,7 @@ impl Stage for SnapcraftPublishStage {
                         snapcraft_upload_command(&snap_path, effective_channels.as_deref());
 
                     if dry_run {
-                        log.status(&format!(
-                            "(dry-run) would run: {}",
-                            upload_args.join(" "),
-                        ));
+                        log.status(&format!("(dry-run) would run: {}", upload_args.join(" "),));
                         continue;
                     }
                     log.status(&format!("running: {}", upload_args.join(" ")));
@@ -1042,7 +1041,10 @@ mod tests {
         assert!(yaml.contains("license: MIT"), "missing license");
         // Prime-dir approach: no parts section in snap.yaml
         assert!(!yaml.contains("parts:"), "snap.yaml should not have parts");
-        assert!(!yaml.contains("plugin:"), "snap.yaml should not have plugin");
+        assert!(
+            !yaml.contains("plugin:"),
+            "snap.yaml should not have plugin"
+        );
     }
 
     #[test]
@@ -1056,7 +1058,10 @@ mod tests {
                 stop_mode: Some("sigterm".to_string()),
                 restart_condition: Some("on-failure".to_string()),
                 plugs: Some(vec!["network".to_string(), "home".to_string()]),
-                environment: Some(HashMap::from([("LANG".to_string(), serde_json::json!("C.UTF-8"))])),
+                environment: Some(HashMap::from([(
+                    "LANG".to_string(),
+                    serde_json::json!("C.UTF-8"),
+                )])),
                 args: Some("--verbose".to_string()),
                 ..Default::default()
             },
@@ -1182,8 +1187,8 @@ mod tests {
                 name: Some("mysnap".to_string()),
                 confinement: Some(mode.to_string()),
                 summary: Some("Test snap".to_string()),
-            description: Some("A test snap package".to_string()),
-            ..Default::default()
+                description: Some("A test snap package".to_string()),
+                ..Default::default()
             };
             let yaml = generate_snap_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
             assert!(
@@ -1299,10 +1304,7 @@ mod tests {
     #[test]
     fn test_resolve_effective_channels_devel_grade() {
         let channels = resolve_effective_channels(None, Some("devel"));
-        assert_eq!(
-            channels.unwrap(),
-            vec!["edge", "beta"],
-        );
+        assert_eq!(channels.unwrap(), vec!["edge", "beta"],);
     }
 
     #[test]
@@ -1723,9 +1725,15 @@ mod tests {
         let yaml = generate_snap_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
         // snap.yaml should not have parts/organize/stage/prime sections
         assert!(!yaml.contains("parts:"), "snap.yaml should not have parts");
-        assert!(!yaml.contains("organize:"), "snap.yaml should not have organize");
+        assert!(
+            !yaml.contains("organize:"),
+            "snap.yaml should not have organize"
+        );
         // Default app command is just the binary name (at prime root)
-        assert!(yaml.contains("command: myapp"), "default app command should be binary name");
+        assert!(
+            yaml.contains("command: myapp"),
+            "default app command should be binary name"
+        );
     }
 
     #[test]
@@ -2487,21 +2495,20 @@ crates:
                 desktop: Some("gui/mydaemon.desktop".to_string()),
                 extensions: Some(vec!["gnome".to_string()]),
                 install_mode: Some("disable".to_string()),
-                passthrough: Some(HashMap::from([
-                    ("custom-key".to_string(), serde_json::json!("custom-value")),
-                ])),
+                passthrough: Some(HashMap::from([(
+                    "custom-key".to_string(),
+                    serde_json::json!("custom-value"),
+                )])),
                 post_stop_command: Some("bin/cleanup".to_string()),
                 refresh_mode: Some("endure".to_string()),
                 reload_command: Some("bin/reload".to_string()),
                 restart_condition: Some("on-failure".to_string()),
                 restart_delay: Some("10s".to_string()),
                 slots: Some(vec!["dbus-slot".to_string()]),
-                sockets: Some(HashMap::from([
-                    (
-                        "mysock".to_string(),
-                        serde_json::json!({"listen-stream": "$SNAP_DATA/mysock.sock"}),
-                    ),
-                ])),
+                sockets: Some(HashMap::from([(
+                    "mysock".to_string(),
+                    serde_json::json!({"listen-stream": "$SNAP_DATA/mysock.sock"}),
+                )])),
                 start_timeout: Some("30s".to_string()),
                 stop_command: Some("bin/stop".to_string()),
                 stop_mode: Some("sigterm-all".to_string()),
@@ -2523,7 +2530,10 @@ crates:
 
         // Verify all kebab-case fields are present
         assert!(yaml.contains("adapter: none"), "missing adapter\n{yaml}");
-        assert!(yaml.contains("- network-manager"), "missing after entry\n{yaml}");
+        assert!(
+            yaml.contains("- network-manager"),
+            "missing after entry\n{yaml}"
+        );
         assert!(yaml.contains("aliases:"), "missing aliases section\n{yaml}");
         assert!(yaml.contains("- md"), "missing alias md\n{yaml}");
         assert!(yaml.contains("- myd"), "missing alias myd\n{yaml}");
@@ -2536,7 +2546,10 @@ crates:
             yaml.contains("bus-name: com.example.mydaemon"),
             "missing bus-name\n{yaml}"
         );
-        assert!(yaml.contains("command-chain:"), "missing command-chain\n{yaml}");
+        assert!(
+            yaml.contains("command-chain:"),
+            "missing command-chain\n{yaml}"
+        );
         assert!(
             yaml.contains("- bin/wrapper"),
             "missing command-chain entry\n{yaml}"
@@ -2627,7 +2640,10 @@ crates:
         };
         let yaml = generate_snap_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
         assert!(yaml.contains("hooks:"), "missing hooks section\n{yaml}");
-        assert!(yaml.contains("configure:"), "missing configure hook\n{yaml}");
+        assert!(
+            yaml.contains("configure:"),
+            "missing configure hook\n{yaml}"
+        );
         assert!(yaml.contains("install:"), "missing install hook\n{yaml}");
     }
 
@@ -2653,7 +2669,10 @@ crates:
         };
         let yaml = generate_snap_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
         assert!(yaml.contains("layout:"), "should use singular 'layout:'");
-        assert!(!yaml.contains("layouts:"), "should not use plural 'layouts:'");
+        assert!(
+            !yaml.contains("layouts:"),
+            "should not use plural 'layouts:'"
+        );
     }
 
     #[test]
@@ -2732,10 +2751,7 @@ crates:
         assert_eq!(app.bus_name.as_deref(), Some("com.example.myapp"));
         assert_eq!(app.command_chain.as_ref().unwrap(), &["bin/wrapper"]);
         assert_eq!(app.common_id.as_deref(), Some("com.example.myapp"));
-        assert_eq!(
-            app.completer.as_deref(),
-            Some("completions/myapp.bash")
-        );
+        assert_eq!(app.completer.as_deref(), Some("completions/myapp.bash"));
         assert_eq!(app.desktop.as_deref(), Some("gui/myapp.desktop"));
         assert_eq!(app.extensions.as_ref().unwrap(), &["gnome"]);
         assert_eq!(app.install_mode.as_deref(), Some("disable"));
@@ -2755,7 +2771,10 @@ crates:
         // Verify extra_files mixed form
         let extra = snap.extra_files.as_ref().unwrap();
         assert_eq!(extra.len(), 2);
-        assert_eq!(extra[0], SnapcraftExtraFileSpec::Source("README.md".to_string()));
+        assert_eq!(
+            extra[0],
+            SnapcraftExtraFileSpec::Source("README.md".to_string())
+        );
         match &extra[1] {
             SnapcraftExtraFileSpec::Detailed {
                 source,
@@ -2795,7 +2814,10 @@ crates:
             ..Default::default()
         };
         let yaml = generate_snap_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
-        assert!(yaml.contains("MY_PORT: 8080"), "missing integer env\n{yaml}");
+        assert!(
+            yaml.contains("MY_PORT: 8080"),
+            "missing integer env\n{yaml}"
+        );
         assert!(yaml.contains("DEBUG: true"), "missing boolean env\n{yaml}");
         assert!(yaml.contains("NAME: myapp"), "missing string env\n{yaml}");
     }
@@ -2811,7 +2833,10 @@ crates:
         };
         let yaml = generate_snap_yaml(&cfg, "1.0.0", &["server", "client"], None, None).unwrap();
         // Default app uses first binary name
-        assert!(yaml.contains("command: server"), "default app should use first binary\n{yaml}");
+        assert!(
+            yaml.contains("command: server"),
+            "default app should use first binary\n{yaml}"
+        );
     }
 
     #[test]
@@ -2885,20 +2910,47 @@ crates:
         let yaml = generate_snap_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
 
         // None of the new fields should appear
-        assert!(!yaml.contains("adapter:"), "adapter should be omitted\n{yaml}");
+        assert!(
+            !yaml.contains("adapter:"),
+            "adapter should be omitted\n{yaml}"
+        );
         assert!(!yaml.contains("after:"), "after should be omitted\n{yaml}");
-        assert!(!yaml.contains("aliases:"), "aliases should be omitted\n{yaml}");
-        assert!(!yaml.contains("autostart:"), "autostart should be omitted\n{yaml}");
-        assert!(!yaml.contains("before:"), "before should be omitted\n{yaml}");
-        assert!(!yaml.contains("bus-name:"), "bus-name should be omitted\n{yaml}");
+        assert!(
+            !yaml.contains("aliases:"),
+            "aliases should be omitted\n{yaml}"
+        );
+        assert!(
+            !yaml.contains("autostart:"),
+            "autostart should be omitted\n{yaml}"
+        );
+        assert!(
+            !yaml.contains("before:"),
+            "before should be omitted\n{yaml}"
+        );
+        assert!(
+            !yaml.contains("bus-name:"),
+            "bus-name should be omitted\n{yaml}"
+        );
         assert!(
             !yaml.contains("command-chain:"),
             "command-chain should be omitted\n{yaml}"
         );
-        assert!(!yaml.contains("common-id:"), "common-id should be omitted\n{yaml}");
-        assert!(!yaml.contains("completer:"), "completer should be omitted\n{yaml}");
-        assert!(!yaml.contains("desktop:"), "desktop should be omitted\n{yaml}");
-        assert!(!yaml.contains("extensions:"), "extensions should be omitted\n{yaml}");
+        assert!(
+            !yaml.contains("common-id:"),
+            "common-id should be omitted\n{yaml}"
+        );
+        assert!(
+            !yaml.contains("completer:"),
+            "completer should be omitted\n{yaml}"
+        );
+        assert!(
+            !yaml.contains("desktop:"),
+            "desktop should be omitted\n{yaml}"
+        );
+        assert!(
+            !yaml.contains("extensions:"),
+            "extensions should be omitted\n{yaml}"
+        );
         assert!(
             !yaml.contains("install-mode:"),
             "install-mode should be omitted\n{yaml}"
@@ -2923,7 +2975,10 @@ crates:
             !yaml.contains("restart-delay:"),
             "restart-delay should be omitted\n{yaml}"
         );
-        assert!(!yaml.contains("sockets:"), "sockets should be omitted\n{yaml}");
+        assert!(
+            !yaml.contains("sockets:"),
+            "sockets should be omitted\n{yaml}"
+        );
         assert!(
             !yaml.contains("start-timeout:"),
             "start-timeout should be omitted\n{yaml}"

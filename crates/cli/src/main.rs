@@ -884,11 +884,7 @@ mod tests {
     #[test]
     fn test_cli_parses_build_output() {
         let cli = Cli::try_parse_from(["anodize", "build", "-o", "./myapp"]);
-        assert!(
-            cli.is_ok(),
-            "CLI should parse build -o: {:?}",
-            cli.err()
-        );
+        assert!(cli.is_ok(), "CLI should parse build -o: {:?}", cli.err());
         if let Commands::Build { output, .. } = cli.unwrap().command {
             assert_eq!(output, Some(std::path::PathBuf::from("./myapp")));
         } else {

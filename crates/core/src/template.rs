@@ -62,8 +62,8 @@ fn translate_go_time_format(fmt: &str) -> Cow<'_, str> {
     // Check if any Go reference date patterns are present.
     // Go reference date: Mon Jan 2 15:04:05 MST 2006
     const GO_MARKERS: &[&str] = &[
-        "2006", "06", "January", "Jan", "01", "Monday", "Mon", "02", "15", "03", "04", "05",
-        "PM", "pm", "-0700", "Z0700", "MST",
+        "2006", "06", "January", "Jan", "01", "Monday", "Mon", "02", "15", "03", "04", "05", "PM",
+        "pm", "-0700", "Z0700", "MST",
     ];
     let has_go_patterns = GO_MARKERS.iter().any(|p| fmt.contains(p));
     if !has_go_patterns {
@@ -77,23 +77,23 @@ fn translate_go_time_format(fmt: &str) -> Cow<'_, str> {
 
     let replacements: &[(&str, &str)] = &[
         // Multi-char patterns (longest first)
-        ("January", "%B"),  // full month name
-        ("Monday", "%A"),   // full weekday name
-        ("-0700", "%z"),    // timezone offset
-        ("Z0700", "%z"),    // timezone offset (Z variant)
-        ("2006", "%Y"),     // 4-digit year
-        ("Jan", "%b"),      // abbreviated month
-        ("Mon", "%a"),      // abbreviated weekday
-        ("MST", "%Z"),      // timezone name
-        ("PM", "%p"),       // AM/PM
-        ("pm", "%P"),       // am/pm
-        ("15", "%H"),       // 24-hour
-        ("06", "%y"),       // 2-digit year
-        ("05", "%S"),       // second
-        ("04", "%M"),       // minute
-        ("03", "%I"),       // 12-hour zero-padded
-        ("02", "%d"),       // zero-padded day
-        ("01", "%m"),       // zero-padded month
+        ("January", "%B"), // full month name
+        ("Monday", "%A"),  // full weekday name
+        ("-0700", "%z"),   // timezone offset
+        ("Z0700", "%z"),   // timezone offset (Z variant)
+        ("2006", "%Y"),    // 4-digit year
+        ("Jan", "%b"),     // abbreviated month
+        ("Mon", "%a"),     // abbreviated weekday
+        ("MST", "%Z"),     // timezone name
+        ("PM", "%p"),      // AM/PM
+        ("pm", "%P"),      // am/pm
+        ("15", "%H"),      // 24-hour
+        ("06", "%y"),      // 2-digit year
+        ("05", "%S"),      // second
+        ("04", "%M"),      // minute
+        ("03", "%I"),      // 12-hour zero-padded
+        ("02", "%d"),      // zero-padded day
+        ("01", "%m"),      // zero-padded month
     ];
 
     for (go_pat, chrono_pat) in replacements {
@@ -497,7 +497,9 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
                 .and_then(|v| v.as_array())
                 .ok_or_else(|| tera::Error::msg("map requires `pairs` argument"))?;
             if pairs.len() % 2 != 0 {
-                return Err(tera::Error::msg("map requires an even number of arguments (key-value pairs)"));
+                return Err(tera::Error::msg(
+                    "map requires an even number of arguments (key-value pairs)",
+                ));
             }
             let mut result = tera::Map::new();
             for chunk in pairs.chunks(2) {
@@ -518,7 +520,9 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
             let items = args
                 .get("items")
                 .and_then(|v| v.as_array())
-                .ok_or_else(|| tera::Error::msg("in requires `items` argument (must be an array)"))?;
+                .ok_or_else(|| {
+                    tera::Error::msg("in requires `items` argument (must be an array)")
+                })?;
             let value = args
                 .get("value")
                 .ok_or_else(|| tera::Error::msg("in requires `value` argument"))?;
@@ -551,9 +555,12 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
                 .get("replacement")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| tera::Error::msg("reReplaceAll requires `replacement` argument"))?;
-            let re = Regex::new(pattern)
-                .map_err(|e| tera::Error::msg(format!("reReplaceAll: invalid regex '{}': {}", pattern, e)))?;
-            Ok(Value::String(re.replace_all(input, replacement).to_string()))
+            let re = Regex::new(pattern).map_err(|e| {
+                tera::Error::msg(format!("reReplaceAll: invalid regex '{}': {}", pattern, e))
+            })?;
+            Ok(Value::String(
+                re.replace_all(input, replacement).to_string(),
+            ))
         },
     );
 
@@ -567,14 +574,21 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
             let pattern = args
                 .get("pattern")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("reReplaceAll filter requires `pattern` argument"))?;
+                .ok_or_else(|| {
+                    tera::Error::msg("reReplaceAll filter requires `pattern` argument")
+                })?;
             let replacement = args
                 .get("replacement")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("reReplaceAll filter requires `replacement` argument"))?;
-            let re = Regex::new(pattern)
-                .map_err(|e| tera::Error::msg(format!("reReplaceAll: invalid regex '{}': {}", pattern, e)))?;
-            Ok(Value::String(re.replace_all(&input, replacement).to_string()))
+                .ok_or_else(|| {
+                    tera::Error::msg("reReplaceAll filter requires `replacement` argument")
+                })?;
+            let re = Regex::new(pattern).map_err(|e| {
+                tera::Error::msg(format!("reReplaceAll: invalid regex '{}': {}", pattern, e))
+            })?;
+            Ok(Value::String(
+                re.replace_all(&input, replacement).to_string(),
+            ))
         },
     );
 
@@ -641,20 +655,17 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     );
 
     // filter as pipe form: {{ items | filter(regexp="pattern") }}
-    tera.register_filter(
-        "filter",
-        |value: &Value, args: &HashMap<String, Value>| {
-            let pattern = args
-                .get("regexp")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("filter requires `regexp` argument"))?;
-            let re = regex::Regex::new(pattern)
-                .map_err(|e| tera::Error::msg(format!("invalid regex '{}': {}", pattern, e)))?;
-            let input = value.as_str().unwrap_or("");
-            let result: Vec<&str> = input.lines().filter(|line| re.is_match(line)).collect();
-            Ok(Value::String(result.join("\n")))
-        },
-    );
+    tera.register_filter("filter", |value: &Value, args: &HashMap<String, Value>| {
+        let pattern = args
+            .get("regexp")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| tera::Error::msg("filter requires `regexp` argument"))?;
+        let re = regex::Regex::new(pattern)
+            .map_err(|e| tera::Error::msg(format!("invalid regex '{}': {}", pattern, e)))?;
+        let input = value.as_str().unwrap_or("");
+        let result: Vec<&str> = input.lines().filter(|line| re.is_match(line)).collect();
+        Ok(Value::String(result.join("\n")))
+    });
 
     // reverseFilter as pipe form: {{ items | reverseFilter(regexp="pattern") }}
     tera.register_filter(
@@ -1122,9 +1133,7 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
                             .cloned()
                             .unwrap_or(Value::String(String::new())))
                     } else {
-                        Err(tera::Error::msg(
-                            "index: array index must be a number",
-                        ))
+                        Err(tera::Error::msg("index: array index must be a number"))
                     }
                 }
                 _ => {
@@ -1137,20 +1146,17 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
 
     // in — filter form: {{ myList | in(value="x") }}
     // Checks whether the piped array contains the given value (string comparison).
-    tera.register_filter(
-        "in",
-        |value: &Value, args: &HashMap<String, Value>| {
-            let items = value
-                .as_array()
-                .ok_or_else(|| tera::Error::msg("in filter requires an array as input"))?;
-            let needle = args
-                .get("value")
-                .ok_or_else(|| tera::Error::msg("in filter requires `value` argument"))?;
-            let needle_str = value_to_string(needle);
-            let found = items.iter().any(|item| value_to_string(item) == needle_str);
-            Ok(Value::Bool(found))
-        },
-    );
+    tera.register_filter("in", |value: &Value, args: &HashMap<String, Value>| {
+        let items = value
+            .as_array()
+            .ok_or_else(|| tera::Error::msg("in filter requires an array as input"))?;
+        let needle = args
+            .get("value")
+            .ok_or_else(|| tera::Error::msg("in filter requires `value` argument"))?;
+        let needle_str = value_to_string(needle);
+        let found = items.iter().any(|item| value_to_string(item) == needle_str);
+        Ok(Value::Bool(found))
+    });
 
     tera
 });
@@ -2569,8 +2575,7 @@ mod tests {
     fn test_positional_replace_with_env_var() {
         // Using dotted path: {{ replace .Env.GITHUB_TOKEN "tok" "XXX" }}
         let vars = test_vars();
-        let result =
-            render("{{ replace .Env.GITHUB_TOKEN \"tok\" \"XXX\" }}", &vars).unwrap();
+        let result = render("{{ replace .Env.GITHUB_TOKEN \"tok\" \"XXX\" }}", &vars).unwrap();
         assert_eq!(result, "XXX123");
     }
 
@@ -2586,8 +2591,7 @@ mod tests {
     fn test_named_arg_syntax_passthrough() {
         // Already using named args — should NOT be rewritten
         let vars = test_vars();
-        let result =
-            render("{{ replace(s=Tag, old=\"v\", new=\"\") }}", &vars).unwrap();
+        let result = render("{{ replace(s=Tag, old=\"v\", new=\"\") }}", &vars).unwrap();
         assert_eq!(result, "1.2.3");
     }
 
@@ -2595,8 +2599,7 @@ mod tests {
     fn test_named_arg_filter_passthrough() {
         // Already using named filter args — should NOT be rewritten
         let vars = test_vars();
-        let result =
-            render("{{ Tag | replace(from=\"v\", to=\"\") }}", &vars).unwrap();
+        let result = render("{{ Tag | replace(from=\"v\", to=\"\") }}", &vars).unwrap();
         assert_eq!(result, "1.2.3");
     }
 
@@ -2604,11 +2607,7 @@ mod tests {
     fn test_positional_mixed_with_literal_text() {
         // Positional syntax mixed with literal text around it
         let vars = test_vars();
-        let result = render(
-            "app-{{ replace .Tag \"v\" \"\" }}-{{ .Os }}",
-            &vars,
-        )
-        .unwrap();
+        let result = render("app-{{ replace .Tag \"v\" \"\" }}-{{ .Os }}", &vars).unwrap();
         assert_eq!(result, "app-1.2.3-linux");
     }
 
@@ -2758,22 +2757,14 @@ mod tests {
     fn test_in_renders_bool_string() {
         // When used in an expression context, `in` should render as "true" or "false"
         let vars = test_vars();
-        let result = render(
-            "{{ in(items=[\"a\", \"b\"], value=\"a\") }}",
-            &vars,
-        )
-        .unwrap();
+        let result = render("{{ in(items=[\"a\", \"b\"], value=\"a\") }}", &vars).unwrap();
         assert_eq!(result, "true");
     }
 
     #[test]
     fn test_in_renders_bool_string_false() {
         let vars = test_vars();
-        let result = render(
-            "{{ in(items=[\"a\", \"b\"], value=\"z\") }}",
-            &vars,
-        )
-        .unwrap();
+        let result = render("{{ in(items=[\"a\", \"b\"], value=\"z\") }}", &vars).unwrap();
         assert_eq!(result, "false");
     }
 
@@ -2966,10 +2957,7 @@ mod tests {
     #[test]
     fn test_re_replace_all_missing_replacement_error() {
         let vars = test_vars();
-        let result = render(
-            "{{ reReplaceAll(pattern=\"x\", input=\"hello\") }}",
-            &vars,
-        );
+        let result = render("{{ reReplaceAll(pattern=\"x\", input=\"hello\") }}", &vars);
         assert!(
             result.is_err(),
             "reReplaceAll without replacement should error"
@@ -3071,7 +3059,10 @@ mod tests {
 
     #[test]
     fn test_extract_artifact_ext_tar_gz() {
-        assert_eq!(extract_artifact_ext("myapp-1.0.0-linux-amd64.tar.gz"), ".tar.gz");
+        assert_eq!(
+            extract_artifact_ext("myapp-1.0.0-linux-amd64.tar.gz"),
+            ".tar.gz"
+        );
     }
 
     #[test]
@@ -3193,8 +3184,7 @@ mod tests {
     fn test_target_template_rendering() {
         let mut vars = test_vars();
         vars.set("Target", "x86_64-unknown-linux-gnu");
-        let result =
-            render("{{ .ProjectName }}-{{ .Version }}-{{ .Target }}", &vars).unwrap();
+        let result = render("{{ .ProjectName }}-{{ .Version }}-{{ .Target }}", &vars).unwrap();
         assert_eq!(result, "cfgd-1.2.3-x86_64-unknown-linux-gnu");
     }
 
@@ -3203,8 +3193,7 @@ mod tests {
     #[test]
     fn test_checksums_template_rendering() {
         let mut vars = test_vars();
-        let checksum_content =
-            "abc123  myapp-1.0.0.tar.gz\ndef456  myapp-1.0.0.zip\n";
+        let checksum_content = "abc123  myapp-1.0.0.tar.gz\ndef456  myapp-1.0.0.zip\n";
         vars.set("Checksums", checksum_content);
         let result = render("{{ .Checksums }}", &vars).unwrap();
         assert_eq!(result, checksum_content);
@@ -3332,11 +3321,7 @@ mod tests {
     fn test_gt_comparison_end_to_end() {
         let vars = test_vars();
         // Major is 1
-        let result = render(
-            "{{ if gt .Major 0 }}positive{{ else }}zero{{ end }}",
-            &vars,
-        )
-        .unwrap();
+        let result = render("{{ if gt .Major 0 }}positive{{ else }}zero{{ end }}", &vars).unwrap();
         assert_eq!(result, "positive");
     }
 
@@ -3344,11 +3329,7 @@ mod tests {
     fn test_lt_comparison_end_to_end() {
         let vars = test_vars();
         // Patch is 3
-        let result = render(
-            "{{ if lt .Patch 5 }}small{{ else }}big{{ end }}",
-            &vars,
-        )
-        .unwrap();
+        let result = render("{{ if lt .Patch 5 }}small{{ else }}big{{ end }}", &vars).unwrap();
         assert_eq!(result, "small");
     }
 
@@ -3356,11 +3337,7 @@ mod tests {
     fn test_eq_with_not_parenthesized() {
         let mut vars = test_vars();
         vars.set("Amd64", "v2");
-        let result = render(
-            "{{ if not (eq .Amd64 \"v1\") }}not-v1{{ end }}",
-            &vars,
-        )
-        .unwrap();
+        let result = render("{{ if not (eq .Amd64 \"v1\") }}not-v1{{ end }}", &vars).unwrap();
         assert_eq!(result, "not-v1");
     }
 
@@ -3395,11 +3372,7 @@ mod tests {
         let mut vars = test_vars();
         let map = serde_json::json!({"key1": "val1", "key2": "val2"});
         vars.set_structured("mymap", map);
-        let result = render(
-            "{{ index(collection=mymap, key=\"key1\") }}",
-            &vars,
-        )
-        .unwrap();
+        let result = render("{{ index(collection=mymap, key=\"key1\") }}", &vars).unwrap();
         assert_eq!(result, "val1");
     }
 
@@ -3408,11 +3381,7 @@ mod tests {
         let mut vars = test_vars();
         let map = serde_json::json!({"key1": "val1"});
         vars.set_structured("mymap", map);
-        let result = render(
-            "{{ index(collection=mymap, key=\"missing\") }}",
-            &vars,
-        )
-        .unwrap();
+        let result = render("{{ index(collection=mymap, key=\"missing\") }}", &vars).unwrap();
         assert_eq!(result, "", "missing key should return empty string");
     }
 
@@ -3421,11 +3390,7 @@ mod tests {
         let mut vars = test_vars();
         let arr = serde_json::json!(["first", "second", "third"]);
         vars.set_structured("myarr", arr);
-        let result = render(
-            "{{ index(collection=myarr, key=1) }}",
-            &vars,
-        )
-        .unwrap();
+        let result = render("{{ index(collection=myarr, key=1) }}", &vars).unwrap();
         assert_eq!(result, "second");
     }
 
@@ -3446,8 +3411,7 @@ mod tests {
     #[test]
     fn test_missing_env_var_renders_empty() {
         let vars = test_vars();
-        let result =
-            render("prefix-{{ .Env.NONEXISTENT_ABC_123 }}-suffix", &vars).unwrap();
+        let result = render("prefix-{{ .Env.NONEXISTENT_ABC_123 }}-suffix", &vars).unwrap();
         assert_eq!(result, "prefix--suffix");
     }
 

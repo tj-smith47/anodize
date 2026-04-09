@@ -47,12 +47,7 @@ pub const VALID_RELEASE_SKIPS: &[&str] = &[
 ];
 
 /// Valid --skip values for the `build` command.
-pub const VALID_BUILD_SKIPS: &[&str] = &[
-    "pre-hooks",
-    "post-hooks",
-    "validate",
-    "before",
-];
+pub const VALID_BUILD_SKIPS: &[&str] = &["pre-hooks", "post-hooks", "validate", "before"];
 
 /// Validate that all skip values are in the allowed set.
 ///
@@ -366,8 +361,7 @@ impl Context {
 
                 // PrefixedPreviousTag = full previous tag (already has prefix).
                 let prev_tag = info.previous_tag.as_deref().unwrap_or("");
-                self.template_vars
-                    .set("PrefixedPreviousTag", prev_tag);
+                self.template_vars.set("PrefixedPreviousTag", prev_tag);
 
                 // PreviousTag = prefix stripped, consistent with Tag being stripped.
                 let stripped_prev = crate::git::strip_monorepo_prefix(prev_tag, prefix);
@@ -376,8 +370,7 @@ impl Context {
                 // PrefixedSummary: info.summary from `git describe` already
                 // includes the monorepo prefix (e.g. "subproject1/v1.2.3-0-gabc123d"),
                 // so use it as-is for the prefixed variant.
-                self.template_vars
-                    .set("PrefixedSummary", &info.summary);
+                self.template_vars.set("PrefixedSummary", &info.summary);
                 // Summary: strip the monorepo prefix for the base variant.
                 let stripped_summary = crate::git::strip_monorepo_prefix(&info.summary, prefix);
                 self.template_vars.set("Summary", stripped_summary);
@@ -399,8 +392,10 @@ impl Context {
                 };
                 self.template_vars
                     .set("PrefixedPreviousTag", &prefixed_prev);
-                self.template_vars
-                    .set("PrefixedSummary", &format!("{}{}", tag_prefix, info.summary));
+                self.template_vars.set(
+                    "PrefixedSummary",
+                    &format!("{}{}", tag_prefix, info.summary),
+                );
             }
         }
 
@@ -546,8 +541,7 @@ impl Context {
         // serde_json::Value and tera::Value are the same type under the hood,
         // so no conversion is needed — pass values directly.
         let tera_value = tera::Value::Array(artifacts_value);
-        self.template_vars
-            .set_structured("Artifacts", tera_value);
+        self.template_vars.set_structured("Artifacts", tera_value);
     }
 
     /// Populate the `Metadata` structured template variable from config.metadata.
@@ -558,22 +552,14 @@ impl Context {
     /// Missing fields default to empty strings / empty arrays.
     pub fn populate_metadata_var(&mut self) {
         let meta = self.config.metadata.as_ref();
-        let description = meta
-            .and_then(|m| m.description.as_deref())
-            .unwrap_or("");
-        let homepage = meta
-            .and_then(|m| m.homepage.as_deref())
-            .unwrap_or("");
-        let license = meta
-            .and_then(|m| m.license.as_deref())
-            .unwrap_or("");
+        let description = meta.and_then(|m| m.description.as_deref()).unwrap_or("");
+        let homepage = meta.and_then(|m| m.homepage.as_deref()).unwrap_or("");
+        let license = meta.and_then(|m| m.license.as_deref()).unwrap_or("");
         let maintainers: Vec<&str> = meta
             .and_then(|m| m.maintainers.as_ref())
             .map(|v| v.iter().map(|s| s.as_str()).collect())
             .unwrap_or_default();
-        let mod_timestamp = meta
-            .and_then(|m| m.mod_timestamp.as_deref())
-            .unwrap_or("");
+        let mod_timestamp = meta.and_then(|m| m.mod_timestamp.as_deref()).unwrap_or("");
 
         let meta_map = serde_json::json!({
             "Description": description,
@@ -583,8 +569,7 @@ impl Context {
             "ModTimestamp": mod_timestamp,
         });
         // serde_json::Value and tera::Value are the same type, so pass directly.
-        self.template_vars
-            .set_structured("Metadata", meta_map);
+        self.template_vars.set_structured("Metadata", meta_map);
     }
 }
 
@@ -1445,18 +1430,14 @@ mod tests {
 
         // Iterate over artifacts and collect names
         let result = ctx
-            .render_template(
-                "{% for a in Artifacts %}{{ a.name }},{% endfor %}",
-            )
+            .render_template("{% for a in Artifacts %}{{ a.name }},{% endfor %}")
             .unwrap();
         assert!(result.contains("myapp-1.0.0-linux-amd64.tar.gz"));
         assert!(result.contains("myapp"));
 
         // Check kind field
         let result_kinds = ctx
-            .render_template(
-                "{% for a in Artifacts %}{{ a.kind }},{% endfor %}",
-            )
+            .render_template("{% for a in Artifacts %}{{ a.kind }},{% endfor %}")
             .unwrap();
         assert!(result_kinds.contains("archive"));
         assert!(result_kinds.contains("binary"));
@@ -1473,9 +1454,7 @@ mod tests {
         ctx.populate_metadata_var();
 
         // Metadata should be accessible as a nested map with PascalCase keys
-        let result = ctx
-            .render_template("{{ Metadata.ModTimestamp }}")
-            .unwrap();
+        let result = ctx.render_template("{{ Metadata.ModTimestamp }}").unwrap();
         assert_eq!(result, "{{ .CommitTimestamp }}");
     }
 
@@ -1638,10 +1617,7 @@ mod tests {
             Some(&"subproject1/v1.2.2".to_string())
         );
         // Summary should be stripped.
-        assert_eq!(
-            v.get("Summary"),
-            Some(&"v1.2.3-0-gabc123d".to_string())
-        );
+        assert_eq!(v.get("Summary"), Some(&"v1.2.3-0-gabc123d".to_string()));
         // PrefixedSummary should retain the full summary.
         assert_eq!(
             v.get("PrefixedSummary"),
@@ -1671,10 +1647,7 @@ mod tests {
             Some(&"svc/v1.9.0".to_string())
         );
         // PreviousTag should be stripped (prefix removed), consistent with Tag.
-        assert_eq!(
-            v.get("PreviousTag"),
-            Some(&"v1.9.0".to_string())
-        );
+        assert_eq!(v.get("PreviousTag"), Some(&"v1.9.0".to_string()));
     }
 
     #[test]
@@ -1693,10 +1666,7 @@ mod tests {
         // Tag is plain "v1.2.3" (not stripped because no monorepo).
         assert_eq!(v.get("Tag"), Some(&"v1.2.3".to_string()));
         // PrefixedTag should prepend tag_prefix.
-        assert_eq!(
-            v.get("PrefixedTag"),
-            Some(&"release/v1.2.3".to_string())
-        );
+        assert_eq!(v.get("PrefixedTag"), Some(&"release/v1.2.3".to_string()));
         assert_eq!(
             v.get("PrefixedPreviousTag"),
             Some(&"release/v1.2.2".to_string())
@@ -1728,10 +1698,7 @@ mod tests {
         // Monorepo takes precedence: Tag is stripped.
         assert_eq!(v.get("Tag"), Some(&"v1.2.3".to_string()));
         // PrefixedTag is the full monorepo tag, NOT tag_prefix-prepended.
-        assert_eq!(
-            v.get("PrefixedTag"),
-            Some(&"svc/v1.2.3".to_string())
-        );
+        assert_eq!(v.get("PrefixedTag"), Some(&"svc/v1.2.3".to_string()));
     }
 
     #[test]
@@ -1830,10 +1797,7 @@ mod tests {
         assert_eq!(v.get("Minor"), Some(&"1".to_string()));
         assert_eq!(v.get("Patch"), Some(&"0".to_string()));
         assert_eq!(v.get("PreviousTag"), Some(&"v2.0.5".to_string()));
-        assert_eq!(
-            v.get("Summary"),
-            Some(&"v2.1.0-0-gabc123d".to_string())
-        );
+        assert_eq!(v.get("Summary"), Some(&"v2.1.0-0-gabc123d".to_string()));
 
         // Prefixed vars should retain the FULL prefix.
         assert_eq!(

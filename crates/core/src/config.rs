@@ -175,7 +175,11 @@ pub struct Config {
     /// directory is scoped to dir.
     pub monorepo: Option<MonorepoConfig>,
     /// Makeself self-extracting archive configurations.
-    #[serde(default, alias = "makeself", deserialize_with = "deserialize_makeselfs")]
+    #[serde(
+        default,
+        alias = "makeself",
+        deserialize_with = "deserialize_makeselfs"
+    )]
     #[schemars(schema_with = "makeselfs_schema")]
     pub makeselfs: Vec<MakeselfConfig>,
     /// Source RPM configuration.
@@ -212,9 +216,8 @@ fn upx_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::sch
 fn sboms_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
     let mut schema = generator.subschema_for::<Vec<SbomConfig>>();
     if let schemars::schema::Schema::Object(ref mut obj) = schema {
-        obj.metadata().description = Some(
-            "SBOM generation configurations. Accepts a single object or array.".to_owned(),
-        );
+        obj.metadata().description =
+            Some("SBOM generation configurations. Accepts a single object or array.".to_owned());
     }
     schema
 }
@@ -362,13 +365,13 @@ impl<'de> Deserialize<'de> for EnvFilesConfig {
         let value = serde_yaml_ng::Value::deserialize(deserializer)?;
         match &value {
             serde_yaml_ng::Value::Sequence(_) => {
-                let list: Vec<String> = serde_yaml_ng::from_value(value)
-                    .map_err(serde::de::Error::custom)?;
+                let list: Vec<String> =
+                    serde_yaml_ng::from_value(value).map_err(serde::de::Error::custom)?;
                 Ok(EnvFilesConfig::List(list))
             }
             serde_yaml_ng::Value::Mapping(_) => {
-                let tokens: EnvFilesTokenConfig = serde_yaml_ng::from_value(value)
-                    .map_err(serde::de::Error::custom)?;
+                let tokens: EnvFilesTokenConfig =
+                    serde_yaml_ng::from_value(value).map_err(serde::de::Error::custom)?;
                 Ok(EnvFilesConfig::TokenFiles(tokens))
             }
             _ => Err(serde::de::Error::custom(
@@ -485,7 +488,11 @@ pub fn load_token_files(
 
     for (env_name, file_path) in &mappings {
         // Skip if the env var is already set in the process environment
-        if std::env::var(env_name).ok().filter(|v| !v.is_empty()).is_some() {
+        if std::env::var(env_name)
+            .ok()
+            .filter(|v| !v.is_empty())
+            .is_some()
+        {
             log.verbose(&format!("using {} from process environment", env_name));
             continue;
         }
@@ -520,10 +527,7 @@ pub fn load_env_files(
         let content = match std::fs::read_to_string(file_path) {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                log.warn(&format!(
-                    "env file '{}' not found, skipping",
-                    file_path
-                ));
+                log.warn(&format!("env file '{}' not found, skipping", file_path));
                 continue;
             }
             Err(e) => {
@@ -591,9 +595,7 @@ pub fn load_env_files(
 ///
 /// Both forms are normalized to `Option<HashMap<String, String>>`.
 /// Lines without `=` in the list form are rejected with a deserialization error.
-fn deserialize_env_map<'de, D>(
-    deserializer: D,
-) -> Result<Option<HashMap<String, String>>, D::Error>
+fn deserialize_env_map<'de, D>(deserializer: D) -> Result<Option<HashMap<String, String>>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -605,9 +607,7 @@ where
         type Value = Option<HashMap<String, String>>;
 
         fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str(
-                "a mapping of env vars (KEY: VALUE) or a list of KEY=VALUE strings",
-            )
+            f.write_str("a mapping of env vars (KEY: VALUE) or a list of KEY=VALUE strings")
         }
 
         fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
@@ -1656,7 +1656,10 @@ pub enum SkipPushConfig {
 }
 
 impl Serialize for SkipPushConfig {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
         match self {
             SkipPushConfig::Auto => serializer.serialize_str("auto"),
             SkipPushConfig::Bool(b) => serializer.serialize_bool(*b),
@@ -1666,17 +1669,25 @@ impl Serialize for SkipPushConfig {
 }
 
 impl<'de> Deserialize<'de> for SkipPushConfig {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
         struct Visitor;
         impl serde::de::Visitor<'_> for Visitor {
             type Value = SkipPushConfig;
             fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 write!(f, "\"auto\", a boolean, or a template string")
             }
-            fn visit_bool<E: serde::de::Error>(self, v: bool) -> std::result::Result<SkipPushConfig, E> {
+            fn visit_bool<E: serde::de::Error>(
+                self,
+                v: bool,
+            ) -> std::result::Result<SkipPushConfig, E> {
                 Ok(SkipPushConfig::Bool(v))
             }
-            fn visit_str<E: serde::de::Error>(self, v: &str) -> std::result::Result<SkipPushConfig, E> {
+            fn visit_str<E: serde::de::Error>(
+                self,
+                v: &str,
+            ) -> std::result::Result<SkipPushConfig, E> {
                 match v {
                     "auto" => Ok(SkipPushConfig::Auto),
                     "true" => Ok(SkipPushConfig::Bool(true)),
@@ -3845,9 +3856,7 @@ where
         type Value = Vec<SourceFileEntry>;
 
         fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str(
-                "a string, a source file entry object, or an array of strings/objects",
-            )
+            f.write_str("a string, a source file entry object, or an array of strings/objects")
         }
 
         fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
@@ -3868,8 +3877,8 @@ where
                         });
                     }
                     other => {
-                        let entry = SourceFileEntry::deserialize(other)
-                            .map_err(de::Error::custom)?;
+                        let entry =
+                            SourceFileEntry::deserialize(other).map_err(de::Error::custom)?;
                         entries.push(entry);
                     }
                 }
@@ -3878,8 +3887,7 @@ where
         }
 
         fn visit_map<M: de::MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
-            let entry =
-                SourceFileEntry::deserialize(de::value::MapAccessDeserializer::new(map))?;
+            let entry = SourceFileEntry::deserialize(de::value::MapAccessDeserializer::new(map))?;
             Ok(vec![entry])
         }
 
@@ -4072,7 +4080,10 @@ pub enum ResolvedPromptSource {
     /// Load from a local file path.
     File(String),
     /// Load from a URL (with optional headers).
-    Url { url: String, headers: Option<std::collections::HashMap<String, String>> },
+    Url {
+        url: String,
+        headers: Option<std::collections::HashMap<String, String>>,
+    },
     /// No source configured.
     None,
 }
@@ -5475,8 +5486,7 @@ where
         }
 
         fn visit_map<M: de::MapAccess<'de>>(self, map: M) -> Result<Self::Value, M::Error> {
-            let config =
-                MakeselfConfig::deserialize(de::value::MapAccessDeserializer::new(map))?;
+            let config = MakeselfConfig::deserialize(de::value::MapAccessDeserializer::new(map))?;
             Ok(vec![config])
         }
 
@@ -5495,8 +5505,10 @@ where
 fn makeselfs_schema(generator: &mut schemars::r#gen::SchemaGenerator) -> schemars::schema::Schema {
     let mut schema = generator.subschema_for::<Vec<MakeselfConfig>>();
     if let schemars::schema::Schema::Object(ref mut obj) = schema {
-        obj.metadata().description =
-            Some("Makeself self-extracting archive configurations. Accepts a single object or array.".to_owned());
+        obj.metadata().description = Some(
+            "Makeself self-extracting archive configurations. Accepts a single object or array."
+                .to_owned(),
+        );
     }
     schema
 }
@@ -5715,6 +5727,7 @@ pub struct AurSourceConfig {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 
@@ -6150,7 +6163,9 @@ crates:
         let json = serde_json::to_string(&bool_false).unwrap();
         assert_eq!(json, "false");
 
-        let tmpl = MakeLatestConfig::String("{{ if .IsSnapshot }}false{{ else }}true{{ end }}".to_string());
+        let tmpl = MakeLatestConfig::String(
+            "{{ if .IsSnapshot }}false{{ else }}true{{ end }}".to_string(),
+        );
         let json = serde_json::to_string(&tmpl).unwrap();
         assert_eq!(json, "\"{{ if .IsSnapshot }}false{{ else }}true{{ end }}\"");
     }
@@ -6970,7 +6985,10 @@ env:
 crates: []
 "#;
         let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
-        assert!(result.is_err(), "list entries with empty key should be rejected");
+        assert!(
+            result.is_err(),
+            "list entries with empty key should be rejected"
+        );
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("empty key"),
@@ -8258,15 +8276,14 @@ crates: []
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let env_files = config.env_files.unwrap();
-        let tokens = env_files.as_token_files().expect("expected TokenFiles variant");
+        let tokens = env_files
+            .as_token_files()
+            .expect("expected TokenFiles variant");
         assert_eq!(
             tokens.github_token.as_deref(),
             Some("~/.config/goreleaser/github_token")
         );
-        assert_eq!(
-            tokens.gitlab_token.as_deref(),
-            Some("/etc/tokens/gitlab")
-        );
+        assert_eq!(tokens.gitlab_token.as_deref(), Some("/etc/tokens/gitlab"));
         assert!(tokens.gitea_token.is_none());
     }
 
@@ -8280,7 +8297,9 @@ crates: []
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let env_files = config.env_files.unwrap();
-        let tokens = env_files.as_token_files().expect("expected TokenFiles variant");
+        let tokens = env_files
+            .as_token_files()
+            .expect("expected TokenFiles variant");
         assert!(tokens.github_token.is_none());
         assert!(tokens.gitlab_token.is_none());
         assert_eq!(tokens.gitea_token.as_deref(), Some("/tmp/gitea"));
@@ -8377,15 +8396,21 @@ crates: []
 
         // Restore original env
         unsafe {
-            if let Some(v) = orig_gh { std::env::set_var("GITHUB_TOKEN", v); }
-            if let Some(v) = orig_gl { std::env::set_var("GITLAB_TOKEN", v); }
-            if let Some(v) = orig_gt { std::env::set_var("GITEA_TOKEN", v); }
+            if let Some(v) = orig_gh {
+                std::env::set_var("GITHUB_TOKEN", v);
+            }
+            if let Some(v) = orig_gl {
+                std::env::set_var("GITLAB_TOKEN", v);
+            }
+            if let Some(v) = orig_gt {
+                std::env::set_var("GITEA_TOKEN", v);
+            }
         }
 
         assert_eq!(vars.get("GITHUB_TOKEN").unwrap(), "ghp_test123");
         assert_eq!(vars.get("GITLAB_TOKEN").unwrap(), "glpat-test456");
         // GITEA_TOKEN not present — default file doesn't exist
-        assert!(vars.get("GITEA_TOKEN").is_none());
+        assert!(!vars.contains_key("GITEA_TOKEN"));
     }
 
     #[test]
@@ -8408,7 +8433,9 @@ crates: []
         // Set GITHUB_TOKEN env var — should take precedence over file
         let orig = std::env::var("GITHUB_TOKEN").ok();
         // SAFETY: test runs serially
-        unsafe { std::env::set_var("GITHUB_TOKEN", "env_token"); }
+        unsafe {
+            std::env::set_var("GITHUB_TOKEN", "env_token");
+        }
 
         let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Normal);
         let vars = load_token_files(&config, &log).unwrap();
@@ -8423,7 +8450,7 @@ crates: []
 
         // File token should NOT be loaded because env var was set
         assert!(
-            vars.get("GITHUB_TOKEN").is_none(),
+            !vars.contains_key("GITHUB_TOKEN"),
             "env var should take precedence; file should not be loaded"
         );
     }
@@ -8438,7 +8465,9 @@ crates: []
 
         let orig_home = std::env::var("HOME").ok();
         // SAFETY: test runs serially
-        unsafe { std::env::set_var("HOME", dir.path()); }
+        unsafe {
+            std::env::set_var("HOME", dir.path());
+        }
 
         let result = read_token_file("~/.config/goreleaser/github_token").unwrap();
 
@@ -8563,10 +8592,7 @@ gitlab_token = "/etc/tokens/gitlab"
             tokens.github_token.as_deref(),
             Some("~/.config/goreleaser/github_token")
         );
-        assert_eq!(
-            tokens.gitlab_token.as_deref(),
-            Some("/etc/tokens/gitlab")
-        );
+        assert_eq!(tokens.gitlab_token.as_deref(), Some("/etc/tokens/gitlab"));
         assert!(tokens.gitea_token.is_none());
     }
 
@@ -9013,8 +9039,16 @@ git:
         let result = validate_tag_sort(&config);
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.contains("alphabetical"), "error should contain the bad value: {}", err);
-        assert!(err.contains("-version:refname"), "error should list accepted values: {}", err);
+        assert!(
+            err.contains("alphabetical"),
+            "error should contain the bad value: {}",
+            err
+        );
+        assert!(
+            err.contains("-version:refname"),
+            "error should list accepted values: {}",
+            err
+        );
     }
 
     #[test]
@@ -9050,10 +9084,7 @@ metadata:
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let meta = config.metadata.unwrap();
-        assert_eq!(
-            meta.mod_timestamp.unwrap(),
-            "{{ .CommitTimestamp }}"
-        );
+        assert_eq!(meta.mod_timestamp.unwrap(), "{{ .CommitTimestamp }}");
     }
 
     #[test]
@@ -9686,8 +9717,12 @@ crates: []
         let includes = config.includes.unwrap();
         assert_eq!(includes.len(), 3);
         assert!(matches!(&includes[0], IncludeSpec::Path(s) if s == "./defaults.yaml"));
-        assert!(matches!(&includes[1], IncludeSpec::FromFile { from_file } if from_file.path == "./config/shared.yaml"));
-        assert!(matches!(&includes[2], IncludeSpec::FromUrl { from_url } if from_url.url == "https://example.com/config.yaml"));
+        assert!(
+            matches!(&includes[1], IncludeSpec::FromFile { from_file } if from_file.path == "./config/shared.yaml")
+        );
+        assert!(
+            matches!(&includes[2], IncludeSpec::FromUrl { from_url } if from_url.url == "https://example.com/config.yaml")
+        );
     }
 
     #[test]
@@ -9727,10 +9762,7 @@ crates: []
         assert_eq!(includes.len(), 1);
         match &includes[0] {
             IncludeSpec::FromUrl { from_url } => {
-                assert_eq!(
-                    from_url.url,
-                    "caarlos0/goreleaserfiles/main/packages.yml"
-                );
+                assert_eq!(from_url.url, "caarlos0/goreleaserfiles/main/packages.yml");
             }
             other => panic!("expected FromUrl, got: {:?}", other),
         }
@@ -9747,8 +9779,14 @@ download: https://github.example.com/
 skip_tls_verify: true
 "#;
         let cfg: GitHubUrlsConfig = serde_yaml_ng::from_str(yaml).unwrap();
-        assert_eq!(cfg.api.as_deref(), Some("https://github.example.com/api/v3/"));
-        assert_eq!(cfg.upload.as_deref(), Some("https://github.example.com/api/uploads/"));
+        assert_eq!(
+            cfg.api.as_deref(),
+            Some("https://github.example.com/api/v3/")
+        );
+        assert_eq!(
+            cfg.upload.as_deref(),
+            Some("https://github.example.com/api/uploads/")
+        );
         assert_eq!(cfg.download.as_deref(), Some("https://github.example.com/"));
         assert_eq!(cfg.skip_tls_verify, Some(true));
     }
@@ -9773,7 +9811,10 @@ use_package_registry: true
 use_job_token: true
 "#;
         let cfg: GitLabUrlsConfig = serde_yaml_ng::from_str(yaml).unwrap();
-        assert_eq!(cfg.api.as_deref(), Some("https://gitlab.example.com/api/v4/"));
+        assert_eq!(
+            cfg.api.as_deref(),
+            Some("https://gitlab.example.com/api/v4/")
+        );
         assert_eq!(cfg.download.as_deref(), Some("https://gitlab.example.com/"));
         assert_eq!(cfg.skip_tls_verify, Some(false));
         assert_eq!(cfg.use_package_registry, Some(true));
@@ -9799,7 +9840,10 @@ download: https://gitea.example.com/
 skip_tls_verify: true
 "#;
         let cfg: GiteaUrlsConfig = serde_yaml_ng::from_str(yaml).unwrap();
-        assert_eq!(cfg.api.as_deref(), Some("https://gitea.example.com/api/v1/"));
+        assert_eq!(
+            cfg.api.as_deref(),
+            Some("https://gitea.example.com/api/v1/")
+        );
         assert_eq!(cfg.download.as_deref(), Some("https://gitea.example.com/"));
         assert_eq!(cfg.skip_tls_verify, Some(true));
     }
@@ -9862,7 +9906,10 @@ crates:
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let urls = config.github_urls.as_ref().unwrap();
         assert_eq!(urls.api.as_deref(), Some("https://ghe.corp.com/api/v3/"));
-        assert_eq!(urls.upload.as_deref(), Some("https://ghe.corp.com/api/uploads/"));
+        assert_eq!(
+            urls.upload.as_deref(),
+            Some("https://ghe.corp.com/api/uploads/")
+        );
         assert_eq!(urls.download.as_deref(), Some("https://ghe.corp.com/"));
         assert_eq!(urls.skip_tls_verify, Some(true));
     }
@@ -10138,16 +10185,10 @@ npms:
         assert_eq!(npm.name.as_deref(), Some("@myorg/mypackage"));
         assert_eq!(npm.description.as_deref(), Some("My CLI tool"));
         assert_eq!(npm.license.as_deref(), Some("MIT"));
-        assert_eq!(
-            npm.author.as_deref(),
-            Some("Jane Doe <jane@example.com>")
-        );
+        assert_eq!(npm.author.as_deref(), Some("Jane Doe <jane@example.com>"));
         assert_eq!(npm.access.as_deref(), Some("public"));
         assert_eq!(npm.tag.as_deref(), Some("latest"));
-        assert_eq!(
-            npm.if_condition.as_deref(),
-            Some("{{ .IsSnapshot }}")
-        );
+        assert_eq!(npm.if_condition.as_deref(), Some("{{ .IsSnapshot }}"));
     }
 
     // -----------------------------------------------------------------------
@@ -10432,7 +10473,10 @@ sboms:
         let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let s = &cfg.sboms[0];
         let env = s.env.as_ref().expect("env should be Some");
-        assert_eq!(env.get("SYFT_FILE_METADATA_CATALOGER_ENABLED").unwrap(), "true");
+        assert_eq!(
+            env.get("SYFT_FILE_METADATA_CATALOGER_ENABLED").unwrap(),
+            "true"
+        );
         assert_eq!(env.get("SYFT_SCOPE").unwrap(), "all-layers");
     }
 
@@ -10449,7 +10493,10 @@ sboms:
         let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let s = &cfg.sboms[0];
         let env = s.env.as_ref().expect("env should be Some");
-        assert_eq!(env.get("SYFT_FILE_METADATA_CATALOGER_ENABLED").unwrap(), "true");
+        assert_eq!(
+            env.get("SYFT_FILE_METADATA_CATALOGER_ENABLED").unwrap(),
+            "true"
+        );
         assert_eq!(env.get("SYFT_SCOPE").unwrap(), "all-layers");
     }
 

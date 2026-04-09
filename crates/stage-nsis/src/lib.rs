@@ -183,8 +183,7 @@ impl Stage for NsisStage {
                         .set("Target", target.as_deref().unwrap_or(""));
 
                     // Determine output filename from name template or default
-                    let name_template =
-                        nsis_cfg.name.as_deref().unwrap_or(DEFAULT_NAME_TEMPLATE);
+                    let name_template = nsis_cfg.name.as_deref().unwrap_or(DEFAULT_NAME_TEMPLATE);
 
                     let exe_filename = ctx.render_template(name_template).with_context(|| {
                         format!(
@@ -306,28 +305,29 @@ impl Stage for NsisStage {
 
                     // Process templated_extra_files: render and copy to staging dir
                     if let Some(ref tpl_specs) = nsis_cfg.templated_extra_files
-                        && !tpl_specs.is_empty() {
-                            anodize_core::templated_files::process_templated_extra_files(
-                                tpl_specs, ctx, staging_dir, "nsis",
-                            )?;
-                        }
+                        && !tpl_specs.is_empty()
+                    {
+                        anodize_core::templated_files::process_templated_extra_files(
+                            tpl_specs,
+                            ctx,
+                            staging_dir,
+                            "nsis",
+                        )?;
+                    }
 
                     // Set NSIS-specific template vars for script rendering
                     let exe_path_str = exe_path.to_string_lossy().into_owned();
                     let staged_binary_str = staged_binary.to_string_lossy().into_owned();
-                    ctx.template_vars_mut()
-                        .set("NsisOutputFile", &exe_path_str);
+                    ctx.template_vars_mut().set("NsisOutputFile", &exe_path_str);
                     ctx.template_vars_mut()
                         .set("NsisBinaryPath", &staged_binary_str);
-                    ctx.template_vars_mut()
-                        .set("NsisBinaryName", binary_name);
+                    ctx.template_vars_mut().set("NsisBinaryName", binary_name);
 
                     // Get the script content (user-provided or default), render
                     // through the template engine, and write to a temp file
                     let script_content = if let Some(script_tmpl) = &nsis_cfg.script {
-                        fs::read_to_string(script_tmpl).with_context(|| {
-                            format!("nsis: read script template: {script_tmpl}")
-                        })?
+                        fs::read_to_string(script_tmpl)
+                            .with_context(|| format!("nsis: read script template: {script_tmpl}"))?
                     } else {
                         default_nsi_script().to_string()
                     };
@@ -350,7 +350,8 @@ impl Stage for NsisStage {
 
                     // Apply mod_timestamp if set (template-rendered, to staging dir contents)
                     if let Some(ref ts_tmpl) = nsis_cfg.mod_timestamp {
-                        let ts = ctx.render_template(ts_tmpl)
+                        let ts = ctx
+                            .render_template(ts_tmpl)
                             .with_context(|| "nsis: render mod_timestamp template")?;
                         anodize_core::util::apply_mod_timestamp(staging_dir, &ts, &log)?;
                     }
@@ -376,7 +377,8 @@ impl Stage for NsisStage {
                     if let Some(ref ts_tmpl) = nsis_cfg.mod_timestamp
                         && exe_path.exists()
                     {
-                        let ts = ctx.render_template(ts_tmpl)
+                        let ts = ctx
+                            .render_template(ts_tmpl)
                             .with_context(|| "nsis: render mod_timestamp template for output")?;
                         let mtime = anodize_core::util::parse_mod_timestamp(&ts)?;
                         anodize_core::util::set_file_mtime(&exe_path, mtime)?;
@@ -393,8 +395,7 @@ impl Stage for NsisStage {
                         target: target.clone(),
                         crate_name: krate.name.clone(),
                         metadata: {
-                            let mut m =
-                                HashMap::from([("format".to_string(), "nsis".to_string())]);
+                            let mut m = HashMap::from([("format".to_string(), "nsis".to_string())]);
                             if let Some(id) = &nsis_cfg.id {
                                 m.insert("id".to_string(), id.clone());
                             }
@@ -1004,7 +1005,9 @@ crates:
         );
         assert_eq!(
             nsis.disable,
-            Some(anodize_core::config::StringOrBool::String("false".to_string()))
+            Some(anodize_core::config::StringOrBool::String(
+                "false".to_string()
+            ))
         );
     }
 
