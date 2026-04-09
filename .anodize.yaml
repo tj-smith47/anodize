@@ -48,8 +48,8 @@ defaults:
     - aarch64-unknown-linux-gnu
     - x86_64-apple-darwin
     - aarch64-apple-darwin
-    - x86_64-pc-windows-gnu
-    - aarch64-pc-windows-gnu
+    - x86_64-pc-windows-msvc
+    - aarch64-pc-windows-msvc
   cross: auto
   flags: --release
   archives:
@@ -395,6 +395,41 @@ crates:
               - home
               - network
               - network-bind
+    flatpaks:
+      - disable: true  # disabled — no Flatpak runtime configured yet
+        app_id: io.github.tj_smith47.Anodize
+        runtime: org.freedesktop.Platform
+        runtime_version: "24.08"
+        sdk: org.freedesktop.Sdk
+        command: anodize
+        finish_args:
+          - "--share=network"
+          - "--filesystem=host"
+    app_bundles:
+      - disable: true  # disabled — no macOS app bundle identity configured
+        bundle: io.github.tj-smith47.anodize
+        name: Anodize
+    dmgs:
+      - disable: true  # disabled — no macOS DMG configured (needs app_bundle first)
+        name: Anodize
+    pkgs:
+      - disable: true  # disabled — no macOS PKG signing identity configured
+        identifier: io.github.tj-smith47.anodize
+    msis:
+      - disable: true  # disabled — no WiX source file (.wxs) created
+        name: Anodize
+    nsis:
+      - disable: true  # disabled — no NSIS script created
+        name: Anodize
+    blobs:
+      - disable: true  # disabled — no cloud storage configured
+        provider: s3
+        bucket: anodize-releases
+
+notarize:
+  disable: true  # disabled — no Apple Developer credentials configured
+
+template_files: []  # no template files configured yet
 
 changelog:
   header: "# Changelog for {{ ProjectName }}"
@@ -458,7 +493,7 @@ upx:
       - "x86_64-unknown-linux-gnu"
       - "aarch64-unknown-linux-gnu"
       - "x86_64-apple-darwin"
-      - "x86_64-pc-windows-gnu"
+      - "x86_64-pc-windows-msvc"
 
 nightly:
   name_template: "{{ ProjectName }}-nightly"

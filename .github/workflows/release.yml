@@ -23,9 +23,11 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu,x86_64-pc-windows-gnu,aarch64-pc-windows-gnu
+            targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
           - os: macos-latest
             targets: x86_64-apple-darwin,aarch64-apple-darwin
+          - os: windows-latest
+            targets: x86_64-pc-windows-msvc,aarch64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -62,6 +64,11 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install upx
 
+      - name: Install UPX (Windows x86_64)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: choco install upx -y
+
       # Bootstrap anodize from source
       - name: Build anodize
         shell: bash
@@ -75,21 +82,13 @@ jobs:
           name: anodize-linux
           path: target/release/anodize
 
-      # Run split build — on Linux, build both linux and windows targets
-      - name: Run anodize release --split (native targets)
+      # Run split build — anodize auto-detects host OS and builds matching targets
+      # zigbuild handles cross-compilation via zig's linker (no gcc-aarch64 needed)
+      - name: Run anodize release --split
         shell: bash
         run: ./target/release/anodize release --split --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-
-      # On Linux, also build windows targets via zigbuild cross-compilation
-      - name: Run anodize release --split (windows targets)
-        if: runner.os == 'Linux'
-        shell: bash
-        run: ./target/release/anodize release --split
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-          ANODIZE_OS: windows
 
       - name: Upload split artifacts
         uses: actions/upload-artifact@v4
@@ -159,6 +158,14 @@ jobs:
       # Install makeself for self-extracting archives
       - name: Install makeself
         run: sudo apt-get install -yq makeself
+
+      # Snapcraft for snap packaging
+      - name: Install snapcraft
+        run: sudo snap install snapcraft --classic
+
+      # rpmbuild for SRPM generation
+      - name: Install rpmbuild
+        run: sudo apt-get install -yq rpm
 
       # Merge artifacts and run post-build pipeline:
       # archive → nfpm → changelog → source → sbom → checksum → sign →
