@@ -48,16 +48,6 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        include:
-          - os: ubuntu-latest
-            artifact: anodize-linux
-            bin: target/release/anodize
-          - os: macos-latest
-            artifact: anodize-macos
-            bin: target/release/anodize
-          - os: windows-latest
-            artifact: anodize-windows
-            bin: target/release/anodize.exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -70,17 +60,17 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Tests
         run: task test
-      # Build release binary for reuse in release workflow (avoids
-      # rebuilding on each platform — saves ~15 min on Windows)
+      # Build release binary on Linux only — used as bootstrap for
+      # release workflow --split and for the snapshot dry-run job.
       - name: Build release binary
-        if: github.ref == 'refs/heads/master'
+        if: github.ref == 'refs/heads/master' && runner.os == 'Linux'
         run: task build
       - name: Upload release binary
-        if: github.ref == 'refs/heads/master'
+        if: github.ref == 'refs/heads/master' && runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: ${{ matrix.bin }}
+          name: anodize-linux
+          path: target/release/anodize
 
   package:
     name: Package (dry-run)

@@ -25,13 +25,10 @@ jobs:
         include:
           - os: ubuntu-latest
             targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
-            artifact: anodize-linux
           - os: macos-latest
             targets: x86_64-apple-darwin,aarch64-apple-darwin
-            artifact: anodize-macos
           - os: windows-latest
             targets: x86_64-pc-windows-msvc,aarch64-pc-windows-msvc
-            artifact: anodize-windows
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -73,15 +70,21 @@ jobs:
         shell: bash
         run: choco install upx -y
 
-      # Download anodize binary from CI instead of rebuilding from source.
-      # Saves ~15 min on Windows, ~5 min on macOS.
-      - name: Install anodize from CI
+      # Bootstrap: Linux reuses the CI-built binary; macOS/Windows build
+      # just the CLI crate from source (faster than full workspace).
+      - name: Install anodize (Linux — from CI artifact)
+        if: runner.os == 'Linux'
         uses: tj-smith47/anodize-action@master
         with:
-          from-artifact: ${{ matrix.artifact }}
+          from-artifact: anodize-linux
           artifact-run-id: auto
           artifact-workflow: ci.yml
           install-only: true
+
+      - name: Install anodize (macOS/Windows — from source)
+        if: runner.os != 'Linux'
+        shell: bash
+        run: cargo build --release -p anodize && cp target/release/anodize$([ "$RUNNER_OS" = "Windows" ] && echo ".exe" || echo "") "$HOME/.cargo/bin/"
 
       # Run split build — anodize auto-detects host OS and builds matching targets
       # zigbuild handles cross-compilation via zig's linker (no gcc-aarch64 needed)
@@ -109,7 +112,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      # Install anodize from CI artifact (same as build jobs)
+      # Reuse CI-built binary for --merge (Linux only)
       - uses: tj-smith47/anodize-action@master
         with:
           from-artifact: anodize-linux
