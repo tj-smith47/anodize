@@ -302,8 +302,9 @@ mod tests {
     #[test]
     fn test_find_binary_bare_name_on_path() {
         if cfg!(windows) {
-            // "cmd" should be findable on PATH on any Windows system
-            assert!(find_binary("cmd"));
+            // "cmd.exe" should be findable on PATH on any Windows system
+            // (find_binary does exact name match, no implicit .exe appending)
+            assert!(find_binary("cmd.exe"));
         } else {
             // "env" should be findable on PATH on any Unix system
             assert!(find_binary("env"));
