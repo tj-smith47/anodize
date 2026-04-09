@@ -1700,10 +1700,7 @@ mod tests {
         assert!(yaml.contains("  type: dir"));
         // The binary entry always has file_info with mode 0755, but the
         // extra "dir" content entry should NOT have file_info
-        assert!(
-            yaml.contains("mode: 493"),
-            "binary should have mode 0755"
-        );
+        assert!(yaml.contains("mode: 493"), "binary should have mode 0755");
     }
 
     #[test]

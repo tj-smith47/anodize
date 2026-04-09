@@ -214,7 +214,11 @@ pub fn run(opts: TagOpts) -> Result<()> {
     // Determine base version.
     // When there is no previous tag, use initial_version directly without bumping
     // (matching github-tag-action behavior: initial_version IS the first tag).
-    let (new_major, new_minor, new_patch) = if prev_tag.is_none() {
+    let (new_major, new_minor, new_patch, old_tag_str) = if let Some(ref prev) = prev_tag {
+        let base = git::parse_semver_tag(prev)?;
+        let (maj, min, pat) = apply_bump(base.major, base.minor, base.patch, &bump);
+        (maj, min, pat, prev.as_str())
+    } else {
         let base = git::parse_semver_tag(&format!("{}{}", cfg.tag_prefix, cfg.initial_version))
             .unwrap_or(git::SemVer {
                 major: 0,
@@ -223,10 +227,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
                 prerelease: None,
                 build_metadata: None,
             });
-        (base.major, base.minor, base.patch)
-    } else {
-        let base = git::parse_semver_tag(prev_tag.as_ref().unwrap())?;
-        apply_bump(base.major, base.minor, base.patch, &bump)
+        (base.major, base.minor, base.patch, "")
     };
 
     // Build new version string
@@ -238,9 +239,8 @@ pub fn run(opts: TagOpts) -> Result<()> {
     }
 
     let new_tag = format!("{}{}", cfg.tag_prefix, new_version);
-    let old_tag = prev_tag.as_deref().unwrap_or("");
 
-    log.verbose(&format!("{} -> {}", old_tag, new_tag));
+    log.verbose(&format!("{} -> {}", old_tag_str, new_tag));
 
     // Create and push tag
     create_tag(&new_tag, &format!("Release {}", new_tag), opts.dry_run)?;
@@ -253,7 +253,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
     };
 
     println!("new_tag={}", new_tag);
-    println!("old_tag={}", old_tag);
+    println!("old_tag={}", old_tag_str);
     println!("part={}", part_str);
 
     Ok(())
