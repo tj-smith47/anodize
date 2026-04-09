@@ -23,11 +23,9 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu
+            targets: x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu,x86_64-pc-windows-gnu,aarch64-pc-windows-gnu
           - os: macos-latest
             targets: x86_64-apple-darwin,aarch64-apple-darwin
-          - os: windows-latest
-            targets: x86_64-pc-windows-msvc,aarch64-pc-windows-msvc
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -64,23 +62,34 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install upx
 
-      - name: Install UPX (Windows x86_64)
-        if: runner.os == 'Windows'
-        shell: bash
-        run: choco install upx -y
-
       # Bootstrap anodize from source
       - name: Build anodize
         shell: bash
         run: cargo build --release -p anodize
 
-      # Run split build — anodize auto-detects host OS and builds matching targets
-      # zigbuild handles cross-compilation via zig's linker (no gcc-aarch64 needed)
-      - name: Run anodize release --split
+      # Upload the anodize binary for reuse in the release job (Linux only)
+      - name: Upload anodize binary
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: anodize-linux
+          path: target/release/anodize
+
+      # Run split build — on Linux, build both linux and windows targets
+      - name: Run anodize release --split (native targets)
         shell: bash
         run: ./target/release/anodize release --split --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+
+      # On Linux, also build windows targets via zigbuild cross-compilation
+      - name: Run anodize release --split (windows targets)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: ./target/release/anodize release --split
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          ANODIZE_OS: windows
 
       - name: Upload split artifacts
         uses: actions/upload-artifact@v4
@@ -100,16 +109,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
+      # Install anodize from the build job artifact (skip cargo build)
+      - uses: tj-smith47/anodize-action@v1
+        with:
+          from-artifact: anodize-linux
+          install-only: true
+
       # nFPM for deb/rpm/apk packaging
       - name: Install nFPM
         run: |
           echo 'deb [trusted=yes] https://repo.goreleaser.com/apt/ /' | sudo tee /etc/apt/sources.list.d/goreleaser.list
           sudo apt-get update -q
           sudo apt-get install -yq nfpm
-
-      # Bootstrap anodize from source
-      - name: Build anodize
-        run: cargo build --release -p anodize
 
       # Download all split artifacts into dist/
       - name: Download split artifacts
@@ -153,7 +164,7 @@ jobs:
       # archive → nfpm → changelog → source → sbom → checksum → sign →
       # release (GitHub) → publish (crates.io, homebrew, scoop, etc.) → announce
       - name: Run anodize release --merge
-        run: ./target/release/anodize release --merge
+        run: anodize release --merge
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
