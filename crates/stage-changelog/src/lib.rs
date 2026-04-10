@@ -3818,8 +3818,10 @@ use: gitea
         use anodize_core::config::{ChangelogConfig, Config, CrateConfig};
         use anodize_core::context::{Context, ContextOptions};
 
+        let tmp = tempfile::TempDir::new().unwrap();
         let mut config = Config::default();
         config.project_name = "test".to_string();
+        config.dist = tmp.path().to_path_buf();
         config.changelog = Some(ChangelogConfig {
             use_source: Some("gitlab".to_string()),
             ..Default::default()
@@ -3855,8 +3857,10 @@ use: gitea
         use anodize_core::config::{ChangelogConfig, Config, CrateConfig};
         use anodize_core::context::{Context, ContextOptions};
 
+        let tmp = tempfile::TempDir::new().unwrap();
         let mut config = Config::default();
         config.project_name = "test".to_string();
+        config.dist = tmp.path().to_path_buf();
         config.changelog = Some(ChangelogConfig {
             use_source: Some("gitea".to_string()),
             ..Default::default()
