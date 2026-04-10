@@ -43,54 +43,29 @@ jobs:
         with:
           key: release-${{ matrix.os }}
 
-      # Zig + cargo-zigbuild for cross-compilation (cross: auto prefers zigbuild)
-      - name: Install Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.13.0
-
-      - name: Install cargo-zigbuild
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-zigbuild
-
-      # UPX (matches .anodize.yaml upx.targets)
-      - name: Install UPX (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -yq upx
-
-      - name: Install UPX (macOS x86_64)
-        if: runner.os == 'macOS'
-        run: brew install upx
-
-      - name: Install UPX (Windows x86_64)
-        if: runner.os == 'Windows'
-        shell: bash
-        run: choco install upx -y
-
-      # Bootstrap: Linux reuses the CI-built binary; macOS/Windows build
-      # just the CLI crate from source (faster than full workspace).
-      - name: Install anodize (Linux — from CI artifact)
+      # Linux reuses the CI-built anodize binary; macOS/Windows must build
+      # anodize from source (no per-platform CI artifact). Both paths flow
+      # through the action so the release workflow has a single entry point.
+      - name: Install anodize + build dependencies (Linux)
         if: runner.os == 'Linux'
         uses: tj-smith47/anodize-action@master
         with:
           from-artifact: anodize-linux
           artifact-run-id: auto
           artifact-workflow: ci.yml
-          install-only: true
+          install: zig,cargo-zigbuild,upx
+          args: release --split --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
-      - name: Install anodize (macOS/Windows — from source)
+      - name: Install anodize + build dependencies (macOS/Windows)
         if: runner.os != 'Linux'
-        shell: bash
-        run: cargo build --release -p anodize && cp target/release/anodize$([ "$RUNNER_OS" = "Windows" ] && echo ".exe" || echo "") "$HOME/.cargo/bin/"
-
-      # Run split build — anodize auto-detects host OS and builds matching targets
-      # zigbuild handles cross-compilation via zig's linker (no gcc-aarch64 needed)
-      - name: Run anodize release --split
-        shell: bash
-        run: anodize release --split --clean
+        uses: tj-smith47/anodize-action@master
+        with:
+          from-source: true
+          install-rust: false  # already installed above via rust-toolchain
+          install: zig,cargo-zigbuild,upx
+          args: release --split --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
@@ -109,25 +84,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-
-      # Reuse CI-built binary for --merge (Linux only)
-      - uses: tj-smith47/anodize-action@master
-        with:
-          from-artifact: anodize-linux
-          artifact-run-id: auto
-          artifact-workflow: ci.yml
-          install-only: true
-
-      # nFPM for deb/rpm/apk packaging
-      - name: Install nFPM
-        run: |
-          echo 'deb [trusted=yes] https://repo.goreleaser.com/apt/ /' | sudo tee /etc/apt/sources.list.d/goreleaser.list
-          sudo apt-get update -q
-          sudo apt-get install -yq nfpm
-
-      # Download all split artifacts into dist/
+      # Download all split artifacts into dist/ before running the action
+      # (the action's `args: release --merge` step will operate on them).
       - name: Download split artifacts
         uses: actions/download-artifact@v4
         with:
@@ -146,38 +104,15 @@ jobs:
           fi
           echo "Found $COUNT split context(s)"
 
-      # Import GPG key for checksum signing (skipped if secret not configured)
-      - name: Import GPG key
-        run: |
-          if [ -n "$GPG_PRIVATE_KEY" ]; then
-            echo "$GPG_PRIVATE_KEY" | gpg --batch --import
-          else
-            echo "GPG_PRIVATE_KEY not set, skipping"
-          fi
-        env:
-          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
-
-      # Install cosign for binary/docker signing
-      - name: Install cosign
-        uses: sigstore/cosign-installer@v3
-
-      # Install makeself for self-extracting archives
-      - name: Install makeself
-        run: sudo apt-get install -yq makeself
-
-      # Snapcraft for snap packaging
-      - name: Install snapcraft
-        run: sudo snap install snapcraft --classic
-
-      # rpmbuild for SRPM generation
-      - name: Install rpmbuild
-        run: sudo apt-get install -yq rpm
-
-      # Merge artifacts and run post-build pipeline:
-      # archive → nfpm → changelog → source → sbom → checksum → sign →
-      # release (GitHub) → publish (crates.io, homebrew, scoop, etc.) → announce
       - name: Run anodize release --merge
-        run: anodize release --merge
+        uses: tj-smith47/anodize-action@master
+        with:
+          from-artifact: anodize-linux
+          artifact-run-id: auto
+          artifact-workflow: ci.yml
+          install: nfpm,makeself,snapcraft,rpmbuild,cosign
+          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          args: release --merge
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
