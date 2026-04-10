@@ -30,6 +30,38 @@ members = [
     "crates/cli",
     "crates/xtask",
 ]
+# xtask is a dev-only tool (doc generation) invoked via `cargo xtask`.
+# Exclude it from default-members so plain `cargo build`/`test`/`clippy`
+# don't compile it — shaves ~20% off the CI test job.
+default-members = [
+    "crates/core",
+    "crates/stage-build",
+    "crates/stage-archive",
+    "crates/stage-nfpm",
+    "crates/stage-checksum",
+    "crates/stage-changelog",
+    "crates/stage-release",
+    "crates/stage-publish",
+    "crates/stage-docker",
+    "crates/stage-sign",
+    "crates/stage-announce",
+    "crates/stage-source",
+    "crates/stage-upx",
+    "crates/stage-snapcraft",
+    "crates/stage-dmg",
+    "crates/stage-msi",
+    "crates/stage-pkg",
+    "crates/stage-blob",
+    "crates/stage-nsis",
+    "crates/stage-appbundle",
+    "crates/stage-flatpak",
+    "crates/stage-notarize",
+    "crates/stage-templatefiles",
+    "crates/stage-makeself",
+    "crates/stage-srpm",
+    "crates/stage-sbom",
+    "crates/cli",
+]
 
 [workspace.package]
 version = "0.1.0"

@@ -7,7 +7,7 @@ tasks:
       - task --list
 
   build:
-    desc: Build all crates in release mode
+    desc: Build all default workspace members in release mode
     sources:
       - "crates/**/src/**/*.rs"
       - "Cargo.toml"
@@ -15,12 +15,12 @@ tasks:
     generates:
       - "target/release/anodize"
     cmds:
-      - cargo build --release --workspace
+      - cargo build --release
 
   check:
-    desc: Run cargo check on all crates
+    desc: Run cargo check on default workspace members
     cmds:
-      - cargo check --workspace --all-targets
+      - cargo check --all-targets
 
   fmt:
     desc: Format all code
@@ -33,19 +33,19 @@ tasks:
       - cargo fmt -- --check
 
   clippy:
-    desc: Run clippy with warnings as errors
+    desc: Run clippy with warnings as errors (default members)
     cmds:
-      - cargo clippy --workspace --all-targets -- -D warnings
+      - cargo clippy --all-targets -- -D warnings
 
   test:
-    desc: Run all tests
+    desc: Run all tests (default members)
     cmds:
-      - cargo test --workspace
+      - cargo test
 
   test:lib:
     desc: Run unit tests only (no integration/doc tests)
     cmds:
-      - cargo test --workspace --lib
+      - cargo test --lib
 
   docs:
     desc: Generate reference docs (CLI + configuration)
