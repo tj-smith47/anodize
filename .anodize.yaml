@@ -518,7 +518,7 @@ binary_signs:
     args:
       - "sign-blob"
       - "--key=env://COSIGN_KEY"
-      - "--output-signature={{ Signature }}"
+      - "--bundle={{ Signature }}"
       - "--yes"
       - "{{ Artifact }}"
 
