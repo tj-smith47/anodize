@@ -1008,7 +1008,7 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     // (only if the formatter binary is available)
 
     // Clone repo (SSH-aware), write nix expression, commit, push.
-    let token = util::resolve_repo_token(ctx, nix_cfg.repository.as_ref(), None);
+    let token = util::resolve_repo_token(ctx, nix_cfg.repository.as_ref(), Some("NIX_PKGS_TOKEN"));
 
     let tmp_dir = tempfile::tempdir().context("nix: create temp dir")?;
     let repo_path = tmp_dir.path();

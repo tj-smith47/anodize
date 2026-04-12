@@ -358,7 +358,8 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
     let plugin_name = plugin_name_rendered.as_str();
 
     // Clone the krew-index fork, write the plugin manifest, commit, push.
-    let token = util::resolve_repo_token(ctx, krew_cfg.repository.as_ref(), None);
+    let token =
+        util::resolve_repo_token(ctx, krew_cfg.repository.as_ref(), Some("KREW_INDEX_TOKEN"));
 
     let tmp_dir = tempfile::tempdir().context("krew: create temp dir")?;
     let repo_path = tmp_dir.path();

@@ -826,7 +826,11 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
         release_date: release_date_ref,
     });
 
-    let token = util::resolve_repo_token(ctx, winget_cfg.repository.as_ref(), None);
+    let token = util::resolve_repo_token(
+        ctx,
+        winget_cfg.repository.as_ref(),
+        Some("WINGET_PKGS_TOKEN"),
+    );
 
     let tmp_dir = tempfile::tempdir().context("winget: create temp dir")?;
     let repo_path = tmp_dir.path();
