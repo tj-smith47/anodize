@@ -61,6 +61,30 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
     if let Some(ref ws_name) = opts.workspace {
         let ws = resolve_workspace(&config, ws_name)?.clone();
         helpers::apply_workspace_overlay(&mut config, &ws);
+    } else if !opts.crate_names.is_empty() && config.crates.is_empty() {
+        // No --workspace given, but --crate X was — infer the workspace that
+        // contains X and apply its overlay. Without this, every downstream
+        // stage (publish, release, snapcraft-publish, …) iterates
+        // ctx.config.crates which is empty in workspace-based configs and
+        // silently does nothing. Matches the behaviour users intuitively
+        // expect: "release crate X" should release X's workspace.
+        let target = &opts.crate_names[0];
+        let ws_for_target = config
+            .workspaces
+            .as_ref()
+            .and_then(|ws_list| {
+                ws_list
+                    .iter()
+                    .find(|ws| ws.crates.iter().any(|c| &c.name == target))
+            })
+            .cloned();
+        if let Some(ws) = ws_for_target {
+            log.verbose(&format!(
+                "--crate {} lives in workspace '{}'; applying workspace overlay",
+                target, ws.name
+            ));
+            helpers::apply_workspace_overlay(&mut config, &ws);
+        }
     }
 
     // Auto-infer project_name from Cargo.toml when not set in config
