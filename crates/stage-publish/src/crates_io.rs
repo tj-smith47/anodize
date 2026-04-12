@@ -214,19 +214,38 @@ pub fn publish_to_crates_io(
     // the dependency chain in topological order, not just the caller's
     // --crate selection. Already-published versions are skipped below via
     // the is_already_published check, so including extra crates is safe.
+    // Build the full crate universe — top-level + all workspaces — so
+    // expand_with_transitive_deps can find deps that live in a DIFFERENT
+    // workspace. After workspace overlay, config.crates only contains the
+    // overlaid workspace's crates, but a crate's depends_on may reference
+    // crates in other workspaces (e.g. cfgd depends on cfgd-core which
+    // lives in its own workspace).
+    let all_crates: Vec<CrateConfig> = {
+        let mut acc = ctx.config.crates.clone();
+        if let Some(ref ws_list) = ctx.config.workspaces {
+            for ws in ws_list {
+                for c in &ws.crates {
+                    if !acc.iter().any(|existing| existing.name == c.name) {
+                        acc.push(c.clone());
+                    }
+                }
+            }
+        }
+        acc
+    };
+
     let expanded_selection: Vec<String> = if selected.is_empty() {
         Vec::new()
     } else {
-        expand_with_transitive_deps(&ctx.config.crates, selected)
+        expand_with_transitive_deps(&all_crates, selected)
     };
     let selected_set: std::collections::HashSet<&str> =
         expanded_selection.iter().map(|s| s.as_str()).collect();
 
     // Collect (name, depends_on) for all crates with crates.io publishing enabled,
-    // filtered to the expanded selection when non-empty.
-    let publishable: Vec<(String, Vec<String>)> = ctx
-        .config
-        .crates
+    // filtered to the expanded selection when non-empty. Uses all_crates (the
+    // flattened universe) so transitive deps from other workspaces are included.
+    let publishable: Vec<(String, Vec<String>)> = all_crates
         .iter()
         .filter(|c| selected.is_empty() || selected_set.contains(c.name.as_str()))
         .filter(|c| {
@@ -249,9 +268,7 @@ pub fn publish_to_crates_io(
     let sorted_names = topological_sort(&publishable);
 
     // Build a quick lookup: name → index_timeout
-    let timeout_map: HashMap<String, u64> = ctx
-        .config
-        .crates
+    let timeout_map: HashMap<String, u64> = all_crates
         .iter()
         .filter_map(|c| {
             c.publish
@@ -261,9 +278,7 @@ pub fn publish_to_crates_io(
         .collect();
 
     // Build a quick lookup: name → depends_on
-    let deps_map: HashMap<String, Vec<String>> = ctx
-        .config
-        .crates
+    let deps_map: HashMap<String, Vec<String>> = all_crates
         .iter()
         .map(|c| (c.name.clone(), c.depends_on.clone().unwrap_or_default()))
         .collect();
