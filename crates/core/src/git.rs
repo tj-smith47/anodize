@@ -927,6 +927,15 @@ pub fn get_commit_messages_between_path(from: &str, to: &str, path: &str) -> Res
     Ok(output.lines().map(str::to_string).collect())
 }
 
+/// Stage specific files and create a commit.
+pub fn stage_and_commit(files: &[&str], message: &str) -> Result<()> {
+    let mut args = vec!["add", "--"];
+    args.extend(files.iter().copied());
+    git_output(&args)?;
+    git_output(&["commit", "-m", message])?;
+    Ok(())
+}
+
 /// Parse owner and repo name from a GitHub remote URL.
 /// Supports HTTPS (`https://github.com/owner/repo.git`) and SSH (`git@github.com:owner/repo.git`).
 pub fn parse_github_remote(url: &str) -> Option<(String, String)> {

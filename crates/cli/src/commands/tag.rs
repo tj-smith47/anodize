@@ -97,11 +97,13 @@ pub fn run(opts: TagOpts) -> Result<()> {
     // prefix from its tag_template.  Also capture the crate path so we can
     // scope change detection to only that directory.
     let mut crate_path: Option<String> = None;
+    let mut version_sync_enabled = false;
     if let Some(ref crate_name) = opts.crate_name
         && let Some(info) = load_crate_tag_info(&opts, crate_name)
     {
         cfg.tag_prefix = info.tag_prefix;
         crate_path = Some(info.path);
+        version_sync_enabled = info.version_sync;
     }
 
     // Merge verbose from config: if config says verbose=true and CLI doesn't say quiet, enable verbose
@@ -251,6 +253,22 @@ pub fn run(opts: TagOpts) -> Result<()> {
 
     log.verbose(&format!("{} -> {}", old_tag_str, new_tag));
 
+    // When version_sync is enabled for this crate, update the Cargo.toml
+    // version and commit before tagging so the tagged commit has the correct
+    // version embedded.  This ensures cargo publish reads the right version.
+    if let Some(ref path) = crate_path
+        && version_sync_enabled
+    {
+        anodize_stage_build::version_sync::sync_version(path, &new_version, opts.dry_run, &log)?;
+        if !opts.dry_run {
+            let cargo_toml = format!("{}/Cargo.toml", path);
+            let _ = git::stage_and_commit(
+                &[&cargo_toml],
+                &format!("chore: bump {} to {}", path, new_version),
+            );
+        }
+    }
+
     // Create and push tag
     create_tag(&new_tag, &format!("Release {}", new_tag), opts.dry_run)?;
 
@@ -290,6 +308,7 @@ fn load_tag_config(opts: &TagOpts) -> TagConfig {
 struct CrateTagInfo {
     tag_prefix: String,
     path: String,
+    version_sync: bool,
 }
 
 /// When `--crate` is specified, look up the crate in top-level crates and
@@ -315,9 +334,15 @@ fn load_crate_tag_info(opts: &TagOpts, crate_name: &str) -> Option<CrateTagInfo>
         })?;
 
     let tag_prefix = git::extract_tag_prefix(&crate_cfg.tag_template)?;
+    let version_sync = crate_cfg
+        .version_sync
+        .as_ref()
+        .and_then(|vs| vs.enabled)
+        .unwrap_or(false);
     Some(CrateTagInfo {
         tag_prefix,
         path: crate_cfg.path.clone(),
+        version_sync,
     })
 }
 
