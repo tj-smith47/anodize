@@ -166,6 +166,13 @@ pub enum Commands {
     Man,
     /// Output JSON Schema for .anodize.yaml
     Jsonschema,
+    /// Resolve a git tag to its matching crate in the config
+    ResolveTag {
+        #[arg(help = "Tag to resolve (e.g. 'v1.2.3', 'core-v0.2.3')")]
+        tag: String,
+        #[arg(long, help = "Output as JSON")]
+        json: bool,
+    },
     /// Auto-tag based on commit message directives
     Tag {
         #[arg(long, help = "Show what tag would be created without pushing")]

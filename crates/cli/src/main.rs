@@ -233,6 +233,13 @@ fn main() {
                 })
         }
         Commands::Jsonschema => commands::jsonschema::run(),
+        Commands::ResolveTag { tag, json } => {
+            commands::resolve_tag::run(commands::resolve_tag::ResolveTagOpts {
+                tag,
+                json,
+                config_override: cli.config.clone(),
+            })
+        }
         Commands::Tag {
             dry_run,
             custom_tag,

@@ -11,4 +11,5 @@ pub mod jsonschema;
 pub mod publish_cmd;
 pub mod publisher;
 pub mod release;
+pub mod resolve_tag;
 pub mod tag;
