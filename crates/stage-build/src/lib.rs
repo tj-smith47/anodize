@@ -45,6 +45,21 @@ pub(crate) fn detect_cross_strategy() -> CrossStrategy {
     CrossStrategy::Cargo
 }
 
+/// Target-aware variant of [`detect_cross_strategy`].
+///
+/// When the target matches the host triple, native `cargo build` is always
+/// the right choice — using `cargo-zigbuild` for a native build requires
+/// the full SDK setup that zig needs for hosts, and the zig linker
+/// historically mis-handles Apple framework paths. Only fall back to the
+/// cross tooling when we're actually cross-compiling.
+pub(crate) fn detect_cross_strategy_for_target(target: &str) -> CrossStrategy {
+    let host = anodize_core::partial::detect_host_target().unwrap_or_default();
+    if !host.is_empty() && target == host {
+        return CrossStrategy::Cargo;
+    }
+    detect_cross_strategy()
+}
+
 // ---------------------------------------------------------------------------
 // resolve_build_program — shared cross_tool / strategy resolution
 // ---------------------------------------------------------------------------
@@ -60,15 +75,22 @@ pub(crate) fn resolve_build_program(
     strategy: &CrossStrategy,
     cross_tool: Option<&str>,
     command_override: Option<&str>,
+    target: Option<&str>,
 ) -> (String, String) {
     if let Some(tool) = cross_tool {
         let subcmd = command_override.unwrap_or("build").to_string();
         return (tool.to_string(), subcmd);
     }
 
-    // Resolve Auto strategy at runtime
+    // Resolve Auto strategy at runtime. Target-aware when the caller
+    // supplied one, so native targets always use cargo even if
+    // cargo-zigbuild or cross are available (zig has known issues
+    // linking for Apple hosts, cross can't cross to the same host).
     let resolved = if *strategy == CrossStrategy::Auto {
-        detect_cross_strategy()
+        match target {
+            Some(t) => detect_cross_strategy_for_target(t),
+            None => detect_cross_strategy(),
+        }
     } else {
         strategy.clone()
     };
@@ -101,7 +123,8 @@ pub(crate) fn build_command(
     cross_tool: Option<&str>,
     command_override: Option<&str>,
 ) -> BuildCommand {
-    let (program, subcommand) = resolve_build_program(strategy, cross_tool, command_override);
+    let (program, subcommand) =
+        resolve_build_program(strategy, cross_tool, command_override, Some(target));
 
     // The subcommand may contain spaces (e.g. "auditable build"), split into separate args
     let mut args: Vec<String> = subcommand
@@ -158,7 +181,8 @@ pub(crate) fn build_lib_command(
     cross_tool: Option<&str>,
     command_override: Option<&str>,
 ) -> BuildCommand {
-    let (program, subcommand) = resolve_build_program(strategy, cross_tool, command_override);
+    let (program, subcommand) =
+        resolve_build_program(strategy, cross_tool, command_override, Some(target));
 
     // The subcommand may contain spaces (e.g. "auditable build"), split into separate args
     let mut args: Vec<String> = subcommand
@@ -3309,7 +3333,7 @@ crate_type = ["dylib"]
 
     #[test]
     fn test_resolve_build_program_auto() {
-        let (prog, sub) = resolve_build_program(&CrossStrategy::Auto, None, None);
+        let (prog, sub) = resolve_build_program(&CrossStrategy::Auto, None, None, None);
         // Auto resolves at runtime — at minimum it falls back to cargo
         assert!(
             prog == "cargo" || prog == "cross",
@@ -3320,24 +3344,41 @@ crate_type = ["dylib"]
 
     #[test]
     fn test_resolve_build_program_zigbuild() {
-        let (prog, sub) = resolve_build_program(&CrossStrategy::Zigbuild, None, None);
+        let (prog, sub) = resolve_build_program(&CrossStrategy::Zigbuild, None, None, None);
         assert_eq!(prog, "cargo");
         assert_eq!(sub, "zigbuild");
     }
 
     #[test]
     fn test_resolve_build_program_cross() {
-        let (prog, sub) = resolve_build_program(&CrossStrategy::Cross, None, None);
+        let (prog, sub) = resolve_build_program(&CrossStrategy::Cross, None, None, None);
         assert_eq!(prog, "cross");
         assert_eq!(sub, "build");
     }
 
     #[test]
     fn test_resolve_build_program_cross_tool_overrides() {
-        let (prog, sub) =
-            resolve_build_program(&CrossStrategy::Zigbuild, Some("/usr/bin/custom"), None);
+        let (prog, sub) = resolve_build_program(
+            &CrossStrategy::Zigbuild,
+            Some("/usr/bin/custom"),
+            None,
+            None,
+        );
         assert_eq!(prog, "/usr/bin/custom");
         assert_eq!(sub, "build");
+    }
+
+    #[test]
+    fn test_resolve_build_program_auto_native_uses_cargo() {
+        // Target == host should always resolve to cargo, even if
+        // cargo-zigbuild/cross are installed.
+        let host = anodize_core::partial::detect_host_target().unwrap_or_default();
+        if host.is_empty() {
+            return;
+        }
+        let (prog, sub) = resolve_build_program(&CrossStrategy::Auto, None, None, Some(&host));
+        assert_eq!(prog, "cargo", "native target should use cargo");
+        assert_eq!(sub, "build", "native target should use plain build");
     }
 
     // ---- Fix 5: resolve_reproducible_epoch tests ----
@@ -3664,7 +3705,7 @@ crates:
     #[test]
     fn test_resolve_build_program_with_command_override() {
         let (prog, sub) =
-            resolve_build_program(&CrossStrategy::Cargo, None, Some("auditable build"));
+            resolve_build_program(&CrossStrategy::Cargo, None, Some("auditable build"), None);
         assert_eq!(prog, "cargo");
         assert_eq!(sub, "auditable build");
     }
