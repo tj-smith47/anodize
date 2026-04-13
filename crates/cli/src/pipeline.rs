@@ -578,6 +578,11 @@ impl Pipeline {
 
             // After the build stage, check if any binary artifacts were produced.
             // Skip binary-dependent stages if not (library-only crate).
+            // NOTE: This is a pipeline optimization, not a feature skip. Each stage
+            // checks its own config internally; stages with no config return Ok(())
+            // immediately. The strict_guard for "no binaries" lives inside the
+            // individual stages (e.g., archive, upx) where it fires AFTER the stage
+            // confirms it has work to do.
             if BINARY_DEPENDENT_STAGES.contains(&name) && !has_binaries {
                 log.status(&format!(
                     "{} {} {}",

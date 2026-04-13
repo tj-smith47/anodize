@@ -1181,8 +1181,14 @@ impl Stage for ReleaseStage {
                     let meta_path = dist_dir.join(meta_name);
                     if meta_path.exists() {
                         artifact_entries.push((meta_path, None));
+                    } else if ctx.is_strict() {
+                        anyhow::bail!(
+                            "include_meta: {} not found at {} (strict mode)",
+                            meta_name,
+                            meta_path.display()
+                        );
                     } else {
-                        log.verbose(&format!(
+                        log.warn(&format!(
                             "include_meta: {} not found at {}",
                             meta_name,
                             meta_path.display()

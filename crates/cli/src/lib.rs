@@ -18,6 +18,12 @@ pub struct Cli {
     pub debug: bool,
     #[arg(long, short = 'q', global = true, help = "Suppress non-error output")]
     pub quiet: bool,
+    #[arg(
+        long,
+        global = true,
+        help = "Strict mode: configured features that silently skip become hard errors"
+    )]
+    pub strict: bool,
     #[command(subcommand)]
     pub command: Commands,
 }

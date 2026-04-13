@@ -943,10 +943,13 @@ impl Stage for NfpmStage {
                 // GoReleaser parity: warn and skip when no output formats configured
                 if nfpm_cfg.formats.is_empty() {
                     let nfpm_id = nfpm_cfg.id.as_deref().unwrap_or("default");
-                    log.warn(&format!(
-                        "nfpm config '{}': no output formats configured, skipping",
-                        nfpm_id
-                    ));
+                    ctx.strict_guard(
+                        &log,
+                        &format!(
+                            "nfpm config '{}': no output formats configured, skipping",
+                            nfpm_id
+                        ),
+                    )?;
                     continue;
                 }
 
@@ -1104,10 +1107,13 @@ impl Stage for NfpmStage {
                         if let Some(triple) = target.as_deref()
                             && !is_arch_supported_for_format(triple, format)
                         {
-                            log.warn(&format!(
-                                "skipping format '{}' for target '{}': architecture not supported",
-                                format, triple
-                            ));
+                            ctx.strict_guard(
+                                &log,
+                                &format!(
+                                    "nfpm: skipping format '{}' for target '{}': architecture not supported",
+                                    format, triple
+                                ),
+                            )?;
                             continue;
                         }
 

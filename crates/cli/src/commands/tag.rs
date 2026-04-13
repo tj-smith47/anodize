@@ -14,6 +14,7 @@ pub struct TagOpts {
     pub verbose: bool,
     pub debug: bool,
     pub quiet: bool,
+    pub strict: bool,
 }
 
 /// Resolved tag configuration with defaults applied.
@@ -120,12 +121,13 @@ pub fn run(opts: TagOpts) -> Result<()> {
     ));
 
     // Helper closure to create a tag via the appropriate method.
+    let strict = opts.strict;
     let create_tag = |tag: &str, message: &str, dry_run: bool| -> Result<()> {
         if cfg.git_api_tagging {
             log.verbose("using GitHub API for tagging (git_api_tagging=true)");
-            git::create_tag_via_github_api(tag, message, dry_run, &log)
+            git::create_tag_via_github_api(tag, message, dry_run, &log, strict)
         } else {
-            git::create_and_push_tag(tag, message, dry_run, &log)
+            git::create_and_push_tag(tag, message, dry_run, &log, strict)
         }
     };
 
@@ -699,6 +701,7 @@ mod tests {
             verbose: false,
             debug: false,
             quiet: false,
+            strict: false,
         };
         let resolved = ResolvedConfig::from_tag_config(&cfg, &opts);
         assert_eq!(resolved.default_bump, "minor");
@@ -731,6 +734,7 @@ mod tests {
             verbose: false,
             debug: false,
             quiet: false,
+            strict: false,
         };
         let resolved = ResolvedConfig::from_tag_config(&cfg, &opts);
         assert_eq!(resolved.default_bump, "major");
@@ -767,6 +771,7 @@ mod tests {
             verbose: false,
             debug: false,
             quiet: false,
+            strict: false,
         };
         let resolved = ResolvedConfig::from_tag_config(&cfg, &opts);
         assert_eq!(resolved.default_bump, "patch");

@@ -1048,17 +1048,20 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
                     .output()
                 {
                     if !output.status.success() {
-                        log.warn(&format!("nix: {} formatting failed", formatter));
+                        ctx.strict_guard(log, &format!("nix: {} formatting failed", formatter))?;
                     }
                 } else {
-                    log.warn(&format!(
-                        "nix: {} not available, skipping format",
-                        formatter
-                    ));
+                    ctx.strict_guard(
+                        log,
+                        &format!("nix: {} not available, skipping format", formatter),
+                    )?;
                 }
             }
             _ => {
-                log.warn(&format!("nix: unknown formatter '{}', skipping", formatter));
+                ctx.strict_guard(
+                    log,
+                    &format!("nix: unknown formatter '{}', skipping", formatter),
+                )?;
             }
         }
     }

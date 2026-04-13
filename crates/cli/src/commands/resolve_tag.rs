@@ -79,15 +79,11 @@ pub fn run(opts: ResolveTagOpts) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_resolve_tag_matches_simple_prefix() {
-        // Simulate the matching logic with inline test data
         let tag = "v1.2.3";
         let prefix = "v";
-        assert!(tag.starts_with(prefix));
-        let remainder = &tag[prefix.len()..];
+        let remainder = tag.strip_prefix(prefix).unwrap();
         assert!(
             remainder
                 .split('.')
@@ -102,8 +98,7 @@ mod tests {
     fn test_resolve_tag_matches_monorepo_prefix() {
         let tag = "core-v0.2.3";
         let prefix = "core-v";
-        assert!(tag.starts_with(prefix));
-        let remainder = &tag[prefix.len()..];
+        let remainder = tag.strip_prefix(prefix).unwrap();
         assert!(
             remainder
                 .split('.')
@@ -118,8 +113,7 @@ mod tests {
     fn test_resolve_tag_rejects_non_version_suffix() {
         let tag = "v-something";
         let prefix = "v";
-        assert!(tag.starts_with(prefix));
-        let remainder = &tag[prefix.len()..];
+        let remainder = tag.strip_prefix(prefix).unwrap();
         // "-something" starts with "-", not a digit
         assert!(
             !remainder
@@ -136,10 +130,9 @@ mod tests {
         // "core-v" should match "core-v1.0.0", not "v" prefix
         let tag = "core-v1.0.0";
 
-        let prefixes = vec![("v", "cfgd"), ("core-v", "cfgd-core")];
+        let prefixes = [("v", "cfgd"), ("core-v", "cfgd-core")];
         let matched = prefixes.iter().find(|(prefix, _)| {
-            if tag.starts_with(prefix) {
-                let remainder = &tag[prefix.len()..];
+            if let Some(remainder) = tag.strip_prefix(prefix) {
                 remainder
                     .split('.')
                     .next()

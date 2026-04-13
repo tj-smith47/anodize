@@ -521,12 +521,16 @@ pub fn load_token_files(
 pub fn load_env_files(
     files: &[String],
     log: &crate::log::StageLogger,
+    strict: bool,
 ) -> Result<std::collections::HashMap<String, String>, String> {
     let mut vars = std::collections::HashMap::new();
     for file_path in files {
         let content = match std::fs::read_to_string(file_path) {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if strict {
+                    return Err(format!("env file '{}' not found (strict mode)", file_path));
+                }
                 log.warn(&format!("env file '{}' not found, skipping", file_path));
                 continue;
             }
@@ -8499,7 +8503,7 @@ crates: []
         drop(f);
 
         let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Normal);
-        let vars = load_env_files(&[env_path.to_string_lossy().to_string()], &log).unwrap();
+        let vars = load_env_files(&[env_path.to_string_lossy().to_string()], &log, false).unwrap();
         assert_eq!(vars.get("TEST_ANODIZE_KEY").unwrap(), "hello_world");
         assert_eq!(vars.get("TEST_ANODIZE_QUOTED").unwrap(), "with quotes");
         assert_eq!(
@@ -8529,7 +8533,7 @@ crates: []
         drop(f);
 
         let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Normal);
-        let vars = load_env_files(&[env_path.to_string_lossy().to_string()], &log).unwrap();
+        let vars = load_env_files(&[env_path.to_string_lossy().to_string()], &log, false).unwrap();
         // The single-quote value should be kept as-is (not stripped, length < 2 for
         // matching quotes)
         assert_eq!(vars.get("TEST_ANODIZE_SINGLEQ").unwrap(), "\"");
@@ -8543,10 +8547,23 @@ crates: []
         let result = load_env_files(
             &["/tmp/nonexistent_anodize_env_file_12345".to_string()],
             &log,
+            false,
         );
         // Missing env files should be skipped (not an error), returning empty vars.
         assert!(result.is_ok());
         assert!(result.unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_load_env_files_nonexistent_strict_mode_errors() {
+        let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Normal);
+        let result = load_env_files(
+            &["/tmp/nonexistent_anodize_env_file_12345".to_string()],
+            &log,
+            true,
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("strict mode"));
     }
 
     // ---- env_files TOML tests ----

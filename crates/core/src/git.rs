@@ -645,6 +645,7 @@ pub fn create_and_push_tag(
     message: &str,
     dry_run: bool,
     log: &crate::log::StageLogger,
+    strict: bool,
 ) -> Result<()> {
     if dry_run {
         log.status(&format!(
@@ -663,6 +664,8 @@ pub fn create_and_push_tag(
 
     if has_remote {
         git_output(&["push", "origin", tag])?;
+    } else if strict {
+        anyhow::bail!("no 'origin' remote found, cannot push tag (strict mode)");
     } else {
         log.warn("no 'origin' remote found, skipping push");
     }
@@ -796,6 +799,7 @@ pub fn create_tag_via_github_api(
     message: &str,
     dry_run: bool,
     log: &crate::log::StageLogger,
+    strict: bool,
 ) -> Result<()> {
     if dry_run {
         log.status(&format!(
@@ -829,8 +833,13 @@ pub fn create_tag_via_github_api(
         Ok(resp) => resp,
         Err(e) => {
             if e.to_string().contains("failed to spawn gh CLI") {
+                if strict {
+                    anyhow::bail!(
+                        "gh CLI not found, cannot create tag via GitHub API (strict mode)"
+                    );
+                }
                 log.warn("gh CLI not found, falling back to local git tag + push");
-                return create_and_push_tag(tag, message, dry_run, log);
+                return create_and_push_tag(tag, message, dry_run, log, strict);
             }
             return Err(e);
         }

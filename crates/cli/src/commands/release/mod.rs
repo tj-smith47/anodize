@@ -42,6 +42,7 @@ pub struct ReleaseOpts {
     pub fail_fast: bool,
     pub split: bool,
     pub merge: bool,
+    pub strict: bool,
 }
 
 pub fn run(opts: ReleaseOpts) -> Result<()> {
@@ -275,6 +276,7 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
         partial_target: None, // Set by --split mode in run_split()
         merge: opts.merge,
         project_root: None,
+        strict: opts.strict,
     };
     let mut ctx = Context::new(config.clone(), ctx_opts);
     helpers::resolve_scm_token_type(&mut ctx, &config);

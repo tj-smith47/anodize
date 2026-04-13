@@ -357,9 +357,10 @@ fn run_cross_platform(
         .collect();
 
     if darwin_artifacts.is_empty() {
-        log.status(&format!(
-            "notarize: macos[{idx}] no matching darwin binaries found"
-        ));
+        ctx.strict_guard(
+            log,
+            &format!("notarize: macos[{idx}] no matching darwin binaries found"),
+        )?;
         return Ok(());
     }
 
@@ -669,17 +670,19 @@ fn run_native_dmg(
         .collect();
 
     if app_bundles.is_empty() && dmg_artifacts.is_empty() {
-        log.status(&format!(
-            "notarize: macos_native[{idx}] (dmg) no matching app bundles or DMGs found"
-        ));
+        ctx.strict_guard(
+            log,
+            &format!("notarize: macos_native[{idx}] (dmg) no matching app bundles or DMGs found"),
+        )?;
         return Ok(());
     }
 
     // Warn when app bundles were signed but no DMGs found for notarization
     if !app_bundles.is_empty() && dmg_artifacts.is_empty() {
-        log.warn(&format!(
-            "notarize: macos_native[{idx}] signed app bundles but no DMGs found for notarization"
-        ));
+        ctx.strict_guard(
+            log,
+            &format!("notarize: macos_native[{idx}] signed app bundles but no DMGs found for notarization"),
+        )?;
     }
 
     for dmg in &dmg_artifacts {
@@ -791,9 +794,10 @@ fn run_native_pkg(
         .collect();
 
     if pkg_artifacts.is_empty() {
-        log.status(&format!(
-            "notarize: macos_native[{idx}] (pkg) no matching PKG artifacts found"
-        ));
+        ctx.strict_guard(
+            log,
+            &format!("notarize: macos_native[{idx}] (pkg) no matching PKG artifacts found"),
+        )?;
         return Ok(());
     }
 

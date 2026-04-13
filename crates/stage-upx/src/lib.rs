@@ -112,10 +112,10 @@ impl Stage for UpxStage {
                         binary
                     );
                 }
-                log.warn(&format!(
-                    "binary '{}' not found, skipping compression",
-                    binary
-                ));
+                ctx.strict_guard(
+                    &log,
+                    &format!("upx: binary '{}' not found, skipping compression", binary),
+                )?;
                 continue;
             }
 
@@ -138,10 +138,13 @@ impl Stage for UpxStage {
 
             if matching_artifacts.is_empty() {
                 let id_label = upx_cfg.id.as_deref().unwrap_or("default");
-                log.status(&format!(
-                    "[{}] no matching binary artifacts to compress",
-                    id_label
-                ));
+                ctx.strict_guard(
+                    &log,
+                    &format!(
+                        "upx[{}]: no matching binary artifacts to compress",
+                        id_label
+                    ),
+                )?;
                 continue;
             }
 

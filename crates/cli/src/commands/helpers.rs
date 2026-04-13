@@ -260,7 +260,7 @@ pub fn setup_env(
     if let Some(ref env_files_config) = config.env_files {
         match env_files_config {
             anodize_core::config::EnvFilesConfig::List(files) => {
-                let env_vars = anodize_core::config::load_env_files(files, log)
+                let env_vars = anodize_core::config::load_env_files(files, log, ctx.is_strict())
                     .map_err(|e| anyhow::anyhow!("{}", e))?;
                 for (key, value) in &env_vars {
                     ctx.template_vars_mut().set_env(key, value);

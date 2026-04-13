@@ -67,12 +67,17 @@ impl Stage for PublishStage {
         // publisher (e.g. homebrew auth) from killing independent downstream
         // publishers (docker, cosign, announce).  crates.io is the exception —
         // it's the authoritative registry and its failure is always fatal.
+        // In strict mode, any failure is immediately fatal.
         let mut errors: Vec<String> = Vec::new();
+        let strict = ctx.is_strict();
 
         // Helper: run a publisher, log + collect error on failure.
         macro_rules! try_publish {
             ($label:expr, $expr:expr) => {
                 if let Err(e) = $expr {
+                    if strict {
+                        anyhow::bail!("{}: {} (strict mode)", $label, e);
+                    }
                     log.warn(&format!("{}: {}", $label, e));
                     errors.push(format!("{}: {}", $label, e));
                 }

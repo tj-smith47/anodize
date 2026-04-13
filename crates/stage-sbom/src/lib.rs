@@ -396,10 +396,13 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
                     "diskimage" => ArtifactKind::DiskImage,
                     "installer" => ArtifactKind::Installer,
                     _ => {
-                        log.warn(&format!(
-                            "sbom[{}]: unknown artifacts type '{}', defaulting to archive",
-                            id, artifacts_type
-                        ));
+                        ctx.strict_guard(
+                            &log,
+                            &format!(
+                                "sbom[{}]: unknown artifacts type '{}', defaulting to archive",
+                                id, artifacts_type
+                            ),
+                        )?;
                         ArtifactKind::Archive
                     }
                 };
@@ -424,10 +427,13 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
                     .collect();
 
                 if matched.is_empty() {
-                    log.status(&format!(
-                        "sbom[{}]: no matching '{}' artifacts found, skipping",
-                        id, artifacts_type
-                    ));
+                    ctx.strict_guard(
+                        &log,
+                        &format!(
+                            "sbom[{}]: no matching '{}' artifacts found, skipping",
+                            id, artifacts_type
+                        ),
+                    )?;
                     return Ok(());
                 }
 

@@ -17,6 +17,7 @@ Release Rust projects with ease
 | `--verbose` | — | Enable verbose output |
 | `--debug` | — | Enable debug output |
 | `--quiet` | `-q` | Suppress non-error output |
+| `--strict` | — | Strict mode: configured features that silently skip become hard errors |
 
 
 ## Commands
@@ -119,6 +120,17 @@ Generate man pages to stdout
 ### `anodize jsonschema`
 
 Output JSON Schema for .anodize.yaml
+
+
+### `anodize resolve-tag`
+
+Resolve a git tag to its matching crate in the config
+
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `<tag>` | — | — | Tag to resolve (e.g. 'v1.2.3', 'core-v0.2.3') |
+| `--json` | — | — | Output as JSON |
 
 
 ### `anodize tag`

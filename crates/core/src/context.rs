@@ -96,6 +96,8 @@ pub struct ContextOptions {
     /// Explicit project root directory. When set, stages use this instead of
     /// discovering the repo root via `git rev-parse --show-toplevel`.
     pub project_root: Option<PathBuf>,
+    /// Strict mode: configured features that would silently skip become errors.
+    pub strict: bool,
 }
 
 impl Default for ContextOptions {
@@ -117,6 +119,7 @@ impl Default for ContextOptions {
             partial_target: None,
             merge: false,
             project_root: None,
+            strict: false,
         }
     }
 }
@@ -199,6 +202,39 @@ impl Context {
 
     pub fn is_snapshot(&self) -> bool {
         self.options.snapshot
+    }
+
+    pub fn is_strict(&self) -> bool {
+        self.options.strict
+    }
+
+    /// In strict mode, return an error. In normal mode, log a warning and continue.
+    /// Use this for any situation where a configured feature silently skips.
+    pub fn strict_guard(&self, log: &crate::log::StageLogger, msg: &str) -> anyhow::Result<()> {
+        if self.options.strict {
+            anyhow::bail!("{} (strict mode)", msg);
+        }
+        log.warn(msg);
+        Ok(())
+    }
+
+    /// Render a template, failing in strict mode on error, or falling back to the raw string.
+    pub fn render_template_strict(
+        &self,
+        template: &str,
+        label: &str,
+        log: &crate::log::StageLogger,
+    ) -> anyhow::Result<String> {
+        match self.render_template(template) {
+            Ok(rendered) => Ok(rendered),
+            Err(e) => {
+                if self.options.strict {
+                    anyhow::bail!("{}: failed to render template: {} (strict mode)", label, e);
+                }
+                log.warn(&format!("{}: failed to render template: {}", label, e));
+                Ok(template.to_string())
+            }
+        }
     }
 
     pub fn is_nightly(&self) -> bool {

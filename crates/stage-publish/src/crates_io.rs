@@ -440,10 +440,11 @@ mod tests {
     }
 
     fn crate_with_deps(name: &str, deps: &[&str]) -> CrateConfig {
-        let mut c = CrateConfig::default();
-        c.name = name.to_string();
-        c.depends_on = Some(deps.iter().map(|s| s.to_string()).collect());
-        c
+        CrateConfig {
+            name: name.to_string(),
+            depends_on: Some(deps.iter().map(|s| s.to_string()).collect()),
+            ..Default::default()
+        }
     }
 
     #[test]

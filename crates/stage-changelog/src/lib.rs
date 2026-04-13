@@ -632,31 +632,18 @@ impl Stage for ChangelogStage {
         // Render path templates if configured (paths support template variables).
         let changelog_paths: Vec<String> = changelog_paths
             .into_iter()
-            .map(|p| {
-                ctx.render_template(&p).unwrap_or_else(|e| {
-                    log.warn(&format!("changelog: failed to render path template: {e}"));
-                    p
-                })
-            })
-            .collect();
+            .map(|p| ctx.render_template_strict(&p, "changelog path", &log))
+            .collect::<Result<Vec<_>>>()?;
 
         // Render title template if configured.
-        let changelog_title = changelog_title.map(|t| {
-            ctx.render_template(&t).unwrap_or_else(|e| {
-                log.warn(&format!("changelog: failed to render title template: {e}"));
-                t
-            })
-        });
+        let changelog_title = changelog_title
+            .map(|t| ctx.render_template_strict(&t, "changelog title", &log))
+            .transpose()?;
 
         // Render divider template if configured.
-        let changelog_divider = changelog_divider.map(|d| {
-            ctx.render_template(&d).unwrap_or_else(|e| {
-                log.warn(&format!(
-                    "changelog: failed to render divider template: {e}"
-                ));
-                d
-            })
-        });
+        let changelog_divider = changelog_divider
+            .map(|d| ctx.render_template_strict(&d, "changelog divider", &log))
+            .transpose()?;
 
         let selected = ctx.options.selected_crates.clone();
         let dist = ctx.config.dist.clone();
@@ -735,10 +722,13 @@ impl Stage for ChangelogStage {
                 match fetch_github_commits(ctx, &prev_tag, &paths, &log) {
                     Ok((infos, logins)) => (infos, logins),
                     Err(e) => {
-                        log.warn(&format!(
-                            "GitHub API fetch failed, falling back to git: {}",
-                            e
-                        ));
+                        ctx.strict_guard(
+                            &log,
+                            &format!(
+                                "changelog: GitHub API fetch failed, falling back to git: {}",
+                                e
+                            ),
+                        )?;
                         (
                             fetch_git_commits(&prev_tag, &paths, &crate_name, &log),
                             String::new(),
@@ -749,10 +739,13 @@ impl Stage for ChangelogStage {
                 match fetch_gitlab_commits(ctx, &prev_tag, &log) {
                     Ok((infos, logins)) => (infos, logins),
                     Err(e) => {
-                        log.warn(&format!(
-                            "GitLab API fetch failed, falling back to git: {}",
-                            e
-                        ));
+                        ctx.strict_guard(
+                            &log,
+                            &format!(
+                                "changelog: GitLab API fetch failed, falling back to git: {}",
+                                e
+                            ),
+                        )?;
                         (
                             fetch_git_commits(&prev_tag, &paths, &crate_name, &log),
                             String::new(),
@@ -763,10 +756,13 @@ impl Stage for ChangelogStage {
                 match fetch_gitea_commits(ctx, &prev_tag, &log) {
                     Ok((infos, logins)) => (infos, logins),
                     Err(e) => {
-                        log.warn(&format!(
-                            "Gitea API fetch failed, falling back to git: {}",
-                            e
-                        ));
+                        ctx.strict_guard(
+                            &log,
+                            &format!(
+                                "changelog: Gitea API fetch failed, falling back to git: {}",
+                                e
+                            ),
+                        )?;
                         (
                             fetch_git_commits(&prev_tag, &paths, &crate_name, &log),
                             String::new(),
@@ -839,19 +835,13 @@ impl Stage for ChangelogStage {
         // that wraps the per-crate changelog body for the GitHub release.
         let mut final_markdown = String::new();
         if let Some(ref h) = header {
-            let rendered = ctx.render_template(h).unwrap_or_else(|e| {
-                log.warn(&format!("changelog: failed to render header template: {e}"));
-                h.clone()
-            });
+            let rendered = ctx.render_template_strict(h, "changelog header", &log)?;
             final_markdown.push_str(&rendered);
             final_markdown.push_str("\n\n");
         }
         final_markdown.push_str(&combined_markdown);
         if let Some(ref f) = footer {
-            let rendered = ctx.render_template(f).unwrap_or_else(|e| {
-                log.warn(&format!("changelog: failed to render footer template: {e}"));
-                f.clone()
-            });
+            let rendered = ctx.render_template_strict(f, "changelog footer", &log)?;
             final_markdown.push('\n');
             final_markdown.push_str(&rendered);
             final_markdown.push('\n');

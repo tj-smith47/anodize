@@ -31,6 +31,7 @@ fn create_source_archive(
     repo_root: &Path,
     commit: &str,
     log: &anodize_core::log::StageLogger,
+    strict: bool,
 ) -> Result<PathBuf> {
     let (git_format, extension) = match format {
         "tar.gz" | "tgz" => ("tar.gz", "tar.gz"),
@@ -132,6 +133,12 @@ fn create_source_archive(
                 };
 
                 if !src.exists() {
+                    if strict {
+                        bail!(
+                            "source: extra file '{}' not found (strict mode)",
+                            file_entry.src
+                        );
+                    }
                     log.warn(&format!(
                         "source: extra file '{}' not found, skipping",
                         file_entry.src
@@ -258,6 +265,11 @@ fn create_source_archive(
                             header.set_mtime(dt.timestamp() as u64);
                         } else if let Ok(ts) = mtime_str.parse::<u64>() {
                             header.set_mtime(ts);
+                        } else if strict {
+                            bail!(
+                                "source: could not parse mtime '{}' as RFC3339 or unix timestamp (strict mode)",
+                                mtime_str
+                            );
                         } else {
                             log.warn(&format!(
                                 "could not parse mtime '{}' as RFC3339 or unix timestamp",
@@ -697,6 +709,7 @@ impl SourceStage {
             &repo_root,
             commit,
             &log,
+            ctx.is_strict(),
         )?;
 
         // GoReleaser sets artifact name to the filename (e.g. "foo-1.0.0.tar.gz").
@@ -1961,6 +1974,7 @@ dependencies = [
             tmp.path(),
             "HEAD",
             &log,
+            false,
         );
 
         let archive_path = result.expect("create_source_archive should succeed");
@@ -2036,6 +2050,7 @@ dependencies = [
             tmp.path(),
             "HEAD",
             &log,
+            false,
         );
 
         let archive_path = result.expect("create_source_archive should succeed");
@@ -2099,6 +2114,7 @@ dependencies = [
             tmp.path(),
             "HEAD",
             &log,
+            false,
         );
 
         let archive_path = result.expect("create_source_archive should succeed");
@@ -2166,6 +2182,7 @@ dependencies = [
             tmp.path(),
             "HEAD",
             &log,
+            false,
         );
 
         assert!(result.is_ok(), "failed: {:?}", result.err());

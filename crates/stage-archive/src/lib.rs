@@ -922,7 +922,10 @@ impl Stage for ArchiveStage {
             let has_any_meta = archive_cfgs.iter().any(|cfg| cfg.meta.unwrap_or(false));
 
             if all_binaries.is_empty() && !has_any_meta {
-                log.warn(&format!("no binaries for crate {crate_name}, skipping"));
+                ctx.strict_guard(
+                    &log,
+                    &format!("no binaries for crate {crate_name}, skipping"),
+                )?;
                 continue;
             }
 

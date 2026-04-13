@@ -81,7 +81,7 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
         let images = entry.images.as_deref().unwrap_or_default();
 
         if images.is_empty() {
-            log.warn("dockerhub: no images configured, skipping entry");
+            ctx.strict_guard(log, "dockerhub: no images configured, skipping entry")?;
             continue;
         }
 
@@ -129,7 +129,10 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
 
         // Critical 2: Skip PATCH when both descriptions are absent.
         if short_desc.is_empty() && full_desc.is_none() {
-            log.warn("dockerhub: both description and full_description are empty, skipping PATCH");
+            ctx.strict_guard(
+                log,
+                "dockerhub: both description and full_description are empty, skipping PATCH",
+            )?;
             continue;
         }
 

@@ -164,6 +164,7 @@ fn main() {
                     fail_fast,
                     split,
                     merge,
+                    strict: cli.strict,
                 })
             })
         }
@@ -254,6 +255,7 @@ fn main() {
             verbose: cli.verbose,
             debug: cli.debug,
             quiet: cli.quiet,
+            strict: cli.strict,
         }),
         Commands::Continue {
             merge,

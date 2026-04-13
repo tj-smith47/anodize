@@ -389,10 +389,13 @@ fn build_universal_binary(
     let (arm64_path, x86_64_path) = match (arm64, x86_64) {
         (Some(a), Some(x)) => (a.path.clone(), x.path.clone()),
         _ => {
-            log.warn(&format!(
-                "universal_binaries: skipping {crate_name} — \
-                 both aarch64-apple-darwin and x86_64-apple-darwin binaries required"
-            ));
+            ctx.strict_guard(
+                &log,
+                &format!(
+                    "universal_binaries: skipping {crate_name} — \
+                     both aarch64-apple-darwin and x86_64-apple-darwin binaries required"
+                ),
+            )?;
             return Ok(());
         }
     };
@@ -404,13 +407,7 @@ fn build_universal_binary(
         .unwrap_or_else(|| crate_name.to_string());
 
     let out_name = if let Some(ref tmpl) = ub.name_template {
-        ctx.render_template(tmpl).unwrap_or_else(|e| {
-            log.warn(&format!(
-                "failed to render universal binary name_template '{}': {}, using raw template",
-                tmpl, e
-            ));
-            tmpl.clone()
-        })
+        ctx.render_template_strict(tmpl, "universal_binaries name_template", &log)?
     } else {
         binary_name.clone()
     };
@@ -559,22 +556,30 @@ pub(crate) fn find_matching_override<'a>(
     target: &str,
     overrides: &'a [BuildOverride],
     log: &anodize_core::log::StageLogger,
-) -> Option<&'a BuildOverride> {
+    strict: bool,
+) -> anyhow::Result<Option<&'a BuildOverride>> {
     for ov in overrides {
         for pat_str in &ov.targets {
             match glob::Pattern::new(pat_str) {
                 Ok(pat) => {
                     if pat.matches(target) {
-                        return Some(ov);
+                        return Ok(Some(ov));
                     }
                 }
                 Err(e) => {
+                    if strict {
+                        anyhow::bail!(
+                            "build: invalid glob pattern '{}': {} (strict mode)",
+                            pat_str,
+                            e
+                        );
+                    }
                     log.warn(&format!("invalid glob pattern '{}': {}", pat_str, e));
                 }
             }
         }
     }
-    None
+    Ok(None)
 }
 
 // ---------------------------------------------------------------------------
@@ -1096,6 +1101,7 @@ fn resolve_copy_from(
 /// target toolchain is installed. If `rustup` is not available (e.g. when
 /// using cargo-cross or a pre-configured environment), this is silently skipped.
 fn ensure_targets_installed(
+    ctx: &Context,
     targets: &[String],
     log: &anodize_core::log::StageLogger,
     dry_run: bool,
@@ -1123,7 +1129,7 @@ fn ensure_targets_installed(
                 ));
             }
             Err(_) => {
-                log.verbose("rustup not found, skipping target installation");
+                ctx.strict_guard(log, "rustup not found, skipping target installation")?;
                 return Ok(()); // If rustup isn't available, skip all
             }
         }
@@ -1457,7 +1463,8 @@ impl Stage for BuildStage {
                     }
 
                     // Apply overrides: merge env, append flags, extend features
-                    let matched_override = find_matching_override(target, &build_overrides, &log);
+                    let matched_override =
+                        find_matching_override(target, &build_overrides, &log, ctx.is_strict())?;
                     let effective_flags: Option<String> = if let Some(ov) = matched_override {
                         match (&flags, &ov.flags) {
                             (Some(base), Some(extra)) => Some(format!("{} {}", base, extra)),
@@ -1764,7 +1771,7 @@ impl Stage for BuildStage {
                     })
                     .collect()
             };
-            ensure_targets_installed(&unique_targets, &log, dry_run)?;
+            ensure_targets_installed(ctx, &unique_targets, &log, dry_run)?;
         }
 
         // -----------------------------------------------------------------
@@ -3112,7 +3119,8 @@ crate_type = ["dylib"]
             ..Default::default()
         }];
         let log = test_logger();
-        let result = find_matching_override("x86_64-unknown-linux-gnu", &overrides, &log);
+        let result =
+            find_matching_override("x86_64-unknown-linux-gnu", &overrides, &log, false).unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().features, Some(vec!["simd".to_string()]));
     }
@@ -3125,7 +3133,8 @@ crate_type = ["dylib"]
             features: Some(vec!["simd".to_string()]),
             ..Default::default()
         }];
-        let result = find_matching_override("aarch64-apple-darwin", &overrides, &log);
+        let result =
+            find_matching_override("aarch64-apple-darwin", &overrides, &log, false).unwrap();
         assert!(result.is_none());
     }
 
@@ -3137,7 +3146,8 @@ crate_type = ["dylib"]
             features: Some(vec!["metal".to_string()]),
             ..Default::default()
         }];
-        let result = find_matching_override("aarch64-apple-darwin", &overrides, &log);
+        let result =
+            find_matching_override("aarch64-apple-darwin", &overrides, &log, false).unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().features, Some(vec!["metal".to_string()]));
     }
@@ -3145,7 +3155,7 @@ crate_type = ["dylib"]
     #[test]
     fn test_find_matching_override_empty_list() {
         let log = test_logger();
-        let result = find_matching_override("x86_64-unknown-linux-gnu", &[], &log);
+        let result = find_matching_override("x86_64-unknown-linux-gnu", &[], &log, false).unwrap();
         assert!(result.is_none());
     }
 
@@ -3164,7 +3174,8 @@ crate_type = ["dylib"]
                 ..Default::default()
             },
         ];
-        let result = find_matching_override("x86_64-unknown-linux-gnu", &overrides, &log);
+        let result =
+            find_matching_override("x86_64-unknown-linux-gnu", &overrides, &log, false).unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().flags, Some("--release".to_string()));
     }
@@ -3217,7 +3228,8 @@ crate_type = ["dylib"]
             flags: Some("--bad".to_string()),
             ..Default::default()
         }];
-        let result = find_matching_override("x86_64-unknown-linux-gnu", &overrides, &log);
+        let result =
+            find_matching_override("x86_64-unknown-linux-gnu", &overrides, &log, false).unwrap();
         assert!(result.is_none(), "invalid glob should not match anything");
     }
 
