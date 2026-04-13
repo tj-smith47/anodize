@@ -251,6 +251,25 @@ pub fn run(opts: TagOpts) -> Result<()> {
         new_version = format!("{}-{}", new_version, cfg.prerelease_suffix);
     }
 
+    // Bug fix: when version_sync is enabled, check if the current Cargo.toml
+    // version is already higher than the tag-derived version. If so, use the
+    // Cargo.toml version to avoid downgrading manually bumped versions.
+    if version_sync_enabled
+        && let Some(ref path) = crate_path
+        && let Ok(cargo_ver) = anodize_stage_build::version_sync::read_cargo_version(path)
+        && let Ok(cargo_sv) = git::parse_semver(&cargo_ver)
+    {
+        let tag_tuple = (new_major, new_minor, new_patch);
+        let cargo_tuple = (cargo_sv.major, cargo_sv.minor, cargo_sv.patch);
+        if cargo_tuple > tag_tuple {
+            log.status(&format!(
+                "Cargo.toml version {} > tag-derived {}, using Cargo.toml version",
+                cargo_ver, new_version
+            ));
+            new_version = cargo_ver;
+        }
+    }
+
     let new_tag = format!("{}{}", cfg.tag_prefix, new_version);
 
     log.verbose(&format!("{} -> {}", old_tag_str, new_tag));
@@ -258,15 +277,60 @@ pub fn run(opts: TagOpts) -> Result<()> {
     // When version_sync is enabled for this crate, update the Cargo.toml
     // version and commit before tagging so the tagged commit has the correct
     // version embedded.  This ensures cargo publish reads the right version.
+    //
+    // Also update intra-workspace dependency version specs so that other
+    // crates referencing this one via path+version don't break.
+    //
+    // Commit messages include [skip ci] to prevent the push of version_sync
+    // commits from triggering duplicate CI/E2E workflow runs.
     if let Some(ref path) = crate_path
         && version_sync_enabled
     {
         anodize_stage_build::version_sync::sync_version(path, &new_version, opts.dry_run, &log)?;
+
+        // Determine workspace root for cross-crate dep updates.
+        let workspace_root = std::env::current_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| ".".to_string());
+
+        // Read the crate name from its Cargo.toml for dep scanning.
+        let crate_cargo = std::path::Path::new(path).join("Cargo.toml");
+        let crate_name = if let Ok(content) = std::fs::read_to_string(&crate_cargo) {
+            content
+                .parse::<toml_edit::DocumentMut>()
+                .ok()
+                .and_then(|doc| {
+                    doc.get("package")
+                        .and_then(|p| p.get("name"))
+                        .and_then(|n| n.as_str())
+                        .map(|s| s.to_string())
+                })
+        } else {
+            None
+        };
+
+        // Update dependency version specs in other workspace crates.
+        let dep_modified = if let Some(ref name) = crate_name {
+            anodize_stage_build::version_sync::sync_workspace_deps(
+                &workspace_root,
+                name,
+                &new_version,
+                opts.dry_run,
+                &log,
+            )?
+        } else {
+            vec![]
+        };
+
         if !opts.dry_run {
             let cargo_toml = format!("{}/Cargo.toml", path);
+            let mut files_to_stage: Vec<&str> = vec![&cargo_toml];
+            for f in &dep_modified {
+                files_to_stage.push(f);
+            }
             let _ = git::stage_and_commit(
-                &[&cargo_toml],
-                &format!("chore: bump {} to {}", path, new_version),
+                &files_to_stage,
+                &format!("chore: bump {} to {} [skip ci]", path, new_version),
             );
         }
     }
