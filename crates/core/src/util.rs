@@ -98,15 +98,34 @@ pub fn topological_sort(items: &[(impl AsRef<str>, impl AsRef<[String]>)]) -> Ve
 /// that avoids shelling out to `which` or `command -v`, making it portable
 /// across all platforms.
 pub fn find_binary(name: &str) -> bool {
-    if name.contains('/') {
+    if name.contains('/') || name.contains('\\') {
         return Path::new(name).exists();
     }
+
+    // On Windows, PATHEXT lists extensions to try (e.g., .COM;.EXE;.BAT;.CMD).
+    // When the caller asks for "upx", we also check for "upx.exe", etc.
+    let extensions: Vec<String> = if cfg!(windows) {
+        std::env::var("PATHEXT")
+            .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string())
+            .split(';')
+            .filter(|e| !e.is_empty())
+            .map(|e| e.to_string())
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     if let Ok(path_var) = std::env::var("PATH") {
         for dir in std::env::split_paths(&path_var) {
             let candidate = dir.join(name);
             if candidate.is_file() {
                 return true;
+            }
+            for ext in &extensions {
+                let with_ext = dir.join(format!("{}{}", name, ext));
+                if with_ext.is_file() {
+                    return true;
+                }
             }
         }
     }

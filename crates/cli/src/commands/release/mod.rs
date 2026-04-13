@@ -63,8 +63,11 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
 
     // If --workspace is specified, resolve the workspace and overlay its config
     // onto the top-level config (replacing crates, changelog, signs, etc.).
+    // Also capture any workspace-level skip stages for merging into skip_stages.
+    let mut workspace_skip: Vec<String> = Vec::new();
     if let Some(ref ws_name) = opts.workspace {
         let ws = resolve_workspace(&config, ws_name)?.clone();
+        workspace_skip = ws.skip.clone();
         helpers::apply_workspace_overlay(&mut config, &ws);
     } else if !opts.crate_names.is_empty() && config.crates.is_empty() {
         // No --workspace given, but --crate X was — infer the workspace that
@@ -88,6 +91,7 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
                 "--crate {} lives in workspace '{}'; applying workspace overlay",
                 target, ws.name
             ));
+            workspace_skip = ws.skip.clone();
             helpers::apply_workspace_overlay(&mut config, &ws);
         }
     }
@@ -225,6 +229,12 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
     let selected_sorted = topo_sort_selected(&all_known_crates, &selected);
 
     let mut skip_stages = opts.skip;
+    // Merge workspace-level skip stages (e.g., skip: [announce] in workspace config).
+    for stage in &workspace_skip {
+        if !skip_stages.iter().any(|s| s == stage) {
+            skip_stages.push(stage.clone());
+        }
+    }
     // Snapshot mode automatically skips publish and announce stages
     // (like GoReleaser). The release stage is NOT skipped — it handles
     // snapshot mode internally (e.g. creating draft releases for testing).

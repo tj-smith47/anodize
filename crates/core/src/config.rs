@@ -5198,6 +5198,10 @@ pub struct WorkspaceConfig {
     /// (`- MY_VAR=hello`). Values are template-rendered at pipeline startup.
     #[serde(default, deserialize_with = "deserialize_env_map")]
     pub env: Option<HashMap<String, String>>,
+    /// Pipeline stages to skip when releasing this workspace.
+    /// Stage names match the CLI `--skip` flag (e.g., `announce`, `publish`).
+    #[serde(default)]
+    pub skip: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
