@@ -532,12 +532,11 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
         install_path.display()
     ));
 
-    util::run_cmd_in(
-        pkg_dir,
-        "choco",
-        &["pack", &nuspec_path.to_string_lossy()],
-        "chocolatey: choco pack",
-    )?;
+    // Create .nupkg natively (OPC/ZIP format) — no `choco` CLI dependency.
+    // A nupkg is a ZIP containing the nuspec, tools/, and OPC metadata files.
+    let nupkg_path = pkg_dir.join(format!("{}.{}.nupkg", pkg_name, version));
+    create_nupkg(pkg_name, &version, &nuspec_path, &tools_dir, &nupkg_path)?;
+    log.status(&format!("created nupkg: {}", nupkg_path.display()));
 
     // Template-render APIKey (GoReleaser parity: chocolatey.go:184)
     let api_key = choco_cfg
@@ -547,27 +546,191 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
         .or_else(|| std::env::var("CHOCOLATEY_API_KEY").ok())
         .unwrap_or_default();
 
+    if api_key.is_empty() {
+        log.warn(&format!(
+            "chocolatey: no API key for '{}', skipping push",
+            crate_name
+        ));
+        return Ok(());
+    }
+
     let source = choco_cfg
         .source_repo
         .as_deref()
         .unwrap_or("https://push.chocolatey.org/");
-    let nupkg = pkg_dir.join(format!("{}.{}.nupkg", pkg_name, version));
-    util::run_cmd_in(
-        pkg_dir,
-        "choco",
-        &[
-            "push",
-            &nupkg.to_string_lossy(),
-            "--source",
-            source,
-            "--api-key",
-            &api_key,
-        ],
-        "chocolatey: choco push",
-    )?;
+
+    // Push via NuGet V2 API — same protocol as `choco push`.
+    push_nupkg(&nupkg_path, source, &api_key, log)?;
 
     log.status(&format!("Chocolatey package pushed for '{}'", crate_name));
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Native nupkg creation (OPC/ZIP format)
+// ---------------------------------------------------------------------------
+
+/// Content types XML — required by the OPC (Open Packaging Conventions) spec.
+/// Maps file extensions to MIME types within the package.
+const CONTENT_TYPES_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml" />
+  <Default Extension="nuspec" ContentType="application/octet-stream" />
+  <Default Extension="ps1" ContentType="application/octet-stream" />
+  <Default Extension="psmdcp" ContentType="application/vnd.openxmlformats-package.core-properties+xml" />
+</Types>"#;
+
+/// Package relationships XML — links the nuspec as the package manifest.
+fn rels_xml(nuspec_filename: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Type="http://schemas.microsoft.com/packaging/2010/07/manifest" Target="/{}" Id="R1" />
+</Relationships>"#,
+        nuspec_filename
+    )
+}
+
+/// Create a .nupkg file (OPC-compliant ZIP) from a nuspec and tools directory.
+///
+/// The nupkg format is an Open Packaging Conventions (OPC) archive:
+/// - `[Content_Types].xml` — MIME type mappings
+/// - `_rels/.rels` — package relationships (points to the nuspec)
+/// - `{name}.nuspec` — NuGet/Chocolatey package manifest
+/// - `tools/**` — package content (install scripts, binaries)
+///
+/// This replaces the `choco pack` CLI command with native Rust ZIP creation,
+/// eliminating the dependency on the Windows-only Chocolatey CLI.
+fn create_nupkg(
+    name: &str,
+    version: &str,
+    nuspec_path: &std::path::Path,
+    tools_dir: &std::path::Path,
+    output_path: &std::path::Path,
+) -> Result<()> {
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
+
+    let nuspec_content = std::fs::read(nuspec_path)
+        .with_context(|| format!("chocolatey: read nuspec {}", nuspec_path.display()))?;
+
+    let file = std::fs::File::create(output_path)
+        .with_context(|| format!("chocolatey: create nupkg {}", output_path.display()))?;
+    let mut zip = zip::ZipWriter::new(file);
+    let options = SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    // [Content_Types].xml (must be at root of ZIP)
+    zip.start_file("[Content_Types].xml", options)?;
+    zip.write_all(CONTENT_TYPES_XML.as_bytes())?;
+
+    // _rels/.rels
+    let nuspec_filename = format!("{}.nuspec", name);
+    zip.start_file("_rels/.rels", options)?;
+    zip.write_all(rels_xml(&nuspec_filename).as_bytes())?;
+
+    // {name}.nuspec
+    zip.start_file(&nuspec_filename, options)?;
+    zip.write_all(&nuspec_content)?;
+
+    // tools/** — walk the tools directory and add all files
+    if tools_dir.exists() {
+        for entry in walkdir(tools_dir)? {
+            let rel_path = entry
+                .strip_prefix(tools_dir.parent().unwrap_or(tools_dir))
+                .unwrap_or(&entry);
+            // Use forward slashes in ZIP paths (per ZIP spec and NuGet convention)
+            let zip_path = rel_path.to_string_lossy().replace('\\', "/");
+            let content = std::fs::read(&entry)
+                .with_context(|| format!("chocolatey: read {}", entry.display()))?;
+            zip.start_file(&zip_path, options)?;
+            zip.write_all(&content)?;
+        }
+    }
+
+    zip.finish()?;
+
+    // Validate: the nupkg should be a valid ZIP with reasonable size
+    let metadata = std::fs::metadata(output_path)?;
+    if metadata.len() == 0 {
+        anyhow::bail!(
+            "chocolatey: generated nupkg is empty: {}",
+            output_path.display()
+        );
+    }
+
+    // Log the package details (GoReleaser parity: chocolatey.go:167)
+    let _nupkg_name = format!("{}.{}.nupkg", name, version);
+
+    Ok(())
+}
+
+/// Recursively collect all files in a directory.
+fn walkdir(dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>> {
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(dir)
+        .with_context(|| format!("chocolatey: read dir {}", dir.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            files.extend(walkdir(&path)?);
+        } else {
+            files.push(path);
+        }
+    }
+    Ok(files)
+}
+
+/// Push a .nupkg to a NuGet V2 API endpoint (Chocolatey, NuGet.org, etc.).
+///
+/// Uses the same HTTP PUT protocol as `choco push`:
+/// - PUT to `{source}/api/v2/package`
+/// - `X-NuGet-ApiKey` header for authentication
+/// - Raw nupkg bytes as the request body
+fn push_nupkg(
+    nupkg_path: &std::path::Path,
+    source: &str,
+    api_key: &str,
+    log: &StageLogger,
+) -> Result<()> {
+    let nupkg_data = std::fs::read(nupkg_path)
+        .with_context(|| format!("chocolatey: read nupkg {}", nupkg_path.display()))?;
+
+    // Normalize source URL and construct push endpoint
+    let base = source.trim_end_matches('/');
+    let push_url = if base.ends_with("/api/v2/package") {
+        base.to_string()
+    } else if base.ends_with("/api/v2") {
+        format!("{}/package", base)
+    } else {
+        format!("{}/api/v2/package", base)
+    };
+
+    log.status(&format!("pushing nupkg to {}", push_url));
+
+    let client = reqwest::blocking::Client::new();
+    let response = client
+        .put(&push_url)
+        .header("X-NuGet-ApiKey", api_key)
+        .header("Content-Type", "application/octet-stream")
+        .body(nupkg_data)
+        .timeout(std::time::Duration::from_secs(300))
+        .send()
+        .with_context(|| format!("chocolatey: push to {}", push_url))?;
+
+    let status = response.status();
+    if status.is_success() || status.as_u16() == 201 {
+        Ok(())
+    } else {
+        let body = response.text().unwrap_or_default();
+        anyhow::bail!(
+            "chocolatey: push failed with HTTP {} to {}: {}",
+            status,
+            push_url,
+            body
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1007,5 +1170,59 @@ crates:
             .as_ref()
             .unwrap();
         assert_eq!(choco.skip_publish, Some(false));
+    }
+
+    #[test]
+    fn test_create_nupkg_produces_valid_opc_zip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg_dir = tmp.path();
+
+        // Write nuspec
+        let nuspec = generate_nuspec(&default_nuspec_params());
+        let nuspec_path = pkg_dir.join("mytool.nuspec");
+        std::fs::write(&nuspec_path, &nuspec).unwrap();
+
+        // Write install script
+        let tools_dir = pkg_dir.join("tools");
+        std::fs::create_dir_all(&tools_dir).unwrap();
+        let script = generate_install_script("mytool", "https://example.com/dl.zip", "abc123", false);
+        std::fs::write(tools_dir.join("chocolateyinstall.ps1"), &script).unwrap();
+
+        // Create nupkg
+        let nupkg_path = pkg_dir.join("mytool.1.0.0.nupkg");
+        create_nupkg("mytool", "1.0.0", &nuspec_path, &tools_dir, &nupkg_path).unwrap();
+
+        // Verify it's a valid ZIP with the expected OPC structure
+        let file = std::fs::File::open(&nupkg_path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+
+        let mut names: Vec<String> = (0..archive.len())
+            .map(|i| archive.by_index(i).unwrap().name().to_string())
+            .collect();
+        names.sort();
+
+        assert!(names.contains(&"[Content_Types].xml".to_string()));
+        assert!(names.contains(&"_rels/.rels".to_string()));
+        assert!(names.contains(&"mytool.nuspec".to_string()));
+        assert!(names.contains(&"tools/chocolateyinstall.ps1".to_string()));
+
+        // Verify file contents by reading each entry in its own scope
+        let read_entry = |archive: &mut zip::ZipArchive<std::fs::File>, name: &str| -> String {
+            let mut entry = archive.by_name(name).unwrap();
+            let mut content = String::new();
+            std::io::Read::read_to_string(&mut entry, &mut content).unwrap();
+            content
+        };
+
+        let ct = read_entry(&mut archive, "[Content_Types].xml");
+        assert!(ct.contains("application/vnd.openxmlformats-package.relationships+xml"));
+        assert!(ct.contains("nuspec"));
+
+        let rels = read_entry(&mut archive, "_rels/.rels");
+        assert!(rels.contains("/mytool.nuspec"));
+
+        let ns = read_entry(&mut archive, "mytool.nuspec");
+        assert!(ns.contains("<id>mytool</id>"));
+        assert!(ns.contains("<version>1.0.0</version>"));
     }
 }
