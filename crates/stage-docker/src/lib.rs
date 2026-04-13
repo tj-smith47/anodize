@@ -1569,6 +1569,10 @@ impl Stage for DockerStage {
         }
 
         let mut new_artifacts: Vec<Artifact> = Vec::new();
+        // Track image references pushed by docker_v2 multi-platform builds.
+        // These are already multi-arch manifest lists — docker_manifests must
+        // not try to re-create them from non-existent per-platform tags.
+        let mut v2_multiplatform_tags: HashSet<String> = HashSet::new();
 
         // ==================================================================
         // Phase 1: Prepare all docker build jobs sequentially
@@ -2133,6 +2137,15 @@ impl Stage for DockerStage {
                             )
                         })?;
 
+                    // Track multi-platform V2 tags so docker_manifests can skip
+                    // redundant manifest creation for images that are already
+                    // multi-arch manifest lists.
+                    if snapshot_plats.len() > 1 && should_push {
+                        for tag in &image_tags {
+                            v2_multiplatform_tags.insert(tag.clone());
+                        }
+                    }
+
                     if dry_run {
                         log.status(&format!("(dry-run) would run: {}", cmd_args.join(" ")));
                         if max_attempts > 1 {
@@ -2356,6 +2369,20 @@ impl Stage for DockerStage {
                                 manifest_cfg.name_template, krate.name
                             )
                         })?;
+
+                    // Skip manifests whose target tag was already pushed as a
+                    // multi-arch manifest list by docker_v2.  docker_v2 with
+                    // --platform=linux/amd64,linux/arm64 --push creates a native
+                    // multi-arch manifest; docker_manifests would try to re-create
+                    // it from per-platform tags (e.g. :0.3.3-amd64) that don't
+                    // exist, causing "manifest unknown" errors.
+                    if v2_multiplatform_tags.contains(&manifest_name) {
+                        log.status(&format!(
+                            "docker: skipping manifest '{}' — already pushed as multi-arch by docker_v2",
+                            manifest_name
+                        ));
+                        continue;
+                    }
 
                     // Render image templates, skipping entries that resolve
                     // to empty strings (e.g. conditional templates that
