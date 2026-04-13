@@ -389,13 +389,13 @@ fn build_universal_binary(
     let (arm64_path, x86_64_path) = match (arm64, x86_64) {
         (Some(a), Some(x)) => (a.path.clone(), x.path.clone()),
         _ => {
-            ctx.strict_guard(
-                &log,
-                &format!(
-                    "universal_binaries: skipping {crate_name} — \
-                     both aarch64-apple-darwin and x86_64-apple-darwin binaries required"
-                ),
-            )?;
+            // Not an error: universal binaries require both darwin archs, which
+            // only exist on macOS builds or in merge mode. On Linux/Windows split
+            // builds this skip is expected — not a strict_guard situation.
+            log.verbose(&format!(
+                "universal_binaries: skipping {crate_name} — \
+                 both aarch64-apple-darwin and x86_64-apple-darwin binaries required"
+            ));
             return Ok(());
         }
     };
