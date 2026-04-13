@@ -323,8 +323,21 @@ pub fn run(opts: TagOpts) -> Result<()> {
         };
 
         if !opts.dry_run {
+            // Regenerate Cargo.lock to match the bumped Cargo.toml versions.
+            // Without this, the tagged commit has Cargo.toml at the new version
+            // but Cargo.lock at the old version, causing `cargo test` (from
+            // before hooks) to update Cargo.lock and dirty the tree.
+            let lock_updated = std::process::Command::new("cargo")
+                .args(["update", "--workspace"])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            if !lock_updated {
+                log.warn("version-sync: `cargo update --workspace` failed; Cargo.lock may be stale");
+            }
+
             let cargo_toml = format!("{}/Cargo.toml", path);
-            let mut files_to_stage: Vec<&str> = vec![&cargo_toml];
+            let mut files_to_stage: Vec<&str> = vec![&cargo_toml, "Cargo.lock"];
             for f in &dep_modified {
                 files_to_stage.push(f);
             }
