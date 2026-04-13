@@ -588,6 +588,15 @@ impl Pipeline {
                 continue;
             }
 
+            // Write metadata.json + artifacts.json before the release stage
+            // so that include_meta can attach them to the GitHub release.
+            // run_post_pipeline overwrites these with the final version later.
+            if name == "release"
+                && let Err(e) = write_pre_release_metadata(ctx)
+            {
+                log.warn(&format!("failed to write pre-release metadata: {}", e));
+            }
+
             log.status(&format!("\u{2022} {}...", name.bold()));
             match stage.run(ctx) {
                 Ok(()) => {
@@ -622,6 +631,41 @@ impl Pipeline {
         }
         Ok(())
     }
+}
+
+/// Write preliminary metadata.json and artifacts.json before the release
+/// stage so that `include_meta: true` can attach them to the GitHub release.
+/// `run_post_pipeline` overwrites these with the final version afterward.
+fn write_pre_release_metadata(ctx: &mut anodize_core::context::Context) -> anyhow::Result<()> {
+    let dist = &ctx.config.dist;
+    std::fs::create_dir_all(dist)?;
+
+    let tag = ctx.template_vars().get("Tag").cloned().unwrap_or_default();
+    let version = ctx.version();
+    let commit = ctx
+        .template_vars()
+        .get("FullCommit")
+        .cloned()
+        .unwrap_or_default();
+
+    let metadata = serde_json::json!({
+        "project_name": ctx.config.project_name,
+        "tag": tag,
+        "version": version,
+        "commit": commit,
+    });
+    std::fs::write(
+        dist.join("metadata.json"),
+        serde_json::to_string_pretty(&metadata)?,
+    )?;
+
+    let artifacts_json = ctx.artifacts.to_artifacts_json()?;
+    std::fs::write(
+        dist.join("artifacts.json"),
+        serde_json::to_string_pretty(&artifacts_json)?,
+    )?;
+
+    Ok(())
 }
 
 /// Build the full release pipeline with all stages in order
