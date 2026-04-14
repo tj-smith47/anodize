@@ -683,20 +683,25 @@ fn walkdir(dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>> {
 
 /// Push a .nupkg to a NuGet V2 API endpoint (Chocolatey, NuGet.org, etc.).
 ///
-/// Uses the same HTTP PUT protocol as `choco push`:
-/// - PUT to `{source}/api/v2/package`
-/// - `X-NuGet-ApiKey` header for authentication
-/// - Raw nupkg bytes as the request body
+/// Matches the wire protocol used by the NuGet.Client library (what `choco
+/// push` and `dotnet nuget push` use): PUT with multipart/form-data and a
+/// NuGet-compatible User-Agent. The Chocolatey community repository's IIS
+/// fronting rejects requests that don't match this shape with 403.
 fn push_nupkg(
     nupkg_path: &std::path::Path,
     source: &str,
     api_key: &str,
     log: &StageLogger,
 ) -> Result<()> {
+    let filename = nupkg_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("package.nupkg")
+        .to_string();
     let nupkg_data = std::fs::read(nupkg_path)
         .with_context(|| format!("chocolatey: read nupkg {}", nupkg_path.display()))?;
 
-    // Normalize source URL and construct push endpoint
+    // Normalize source URL and construct push endpoint.
     let base = source.trim_end_matches('/');
     let push_url = if base.ends_with("/api/v2/package") {
         base.to_string()
@@ -708,13 +713,23 @@ fn push_nupkg(
 
     log.status(&format!("pushing nupkg to {}", push_url));
 
-    let client = reqwest::blocking::Client::new();
+    let form_file = reqwest::blocking::multipart::Part::bytes(nupkg_data)
+        .file_name(filename)
+        .mime_str("application/octet-stream")
+        .context("chocolatey: build multipart part")?;
+    let form = reqwest::blocking::multipart::Form::new().part("package", form_file);
+
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("NuGet Command Line/6.10.0 (anodize)")
+        .timeout(std::time::Duration::from_secs(300))
+        .build()
+        .context("chocolatey: build http client")?;
     let response = client
         .put(&push_url)
         .header("X-NuGet-ApiKey", api_key)
-        .header("Content-Type", "application/octet-stream")
-        .body(nupkg_data)
-        .timeout(std::time::Duration::from_secs(300))
+        .header("X-NuGet-Client-Version", "6.10.0")
+        .header("X-NuGet-Protocol-Version", "4.1.0")
+        .multipart(form)
         .send()
         .with_context(|| format!("chocolatey: push to {}", push_url))?;
 
