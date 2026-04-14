@@ -66,21 +66,24 @@ impl Stage for PublishStage {
         let selected = ctx.options.selected_crates.clone();
 
         // Individual publisher failures are collected and reported at the end
-        // rather than aborting the entire publish stage.  This prevents a single
+        // rather than aborting the entire publish stage. This prevents a single
         // publisher (e.g. homebrew auth) from killing independent downstream
-        // publishers (docker, cosign, announce).  crates.io is the exception —
+        // publishers (docker, cosign, announce). crates.io is the exception —
         // it's the authoritative registry and its failure is always fatal.
-        // In strict mode, any failure is immediately fatal.
+        //
+        // Strict mode semantics: we still COLLECT every publisher error so a
+        // single run surfaces *all* remaining issues. The difference vs. the
+        // default mode is that at the end of the stage we bail with the full
+        // list instead of warning. Failing fast on the first error is
+        // counter-productive for dogfooding — it hides every issue after the
+        // first, forcing N release cycles to shake out N bugs.
         let mut errors: Vec<String> = Vec::new();
-        let strict = ctx.is_strict();
 
-        // Helper: run a publisher, log + collect error on failure.
+        // Helper: run a publisher, log + collect error on failure. The end-of-
+        // stage aggregation below decides whether to warn or bail.
         macro_rules! try_publish {
             ($label:expr, $expr:expr) => {
                 if let Err(e) = $expr {
-                    if strict {
-                        anyhow::bail!("{}: {} (strict mode)", $label, e);
-                    }
                     log.warn(&format!("{}: {}", $label, e));
                     errors.push(format!("{}: {}", $label, e));
                 }
@@ -160,9 +163,15 @@ impl Stage for PublishStage {
         if errors.is_empty() {
             Ok(())
         } else {
+            let suffix = if ctx.is_strict() {
+                " (strict mode)"
+            } else {
+                ""
+            };
             anyhow::bail!(
-                "{} publisher(s) failed:\n  {}",
+                "{} publisher(s) failed{}:\n  {}",
                 errors.len(),
+                suffix,
                 errors.join("\n  ")
             )
         }

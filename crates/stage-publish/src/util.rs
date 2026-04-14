@@ -819,13 +819,72 @@ pub(crate) fn commit_and_push_with_opts(
         &format!("{label}: git commit"),
     )?;
 
+    push_branch_idempotent(repo_path, branch, label)
+}
+
+/// Push the current branch to `origin`, retrying with `--force-with-lease`
+/// if the remote rejects because the branch already exists with divergent
+/// content.
+///
+/// Why force-with-lease is safe here: publishers that use a branch name call
+/// `commit_and_push_with_opts` with a per-version branch (e.g.
+/// `TJSmith.cfgd-0.3.5`, `kubectl-cfgd-v0.3.5`). Those branch names are
+/// scoped to exactly one release version — re-running the same release
+/// regenerates bit-identical manifests, so overwriting a prior run's
+/// attempt is the correct idempotent behaviour.
+///
+/// `--force-with-lease` (unlike plain `--force`) still refuses to overwrite
+/// if the remote has moved in a way the local clone hasn't observed, so it
+/// retains the safety net against clobbering unrelated concurrent work.
+fn push_branch_idempotent(repo_path: &Path, branch: Option<&str>, label: &str) -> Result<()> {
     let push_args: Vec<&str> = if let Some(branch_name) = branch {
         vec!["push", "-u", "origin", branch_name]
     } else {
         vec!["push"]
     };
 
-    run_cmd_in(repo_path, "git", &push_args, &format!("{label}: git push"))
+    let output = Command::new("git")
+        .args(&push_args)
+        .current_dir(repo_path)
+        .output()
+        .with_context(|| format!("{label}: failed to run git {}", push_args.join(" ")))?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    // Fetch-first rejection only happens when we're pushing to an existing
+    // branch that has diverged. Without an explicit branch name we're pushing
+    // master/HEAD and should not force.
+    let is_non_fast_forward = stderr.contains("[rejected]")
+        && (stderr.contains("fetch first")
+            || stderr.contains("non-fast-forward")
+            || stderr.contains("tip of your current branch is behind"));
+
+    let Some(branch_name) = branch else {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        anyhow::bail!(
+            "{label}: git push failed (exit {})\nstderr: {stderr}\nstdout: {stdout}",
+            output.status.code().unwrap_or(-1),
+        );
+    };
+    if !is_non_fast_forward {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        anyhow::bail!(
+            "{label}: git push -u origin {branch_name} failed (exit {})\nstderr: {stderr}\nstdout: {stdout}",
+            output.status.code().unwrap_or(-1),
+        );
+    }
+
+    // Safe retry: the branch is per-version, so overwriting it with our
+    // freshly-generated content is correct. `--force-with-lease` still
+    // respects the remote's observed state.
+    run_cmd_in(
+        repo_path,
+        "git",
+        &["push", "--force-with-lease", "-u", "origin", branch_name],
+        &format!("{label}: git push --force-with-lease (stale versioned branch)"),
+    )
 }
 
 // ---------------------------------------------------------------------------

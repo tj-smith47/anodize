@@ -843,13 +843,8 @@ impl Stage for ArchiveStage {
                 match &c.archives {
                     ArchivesConfig::Disabled => None,
                     ArchivesConfig::Configs(cfgs) => {
-                        let has_builds = c
-                            .builds
-                            .as_ref()
-                            .map(|b| !b.is_empty())
-                            .unwrap_or(false);
-                        let has_meta_archive =
-                            cfgs.iter().any(|cfg| cfg.meta.unwrap_or(false));
+                        let has_builds = c.builds.as_ref().map(|b| !b.is_empty()).unwrap_or(false);
+                        let has_meta_archive = cfgs.iter().any(|cfg| cfg.meta.unwrap_or(false));
                         let has_existing_artifacts = !ctx
                             .artifacts
                             .by_kinds_and_crate(&archivable_kinds, &c.name)
