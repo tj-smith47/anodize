@@ -609,11 +609,14 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
 
     // Collect both archive (.zip only) and portable binary artifacts.
     // GoReleaser parity: winget.go:187 filters ByFormats("zip") for archives,
-    // plus ByType(UploadableBinary) for portable binaries.
+    // plus ByType(UploadableBinary) for portable binaries. Filter on
+    // `UploadableBinary` — not `Binary` — because `Binary` includes raw
+    // build outputs that get packaged into archives (not uploaded standalone).
     let archive_artifacts = ctx.artifacts.by_kind_and_crate(artifact_kind, crate_name);
-    let binary_artifacts = ctx
-        .artifacts
-        .by_kind_and_crate(anodize_core::artifact::ArtifactKind::Binary, crate_name);
+    let binary_artifacts = ctx.artifacts.by_kind_and_crate(
+        anodize_core::artifact::ArtifactKind::UploadableBinary,
+        crate_name,
+    );
 
     let is_windows = |a: &anodize_core::artifact::Artifact| -> bool {
         a.target

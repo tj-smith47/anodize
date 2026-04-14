@@ -694,7 +694,7 @@ pub fn build_release_pipeline() -> Pipeline {
     use anodize_stage_publish::PublishStage;
     use anodize_stage_release::ReleaseStage;
     use anodize_stage_sbom::SbomStage;
-    use anodize_stage_sign::SignStage;
+    use anodize_stage_sign::{DockerSignStage, SignStage};
     use anodize_stage_snapcraft::{SnapcraftPublishStage, SnapcraftStage};
     use anodize_stage_source::SourceStage;
     use anodize_stage_srpm::SrpmStage;
@@ -739,6 +739,8 @@ pub fn build_release_pipeline() -> Pipeline {
     // ── Publish ──────────────────────────────────────────────────────────
     p.add(Box::new(ReleaseStage));
     p.add(Box::new(DockerStage));
+    // DockerSignStage runs after DockerStage so docker image artifacts exist.
+    p.add(Box::new(DockerSignStage));
     p.add(Box::new(PublishStage));
     p.add(Box::new(SnapcraftPublishStage));
     p.add(Box::new(BlobStage));
@@ -801,7 +803,7 @@ pub fn build_merge_pipeline() -> Pipeline {
     use anodize_stage_publish::PublishStage;
     use anodize_stage_release::ReleaseStage;
     use anodize_stage_sbom::SbomStage;
-    use anodize_stage_sign::SignStage;
+    use anodize_stage_sign::{DockerSignStage, SignStage};
     use anodize_stage_snapcraft::{SnapcraftPublishStage, SnapcraftStage};
     use anodize_stage_source::SourceStage;
     use anodize_stage_srpm::SrpmStage;
@@ -829,6 +831,7 @@ pub fn build_merge_pipeline() -> Pipeline {
     p.add(Box::new(SignStage));
     p.add(Box::new(ReleaseStage));
     p.add(Box::new(DockerStage));
+    p.add(Box::new(DockerSignStage));
     p.add(Box::new(PublishStage));
     p.add(Box::new(SnapcraftPublishStage));
     p.add(Box::new(BlobStage));

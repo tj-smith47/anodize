@@ -903,6 +903,26 @@ impl Stage for SignStage {
             "binary-sign",
         )?;
 
+        // Refresh the artifacts template variable so newly-added signatures
+        // and certificates are visible to downstream stages (matching
+        // GoReleaser's ctx.Artifacts.Refresh()).
+        ctx.refresh_artifacts_var();
+        Ok(())
+    }
+}
+
+/// Pipeline stage for signing Docker images via `docker_signs` config.
+/// Must run after `DockerStage` so Docker image artifacts are present.
+pub struct DockerSignStage;
+
+impl Stage for DockerSignStage {
+    fn name(&self) -> &str {
+        "docker-sign"
+    }
+
+    fn run(&self, ctx: &mut Context) -> Result<()> {
+        let log = ctx.logger("docker-sign");
+
         // ----------------------------------------------------------------
         // Docker image signing via `docker_signs` config
         // ----------------------------------------------------------------
@@ -2419,7 +2439,7 @@ env:
             size: None,
         });
 
-        let stage = SignStage;
+        let stage = DockerSignStage;
         stage.run(&mut ctx).unwrap();
 
         let env_output = std::fs::read_to_string(&marker_path).unwrap();
@@ -2874,7 +2894,7 @@ crates: []
             size: None,
         });
 
-        let stage = SignStage;
+        let stage = DockerSignStage;
         stage.run(&mut ctx).unwrap();
 
         let output = std::fs::read_to_string(&marker_path).unwrap();
@@ -3473,7 +3493,7 @@ crates: []
         let mut ctx = TestContextBuilder::new().dry_run(true).build();
         ctx.config.docker_signs = Some(docker_signs);
 
-        let stage = SignStage;
+        let stage = DockerSignStage;
         let result = stage.run(&mut ctx);
         assert!(
             result.is_err(),
@@ -3525,7 +3545,7 @@ crates: []
         let mut ctx = TestContextBuilder::new().dry_run(true).build();
         ctx.config.docker_signs = Some(docker_signs);
 
-        let stage = SignStage;
+        let stage = DockerSignStage;
         let result = stage.run(&mut ctx);
         assert!(
             result.is_err(),
@@ -3584,7 +3604,7 @@ crates: []
             size: None,
         });
 
-        let stage = SignStage;
+        let stage = DockerSignStage;
         stage.run(&mut ctx).unwrap();
 
         let output = std::fs::read_to_string(&marker_path).unwrap();

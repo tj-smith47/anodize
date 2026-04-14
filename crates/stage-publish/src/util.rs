@@ -1059,14 +1059,16 @@ pub(crate) fn find_artifacts_by_os_with_goarch(
     goamd64: Option<&str>,
     goarm: Option<&str>,
 ) -> Vec<OsArtifact> {
-    // Include both Archive and Binary artifacts — GoReleaser supports both
-    // UploadableArchive and UploadableBinary types for publisher packages.
+    // Include both Archive and UploadableBinary artifacts — GoReleaser
+    // supports both UploadableArchive and UploadableBinary types for publisher
+    // packages. Use UploadableBinary (not Binary) so raw build outputs
+    // packaged into archives don't double-register as portable binaries.
     let mut all = ctx
         .artifacts
         .by_kind_and_crate(ArtifactKind::Archive, crate_name);
     all.extend(
         ctx.artifacts
-            .by_kind_and_crate(ArtifactKind::Binary, crate_name),
+            .by_kind_and_crate(ArtifactKind::UploadableBinary, crate_name),
     );
     // OnlyReplacingUnibins: exclude universal binaries that didn't replace
     // single-arch variants (GoReleaser parity).
@@ -1129,7 +1131,7 @@ pub(crate) fn find_all_platform_artifacts_with_goarch(
         .by_kind_and_crate(ArtifactKind::Archive, crate_name);
     all.extend(
         ctx.artifacts
-            .by_kind_and_crate(ArtifactKind::Binary, crate_name),
+            .by_kind_and_crate(ArtifactKind::UploadableBinary, crate_name),
     );
     // OnlyReplacingUnibins: exclude universal binaries that didn't replace
     // single-arch variants (GoReleaser parity).

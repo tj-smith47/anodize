@@ -1471,7 +1471,7 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
         .by_kind_and_crate(anodize_core::artifact::ArtifactKind::Archive, crate_name);
     all_artifacts.extend(
         ctx.artifacts
-            .by_kind_and_crate(anodize_core::artifact::ArtifactKind::Binary, crate_name),
+            .by_kind_and_crate(anodize_core::artifact::ArtifactKind::UploadableBinary, crate_name),
     );
     let archive_data: Vec<(String, String, String)> = all_artifacts
         .iter()
