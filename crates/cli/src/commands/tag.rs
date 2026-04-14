@@ -281,8 +281,15 @@ pub fn run(opts: TagOpts) -> Result<()> {
     // Also update intra-workspace dependency version specs so that other
     // crates referencing this one via path+version don't break.
     //
-    // Commit messages include [skip ci] to prevent the push of version_sync
-    // commits from triggering duplicate CI/E2E workflow runs.
+    // The commit message intentionally OMITS `[skip ci]`. Earlier revisions
+    // added the marker to suppress the master push's follow-up CI run, but
+    // GitHub also suppresses tag-push workflow triggers when the tag target
+    // commit's message contains `[skip ci]` — which silently broke the
+    // release workflow trigger for autotag-created tags. The version-sync
+    // commit is treated like any normal commit: its master push re-runs
+    // CI, but the autotag job on that re-run no-ops because no new
+    // release-worthy commits are present since the freshly-created tag
+    // (see the conventional-commit gate in detect_bump).
     if let Some(ref path) = crate_path
         && version_sync_enabled
     {
@@ -345,7 +352,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
             }
             let _ = git::stage_and_commit(
                 &files_to_stage,
-                &format!("chore: bump {} to {} [skip ci]", path, new_version),
+                &format!("chore: bump {} to {}", path, new_version),
             );
         }
     }
@@ -494,6 +501,20 @@ fn detect_bump(messages: &[String], cfg: &ResolvedConfig) -> BumpKind {
 }
 
 /// Core bump detection logic, separated for unit testing without needing the full config.
+///
+/// Detection layers (applied in order):
+/// 1. Explicit tokens (`#major`, `#minor`, `#patch`, `#none`) — highest signal.
+///    `#none` always wins; `#major` > `#minor` > `#patch` among the rest.
+/// 2. Conventional-commit markers if no explicit token matched — `feat:` →
+///    minor, `fix:` / `perf:` / `revert:` → patch, any line containing
+///    `BREAKING CHANGE` or a `<type>!:` shorthand → major. A message that
+///    starts with `chore:` / `docs:` / `style:` / `refactor:` / `test:` /
+///    `build:` / `ci:` is NOT release-worthy, so it contributes nothing.
+/// 3. `default_bump` fallback when neither a token nor a conventional
+///    marker matched. Configure `default_bump: none` to require every
+///    release-worthy commit to carry either a `#...` token or a
+///    conventional marker (prevents autotag from producing a patch bump
+///    over chore-only ranges).
 pub(crate) fn detect_bump_from_tokens(
     messages: &[String],
     major_token: &str,
@@ -522,12 +543,7 @@ pub(crate) fn detect_bump_from_tokens(
         }
     }
 
-    // #none takes priority -- skip tagging entirely
-    if has_none {
-        return BumpKind::None;
-    }
-
-    // Priority: major > minor > patch
+    // Priority: major > minor > patch among explicit tokens.
     if has_major {
         return BumpKind::Major;
     }
@@ -538,6 +554,21 @@ pub(crate) fn detect_bump_from_tokens(
         return BumpKind::Patch;
     }
 
+    // Conventional-commit layer: fires when no explicit #token matched. A
+    // release-worthy conventional marker wins over `#none` because `#none`
+    // represents "no default bump intended" — it's a veto over the implicit
+    // fallback, not a veto over explicit release signals.
+    if let Some(bump) = detect_conventional_bump(messages) {
+        return bump;
+    }
+
+    // No explicit token, no conventional marker. `#none` now takes effect:
+    // ranges where the only "signal" is `#none` explicitly skip, regardless
+    // of default_bump.
+    if has_none {
+        return BumpKind::None;
+    }
+
     // Fall back to default_bump
     match default_bump {
         "major" => BumpKind::Major,
@@ -545,6 +576,67 @@ pub(crate) fn detect_bump_from_tokens(
         "patch" => BumpKind::Patch,
         "none" | "false" => BumpKind::None,
         _ => BumpKind::Minor,
+    }
+}
+
+/// Scan messages for Conventional-Commits release-worthy markers.
+///
+/// Returns `Some(kind)` when at least one message matches a bump-worthy
+/// pattern; `None` when the range contains only non-release-worthy commit
+/// types (chore, docs, style, refactor, test, build, ci) or unstructured
+/// messages. The caller decides how to treat `None` — typically fall back
+/// to the configured `default_bump`.
+///
+/// Patterns:
+/// - `BREAKING CHANGE` in any line, or a `<type>!:` shorthand → major
+/// - Message starts with `feat:` / `feat(scope):` → minor
+/// - Message starts with `fix:` / `perf:` / `revert:` (and scoped variants)
+///   → patch
+fn detect_conventional_bump(messages: &[String]) -> Option<BumpKind> {
+    let mut has_breaking = false;
+    let mut has_feat = false;
+    let mut has_fix_or_perf = false;
+
+    for msg in messages {
+        // BREAKING CHANGE footer or body line → major
+        if msg.contains("BREAKING CHANGE") || msg.contains("BREAKING-CHANGE") {
+            has_breaking = true;
+        }
+        // Inspect only the subject line for the type prefix.
+        let subject = msg.lines().next().unwrap_or("").trim_start();
+        let (ty, rest) = match subject.split_once(':') {
+            Some(pair) => pair,
+            None => continue,
+        };
+        // Strip a `(scope)` suffix and capture the `!` breaking marker.
+        let (head, marker) = ty.split_once('(').map_or((ty, ""), |(h, scope_rest)| {
+            // scope_rest is like `scope)!` or `scope)` — extract the post-`)` part.
+            let after_scope = scope_rest.split_once(')').map_or("", |x| x.1);
+            (h, after_scope)
+        });
+        let is_breaking_shorthand = marker.starts_with('!') || ty.ends_with('!');
+        // Ignore pattern where `rest` is empty (e.g. `feat:` with nothing after) —
+        // still counts as a typed commit. We only require the prefix match.
+        let _ = rest;
+
+        if is_breaking_shorthand {
+            has_breaking = true;
+        }
+        match head.trim() {
+            "feat" => has_feat = true,
+            "fix" | "perf" | "revert" => has_fix_or_perf = true,
+            _ => {}
+        }
+    }
+
+    if has_breaking {
+        Some(BumpKind::Major)
+    } else if has_feat {
+        Some(BumpKind::Minor)
+    } else if has_fix_or_perf {
+        Some(BumpKind::Patch)
+    } else {
+        None
     }
 }
 
@@ -600,20 +692,49 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_bump_none_token() {
+    fn test_detect_bump_none_token_loses_to_explicit_major() {
+        // `#none` is a veto over the default_bump fallback, NOT over explicit
+        // release signals. If any commit in the range explicitly asks for a
+        // bump, that wins regardless of a sibling `#none`.
         let messages = vec![
             "chore: update deps #none".to_string(),
             "feat: something #major".to_string(),
         ];
         let result =
             detect_bump_from_tokens(&messages, "#major", "#minor", "#patch", "#none", "minor");
+        assert_eq!(result, BumpKind::Major);
+    }
+
+    #[test]
+    fn test_detect_bump_none_suppresses_default_fallback() {
+        // No explicit token, no conventional marker, but `#none` present →
+        // range is intentionally non-release-worthy. Skip regardless of
+        // default_bump.
+        let messages = vec!["chore: prep #none".to_string()];
+        let result =
+            detect_bump_from_tokens(&messages, "#major", "#minor", "#patch", "#none", "minor");
         assert_eq!(result, BumpKind::None);
     }
 
     #[test]
-    fn test_detect_bump_default_when_no_tokens() {
+    fn test_detect_bump_none_loses_to_conventional_fix() {
+        // A legit `fix:` in the range is a release signal. A `#none` on a
+        // sibling cleanup commit must not mask it.
         let messages = vec![
-            "fix: something".to_string(),
+            "fix: deref bug".to_string(),
+            "chore: revert local-only churn #none".to_string(),
+        ];
+        let result =
+            detect_bump_from_tokens(&messages, "#major", "#minor", "#patch", "#none", "none");
+        assert_eq!(result, BumpKind::Patch);
+    }
+
+    #[test]
+    fn test_detect_bump_default_when_no_tokens() {
+        // Messages carry no explicit token and no release-worthy conventional
+        // marker (docs: doesn't bump), so the default_bump fallback takes effect.
+        let messages = vec![
+            "unstructured message".to_string(),
             "docs: update readme".to_string(),
         ];
         let result =
@@ -623,7 +744,7 @@ mod tests {
 
     #[test]
     fn test_detect_bump_default_patch() {
-        let messages = vec!["fix: something".to_string()];
+        let messages = vec!["chore: deps bump".to_string()];
         let result =
             detect_bump_from_tokens(&messages, "#major", "#minor", "#patch", "#none", "patch");
         assert_eq!(result, BumpKind::Patch);
@@ -631,7 +752,7 @@ mod tests {
 
     #[test]
     fn test_detect_bump_default_major() {
-        let messages = vec!["fix: something".to_string()];
+        let messages = vec!["chore: deps bump".to_string()];
         let result =
             detect_bump_from_tokens(&messages, "#major", "#minor", "#patch", "#none", "major");
         assert_eq!(result, BumpKind::Major);
@@ -639,10 +760,89 @@ mod tests {
 
     #[test]
     fn test_detect_bump_default_none() {
-        let messages = vec!["fix: something".to_string()];
+        let messages = vec!["chore: deps bump".to_string()];
         let result =
             detect_bump_from_tokens(&messages, "#major", "#minor", "#patch", "#none", "none");
         assert_eq!(result, BumpKind::None);
+    }
+
+    // ------------------------------------------------------------------
+    // Conventional-commit layer tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_conventional_fix_triggers_patch() {
+        let messages = vec!["fix: null deref in parser".to_string()];
+        let result =
+            detect_bump_from_tokens(&messages, "#major", "#minor", "#patch", "#none", "none");
+        assert_eq!(result, BumpKind::Patch);
+    }
+
+    #[test]
+    fn test_conventional_feat_triggers_minor() {
+        let messages = vec!["feat(api): add pagination".to_string()];
+        let result =
+            detect_bump_from_tokens(&messages, "#major", "#minor", "#patch", "#none", "none");
+        assert_eq!(result, BumpKind::Minor);
+    }
+
+    #[test]
+    fn test_conventional_perf_triggers_patch() {
+        let messages = vec!["perf: skip redundant clone".to_string()];
+        let result =
+            detect_bump_from_tokens(&messages, "#major", "#minor", "#patch", "#none", "none");
+        assert_eq!(result, BumpKind::Patch);
+    }
+
+    #[test]
+    fn test_conventional_breaking_change_footer_triggers_major() {
+        let messages = vec![
+            "feat: rename flags\n\nBREAKING CHANGE: --dry replaced with --dry-run".to_string(),
+        ];
+        let result =
+            detect_bump_from_tokens(&messages, "#major", "#minor", "#patch", "#none", "none");
+        assert_eq!(result, BumpKind::Major);
+    }
+
+    #[test]
+    fn test_conventional_breaking_shorthand_triggers_major() {
+        let messages = vec!["feat!: rewrite config layer".to_string()];
+        let result =
+            detect_bump_from_tokens(&messages, "#major", "#minor", "#patch", "#none", "none");
+        assert_eq!(result, BumpKind::Major);
+    }
+
+    #[test]
+    fn test_conventional_scoped_breaking_shorthand_triggers_major() {
+        let messages = vec!["fix(config)!: rename layer field".to_string()];
+        let result =
+            detect_bump_from_tokens(&messages, "#major", "#minor", "#patch", "#none", "none");
+        assert_eq!(result, BumpKind::Major);
+    }
+
+    #[test]
+    fn test_conventional_chore_only_range_noops_with_none_default() {
+        // This is the cfgd dogfood scenario: a stable lib crate gets a test/chore
+        // touch but no release-worthy commit. default_bump=none means autotag
+        // should NOT mint a new tag — matches the intent.
+        let messages = vec![
+            "chore: bump dep".to_string(),
+            "test: new harness".to_string(),
+            "refactor: cleaner helper".to_string(),
+        ];
+        let result =
+            detect_bump_from_tokens(&messages, "#major", "#minor", "#patch", "#none", "none");
+        assert_eq!(result, BumpKind::None);
+    }
+
+    #[test]
+    fn test_conventional_ignored_when_explicit_token_present() {
+        // `#major` wins over `feat:` — explicit intent overrides the
+        // conventional-commit layer.
+        let messages = vec!["feat: add thing\n\n#major".to_string()];
+        let result =
+            detect_bump_from_tokens(&messages, "#major", "#minor", "#patch", "#none", "none");
+        assert_eq!(result, BumpKind::Major);
     }
 
     #[test]
