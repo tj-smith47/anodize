@@ -431,11 +431,15 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
             log,
         );
     } else {
-        // Legacy path: always submit a PR using upstream_repo or own repo.
+        // Legacy path: always submit a PR. Upstream is the canonical
+        // krew-index repository unless explicitly overridden. Falling back
+        // to the user's own repo (the prior behavior) silently created
+        // useless intra-fork PRs against the user's empty `main` branch
+        // instead of against the real upstream.
         let upstream_slug = if let Some(ref u) = krew_cfg.upstream_repo {
             format!("{}/{}", u.owner, u.name)
         } else {
-            format!("{}/{}", repo_owner, repo_name)
+            "kubernetes-sigs/krew-index".to_string()
         };
 
         util::submit_pr_via_gh(
