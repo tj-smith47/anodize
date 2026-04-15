@@ -948,12 +948,24 @@ pub(crate) fn submit_pr_via_gh(
     let token = std::env::var("ANODIZE_GITHUB_TOKEN")
         .ok()
         .or_else(|| std::env::var("GITHUB_TOKEN").ok());
+
+    // Discover the upstream's actual default branch. Hardcoding "main" breaks
+    // PR creation against repos whose default is "master" (e.g.
+    // microsoft/winget-pkgs) or any other name. The 404 on the base ref
+    // bubbles up as a tangled GraphQL error from `gh pr create`:
+    // "Head sha can't be blank, ..., not all refs are readable, Base ref
+    // must be a branch". Fall back to "main" only if the lookup fails.
+    let base_branch = upstream_repo
+        .split_once('/')
+        .and_then(|(owner, name)| fetch_default_branch(owner, name, token.as_deref()))
+        .unwrap_or_else(|| "main".to_string());
+
     if gh_is_available() {
         create_pr_via_gh_cli(
             repo_path,
             upstream_repo,
             head,
-            "main",
+            &base_branch,
             title,
             body,
             false,
@@ -963,7 +975,16 @@ pub(crate) fn submit_pr_via_gh(
     } else if let Some(ref tok) = token {
         if let Some((owner, name)) = upstream_repo.split_once('/') {
             create_pr_via_api(
-                owner, name, head, "main", title, body, false, tok, label, log,
+                owner,
+                name,
+                head,
+                &base_branch,
+                title,
+                body,
+                false,
+                tok,
+                label,
+                log,
             );
         } else {
             log.warn(&format!(
@@ -975,6 +996,31 @@ pub(crate) fn submit_pr_via_gh(
             "{label}: neither `gh` CLI nor a token is available -- cannot create PR automatically"
         ));
     }
+}
+
+/// Look up a GitHub repo's `default_branch` via the REST API. Returns `None`
+/// on any failure (token missing, network error, repo not found, parse
+/// failure) so the caller can fall back to a sensible default.
+fn fetch_default_branch(owner: &str, name: &str, token: Option<&str>) -> Option<String> {
+    let url = format!("https://api.github.com/repos/{}/{}", owner, name);
+    let mut req = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .ok()?
+        .get(&url)
+        .header("User-Agent", "anodize")
+        .header("Accept", "application/vnd.github+json");
+    if let Some(tok) = token {
+        req = req.bearer_auth(tok);
+    }
+    let resp = req.send().ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body: serde_json::Value = resp.json().ok()?;
+    body.get("default_branch")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 // ---------------------------------------------------------------------------
