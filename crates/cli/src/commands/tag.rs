@@ -544,22 +544,30 @@ pub(crate) fn detect_bump_from_tokens(
     none_token: &str,
     default_bump: &str,
 ) -> BumpKind {
+    // Whole-token (not substring) match: a commit body containing
+    // `"chore: revert #none commit"` in prose, or a word like `#handsome`,
+    // must NOT trigger the `#none` signal. Tokens are recognized only when
+    // they appear as a standalone whitespace-separated word.
+    let message_has_token = |msg: &str, token: &str| -> bool {
+        msg.split(|c: char| c.is_whitespace()).any(|w| w == token)
+    };
+
     let mut has_major = false;
     let mut has_minor = false;
     let mut has_patch = false;
     let mut has_none = false;
 
     for msg in messages {
-        if msg.contains(none_token) {
+        if message_has_token(msg, none_token) {
             has_none = true;
         }
-        if msg.contains(major_token) {
+        if message_has_token(msg, major_token) {
             has_major = true;
         }
-        if msg.contains(minor_token) {
+        if message_has_token(msg, minor_token) {
             has_minor = true;
         }
-        if msg.contains(patch_token) {
+        if message_has_token(msg, patch_token) {
             has_patch = true;
         }
     }

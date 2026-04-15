@@ -289,6 +289,52 @@ async fn delete_release_asset_by_name(
     Ok(false)
 }
 
+/// Look up an existing release asset by name and return its byte size.
+///
+/// Used by the idempotent-upload path: when GitHub rejects an upload with
+/// `422 already_exists`, comparing the existing asset's size to the local
+/// file size lets us decide whether a prior attempt successfully uploaded
+/// the same bytes (outer-retry recovery) or whether the names collided with
+/// different content (real conflict that needs `replace_existing_artifacts`).
+async fn find_release_asset_size(
+    octo: &octocrab::Octocrab,
+    owner: &str,
+    repo: &str,
+    release_id: u64,
+    asset_name: &str,
+) -> Result<Option<u64>> {
+    const MAX_PAGES: u32 = 50;
+    let mut page: u32 = 1;
+    loop {
+        let route = format!(
+            "/repos/{}/{}/releases/{}/assets?per_page=100&page={}",
+            owner, repo, release_id, page
+        );
+        let assets: Vec<octocrab::models::repos::Asset> =
+            octo.get(route, None::<&()>).await.with_context(|| {
+                format!(
+                    "release: list assets for release {} on {}/{} (page {})",
+                    release_id, owner, repo, page
+                )
+            })?;
+
+        for asset in &assets {
+            if asset.name == asset_name {
+                return Ok(Some(asset.size as u64));
+            }
+        }
+
+        if assets.len() < 100 {
+            break;
+        }
+        page += 1;
+        if page > MAX_PAGES {
+            break;
+        }
+    }
+    Ok(None)
+}
+
 // ---------------------------------------------------------------------------
 // retry_upload — shared exponential-backoff retry for upload operations
 // ---------------------------------------------------------------------------
@@ -2095,6 +2141,7 @@ impl Stage for ReleaseStage {
                                     let data = std::fs::read(&path).with_context(|| {
                                         format!("release: read artifact {}", path.display())
                                     })?;
+                                    let local_size = data.len() as u64;
 
                                     match octo
                                         .repos(&gh_owner, &gh_name)
@@ -2120,10 +2167,18 @@ impl Stage for ReleaseStage {
                                                     if source.status_code.as_u16() == 422
                                             ) && err_str.contains("already_exists");
 
-                                            if is_already_exists && replace_existing_artifacts {
-                                                // Delete the conflicting asset via paginated
-                                                // search and retry. Handles releases with >30 assets.
-                                                let _ = delete_release_asset_by_name(
+                                            if is_already_exists {
+                                                // Outer-retry idempotency: if an asset with the
+                                                // same name already exists AND its size matches
+                                                // the local artifact, a prior attempt in this
+                                                // same release flow successfully uploaded it.
+                                                // Treat as a no-op — the bytes GitHub has are
+                                                // the bytes we intended to upload. This makes
+                                                // re-runs of the publish step (e.g. after a
+                                                // different publisher later in the same run
+                                                // failed) recover without needing operators to
+                                                // opt into `replace_existing_artifacts`.
+                                                let remote_size = find_release_asset_size(
                                                     &octo,
                                                     &gh_owner,
                                                     &gh_name,
@@ -2133,19 +2188,45 @@ impl Stage for ReleaseStage {
                                                 .await
                                                 .with_context(|| {
                                                     format!(
-                                                        "release: delete duplicate artifact '{}' from release '{}'",
+                                                        "release: look up existing asset '{}' on release '{}'",
                                                         file_name, tag_c
                                                     )
                                                 })?;
-                                                last_err = Some(anyhow::anyhow!(err));
-                                                if attempt < MAX_UPLOAD_ATTEMPTS {
-                                                    let delay = std::cmp::min(
-                                                        INITIAL_RETRY_DELAY * 2u32.pow(attempt - 1),
-                                                        MAX_RETRY_DELAY,
-                                                    );
-                                                    tokio::time::sleep(delay).await;
+                                                if remote_size == Some(local_size) {
+                                                    last_err = None;
+                                                    break;
                                                 }
-                                                continue;
+
+                                                // Size mismatch — real conflict. Fall back to
+                                                // `replace_existing_artifacts` config: if the
+                                                // operator opted in, delete the stale asset and
+                                                // retry; otherwise fail loudly so the operator
+                                                // can decide how to reconcile.
+                                                if replace_existing_artifacts {
+                                                    let _ = delete_release_asset_by_name(
+                                                        &octo,
+                                                        &gh_owner,
+                                                        &gh_name,
+                                                        release_id_raw,
+                                                        &file_name,
+                                                    )
+                                                    .await
+                                                    .with_context(|| {
+                                                        format!(
+                                                            "release: delete duplicate artifact '{}' from release '{}'",
+                                                            file_name, tag_c
+                                                        )
+                                                    })?;
+                                                    last_err = Some(anyhow::anyhow!(err));
+                                                    if attempt < MAX_UPLOAD_ATTEMPTS {
+                                                        let delay = std::cmp::min(
+                                                            INITIAL_RETRY_DELAY * 2u32.pow(attempt - 1),
+                                                            MAX_RETRY_DELAY,
+                                                        );
+                                                        tokio::time::sleep(delay).await;
+                                                    }
+                                                    continue;
+                                                }
                                             }
 
                                             // GoReleaser parity: handle rate limiting
