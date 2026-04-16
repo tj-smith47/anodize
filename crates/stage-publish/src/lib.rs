@@ -5,11 +5,9 @@ pub mod chocolatey;
 pub mod cloudsmith;
 pub mod crates_io;
 pub mod dockerhub;
-pub mod fury;
 pub mod homebrew;
 pub mod krew;
 pub mod nix;
-pub mod npm;
 pub mod scoop;
 pub mod upload;
 pub(crate) mod util;
@@ -27,11 +25,9 @@ use chocolatey::publish_to_chocolatey;
 use cloudsmith::publish_to_cloudsmith;
 use crates_io::publish_to_crates_io;
 use dockerhub::publish_to_dockerhub;
-use fury::publish_to_fury;
 use homebrew::{publish_to_homebrew, publish_top_level_homebrew_casks};
 use krew::publish_to_krew;
 use nix::publish_to_nix;
-use npm::publish_to_npm;
 use scoop::publish_to_scoop;
 use upload::publish_to_upload;
 use winget::publish_to_winget;
@@ -111,16 +107,10 @@ impl Stage for PublishStage {
         // 3. Artifactory — top-level publisher (not per-crate).
         try_publish!("artifactory", publish_to_artifactory(ctx, &log));
 
-        // 4. GemFury — top-level publisher (not per-crate).
-        try_publish!("fury", publish_to_fury(ctx, &log));
-
-        // 5. CloudSmith — top-level publisher (not per-crate).
+        // 4. CloudSmith — top-level publisher (not per-crate).
         try_publish!("cloudsmith", publish_to_cloudsmith(ctx, &log));
 
-        // 6. NPM — top-level publisher (not per-crate).
-        try_publish!("npm", publish_to_npm(ctx, &log));
-
-        // 7. Generic HTTP upload — top-level publisher.
+        // 5. Generic HTTP upload — top-level publisher.
         try_publish!("upload", publish_to_upload(ctx, &log));
 
         // ---- Package-manager publishers (consume URLs from releases above) ----

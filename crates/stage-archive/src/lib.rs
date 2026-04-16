@@ -460,8 +460,7 @@ pub fn resolve_file_specs(specs: &[ArchiveFileSpec]) -> Result<Vec<ResolvedExtra
                 // produces dst/filename — more intuitive behavior (e.g.
                 // dst: "licenses/" puts the file inside a licenses directory
                 // rather than renaming it).
-                if dst.is_some() && !do_strip {
-                    let dst_prefix = dst.as_deref().unwrap();
+                if let Some(dst_prefix) = dst.as_deref().filter(|_| !do_strip) {
                     let file_strs: Vec<String> = paths
                         .iter()
                         .map(|p| p.to_string_lossy().to_string())
@@ -1279,10 +1278,8 @@ impl Stage for ArchiveStage {
                     // Combine binary + extra entries and deduplicate by archive_name.
                     // Matches GoReleaser's unique() — first occurrence wins,
                     // duplicates are warned and skipped.
-                    let combined: Vec<ArchiveEntry> = binary_entries
-                        .into_iter()
-                        .chain(extra_entries.into_iter())
-                        .collect();
+                    let combined: Vec<ArchiveEntry> =
+                        binary_entries.into_iter().chain(extra_entries).collect();
                     let deduped = deduplicate_entries(combined);
                     let sorted = sort_entries(deduped);
                     let all_entries: Vec<&ArchiveEntry> = sorted.iter().collect();
@@ -1532,12 +1529,11 @@ impl Stage for ArchiveStage {
                         let mut replaces_val: Option<String> = None;
                         let mut any_dynlink = false;
                         for b in &selected_bins {
-                            if replaces_val.is_none() {
-                                if let Some(r) = b.metadata.get("replaces")
-                                    && !r.is_empty()
-                                {
-                                    replaces_val = Some(r.clone());
-                                }
+                            if replaces_val.is_none()
+                                && let Some(r) = b.metadata.get("replaces")
+                                && !r.is_empty()
+                            {
+                                replaces_val = Some(r.clone());
                             }
                             if let Some(d) = b.metadata.get("dynamically_linked")
                                 && d == "true"

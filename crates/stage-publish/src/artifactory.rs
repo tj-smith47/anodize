@@ -62,8 +62,6 @@ fn artifact_kinds_for_mode(mode: &str) -> Vec<ArtifactKind> {
             ArtifactKind::Makeself,
             ArtifactKind::LinuxPackage,
             ArtifactKind::Flatpak,
-            ArtifactKind::PyWheel,
-            ArtifactKind::PySdist,
         ],
     }
 }

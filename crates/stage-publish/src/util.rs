@@ -1100,10 +1100,10 @@ pub(crate) struct OsArtifact {
     pub id: Option<String>,
     /// amd64 microarchitecture variant (e.g. "v1", "v2", "v3", "v4").
     /// Populated from artifact metadata when present.
-    pub goamd64: Option<String>,
+    pub amd64_variant: Option<String>,
     /// ARM version (e.g. "6", "7").
     /// Populated from artifact metadata when present.
-    pub goarm: Option<String>,
+    pub arm_variant: Option<String>,
 }
 
 /// Convert a single `Artifact` reference into an `OsArtifact`, using the
@@ -1119,8 +1119,8 @@ fn artifact_to_os_artifact(a: &Artifact, os_fallback: &str) -> OsArtifact {
         .unwrap_or_else(|| a.path.to_string_lossy().into_owned());
     let sha256 = a.metadata.get("sha256").cloned().unwrap_or_default();
     let id = a.metadata.get("id").cloned();
-    let goamd64 = a.metadata.get("goamd64").cloned();
-    let goarm = a.metadata.get("goarm").cloned();
+    let amd64_variant = a.metadata.get("amd64_variant").cloned();
+    let arm_variant = a.metadata.get("arm_variant").cloned();
     let target = a.target.as_deref().unwrap_or("");
     OsArtifact {
         url,
@@ -1128,8 +1128,8 @@ fn artifact_to_os_artifact(a: &Artifact, os_fallback: &str) -> OsArtifact {
         os: infer_os(target, os_fallback),
         arch: infer_arch(target),
         id,
-        goamd64,
-        goarm,
+        amd64_variant,
+        arm_variant,
     }
 }
 
@@ -1222,21 +1222,21 @@ pub(crate) fn find_artifacts_by_os_filtered(
     os_needle: &str,
     ids: Option<&[String]>,
 ) -> Vec<OsArtifact> {
-    find_artifacts_by_os_with_goarch(ctx, crate_name, os_needle, ids, None, None)
+    find_artifacts_by_os_with_variant(ctx, crate_name, os_needle, ids, None, None)
 }
 
-/// Find artifacts by OS with optional goamd64/goarm microarchitecture filtering.
+/// Find artifacts by OS with optional amd64_variant/arm_variant microarchitecture filtering.
 ///
-/// When `goamd64` is `Some`, only amd64 artifacts whose metadata `goamd64`
-/// matches (or have no goamd64 metadata, for backward compat) are included.
-/// Similarly for `goarm` and arm artifacts.
-pub(crate) fn find_artifacts_by_os_with_goarch(
+/// When `amd64_variant` is `Some`, only amd64 artifacts whose metadata `amd64_variant`
+/// matches (or have no amd64_variant metadata, for backward compat) are included.
+/// Similarly for `arm_variant` and arm artifacts.
+pub(crate) fn find_artifacts_by_os_with_variant(
     ctx: &Context,
     crate_name: &str,
     os_needle: &str,
     ids: Option<&[String]>,
-    goamd64: Option<&str>,
-    goarm: Option<&str>,
+    amd64_variant: Option<&str>,
+    arm_variant: Option<&str>,
 ) -> Vec<OsArtifact> {
     // Include both Archive and UploadableBinary artifacts — GoReleaser
     // supports both UploadableArchive and UploadableBinary types for publisher
@@ -1270,7 +1270,7 @@ pub(crate) fn find_artifacts_by_os_with_goarch(
         })
         .map(|a| artifact_to_os_artifact(a, os_needle))
         .collect();
-    filter_by_goarch(os_artifacts, goamd64, goarm)
+    filter_by_variant(os_artifacts, amd64_variant, arm_variant)
 }
 
 /// Find all Archive artifacts for the given crate across all platforms.
@@ -1289,21 +1289,21 @@ pub(crate) fn find_all_platform_artifacts_filtered(
     crate_name: &str,
     ids: Option<&[String]>,
 ) -> Vec<OsArtifact> {
-    find_all_platform_artifacts_with_goarch(ctx, crate_name, ids, None, None)
+    find_all_platform_artifacts_with_variant(ctx, crate_name, ids, None, None)
 }
 
-/// Find all platform artifacts with optional goamd64/goarm microarchitecture
+/// Find all platform artifacts with optional amd64_variant/arm_variant microarchitecture
 /// filtering.
 ///
-/// When `goamd64` is `Some`, only amd64 artifacts whose metadata `goamd64`
-/// matches (or have no goamd64 metadata, for backward compat) are included.
-/// Similarly for `goarm` and arm artifacts.
-pub(crate) fn find_all_platform_artifacts_with_goarch(
+/// When `amd64_variant` is `Some`, only amd64 artifacts whose metadata `amd64_variant`
+/// matches (or have no amd64_variant metadata, for backward compat) are included.
+/// Similarly for `arm_variant` and arm artifacts.
+pub(crate) fn find_all_platform_artifacts_with_variant(
     ctx: &Context,
     crate_name: &str,
     ids: Option<&[String]>,
-    goamd64: Option<&str>,
-    goarm: Option<&str>,
+    amd64_variant: Option<&str>,
+    arm_variant: Option<&str>,
 ) -> Vec<OsArtifact> {
     let mut all = ctx
         .artifacts
@@ -1323,40 +1323,40 @@ pub(crate) fn find_all_platform_artifacts_with_goarch(
         .into_iter()
         .map(|a| artifact_to_os_artifact(a, "unknown"))
         .collect();
-    filter_by_goarch(os_artifacts, goamd64, goarm)
+    filter_by_variant(os_artifacts, amd64_variant, arm_variant)
 }
 
-/// Filter a vec of `OsArtifact` by goamd64/goarm microarchitecture variants.
+/// Filter a vec of `OsArtifact` by amd64_variant/arm_variant microarchitecture variants.
 ///
-/// For amd64 artifacts: when `goamd64` is set, keep only artifacts whose
-/// `goamd64` metadata matches the config value or that have no goamd64
+/// For amd64 artifacts: when `amd64_variant` is set, keep only artifacts whose
+/// `amd64_variant` metadata matches the config value or that have no amd64_variant
 /// metadata (backward compat).
 ///
-/// For arm artifacts (armv6, armv7): when `goarm` is set, keep only artifacts
-/// whose `goarm` metadata matches or that have no goarm metadata.
+/// For arm artifacts (armv6, armv7): when `arm_variant` is set, keep only artifacts
+/// whose `arm_variant` metadata matches or that have no arm_variant metadata.
 ///
 /// Non-amd64/non-arm artifacts always pass through.
-fn filter_by_goarch(
+fn filter_by_variant(
     artifacts: Vec<OsArtifact>,
-    goamd64: Option<&str>,
-    goarm: Option<&str>,
+    amd64_variant: Option<&str>,
+    arm_variant: Option<&str>,
 ) -> Vec<OsArtifact> {
     artifacts
         .into_iter()
         .filter(|a| {
-            // Filter amd64 artifacts by goamd64 config
+            // Filter amd64 artifacts by amd64_variant config
             if a.arch == "amd64"
-                && let Some(want) = goamd64
+                && let Some(want) = amd64_variant
             {
-                // Keep if artifact has no goamd64 (compat) or matches
-                return a.goamd64.as_deref().is_none_or(|v| v == want);
+                // Keep if artifact has no amd64_variant (compat) or matches
+                return a.amd64_variant.as_deref().is_none_or(|v| v == want);
             }
-            // Filter arm artifacts by goarm config
+            // Filter arm artifacts by arm_variant config
             if a.arch.starts_with("arm")
                 && a.arch != "arm64"
-                && let Some(want) = goarm
+                && let Some(want) = arm_variant
             {
-                return a.goarm.as_deref().is_none_or(|v| v == want);
+                return a.arm_variant.as_deref().is_none_or(|v| v == want);
             }
             true
         })
@@ -1675,8 +1675,8 @@ mod tests {
                 os: "linux".to_string(),
                 arch: "amd64".to_string(),
                 id: Some("a".to_string()),
-                goamd64: None,
-                goarm: None,
+                amd64_variant: None,
+                arm_variant: None,
             },
             OsArtifact {
                 url: "u2".to_string(),
@@ -1684,8 +1684,8 @@ mod tests {
                 os: "darwin".to_string(),
                 arch: "arm64".to_string(),
                 id: Some("b".to_string()),
-                goamd64: None,
-                goarm: None,
+                amd64_variant: None,
+                arm_variant: None,
             },
         ];
         let result = filter_os_artifacts_by_ids(artifacts, None);
@@ -1701,8 +1701,8 @@ mod tests {
                 os: "linux".to_string(),
                 arch: "amd64".to_string(),
                 id: Some("keep-me".to_string()),
-                goamd64: None,
-                goarm: None,
+                amd64_variant: None,
+                arm_variant: None,
             },
             OsArtifact {
                 url: "u2".to_string(),
@@ -1710,8 +1710,8 @@ mod tests {
                 os: "darwin".to_string(),
                 arch: "arm64".to_string(),
                 id: Some("drop-me".to_string()),
-                goamd64: None,
-                goarm: None,
+                amd64_variant: None,
+                arm_variant: None,
             },
             OsArtifact {
                 url: "u3".to_string(),
@@ -1719,8 +1719,8 @@ mod tests {
                 os: "windows".to_string(),
                 arch: "amd64".to_string(),
                 id: None,
-                goamd64: None,
-                goarm: None,
+                amd64_variant: None,
+                arm_variant: None,
             },
         ];
         let ids = vec!["keep-me".to_string()];
@@ -1737,8 +1737,8 @@ mod tests {
             os: "linux".to_string(),
             arch: "amd64".to_string(),
             id: Some("a".to_string()),
-            goamd64: None,
-            goarm: None,
+            amd64_variant: None,
+            arm_variant: None,
         }];
         let ids: Vec<String> = vec![];
         let result = filter_os_artifacts_by_ids(artifacts, Some(&ids));
@@ -1815,11 +1815,11 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // filter_by_goarch tests
+    // filter_by_variant tests
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_filter_by_goarch_no_filter_passes_all() {
+    fn test_filter_by_variant_no_filter_passes_all() {
         let artifacts = vec![
             OsArtifact {
                 url: "u1".into(),
@@ -1827,8 +1827,8 @@ mod tests {
                 os: "linux".into(),
                 arch: "amd64".into(),
                 id: None,
-                goamd64: Some("v1".into()),
-                goarm: None,
+                amd64_variant: Some("v1".into()),
+                arm_variant: None,
             },
             OsArtifact {
                 url: "u2".into(),
@@ -1836,16 +1836,16 @@ mod tests {
                 os: "linux".into(),
                 arch: "amd64".into(),
                 id: None,
-                goamd64: Some("v3".into()),
-                goarm: None,
+                amd64_variant: Some("v3".into()),
+                arm_variant: None,
             },
         ];
-        let result = filter_by_goarch(artifacts, None, None);
+        let result = filter_by_variant(artifacts, None, None);
         assert_eq!(result.len(), 2);
     }
 
     #[test]
-    fn test_filter_by_goarch_amd64_v1() {
+    fn test_filter_by_variant_amd64_v1() {
         let artifacts = vec![
             OsArtifact {
                 url: "v1".into(),
@@ -1853,8 +1853,8 @@ mod tests {
                 os: "linux".into(),
                 arch: "amd64".into(),
                 id: None,
-                goamd64: Some("v1".into()),
-                goarm: None,
+                amd64_variant: Some("v1".into()),
+                arm_variant: None,
             },
             OsArtifact {
                 url: "v3".into(),
@@ -1862,8 +1862,8 @@ mod tests {
                 os: "linux".into(),
                 arch: "amd64".into(),
                 id: None,
-                goamd64: Some("v3".into()),
-                goarm: None,
+                amd64_variant: Some("v3".into()),
+                arm_variant: None,
             },
             OsArtifact {
                 url: "arm64".into(),
@@ -1871,34 +1871,34 @@ mod tests {
                 os: "linux".into(),
                 arch: "arm64".into(),
                 id: None,
-                goamd64: None,
-                goarm: None,
+                amd64_variant: None,
+                arm_variant: None,
             },
         ];
-        let result = filter_by_goarch(artifacts, Some("v1"), None);
+        let result = filter_by_variant(artifacts, Some("v1"), None);
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].url, "v1");
         assert_eq!(result[1].url, "arm64"); // non-amd64 passes through
     }
 
     #[test]
-    fn test_filter_by_goarch_amd64_no_metadata_passes() {
-        // Artifacts without goamd64 metadata pass through (backward compat).
+    fn test_filter_by_variant_amd64_no_metadata_passes() {
+        // Artifacts without amd64_variant metadata pass through (backward compat).
         let artifacts = vec![OsArtifact {
             url: "u1".into(),
             sha256: "s".into(),
             os: "linux".into(),
             arch: "amd64".into(),
             id: None,
-            goamd64: None,
-            goarm: None,
+            amd64_variant: None,
+            arm_variant: None,
         }];
-        let result = filter_by_goarch(artifacts, Some("v1"), None);
+        let result = filter_by_variant(artifacts, Some("v1"), None);
         assert_eq!(result.len(), 1);
     }
 
     #[test]
-    fn test_filter_by_goarch_arm_filter() {
+    fn test_filter_by_variant_arm_filter() {
         let artifacts = vec![
             OsArtifact {
                 url: "arm6".into(),
@@ -1906,8 +1906,8 @@ mod tests {
                 os: "linux".into(),
                 arch: "armv6".into(),
                 id: None,
-                goamd64: None,
-                goarm: Some("6".into()),
+                amd64_variant: None,
+                arm_variant: Some("6".into()),
             },
             OsArtifact {
                 url: "arm7".into(),
@@ -1915,17 +1915,17 @@ mod tests {
                 os: "linux".into(),
                 arch: "armv7".into(),
                 id: None,
-                goamd64: None,
-                goarm: Some("7".into()),
+                amd64_variant: None,
+                arm_variant: Some("7".into()),
             },
         ];
-        let result = filter_by_goarch(artifacts, None, Some("7"));
+        let result = filter_by_variant(artifacts, None, Some("7"));
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].url, "arm7");
     }
 
     #[test]
-    fn test_filter_by_goarch_combined() {
+    fn test_filter_by_variant_combined() {
         let artifacts = vec![
             OsArtifact {
                 url: "amd64-v1".into(),
@@ -1933,8 +1933,8 @@ mod tests {
                 os: "linux".into(),
                 arch: "amd64".into(),
                 id: None,
-                goamd64: Some("v1".into()),
-                goarm: None,
+                amd64_variant: Some("v1".into()),
+                arm_variant: None,
             },
             OsArtifact {
                 url: "amd64-v3".into(),
@@ -1942,8 +1942,8 @@ mod tests {
                 os: "linux".into(),
                 arch: "amd64".into(),
                 id: None,
-                goamd64: Some("v3".into()),
-                goarm: None,
+                amd64_variant: Some("v3".into()),
+                arm_variant: None,
             },
             OsArtifact {
                 url: "arm6".into(),
@@ -1951,8 +1951,8 @@ mod tests {
                 os: "linux".into(),
                 arch: "armv6".into(),
                 id: None,
-                goamd64: None,
-                goarm: Some("6".into()),
+                amd64_variant: None,
+                arm_variant: Some("6".into()),
             },
             OsArtifact {
                 url: "arm7".into(),
@@ -1960,11 +1960,11 @@ mod tests {
                 os: "linux".into(),
                 arch: "armv7".into(),
                 id: None,
-                goamd64: None,
-                goarm: Some("7".into()),
+                amd64_variant: None,
+                arm_variant: Some("7".into()),
             },
         ];
-        let result = filter_by_goarch(artifacts, Some("v1"), Some("7"));
+        let result = filter_by_variant(artifacts, Some("v1"), Some("7"));
         assert_eq!(result.len(), 2);
         assert!(result.iter().any(|a| a.url == "amd64-v1"));
         assert!(result.iter().any(|a| a.url == "arm7"));

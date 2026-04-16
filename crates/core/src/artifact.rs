@@ -20,10 +20,6 @@ pub enum ArtifactKind {
     CShared,
     Wasm,
 
-    // --- Python packages ---
-    PyWheel,
-    PySdist,
-
     // --- Packaged archives ---
     Archive,
     SourceArchive,
@@ -90,8 +86,6 @@ impl ArtifactKind {
             ArtifactKind::CArchive => "c_archive",
             ArtifactKind::CShared => "c_shared",
             ArtifactKind::Wasm => "wasm",
-            ArtifactKind::PyWheel => "py_wheel",
-            ArtifactKind::PySdist => "py_sdist",
             ArtifactKind::Archive => "archive",
             ArtifactKind::SourceArchive => "source_archive",
             ArtifactKind::Makeself => "makeself",
@@ -141,8 +135,6 @@ impl ArtifactKind {
             "c_archive" => Some(ArtifactKind::CArchive),
             "c_shared" => Some(ArtifactKind::CShared),
             "wasm" => Some(ArtifactKind::Wasm),
-            "py_wheel" => Some(ArtifactKind::PyWheel),
-            "py_sdist" => Some(ArtifactKind::PySdist),
             "archive" => Some(ArtifactKind::Archive),
             "source_archive" => Some(ArtifactKind::SourceArchive),
             "makeself" => Some(ArtifactKind::Makeself),
@@ -347,9 +339,6 @@ impl ArtifactRegistry {
 }
 
 /// Artifact kinds that should be included in size reporting.
-/// Matches GoReleaser's reportsizes filter: all uploadable types (including
-/// UploadableBinary, Makeself, PyWheel, PySdist) + build outputs (Binary,
-/// UniversalBinary, Library, Header, CArchive, CShared, Wasm) + Snap.
 pub fn size_reportable_kinds() -> &'static [ArtifactKind] {
     &[
         // Uploadable types (all appear in releases)
@@ -361,8 +350,6 @@ pub fn size_reportable_kinds() -> &'static [ArtifactKind] {
         ArtifactKind::Flatpak,
         ArtifactKind::SourceRpm,
         ArtifactKind::Sbom,
-        ArtifactKind::PyWheel,
-        ArtifactKind::PySdist,
         ArtifactKind::Checksum,
         ArtifactKind::Signature,
         ArtifactKind::Certificate,
@@ -371,7 +358,7 @@ pub fn size_reportable_kinds() -> &'static [ArtifactKind] {
         ArtifactKind::MacOsPackage,
         ArtifactKind::Snap,
         ArtifactKind::PublishableSnapcraft,
-        // Build outputs (GoReleaser reports Binary, CArchive, CShared, Header)
+        // Build outputs
         ArtifactKind::Binary,
         ArtifactKind::UploadableBinary,
         ArtifactKind::UniversalBinary,
@@ -383,9 +370,8 @@ pub fn size_reportable_kinds() -> &'static [ArtifactKind] {
     ]
 }
 
-/// Artifact kinds that are uploadable to releases/blob storage.
-/// Matches GoReleaser's ReleaseUploadableTypes — the canonical list of types
-/// that should be uploaded, checksummed, signed, and distributed.
+/// Artifact kinds that are uploadable to releases/blob storage — the canonical
+/// list of types that should be uploaded, checksummed, signed, and distributed.
 pub fn uploadable_kinds() -> &'static [ArtifactKind] {
     &[
         ArtifactKind::Archive,
@@ -398,8 +384,6 @@ pub fn uploadable_kinds() -> &'static [ArtifactKind] {
         ArtifactKind::Flatpak,
         ArtifactKind::SourceRpm,
         ArtifactKind::Sbom,
-        ArtifactKind::PyWheel,
-        ArtifactKind::PySdist,
         ArtifactKind::Checksum,
         ArtifactKind::Signature,
         ArtifactKind::Certificate,
@@ -409,14 +393,13 @@ pub fn uploadable_kinds() -> &'static [ArtifactKind] {
     ]
 }
 
-/// Artifact kinds eligible for release upload, matching GoReleaser's
-/// `ReleaseUploadableTypes` ordering from `internal/pipe/release/release.go`.
-/// This is the canonical list used by the GitHub release publisher and by
-/// blob storage when deciding which artifacts to include.
+/// Artifact kinds eligible for release upload. Canonical list used by the
+/// GitHub release publisher and by blob storage when deciding which artifacts
+/// to include.
 ///
 /// Kept intentionally narrower than [`uploadable_kinds`] — for example,
-/// [`ArtifactKind::PublishableSnapcraft`] appears in anodize's internal
-/// uploadable list but is not released to GitHub in GoReleaser.
+/// [`ArtifactKind::PublishableSnapcraft`] appears in the internal uploadable
+/// list but is not released to GitHub.
 pub fn release_uploadable_kinds() -> &'static [ArtifactKind] {
     &[
         ArtifactKind::Archive,
@@ -428,8 +411,6 @@ pub fn release_uploadable_kinds() -> &'static [ArtifactKind] {
         ArtifactKind::Flatpak,
         ArtifactKind::SourceRpm,
         ArtifactKind::Sbom,
-        ArtifactKind::PyWheel,
-        ArtifactKind::PySdist,
         ArtifactKind::Checksum,
         ArtifactKind::Signature,
         ArtifactKind::Certificate,
@@ -721,14 +702,6 @@ mod tests {
             "c_shared"
         );
         assert_eq!(
-            serde_json::to_value(ArtifactKind::PyWheel).unwrap(),
-            "py_wheel"
-        );
-        assert_eq!(
-            serde_json::to_value(ArtifactKind::PySdist).unwrap(),
-            "py_sdist"
-        );
-        assert_eq!(
             serde_json::to_value(ArtifactKind::Makeself).unwrap(),
             "makeself"
         );
@@ -831,8 +804,6 @@ mod tests {
             ArtifactKind::CArchive,
             ArtifactKind::CShared,
             ArtifactKind::Wasm,
-            ArtifactKind::PyWheel,
-            ArtifactKind::PySdist,
             ArtifactKind::Archive,
             ArtifactKind::SourceArchive,
             ArtifactKind::Makeself,
@@ -874,7 +845,7 @@ mod tests {
                 ArtifactKind::parse(s).unwrap_or_else(|| panic!("parse({:?}) returned None", s));
             assert_eq!(*variant, parsed, "roundtrip failed for {:?}", s);
         }
-        assert_eq!(all_variants.len(), 44, "update test when adding variants");
+        assert_eq!(all_variants.len(), 42, "update test when adding variants");
     }
 
     #[test]
@@ -920,8 +891,6 @@ mod tests {
         assert!(kinds.contains(&ArtifactKind::LinuxPackage));
         assert!(kinds.contains(&ArtifactKind::Flatpak));
         assert!(kinds.contains(&ArtifactKind::SourceRpm));
-        assert!(kinds.contains(&ArtifactKind::PyWheel));
-        assert!(kinds.contains(&ArtifactKind::PySdist));
         assert!(kinds.contains(&ArtifactKind::Sbom));
         assert!(kinds.contains(&ArtifactKind::Checksum));
         assert!(kinds.contains(&ArtifactKind::Signature));

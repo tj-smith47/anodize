@@ -1083,7 +1083,13 @@ fn fetch_gitlab_commits(
         .api
         .unwrap_or_else(|| "https://gitlab.com/api/v4".to_string());
     let api = api_url.trim_end_matches('/');
-    let use_job_token = gitlab_urls.use_job_token.unwrap_or(false);
+    // Match GoReleaser's `checkUseJobToken`: only send JOB-TOKEN when
+    // CI_JOB_TOKEN is set, the flag is on, and the provided token equals
+    // CI_JOB_TOKEN. Otherwise fall back to PRIVATE-TOKEN.
+    let use_job_token = {
+        let ci_token = std::env::var("CI_JOB_TOKEN").unwrap_or_default();
+        !ci_token.is_empty() && gitlab_urls.use_job_token.unwrap_or(false) && token == ci_token
+    };
     let skip_tls = gitlab_urls.skip_tls_verify.unwrap_or(false);
 
     // Derive project ID from git remote (owner/repo), URL-encode slashes.
@@ -2333,7 +2339,7 @@ abbrev: 10
         let changelog = ctx
             .changelogs
             .get("test-project")
-            .expect("changelog for test-project should exist");
+            .unwrap_or_else(|| panic!("changelog for test-project should exist"));
         assert!(!changelog.is_empty(), "changelog should not be empty");
 
         // Verify expected sections exist

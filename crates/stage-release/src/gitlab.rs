@@ -84,6 +84,27 @@ fn auth_header(use_job_token: bool) -> &'static str {
     }
 }
 
+/// Resolve whether the `JOB-TOKEN` header should be used for the given token.
+///
+/// Mirrors GoReleaser's `checkUseJobToken` (`internal/client/gitlab.go:642`).
+/// Returns true only when all three hold:
+///
+/// 1. `CI_JOB_TOKEN` env var is non-empty (we're inside a GitLab runner).
+/// 2. `gitlab_urls.use_job_token` is true in config.
+/// 3. the token being used equals `CI_JOB_TOKEN` — so secondary clients built
+///    during the same CI run (e.g. Homebrew publishing with a personal token)
+///    still fall back to `PRIVATE-TOKEN`.
+pub(crate) fn resolve_use_job_token(config_flag: bool, token: &str) -> bool {
+    let ci_token = std::env::var("CI_JOB_TOKEN").unwrap_or_default();
+    if ci_token.is_empty() {
+        return false;
+    }
+    if !config_flag {
+        return false;
+    }
+    token == ci_token
+}
+
 /// Build a [`reqwest::Client`] configured for GitLab API access.
 ///
 /// - `token`: the GITLAB_TOKEN or CI_JOB_TOKEN value.
@@ -714,5 +735,48 @@ mod tests {
     #[test]
     fn auth_header_job_token() {
         assert_eq!(auth_header(true), "JOB-TOKEN");
+    }
+
+    // -- resolve_use_job_token -----------------------------------------------
+    // Mutates CI_JOB_TOKEN env var — must run serially to avoid races with
+    // other tests in the workspace that may read the same variable.
+
+    #[test]
+    #[serial_test::serial]
+    fn resolve_use_job_token_in_ci_flag_on_tokens_match() {
+        unsafe { std::env::set_var("CI_JOB_TOKEN", "real-ci-token") };
+        assert!(resolve_use_job_token(true, "real-ci-token"));
+        unsafe { std::env::remove_var("CI_JOB_TOKEN") };
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn resolve_use_job_token_in_ci_flag_on_tokens_differ() {
+        unsafe { std::env::set_var("CI_JOB_TOKEN", "real-ci-token") };
+        assert!(!resolve_use_job_token(true, "glpat-xyz"));
+        unsafe { std::env::remove_var("CI_JOB_TOKEN") };
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn resolve_use_job_token_in_ci_flag_off() {
+        unsafe { std::env::set_var("CI_JOB_TOKEN", "real-ci-token") };
+        assert!(!resolve_use_job_token(false, "real-ci-token"));
+        unsafe { std::env::remove_var("CI_JOB_TOKEN") };
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn resolve_use_job_token_no_ci_env() {
+        unsafe { std::env::remove_var("CI_JOB_TOKEN") };
+        assert!(!resolve_use_job_token(true, "glpat-xyz"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn resolve_use_job_token_empty_ci_env() {
+        unsafe { std::env::set_var("CI_JOB_TOKEN", "") };
+        assert!(!resolve_use_job_token(true, ""));
+        unsafe { std::env::remove_var("CI_JOB_TOKEN") };
     }
 }

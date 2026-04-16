@@ -1,21 +1,27 @@
 use anyhow::Result;
 use serde_json::json;
 
-const PDS_URL: &str = "https://bsky.social";
+/// Default Bluesky PDS (Personal Data Server). Override via
+/// `bluesky.pds_url` in config to target a self-hosted PDS.
+pub const DEFAULT_PDS_URL: &str = "https://bsky.social";
 
 pub fn send_bluesky(
     username: &str,
     app_password: &str,
     message: &str,
     release_url: Option<&str>,
+    pds_url: Option<&str>,
 ) -> Result<()> {
+    let pds_url = pds_url
+        .map(|s| s.trim_end_matches('/').to_string())
+        .unwrap_or_else(|| DEFAULT_PDS_URL.to_string());
     let client = reqwest::blocking::Client::builder()
         .user_agent("anodize/1.0")
         .build()?;
 
     // Step 1: Create session (login)
     let session_resp = client
-        .post(format!("{PDS_URL}/xrpc/com.atproto.server.createSession"))
+        .post(format!("{pds_url}/xrpc/com.atproto.server.createSession"))
         .header("Content-Type", "application/json")
         .body(
             json!({
@@ -67,7 +73,7 @@ pub fn send_bluesky(
     });
 
     let create_resp = client
-        .post(format!("{PDS_URL}/xrpc/com.atproto.repo.createRecord"))
+        .post(format!("{pds_url}/xrpc/com.atproto.repo.createRecord"))
         .bearer_auth(access_jwt)
         .header("Content-Type", "application/json")
         .body(create_body.to_string())

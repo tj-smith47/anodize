@@ -21,8 +21,9 @@
 //!     draft: false,
 //! }));
 //!
-//! let result = mock.create_release(&params).unwrap();
+//! let result = mock.create_release(&params)?;
 //! assert_eq!(mock.create_release_calls(), 1);
+//! # Ok::<(), anyhow::Error>(())
 //! ```
 
 use std::path::PathBuf;
@@ -161,64 +162,100 @@ impl MockGitHubClient {
 
     /// Configure the response for `create_release` calls.
     pub fn set_create_release_response(&self, response: Result<ReleaseInfo, String>) {
-        *self.create_release_response.lock().unwrap() = Some(response);
+        *self
+            .create_release_response
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(response);
     }
 
     /// Configure the response for `upload_asset` calls.
     pub fn set_upload_asset_response(&self, response: Result<AssetInfo, String>) {
-        *self.upload_asset_response.lock().unwrap() = Some(response);
+        *self
+            .upload_asset_response
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(response);
     }
 
     /// Configure the response for `list_releases` calls.
     pub fn set_list_releases_response(&self, response: Result<Vec<ReleaseInfo>, String>) {
-        *self.list_releases_response.lock().unwrap() = Some(response);
+        *self
+            .list_releases_response
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(response);
     }
 
     /// Configure the response for `delete_release` calls.
     pub fn set_delete_release_response(&self, response: Result<(), String>) {
-        *self.delete_release_response.lock().unwrap() = Some(response);
+        *self
+            .delete_release_response
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(response);
     }
 
     // -- Call counters / accessors --
 
     /// Number of times `create_release` was called.
     pub fn create_release_call_count(&self) -> usize {
-        self.create_release_calls.lock().unwrap().len()
+        self.create_release_calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
     }
 
     /// Number of times `upload_asset` was called.
     pub fn upload_asset_call_count(&self) -> usize {
-        self.upload_asset_calls.lock().unwrap().len()
+        self.upload_asset_calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
     }
 
     /// Number of times `list_releases` was called.
     pub fn list_releases_call_count(&self) -> usize {
-        self.list_releases_calls.lock().unwrap().len()
+        self.list_releases_calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
     }
 
     /// Number of times `delete_release` was called.
     pub fn delete_release_call_count(&self) -> usize {
-        self.delete_release_calls.lock().unwrap().len()
+        self.delete_release_calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
     }
 
     /// Get a clone of all recorded `create_release` call parameters.
     pub fn create_release_calls(&self) -> Vec<CreateReleaseParams> {
-        self.create_release_calls.lock().unwrap().clone()
+        self.create_release_calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Get a clone of all recorded `upload_asset` call parameters.
     pub fn upload_asset_calls(&self) -> Vec<UploadAssetParams> {
-        self.upload_asset_calls.lock().unwrap().clone()
+        self.upload_asset_calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Get a clone of all recorded `list_releases` call parameters.
     pub fn list_releases_calls(&self) -> Vec<ListReleasesParams> {
-        self.list_releases_calls.lock().unwrap().clone()
+        self.list_releases_calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Get a clone of all recorded `delete_release` call parameters.
     pub fn delete_release_calls(&self) -> Vec<DeleteReleaseParams> {
-        self.delete_release_calls.lock().unwrap().clone()
+        self.delete_release_calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 }
 
@@ -234,10 +271,15 @@ impl GitHubClient for MockGitHubClient {
     fn create_release(&self, params: &CreateReleaseParams) -> anyhow::Result<ReleaseInfo> {
         self.create_release_calls
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(params.clone());
 
-        match self.create_release_response.lock().unwrap().as_ref() {
+        match self
+            .create_release_response
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+        {
             Some(Ok(info)) => Ok(info.clone()),
             Some(Err(msg)) => Err(anyhow::anyhow!("{}", msg)),
             None => Err(anyhow::anyhow!(
@@ -247,9 +289,17 @@ impl GitHubClient for MockGitHubClient {
     }
 
     fn upload_asset(&self, params: &UploadAssetParams) -> anyhow::Result<AssetInfo> {
-        self.upload_asset_calls.lock().unwrap().push(params.clone());
+        self.upload_asset_calls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(params.clone());
 
-        match self.upload_asset_response.lock().unwrap().as_ref() {
+        match self
+            .upload_asset_response
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+        {
             Some(Ok(info)) => Ok(info.clone()),
             Some(Err(msg)) => Err(anyhow::anyhow!("{}", msg)),
             None => Err(anyhow::anyhow!(
@@ -261,10 +311,15 @@ impl GitHubClient for MockGitHubClient {
     fn list_releases(&self, params: &ListReleasesParams) -> anyhow::Result<Vec<ReleaseInfo>> {
         self.list_releases_calls
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(params.clone());
 
-        match self.list_releases_response.lock().unwrap().as_ref() {
+        match self
+            .list_releases_response
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+        {
             Some(Ok(releases)) => Ok(releases.clone()),
             Some(Err(msg)) => Err(anyhow::anyhow!("{}", msg)),
             None => Err(anyhow::anyhow!(
@@ -276,10 +331,15 @@ impl GitHubClient for MockGitHubClient {
     fn delete_release(&self, params: &DeleteReleaseParams) -> anyhow::Result<()> {
         self.delete_release_calls
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(params.clone());
 
-        match self.delete_release_response.lock().unwrap().as_ref() {
+        match self
+            .delete_release_response
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+        {
             Some(Ok(())) => Ok(()),
             Some(Err(msg)) => Err(anyhow::anyhow!("{}", msg)),
             None => Err(anyhow::anyhow!(

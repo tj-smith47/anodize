@@ -843,7 +843,7 @@ fn build_octocrab_client_insecure(
     } else {
         "https://api.github.com"
             .parse()
-            .expect("hardcoded URI is valid")
+            .unwrap_or_else(|e| panic!("hardcoded URI is valid: {e}"))
     };
 
     let upload_uri: http::Uri =
@@ -854,7 +854,7 @@ fn build_octocrab_client_insecure(
         } else {
             "https://uploads.github.com"
                 .parse()
-                .expect("hardcoded URI is valid")
+                .unwrap_or_else(|e| panic!("hardcoded URI is valid: {e}"))
         };
 
     // Follow octocrab's custom_client.rs example: with_service → with_layer
@@ -973,7 +973,9 @@ impl Stage for ReleaseStage {
             tokio::runtime::Runtime::new().context("release: failed to create tokio runtime")?;
 
         for crate_cfg in &crates {
-            let release_cfg = crate_cfg.release.as_ref().unwrap();
+            let Some(release_cfg) = crate_cfg.release.as_ref() else {
+                continue;
+            };
 
             // Skip crates where release is explicitly disabled (supports template strings).
             if let Some(ref d) = release_cfg.disable
@@ -1127,7 +1129,11 @@ impl Stage for ReleaseStage {
             // GoReleaser uploads archives, packages, and signatures — NOT raw
             // binaries (Binary kind).  Raw binaries share the same filename
             // across platforms, causing "already_exists" collisions.
-            let mut artifact_entries: Vec<(std::path::PathBuf, Option<String>)> = [
+            //
+            // Matches GoReleaser `internal/pipe/release/release.go:160-167`:
+            //   types := artifact.ReleaseUploadableTypes()
+            //   if ctx.Config.Release.IncludeMeta { types = append(types, artifact.Metadata) }
+            let mut upload_kinds: Vec<ArtifactKind> = vec![
                 ArtifactKind::Archive,
                 ArtifactKind::UploadableBinary,
                 ArtifactKind::UniversalBinary,
@@ -1148,51 +1154,38 @@ impl Stage for ReleaseStage {
                 ArtifactKind::Header,
                 ArtifactKind::CArchive,
                 ArtifactKind::CShared,
-            ]
-            .iter()
-            .flat_map(|&kind| {
-                let artifacts = ctx
-                    .artifacts
-                    .by_kind_and_crate(kind, &crate_cfg.name)
-                    .into_iter();
-                if let Some(ids) = ids_filter {
-                    artifacts
-                        .filter(|a| {
-                            // Checksums and source archives are ID-agnostic
-                            // (always included regardless of IDs filter, matching GoReleaser).
-                            // Note: extra files (UploadableFile in GoReleaser) are also exempt,
-                            // but those are handled separately via collect_extra_files.
-                            matches!(
-                                a.kind,
-                                ArtifactKind::Checksum
-                                    | ArtifactKind::SourceArchive
-                                    | ArtifactKind::Metadata
-                            ) || matches!(a.metadata.get("id"), Some(id) if ids.contains(id))
-                        })
-                        .map(|a| (a.path.clone(), None))
-                        .collect::<Vec<_>>()
-                } else {
-                    artifacts
-                        .map(|a| (a.path.clone(), None))
-                        .collect::<Vec<_>>()
-                }
-            })
-            .collect();
-
-            // Also include Metadata artifacts that are Signatures or Certificates.
-            let sig_cert_entries: Vec<(std::path::PathBuf, Option<String>)> = ctx
-                .artifacts
-                .by_kind_and_crate(ArtifactKind::Metadata, &crate_cfg.name)
-                .into_iter()
-                .filter(|a| {
-                    matches!(
-                        a.metadata.get("type").map(|s| s.as_str()),
-                        Some("Signature") | Some("Certificate")
-                    )
+            ];
+            if include_meta {
+                upload_kinds.push(ArtifactKind::Metadata);
+            }
+            let mut artifact_entries: Vec<(std::path::PathBuf, Option<String>)> = upload_kinds
+                .iter()
+                .flat_map(|&kind| {
+                    let artifacts = ctx
+                        .artifacts
+                        .by_kind_and_crate(kind, &crate_cfg.name)
+                        .into_iter();
+                    if let Some(ids) = ids_filter {
+                        artifacts
+                            .filter(|a| {
+                                // Checksums and source archives are ID-agnostic
+                                // (always included regardless of IDs filter, matching GoReleaser).
+                                // Note: extra files (UploadableFile in GoReleaser) are also exempt,
+                                // but those are handled separately via collect_extra_files.
+                                matches!(
+                                    a.kind,
+                                    ArtifactKind::Checksum | ArtifactKind::SourceArchive
+                                ) || matches!(a.metadata.get("id"), Some(id) if ids.contains(id))
+                            })
+                            .map(|a| (a.path.clone(), None))
+                            .collect::<Vec<_>>()
+                    } else {
+                        artifacts
+                            .map(|a| (a.path.clone(), None))
+                            .collect::<Vec<_>>()
+                    }
                 })
-                .map(|a| (a.path.clone(), None))
                 .collect();
-            artifact_entries.extend(sig_cert_entries);
 
             if let Some(ids) = ids_filter {
                 log.verbose(&format!(
@@ -1455,7 +1448,13 @@ impl Stage for ReleaseStage {
                         .download
                         .unwrap_or_else(|| "https://gitlab.com".to_string());
                     let skip_tls = gitlab_urls.skip_tls_verify.unwrap_or(false);
-                    let use_job_token = gitlab_urls.use_job_token.unwrap_or(false);
+                    // Match GoReleaser's `checkUseJobToken`: only send JOB-TOKEN
+                    // when CI_JOB_TOKEN is set, the flag is on, and the token
+                    // equals CI_JOB_TOKEN. Otherwise fall back to PRIVATE-TOKEN.
+                    let use_job_token = gitlab::resolve_use_job_token(
+                        gitlab_urls.use_job_token.unwrap_or(false),
+                        &token_str,
+                    );
                     let use_pkg_registry =
                         gitlab_urls.use_package_registry.unwrap_or(false) || use_job_token;
 
@@ -2068,7 +2067,20 @@ impl Stage for ReleaseStage {
                         release_name, release.id, github.owner, github.name
                     ));
 
-                    let html_url = release.html_url.to_string();
+                    // Construct the public release URL deterministically from
+                    // owner/repo/tag, matching GoReleaser `internal/pipe/release/scm.go:26-33`.
+                    // The GitHub API's `html_url` for draft releases is
+                    // `.../releases/tag/untagged-<sha>` (because no git tag exists
+                    // yet), and keeping that URL makes announcement emails /
+                    // publishers emit broken links that 404 after the draft is
+                    // published.
+                    let html_url = format!(
+                        "{}/{}/{}/releases/tag/{}",
+                        gh_download_base.trim_end_matches('/'),
+                        github.owner,
+                        github.name,
+                        tag,
+                    );
                     let release_id_raw = release.id.into_inner();
 
                     // Wrap octo in Arc for shared use across parallel upload tasks

@@ -155,7 +155,9 @@ pub fn generate_manifest_with_opts(
     });
 
     // Add optional array fields when present.
-    let obj = manifest.as_object_mut().expect("manifest is an object");
+    let obj = manifest
+        .as_object_mut()
+        .unwrap_or_else(|| panic!("manifest is an object: programmer bug, expected JSON object"));
 
     if let Some(persist) = opts.persist {
         obj.insert("persist".to_string(), serde_json::json!(persist));
@@ -175,7 +177,8 @@ pub fn generate_manifest_with_opts(
 
     // SAFETY: The manifest is a serde_json::Value constructed from string
     // literals and function parameters; serialisation to JSON is infallible.
-    serde_json::to_string_pretty(&manifest).expect("scoop: serialize manifest")
+    serde_json::to_string_pretty(&manifest)
+        .unwrap_or_else(|e| panic!("scoop: serialize manifest: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -236,10 +239,10 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         .unwrap_or_else(|_| manifest_name_raw.to_string());
     let manifest_name = manifest_name_rendered.as_str();
 
-    // Find all Windows Archive artifacts, applying IDs + goamd64 filter.
+    // Find all Windows Archive artifacts, applying IDs + amd64_variant filter.
     let ids_filter = scoop_cfg.ids.as_deref();
     let url_template = scoop_cfg.url_template.as_deref();
-    let goamd64 = scoop_cfg.goamd64.as_deref().or(Some("v1"));
+    let amd64_variant = scoop_cfg.amd64_variant.as_deref().or(Some("v1"));
 
     let artifact_kind = util::resolve_artifact_kind(scoop_cfg.use_artifact.as_deref());
     let all_artifacts = ctx.artifacts.by_kind_and_crate(artifact_kind, crate_name);
@@ -271,14 +274,14 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
                 true
             }
         })
-        // Filter by goamd64 microarchitecture variant.
+        // Filter by amd64_variant microarchitecture variant.
         .filter(|a| {
             let target = a.target.as_deref().unwrap_or("");
             let (_, arch) = anodize_core::target::map_target(target);
             if arch == "amd64"
-                && let Some(want) = goamd64
+                && let Some(want) = amd64_variant
             {
-                return a.metadata.get("goamd64").is_none_or(|v| v == want);
+                return a.metadata.get("amd64_variant").is_none_or(|v| v == want);
             }
             true
         })
@@ -612,8 +615,8 @@ mod tests {
         );
 
         // Parse the manifest as JSON
-        let json: serde_json::Value =
-            serde_json::from_str(&manifest).expect("manifest should be valid JSON");
+        let json: serde_json::Value = serde_json::from_str(&manifest)
+            .unwrap_or_else(|e| panic!("manifest should be valid JSON: {e}"));
 
         // Verify top-level fields exist and have correct values
         assert_eq!(json["version"], "3.2.1");
@@ -709,8 +712,9 @@ mod tests {
         );
 
         // Even with special characters, should produce valid JSON
-        let json: serde_json::Value = serde_json::from_str(&manifest)
-            .expect("manifest with special chars should still be valid JSON");
+        let json: serde_json::Value = serde_json::from_str(&manifest).unwrap_or_else(|e| {
+            panic!("manifest with special chars should still be valid JSON: {e}")
+        });
         assert_eq!(
             json["description"],
             "A tool for \"parsing\" JSON & XML <data>"

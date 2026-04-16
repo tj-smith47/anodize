@@ -321,7 +321,7 @@ fn resolve_type_name(prop: &SchemaObject) -> String {
                     non_null
                         .into_iter()
                         .next()
-                        .expect("filtered to exactly one non-null type")
+                        .unwrap_or_else(|| panic!("filtered to exactly one non-null type"))
                 } else {
                     non_null.join(" | ")
                 }
@@ -474,7 +474,7 @@ mod tests {
         let props = root
             .object
             .as_ref()
-            .expect("Config should be an object schema");
+            .unwrap_or_else(|| panic!("Config should be an object schema"));
         let field_names: Vec<&String> = props.properties.keys().collect();
 
         for expected in &[
@@ -524,7 +524,7 @@ mod tests {
         let props = root
             .object
             .as_ref()
-            .expect("Config should be an object schema");
+            .unwrap_or_else(|| panic!("Config should be an object schema"));
 
         for (name, schema) in &props.properties {
             if let Schema::Object(obj) = schema {

@@ -142,7 +142,8 @@ pub fn generate_manifest(params: &KrewManifestParams<'_>) -> String {
 
     // SAFETY: The manifest struct is composed entirely of Strings and Vecs;
     // YAML serialisation is infallible for these types.
-    let yaml = serde_yaml_ng::to_string(&manifest).expect("krew: serialize manifest");
+    let yaml = serde_yaml_ng::to_string(&manifest)
+        .unwrap_or_else(|e| panic!("krew: serialize manifest: {e}"));
 
     // GoReleaser parity: prepend a generated-file header comment.
     format!(
@@ -306,10 +307,10 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
         .unwrap_or_else(|_| homepage_raw.clone());
     let caveats = krew_cfg.caveats.clone().unwrap_or_default();
 
-    // Find artifacts across all platforms, applying IDs + goamd64/goarm filter.
+    // Find artifacts across all platforms, applying IDs + amd64_variant/arm_variant filter.
     let ids_filter = krew_cfg.ids.as_deref();
-    let goamd64 = krew_cfg.goamd64.as_deref().or(Some("v1"));
-    let goarm = krew_cfg.goarm.as_deref();
+    let amd64_variant = krew_cfg.amd64_variant.as_deref().or(Some("v1"));
+    let arm_variant = krew_cfg.arm_variant.as_deref();
 
     // GoReleaser parity (krew.go:233-236): Krew plugins only support a single
     // binary per archive. Check archive artifacts before building the manifest
@@ -338,8 +339,13 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
         }
     }
 
-    let all_artifacts =
-        util::find_all_platform_artifacts_with_goarch(ctx, crate_name, ids_filter, goamd64, goarm);
+    let all_artifacts = util::find_all_platform_artifacts_with_variant(
+        ctx,
+        crate_name,
+        ids_filter,
+        amd64_variant,
+        arm_variant,
+    );
 
     let url_template = krew_cfg.url_template.as_deref();
 

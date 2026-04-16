@@ -118,7 +118,7 @@ pub fn generate_pkgbuild(params: &PkgbuildParams<'_>) -> String {
     tera.autoescape_on(vec![]); // PKGBUILD is shell, not HTML
     // SAFETY: PKGBUILD_TEMPLATE is a compile-time constant; parse cannot fail.
     tera.add_raw_template("pkgbuild", PKGBUILD_TEMPLATE)
-        .expect("aur: invalid PKGBUILD template");
+        .unwrap_or_else(|e| panic!("aur: invalid PKGBUILD template: {e}"));
 
     let mut ctx = tera::Context::new();
     ctx.insert("name", params.name);
@@ -197,7 +197,7 @@ pub fn generate_pkgbuild(params: &PkgbuildParams<'_>) -> String {
 
     // SAFETY: All context variables are inserted above; rendering is infallible.
     tera.render("pkgbuild", &ctx)
-        .expect("aur: failed to render PKGBUILD template")
+        .unwrap_or_else(|e| panic!("aur: failed to render PKGBUILD template: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -228,7 +228,7 @@ pub fn generate_srcinfo(params: &PkgbuildParams<'_>) -> String {
     let mut tera = Tera::default();
     tera.autoescape_on(vec![]);
     tera.add_raw_template("srcinfo", SRCINFO_TEMPLATE)
-        .expect("aur: invalid .SRCINFO template");
+        .unwrap_or_else(|e| panic!("aur: invalid .SRCINFO template: {e}"));
 
     let mut ctx = tera::Context::new();
     ctx.insert("name", params.name);
@@ -276,7 +276,7 @@ pub fn generate_srcinfo(params: &PkgbuildParams<'_>) -> String {
     ctx.insert("sources", &sources);
 
     tera.render("srcinfo", &ctx)
-        .expect("aur: failed to render .SRCINFO template")
+        .unwrap_or_else(|e| panic!("aur: failed to render .SRCINFO template: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -386,16 +386,16 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     let replaces = aur_cfg.replaces.clone().unwrap_or_default();
     let backup = aur_cfg.backup.clone().unwrap_or_default();
 
-    // Find Linux artifacts for the AUR package, applying IDs + goamd64 filter.
-    // GoReleaser hardcodes goarm to "7" for AUR (no config option).
+    // Find Linux artifacts for the AUR package, applying IDs + amd64_variant filter.
+    // GoReleaser hardcodes arm_variant to "7" for AUR (no config option).
     let ids_filter = aur_cfg.ids.as_deref();
-    let goamd64 = aur_cfg.goamd64.as_deref().or(Some("v1"));
-    let linux_artifacts = util::find_artifacts_by_os_with_goarch(
+    let amd64_variant = aur_cfg.amd64_variant.as_deref().or(Some("v1"));
+    let linux_artifacts = util::find_artifacts_by_os_with_variant(
         ctx,
         crate_name,
         "linux",
         ids_filter,
-        goamd64,
+        amd64_variant,
         Some("7"),
     );
 
@@ -549,7 +549,18 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         "package",
     );
     let commit_opts = util::resolve_commit_opts(aur_cfg.commit_author.as_ref(), None, None);
-    util::commit_and_push_with_opts(repo_path, &["."], &commit_msg, None, "aur", &commit_opts)?;
+    // AUR repositories are always on `master`. Pin the push branch explicitly
+    // rather than relying on `git clone`'s default, which varies by git
+    // version / config and once surfaced pushes that silently went to `main`
+    // on fresh-cloned workspaces. Matches GoReleaser `internal/pipe/aur/aur.go`.
+    util::commit_and_push_with_opts(
+        repo_path,
+        &["."],
+        &commit_msg,
+        Some("master"),
+        "aur",
+        &commit_opts,
+    )?;
 
     log.status(&format!(
         "AUR package '{}' pushed to {}",

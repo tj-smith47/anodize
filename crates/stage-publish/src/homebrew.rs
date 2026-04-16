@@ -301,7 +301,7 @@ pub struct CaskParams<'a> {
 pub fn generate_cask(params: &CaskParams<'_>) -> String {
     let mut tera = tera::Tera::default();
     tera.add_raw_template("cask", CASK_TEMPLATE)
-        .expect("homebrew: parse cask template");
+        .unwrap_or_else(|e| panic!("homebrew: parse cask template: {e}"));
     tera.autoescape_on(vec![]);
 
     let mut ctx = tera::Context::new();
@@ -386,7 +386,7 @@ pub fn generate_cask(params: &CaskParams<'_>) -> String {
     );
 
     tera.render("cask", &ctx)
-        .expect("homebrew: render cask template")
+        .unwrap_or_else(|e| panic!("homebrew: render cask template: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -946,7 +946,7 @@ pub fn generate_formula_with_opts(
     let mut tera = tera::Tera::default();
     // SAFETY: FORMULA_TEMPLATE is a compile-time constant; parse cannot fail.
     tera.add_raw_template("formula", FORMULA_TEMPLATE)
-        .expect("homebrew: parse formula template");
+        .unwrap_or_else(|e| panic!("homebrew: parse formula template: {e}"));
 
     // Disable autoescaping (we're generating Ruby, not HTML)
     tera.autoescape_on(vec![]);
@@ -1217,7 +1217,7 @@ pub fn generate_formula_with_opts(
 
     // SAFETY: All context variables are inserted above; rendering is infallible.
     tera.render("formula", &ctx)
-        .expect("homebrew: render formula template")
+        .unwrap_or_else(|e| panic!("homebrew: render formula template: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -1461,11 +1461,11 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
 
     // Collect Archive and Binary artifacts for this crate to build the formula entries.
     // GoReleaser supports both UploadableArchive and UploadableBinary types here.
-    // Apply IDs + goamd64/goarm filter.
+    // Apply IDs + amd64_variant/arm_variant filter.
     let ids_filter = hb_cfg.ids.as_deref();
-    let goamd64 = hb_cfg.goamd64.as_deref().or(Some("v1"));
+    let amd64_variant = hb_cfg.amd64_variant.as_deref().or(Some("v1"));
     // GoReleaser defaults Goarm to "6" for Homebrew (brew.go:85)
-    let goarm = hb_cfg.goarm.as_deref().or(Some("6"));
+    let arm_variant = hb_cfg.arm_variant.as_deref().or(Some("6"));
     let mut all_artifacts = ctx
         .artifacts
         .by_kind_and_crate(anodize_core::artifact::ArtifactKind::Archive, crate_name);
@@ -1488,20 +1488,20 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
                 true
             }
         })
-        // Filter by goamd64/goarm microarchitecture variant.
+        // Filter by amd64_variant/arm_variant microarchitecture variant.
         .filter(|a| {
             let target = a.target.as_deref().unwrap_or("");
             let (_, arch) = anodize_core::target::map_target(target);
             if arch == "amd64"
-                && let Some(want) = goamd64
+                && let Some(want) = amd64_variant
             {
-                return a.metadata.get("goamd64").is_none_or(|v| v == want);
+                return a.metadata.get("amd64_variant").is_none_or(|v| v == want);
             }
             if arch.starts_with("arm")
                 && arch != "arm64"
-                && let Some(want) = goarm
+                && let Some(want) = arm_variant
             {
-                return a.metadata.get("goarm").is_none_or(|v| v == want);
+                return a.metadata.get("arm_variant").is_none_or(|v| v == want);
             }
             true
         })
@@ -2739,11 +2739,13 @@ mod tests {
         );
         let autoconf_pos = formula
             .find("depends_on \"autoconf\"")
-            .expect("autoconf present");
+            .unwrap_or_else(|| panic!("autoconf present"));
         let libgit2_pos = formula
             .find("depends_on \"libgit2\"")
-            .expect("libgit2 present");
-        let zlib_pos = formula.find("depends_on \"zlib\"").expect("zlib present");
+            .unwrap_or_else(|| panic!("libgit2 present"));
+        let zlib_pos = formula
+            .find("depends_on \"zlib\"")
+            .unwrap_or_else(|| panic!("zlib present"));
         assert!(
             autoconf_pos < libgit2_pos && libgit2_pos < zlib_pos,
             "dependencies should be sorted alphabetically: autoconf < libgit2 < zlib"

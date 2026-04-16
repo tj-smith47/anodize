@@ -91,6 +91,8 @@ fn find_image_digest(artifacts: &[Artifact], image: &str) -> Option<String> {
 /// Determine whether a docker error message indicates a transient
 /// network/registry failure that is worth retrying, as opposed to a build
 /// failure (bad Dockerfile, missing files, etc.) that will never succeed.
+///
+/// Used by the legacy (V1) docker build path. V2 uses [`is_retriable_error_v2`].
 pub fn is_retriable_error(error_msg: &str) -> bool {
     let retriable_patterns = [
         "dial tcp",
@@ -110,13 +112,24 @@ pub fn is_retriable_error(error_msg: &str) -> bool {
         "no such host",
         "REFUSED_STREAM",
         "registry returned status",
-        // GoReleaser V2 retries on manifest verification failures
-        "manifest verification failed for digest",
     ];
     let lower = error_msg.to_lowercase();
     retriable_patterns
         .iter()
         .any(|p| lower.contains(&p.to_lowercase()))
+}
+
+/// V2-specific retry predicate. Matches GoReleaser's narrow
+/// `isRetriableManifestCreate` (`v2/docker.go:544-549`): only retries when
+/// the output contains `"manifest verification failed for digest"`. All
+/// other errors — network timeouts, build failures, registry 5xx — are
+/// considered fatal under V2, because V2 runs `buildx build --push` as a
+/// single atomic operation and its own internal retry already covers the
+/// lower-level transient cases.
+pub fn is_retriable_error_v2(error_msg: &str) -> bool {
+    error_msg
+        .to_lowercase()
+        .contains("manifest verification failed for digest")
 }
 
 // ---------------------------------------------------------------------------
@@ -878,7 +891,11 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
             }
             Err(e) => {
                 let err_msg = format!("{:#}", e);
-                let is_retriable = is_retriable_error(&err_msg);
+                let is_retriable = if job.is_v2 {
+                    is_retriable_error_v2(&err_msg)
+                } else {
+                    is_retriable_error(&err_msg)
+                };
                 if attempt < job.max_attempts && !is_retriable {
                     // Diagnostic: file-not-found hints for COPY/ADD failures.
                     // List all files in the build context to help debug which
@@ -1271,7 +1288,7 @@ fn stage_binaries(
 /// Stage artifacts into docker build context using GoReleaser V2 layout.
 ///
 /// V2 uses `<os>/<arch>/<name>` directory structure (matching `$TARGETPLATFORM`)
-/// and stages Binary, LinuxPackage, CArchive, CShared, and PyWheel artifacts.
+/// and stages Binary, LinuxPackage, CArchive, and CShared artifacts.
 /// Artifacts with `goos == "all"` are copied into every platform directory.
 fn stage_artifacts_v2(
     platforms: &[String],
@@ -1287,7 +1304,6 @@ fn stage_artifacts_v2(
         ArtifactKind::LinuxPackage,
         ArtifactKind::CArchive,
         ArtifactKind::CShared,
-        ArtifactKind::PyWheel,
     ];
 
     for platform in platforms {
@@ -1542,21 +1558,35 @@ impl Stage for DockerStage {
             return Ok(());
         }
 
-        // Validate Docker V2 config ID uniqueness — duplicate IDs cause
-        // confusing artifact collisions and filtering bugs.
+        // Validate Docker / Docker V2 config ID uniqueness. Matches GoReleaser
+        // `internal/ids/ids.go:26-36` — duplicate IDs are a hard error in both
+        // `docker.go:111` and `v2/docker.go:93`, because downstream filters
+        // rely on IDs to disambiguate artifacts.
         {
-            let mut seen_ids: HashSet<String> = HashSet::new();
+            let mut docker_ids: HashSet<String> = HashSet::new();
+            let mut v2_ids: HashSet<String> = HashSet::new();
             for krate in &crates {
+                if let Some(ref cfgs) = krate.docker {
+                    for cfg in cfgs {
+                        if let Some(ref id) = cfg.id
+                            && !docker_ids.insert(id.clone())
+                        {
+                            anyhow::bail!(
+                                "found 2 dockers with the ID '{}', please fix your config",
+                                id
+                            );
+                        }
+                    }
+                }
                 if let Some(ref v2_cfgs) = krate.docker_v2 {
                     for v2_cfg in v2_cfgs {
                         if let Some(ref id) = v2_cfg.id
-                            && !seen_ids.insert(id.clone())
+                            && !v2_ids.insert(id.clone())
                         {
-                            log.warn(&format!(
-                                "duplicate docker_v2 config id '{}' — \
-                                     each config should have a unique id",
+                            anyhow::bail!(
+                                "found 2 docker_v2 with the ID '{}', please fix your config",
                                 id
-                            ));
+                            );
                         }
                     }
                 }
@@ -1629,6 +1659,38 @@ impl Stage for DockerStage {
                     fs::create_dir_all(&staging_dir).with_context(|| {
                         format!("docker: create staging dir {}", staging_dir.display())
                     })?;
+                }
+
+                // GoReleaser parity (docker.go:170-172): when `ids:` is set
+                // with N values, the number of distinct artifact IDs actually
+                // matched must equal N. A typo like `ids: [foo, baz]` where
+                // only `foo` exists would otherwise silently build the image
+                // with a partial binary set.
+                if let Some(ref ids) = docker_cfg.ids
+                    && !ids.is_empty()
+                {
+                    let matched_ids: HashSet<String> = ctx
+                        .artifacts
+                        .by_kind_and_crate(ArtifactKind::Binary, &krate.name)
+                        .into_iter()
+                        .filter_map(|a| a.metadata.get("id").cloned())
+                        .filter(|id| ids.iter().any(|wanted| wanted == id))
+                        .collect();
+                    if matched_ids.len() != ids.len() {
+                        let cfg_label = docker_cfg
+                            .id
+                            .clone()
+                            .unwrap_or_else(|| format!("index {}", idx));
+                        anyhow::bail!(
+                            "docker[{}]: expected to find {} distinct binary ids for ids {:?}, \
+                             found {} ({:?}). Learn more at https://goreleaser.com/errors/docker-build",
+                            cfg_label,
+                            ids.len(),
+                            ids,
+                            matched_ids.len(),
+                            matched_ids,
+                        );
+                    }
                 }
 
                 // ------------------------------------------------------------------
@@ -2262,14 +2324,17 @@ impl Stage for DockerStage {
 
                 handles
                     .into_iter()
-                    .map(|h| h.join().expect("docker build thread panicked"))
+                    .map(|h| {
+                        h.join()
+                            .unwrap_or_else(|_| panic!("docker build thread panicked"))
+                    })
                     .collect()
             });
 
             // ==================================================================
             // Phase 3: Collect results and register artifacts
             // ==================================================================
-            for (job, result) in build_jobs.iter().zip(results.into_iter()) {
+            for (job, result) in build_jobs.iter().zip(results) {
                 let build_result = result?;
                 for tag in &job.rendered_tags {
                     let mut meta = HashMap::new();
@@ -2508,30 +2573,19 @@ impl Stage for DockerStage {
                             log.status(&format!("(dry-run) would run: {}", push_cmd.join(" ")));
                         }
                     } else {
-                        // Remove any existing manifest to prevent stale manifest
-                        // failures on re-runs (GoReleaser does this too).
-                        // We ignore "no such manifest" errors (manifest didn't
-                        // exist yet, which is fine) but propagate other failures.
-                        if let Ok(rm_output) = {
-                            let mut rm_cmd = Command::new(manifest_bin);
-                            rm_cmd.args(["manifest", "rm", &manifest_name]);
-                            for (key, value) in &manifest_env_vars {
-                                rm_cmd.env(key, value);
-                            }
-                            rm_cmd.output()
-                        } && !rm_output.status.success()
-                        {
-                            let stderr = String::from_utf8_lossy(&rm_output.stderr).to_lowercase();
-                            if !stderr.contains("no such manifest") && !stderr.contains("not found")
-                            {
-                                let stderr_full = String::from_utf8_lossy(&rm_output.stderr);
-                                anyhow::bail!(
-                                    "docker manifest rm {} failed: {}",
-                                    manifest_name,
-                                    stderr_full.trim()
-                                );
-                            }
+                        // Remove any existing manifest before recreating.
+                        // Matches GoReleaser `internal/pipe/docker/api_docker.go:26`:
+                        //   `_ = runCommand(ctx, ".", "docker", "manifest", "rm", manifest)`
+                        // — all errors ignored. A missing manifest is the common case
+                        // (first run / new tag), and any other failure (auth, network,
+                        // daemon offline) will surface when `manifest create` runs
+                        // right after, with a more actionable error.
+                        let mut rm_cmd = Command::new(manifest_bin);
+                        rm_cmd.args(["manifest", "rm", &manifest_name]);
+                        for (key, value) in &manifest_env_vars {
+                            rm_cmd.env(key, value);
                         }
+                        let _ = rm_cmd.output();
 
                         // Manifest create/push with retry logic — registry
                         // operations can fail transiently. Uses the

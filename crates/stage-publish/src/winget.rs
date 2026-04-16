@@ -18,7 +18,7 @@ use crate::util;
 /// Pattern: `^[^\.\s\\\/:\*\?"<>\|]+(\.[^\.\s\\\/:\*\?"<>\|]+){1,7}$`
 pub fn validate_package_identifier(id: &str) -> Result<()> {
     let re = regex::Regex::new(r#"^[^\.\s\\/:\*\?"<>\|]+(\.[^\.\s\\/:\*\?"<>\|]+){1,7}$"#)
-        .expect("winget: compile PackageIdentifier regex");
+        .unwrap_or_else(|e| panic!("winget: compile PackageIdentifier regex: {e}"));
 
     if re.is_match(id) {
         Ok(())
@@ -278,7 +278,8 @@ pub fn generate_manifest(params: &WingetManifestParams<'_>) -> String {
         manifest_type: "singleton".to_string(),
         manifest_version: "1.12.0".to_string(),
     };
-    serde_yaml_ng::to_string(&manifest).expect("winget: serialize manifest")
+    serde_yaml_ng::to_string(&manifest)
+        .unwrap_or_else(|e| panic!("winget: serialize manifest: {e}"))
 }
 
 /// Generate the 3-file WinGet manifest set: (version, installer, locale).
@@ -457,19 +458,22 @@ pub fn generate_manifests(params: &WingetManifestParams<'_>) -> (String, String,
             "{}{}{}",
             GENERATED_HEADER,
             SCHEMA_VERSION,
-            serde_yaml_ng::to_string(&version).expect("winget: serialize version manifest")
+            serde_yaml_ng::to_string(&version)
+                .unwrap_or_else(|e| panic!("winget: serialize version manifest: {e}"))
         ),
         format!(
             "{}{}{}",
             GENERATED_HEADER,
             SCHEMA_INSTALLER,
-            serde_yaml_ng::to_string(&installer).expect("winget: serialize installer manifest")
+            serde_yaml_ng::to_string(&installer)
+                .unwrap_or_else(|e| panic!("winget: serialize installer manifest: {e}"))
         ),
         format!(
             "{}{}{}",
             GENERATED_HEADER,
             SCHEMA_LOCALE,
-            serde_yaml_ng::to_string(&locale).expect("winget: serialize locale manifest")
+            serde_yaml_ng::to_string(&locale)
+                .unwrap_or_else(|e| panic!("winget: serialize locale manifest: {e}"))
         ),
     )
 }
@@ -577,10 +581,10 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
         )
     })?;
 
-    // Find windows Archive artifacts for this crate with IDs + goamd64 filtering.
+    // Find windows Archive artifacts for this crate with IDs + amd64_variant filtering.
     let ids_filter = winget_cfg.ids.as_deref();
     let url_template = winget_cfg.url_template.as_deref();
-    let goamd64 = winget_cfg.goamd64.as_deref().or(Some("v1"));
+    let amd64_variant = winget_cfg.amd64_variant.as_deref().or(Some("v1"));
 
     let artifact_kind = util::resolve_artifact_kind(winget_cfg.use_artifact.as_deref());
 
@@ -638,13 +642,13 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
             true
         }
     };
-    let matches_goamd64 = |a: &anodize_core::artifact::Artifact| -> bool {
+    let matches_amd64_variant = |a: &anodize_core::artifact::Artifact| -> bool {
         let target = a.target.as_deref().unwrap_or("");
         let (_, arch) = anodize_core::target::map_target(target);
         if arch == "amd64"
-            && let Some(want) = goamd64
+            && let Some(want) = amd64_variant
         {
-            return a.metadata.get("goamd64").is_none_or(|v| v == want);
+            return a.metadata.get("amd64_variant").is_none_or(|v| v == want);
         }
         true
     };
@@ -655,7 +659,7 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
 
     // Archive artifacts: filter to .zip only (GoReleaser parity: winget.go:467)
     for a in archive_artifacts.iter() {
-        if !is_windows(a) || !matches_ids(a) || !matches_goamd64(a) {
+        if !is_windows(a) || !matches_ids(a) || !matches_amd64_variant(a) {
             continue;
         }
         let format = a.metadata.get("format").map(|f| f.as_str()).unwrap_or("");
@@ -699,7 +703,7 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
 
     // Portable binary artifacts (GoReleaser parity: winget.go:475)
     for a in binary_artifacts.iter() {
-        if !is_windows(a) || !matches_ids(a) || !matches_goamd64(a) {
+        if !is_windows(a) || !matches_ids(a) || !matches_amd64_variant(a) {
             continue;
         }
         binary_count += 1;
@@ -797,7 +801,8 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
             anodize_core::template::render(v, &vars).unwrap_or_else(|_| v.to_string())
         })
     };
-    let publisher_rendered = render(Some(publisher_name)).unwrap();
+    let publisher_rendered =
+        render(Some(publisher_name)).unwrap_or_else(|| publisher_name.to_string());
     let publisher_url_rendered = render(winget_cfg.publisher_url.as_deref());
     let publisher_support_rendered = render(winget_cfg.publisher_support_url.as_deref());
     let privacy_url_rendered = render(winget_cfg.privacy_url.as_deref());
@@ -805,9 +810,11 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
     let author_rendered = render(winget_cfg.author.as_deref());
     let copyright_rendered = render(winget_cfg.copyright.as_deref());
     let copyright_url_rendered = render(winget_cfg.copyright_url.as_deref());
-    let license_rendered = render(Some(license)).unwrap();
+    let license_rendered = render(Some(license)).unwrap_or_else(|| license.to_string());
     let license_url_rendered = render(winget_cfg.license_url.as_deref());
-    let short_desc_rendered = render(Some(short_desc)).unwrap().replace('\t', "  ");
+    let short_desc_rendered = render(Some(short_desc))
+        .unwrap_or_else(|| short_desc.to_string())
+        .replace('\t', "  ");
     let release_notes_url_rendered = render(winget_cfg.release_notes_url.as_deref());
     let installation_notes_rendered = render(winget_cfg.installation_notes.as_deref());
     let path_rendered = render(winget_cfg.path.as_deref());

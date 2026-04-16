@@ -219,7 +219,7 @@ fn create_source_archive(
                     // "./" / root prefix so the tar entry is a clean relative
                     // path inside the prefix directory.
                     let src_path = Path::new(&entry.src);
-                    let rel = if src_path.is_absolute() {
+                    if src_path.is_absolute() {
                         src_path
                             .file_name()
                             .map(PathBuf::from)
@@ -229,8 +229,7 @@ fn create_source_archive(
                             .strip_prefix("./")
                             .map(PathBuf::from)
                             .unwrap_or_else(|_| src_path.to_path_buf())
-                    };
-                    rel
+                    }
                 };
 
                 let archive_path = Path::new(prefix).join(&dest_rel);
@@ -617,7 +616,11 @@ impl Stage for SourceStage {
 
 impl SourceStage {
     fn run_source_archive(&self, ctx: &mut Context, dist: &Path) -> Result<()> {
-        let source_cfg = ctx.config.source.as_ref().unwrap();
+        let source_cfg = ctx
+            .config
+            .source
+            .as_ref()
+            .context("source stage invoked without source config (programmer bug)")?;
         let format = source_cfg.archive_format().to_string();
 
         // Determine the archive name
@@ -1898,7 +1901,7 @@ dependencies = [
             .args(["rev-parse", "HEAD"])
             .current_dir(tmp.path())
             .output()
-            .expect("git rev-parse HEAD should succeed");
+            .unwrap_or_else(|e| panic!("git rev-parse HEAD should succeed: {e}"));
         let real_commit = String::from_utf8_lossy(&real_commit.stdout)
             .trim()
             .to_string();
@@ -1997,7 +2000,8 @@ dependencies = [
             false,
         );
 
-        let archive_path = result.expect("create_source_archive should succeed");
+        let archive_path =
+            result.unwrap_or_else(|e| panic!("create_source_archive should succeed: {e}"));
         assert!(archive_path.exists(), "archive should exist");
 
         // Open the tar.gz and check that config.toml appears directly under
@@ -2073,7 +2077,8 @@ dependencies = [
             false,
         );
 
-        let archive_path = result.expect("create_source_archive should succeed");
+        let archive_path =
+            result.unwrap_or_else(|e| panic!("create_source_archive should succeed: {e}"));
 
         let file = std::fs::File::open(&archive_path).unwrap();
         let gz = flate2::read::GzDecoder::new(file);
@@ -2137,7 +2142,8 @@ dependencies = [
             false,
         );
 
-        let archive_path = result.expect("create_source_archive should succeed");
+        let archive_path =
+            result.unwrap_or_else(|e| panic!("create_source_archive should succeed: {e}"));
 
         let file = std::fs::File::open(&archive_path).unwrap();
         let gz = flate2::read::GzDecoder::new(file);

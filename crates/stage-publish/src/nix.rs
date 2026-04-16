@@ -4,6 +4,40 @@ use anyhow::{Context as _, Result};
 
 use crate::util;
 
+/// Read a `u64` from a byte slice at the given offset. The slice bounds
+/// are trusted at each call site (headers are pre-sized); `unwrap_or` with
+/// `[0u8; 8]` prevents a panic if that ever regresses — we just return 0,
+/// which the caller's downstream checks treat as a malformed ELF.
+fn read_u64(bytes: &[u8], little: bool) -> u64 {
+    let arr: [u8; 8] = bytes.try_into().unwrap_or([0u8; 8]);
+    if little {
+        u64::from_le_bytes(arr)
+    } else {
+        u64::from_be_bytes(arr)
+    }
+}
+
+/// Read a `u32` from a byte slice at the given offset. Same fallback
+/// rationale as [`read_u64`].
+fn read_u32(bytes: &[u8], little: bool) -> u32 {
+    let arr: [u8; 4] = bytes.try_into().unwrap_or([0u8; 4]);
+    if little {
+        u32::from_le_bytes(arr)
+    } else {
+        u32::from_be_bytes(arr)
+    }
+}
+
+/// Read a `u16` from a byte slice. Same fallback rationale as [`read_u64`].
+fn read_u16(bytes: &[u8], little: bool) -> u16 {
+    let arr: [u8; 2] = bytes.try_into().unwrap_or([0u8; 2]);
+    if little {
+        u16::from_le_bytes(arr)
+    } else {
+        u16::from_be_bytes(arr)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // ELF dynamic linking detection
 // ---------------------------------------------------------------------------
@@ -32,38 +66,14 @@ fn is_dynamically_linked(path: &std::path::Path) -> bool {
 
     // Parse program header offset and count
     let (phoff, phentsize, phnum) = if is_64bit {
-        let phoff = if is_little_endian {
-            u64::from_le_bytes(header[32..40].try_into().unwrap())
-        } else {
-            u64::from_be_bytes(header[32..40].try_into().unwrap())
-        };
-        let phentsize = if is_little_endian {
-            u16::from_le_bytes(header[54..56].try_into().unwrap())
-        } else {
-            u16::from_be_bytes(header[54..56].try_into().unwrap())
-        };
-        let phnum = if is_little_endian {
-            u16::from_le_bytes(header[56..58].try_into().unwrap())
-        } else {
-            u16::from_be_bytes(header[56..58].try_into().unwrap())
-        };
+        let phoff = read_u64(&header[32..40], is_little_endian);
+        let phentsize = read_u16(&header[54..56], is_little_endian);
+        let phnum = read_u16(&header[56..58], is_little_endian);
         (phoff, phentsize, phnum)
     } else {
-        let phoff = if is_little_endian {
-            u32::from_le_bytes(header[28..32].try_into().unwrap()) as u64
-        } else {
-            u32::from_be_bytes(header[28..32].try_into().unwrap()) as u64
-        };
-        let phentsize = if is_little_endian {
-            u16::from_le_bytes(header[42..44].try_into().unwrap())
-        } else {
-            u16::from_be_bytes(header[42..44].try_into().unwrap())
-        };
-        let phnum = if is_little_endian {
-            u16::from_le_bytes(header[44..46].try_into().unwrap())
-        } else {
-            u16::from_be_bytes(header[44..46].try_into().unwrap())
-        };
+        let phoff = read_u32(&header[28..32], is_little_endian) as u64;
+        let phentsize = read_u16(&header[42..44], is_little_endian);
+        let phnum = read_u16(&header[44..46], is_little_endian);
         (phoff, phentsize, phnum)
     };
 
@@ -77,11 +87,7 @@ fn is_dynamically_linked(path: &std::path::Path) -> bool {
         if file.read_exact(&mut phdr_buf).is_err() {
             return false;
         }
-        let p_type = if is_little_endian {
-            u32::from_le_bytes(phdr_buf[0..4].try_into().unwrap())
-        } else {
-            u32::from_be_bytes(phdr_buf[0..4].try_into().unwrap())
-        };
+        let p_type = read_u32(&phdr_buf[0..4], is_little_endian);
         if p_type == 3 {
             // PT_INTERP
             return true;
@@ -140,7 +146,10 @@ fn nix_base32_encode(bytes: &[u8]) -> String {
         out[len - 1 - n] = NIX_BASE32_CHARS[(c & 0x1f) as usize];
     }
 
-    String::from_utf8(out).expect("nix base32 chars are valid UTF-8")
+    // `out` contains only ASCII characters from NIX_BASE32_CHARS, so
+    // from_utf8 cannot fail; fall back to an empty string in the
+    // impossible error case rather than panic.
+    String::from_utf8(out).unwrap_or_default()
 }
 
 /// Convert a hex-encoded SHA256 hash to SRI format (`sha256-{base64}`).
@@ -291,8 +300,10 @@ pub struct NixParams<'a> {
 /// Generate a Nix derivation expression string.
 pub fn generate_nix_expression(params: &NixParams<'_>) -> String {
     let mut tera = tera::Tera::default();
+    // NIX_TEMPLATE is a hardcoded const; a parse error means a programmer
+    // bug in this file, so panic with diagnostic context.
     tera.add_raw_template("nix", NIX_TEMPLATE)
-        .expect("nix: parse template");
+        .unwrap_or_else(|e| panic!("nix: parse template (programmer bug): {}", e));
     tera.autoescape_on(vec![]);
 
     let mut ctx = tera::Context::new();
@@ -341,7 +352,10 @@ pub fn generate_nix_expression(params: &NixParams<'_>) -> String {
     ctx.insert("has_post_install", &!params.post_install_lines.is_empty());
     ctx.insert("post_install_lines", &params.post_install_lines);
 
-    tera.render("nix", &ctx).expect("nix: render expression")
+    // Same rationale as parse: rendering failure means the template has
+    // an undeclared variable that's a programmer bug, not user input.
+    tera.render("nix", &ctx)
+        .unwrap_or_else(|e| panic!("nix: render expression (programmer bug): {}", e))
 }
 
 // ---------------------------------------------------------------------------
@@ -746,11 +760,16 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         validate_nix_license(license)?;
     }
 
-    // Find artifacts for Linux and Darwin platforms, applying IDs + goamd64 filter.
+    // Find artifacts for Linux and Darwin platforms, applying IDs + amd64_variant filter.
     let ids_filter = nix_cfg.ids.as_deref();
-    let goamd64 = nix_cfg.goamd64.as_deref().or(Some("v1"));
-    let all_artifacts =
-        util::find_all_platform_artifacts_with_goarch(ctx, crate_name, ids_filter, goamd64, None);
+    let amd64_variant = nix_cfg.amd64_variant.as_deref().or(Some("v1"));
+    let all_artifacts = util::find_all_platform_artifacts_with_variant(
+        ctx,
+        crate_name,
+        ids_filter,
+        amd64_variant,
+        None,
+    );
 
     let url_template = nix_cfg.url_template.as_deref();
 

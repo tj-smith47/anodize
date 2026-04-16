@@ -41,8 +41,8 @@ use std::process::Command;
 ///     .dry_run(true)
 ///     .build();
 ///
-/// assert_eq!(ctx.template_vars().get("ProjectName").unwrap(), "my-app");
-/// assert_eq!(ctx.template_vars().get("Tag").unwrap(), "v2.0.0");
+/// assert_eq!(ctx.template_vars().get("ProjectName").map(|s| s.as_str()), Some("my-app"));
+/// assert_eq!(ctx.template_vars().get("Tag").map(|s| s.as_str()), Some("v2.0.0"));
 /// ```
 pub struct TestContextBuilder {
     project_name: String,
@@ -373,19 +373,20 @@ name = "test-project"
 path = "src/main.rs"
 "#,
     )
-    .expect("failed to write Cargo.toml");
+    .unwrap_or_else(|e| panic!("failed to write Cargo.toml: {e}"));
 
-    fs::create_dir_all(dir.join("src")).expect("failed to create src/");
+    fs::create_dir_all(dir.join("src")).unwrap_or_else(|e| panic!("failed to create src/: {e}"));
     fs::write(
         dir.join("src/main.rs"),
         r#"fn main() { println!("hello"); }"#,
     )
-    .expect("failed to write src/main.rs");
+    .unwrap_or_else(|e| panic!("failed to write src/main.rs: {e}"));
 }
 
 /// Write an `.anodize.yaml` config file in the given directory.
 pub fn create_config(dir: &Path, content: &str) {
-    fs::write(dir.join(".anodize.yaml"), content).expect("failed to write .anodize.yaml");
+    fs::write(dir.join(".anodize.yaml"), content)
+        .unwrap_or_else(|e| panic!("failed to write .anodize.yaml: {e}"));
 }
 
 /// Create a fake binary file at `dir/<name>` for testing archive/checksum stages.
@@ -395,11 +396,12 @@ pub fn create_config(dir: &Path, content: &str) {
 pub fn create_fake_binary(dir: &Path, name: &str) -> std::path::PathBuf {
     let path = dir.join(name);
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("failed to create parent dir for fake binary");
+        fs::create_dir_all(parent)
+            .unwrap_or_else(|e| panic!("failed to create parent dir for fake binary: {e}"));
     }
     // Write a recognizable pattern that is not all zeros
     let data: Vec<u8> = (0..256u16).map(|i| (i % 256) as u8).collect();
-    fs::write(&path, &data).expect("failed to write fake binary");
+    fs::write(&path, &data).unwrap_or_else(|e| panic!("failed to write fake binary: {e}"));
     path
 }
 
@@ -413,7 +415,7 @@ fn run_git(dir: &Path, args: &[&str]) {
         .args(args)
         .current_dir(dir)
         .output()
-        .expect("git command failed to spawn");
+        .unwrap_or_else(|e| panic!("git command failed to spawn: {e}"));
     assert!(
         output.status.success(),
         "git {:?} failed with status {}: {}",
@@ -448,7 +450,7 @@ pub fn init_git_repo_with_commits(dir: &Path, commits: &[&str]) {
     for (i, message) in commits.iter().enumerate() {
         let filename = format!("commit_{}.txt", i);
         fs::write(dir.join(&filename), format!("content for commit {}", i))
-            .expect("failed to write commit file");
+            .unwrap_or_else(|e| panic!("failed to write commit file: {e}"));
         run_git(dir, &["add", "-A"]);
         run_git(dir, &["commit", "-m", message]);
 

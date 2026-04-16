@@ -1169,6 +1169,47 @@ fn ensure_targets_installed(
 }
 
 // ---------------------------------------------------------------------------
+// amd64 microarchitecture variant detection from RUSTFLAGS
+// ---------------------------------------------------------------------------
+
+fn parse_amd64_variant_from_rustflags(rustflags: &str) -> Option<String> {
+    let tokens: Vec<&str> = rustflags.split_whitespace().collect();
+    let mut i = 0;
+    while i < tokens.len() {
+        let cpu = if let Some(val) = tokens[i].strip_prefix("-Ctarget-cpu=") {
+            Some(val)
+        } else if tokens[i] == "-C"
+            && i + 1 < tokens.len()
+            && let Some(val) = tokens[i + 1].strip_prefix("target-cpu=")
+        {
+            i += 1;
+            Some(val)
+        } else {
+            None
+        };
+        if let Some(cpu) = cpu
+            && let Some(level) = cpu.strip_prefix("x86-64-")
+        {
+            return Some(level.to_string());
+        }
+        i += 1;
+    }
+    None
+}
+
+fn detect_amd64_variant(target: &str, env: &HashMap<String, String>) -> Option<String> {
+    if !target.starts_with("x86_64") {
+        return None;
+    }
+    if let Some(flags) = env.get("RUSTFLAGS")
+        && let Some(v) = parse_amd64_variant_from_rustflags(flags)
+    {
+        return Some(v);
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
 // BuildStage
 // ---------------------------------------------------------------------------
 
@@ -1286,6 +1327,9 @@ impl Stage for BuildStage {
             crate_path: String,
             /// Optional mod_timestamp override for the built binary.
             mod_timestamp: Option<String>,
+            /// Detected amd64 microarchitecture variant (e.g. "v2", "v3", "v4")
+            /// from RUSTFLAGS `-C target-cpu=x86-64-vN`.
+            amd64_variant: Option<String>,
         }
 
         /// Result of executing a build job.
@@ -1297,13 +1341,21 @@ impl Stage for BuildStage {
             binary_name: String,
             build_id: Option<String>,
             no_unique_dist_dir: bool,
+            amd64_variant: Option<String>,
         }
 
         /// Build artifact metadata, always including "binary" and optionally "id".
-        fn artifact_meta(binary: &str, build_id: &Option<String>) -> HashMap<String, String> {
+        fn artifact_meta(
+            binary: &str,
+            build_id: &Option<String>,
+            amd64_variant: &Option<String>,
+        ) -> HashMap<String, String> {
             let mut m = HashMap::from([("binary".to_string(), binary.to_string())]);
             if let Some(id) = build_id {
                 m.insert("id".to_string(), id.clone());
+            }
+            if let Some(v) = amd64_variant {
+                m.insert("amd64_variant".to_string(), v.clone());
             }
             m
         }
@@ -1642,6 +1694,9 @@ impl Stage for BuildStage {
                         ctx.template_vars_mut().set("ArtifactExt", "");
                         ctx.template_vars_mut().set("ArtifactID", "");
 
+                        let copy_variant = raw_target_env
+                            .map(|e| detect_amd64_variant(target, e))
+                            .unwrap_or(None);
                         copy_jobs.push(BuildJob {
                             cmd: None,
                             copy_from: Some((src_path, bin_path.clone())),
@@ -1657,6 +1712,7 @@ impl Stage for BuildStage {
                             no_unique_dist_dir: no_unique_dist_dir_val,
                             crate_path: crate_cfg.path.clone(),
                             mod_timestamp: build.mod_timestamp.clone(),
+                            amd64_variant: copy_variant,
                         });
                         continue;
                     }
@@ -1794,6 +1850,7 @@ impl Stage for BuildStage {
                         no_unique_dist_dir: no_unique_dist_dir_val,
                         crate_path: crate_cfg.path.clone(),
                         mod_timestamp: build.mod_timestamp.clone(),
+                        amd64_variant: detect_amd64_variant(target, &target_env),
                     });
                 }
             }
@@ -1846,10 +1903,11 @@ impl Stage for BuildStage {
                             crate_name: &str,
                             binary_name: &str,
                             build_id: &Option<String>,
-                            no_unique_dist_dir: bool|
+                            no_unique_dist_dir: bool,
+                            amd64_variant: &Option<String>|
          -> Result<()> {
             ctx.template_vars_mut().set("Binary", binary_name);
-            let mut meta = artifact_meta(binary_name, build_id);
+            let mut meta = artifact_meta(binary_name, build_id, amd64_variant);
 
             let artifact_path = if no_unique_dist_dir {
                 meta.insert("no_unique_dist_dir".to_string(), "true".to_string());
@@ -1939,6 +1997,7 @@ impl Stage for BuildStage {
                     &job.binary_name,
                     &job.build_id,
                     job.no_unique_dist_dir,
+                    &job.amd64_variant,
                 )?;
             }
         } else if effective_parallelism <= 1 || build_jobs.len() <= 1 {
@@ -1955,7 +2014,10 @@ impl Stage for BuildStage {
                     )?;
                 }
 
-                let cmd = job.cmd.as_ref().unwrap();
+                let cmd = job
+                    .cmd
+                    .as_ref()
+                    .context("build job has no cmd (programmer bug: Phase 1 should populate)")?;
                 log.status(&format!("running: {} {}", cmd.program, cmd.args.join(" ")));
                 let output = Command::new(&cmd.program)
                     .args(&cmd.args)
@@ -2019,12 +2081,16 @@ impl Stage for BuildStage {
                     &job.binary_name,
                     &job.build_id,
                     job.no_unique_dist_dir,
+                    &job.amd64_variant,
                 )?;
             }
 
             // Copy-from jobs (must run after source builds complete)
             for job in &copy_jobs {
-                let (src, dst) = job.copy_from.as_ref().unwrap();
+                let (src, dst) = job
+                    .copy_from
+                    .as_ref()
+                    .context("copy_from job without copy_from pair (programmer bug)")?;
                 resolve_copy_from(ctx, src, dst, &job.target, &job.crate_name)?;
 
                 add_artifact(
@@ -2036,6 +2102,7 @@ impl Stage for BuildStage {
                     &job.binary_name,
                     &job.build_id,
                     job.no_unique_dist_dir,
+                    &job.amd64_variant,
                 )?;
             }
         } else {
@@ -2055,7 +2122,19 @@ impl Stage for BuildStage {
                     let handles: Vec<_> = chunk
                         .iter()
                         .map(|job| {
-                            let cmd = job.cmd.as_ref().unwrap();
+                            // Phase 1 always populates `job.cmd` for build jobs
+                            // (copy-from-only jobs run in a separate code path
+                            // above). Use `unwrap_or_else(panic!)` with a
+                            // diagnostic rather than `?` because this closure
+                            // can't propagate errors — the surrounding
+                            // `.map(|job| …)` returns `JoinHandle`, not
+                            // `Result`. A panic here surfaces a programmer bug.
+                            let cmd = job.cmd.as_ref().unwrap_or_else(|| {
+                                panic!(
+                                    "build job for crate {} has no cmd (programmer bug: Phase 1 should populate)",
+                                    job.crate_name
+                                )
+                            });
                             let program = cmd.program.clone();
                             let args = cmd.args.clone();
                             let env = cmd.env.clone();
@@ -2073,6 +2152,7 @@ impl Stage for BuildStage {
                             let pre_hooks = job.pre_hooks.clone();
                             let post_hooks = job.post_hooks.clone();
                             let job_mod_timestamp = job.mod_timestamp.clone();
+                            let job_amd64_variant = job.amd64_variant.clone();
                             let thread_tvars = template_vars.clone();
                             // StageLogger is not Clone, so create a fresh one per thread
                             let thread_log = anodize_core::log::StageLogger::new("build", log.verbosity());
@@ -2157,6 +2237,7 @@ impl Stage for BuildStage {
                                     binary_name,
                                     build_id,
                                     no_unique_dist_dir,
+                                    amd64_variant: job_amd64_variant,
                                 })
                             })
                         })
@@ -2187,13 +2268,17 @@ impl Stage for BuildStage {
                         &r.binary_name,
                         &r.build_id,
                         r.no_unique_dist_dir,
+                        &r.amd64_variant,
                     )?;
                 }
             }
 
             // Copy-from jobs (must run after source builds complete)
             for job in &copy_jobs {
-                let (src, dst) = job.copy_from.as_ref().unwrap();
+                let (src, dst) = job
+                    .copy_from
+                    .as_ref()
+                    .context("copy_from job without copy_from pair (programmer bug)")?;
                 resolve_copy_from(ctx, src, dst, &job.target, &job.crate_name)?;
 
                 add_artifact(
@@ -2205,6 +2290,7 @@ impl Stage for BuildStage {
                     &job.binary_name,
                     &job.build_id,
                     job.no_unique_dist_dir,
+                    &job.amd64_variant,
                 )?;
             }
         }
@@ -4042,5 +4128,76 @@ crates:
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let build = &config.crates[0].builds.as_ref().unwrap()[0];
         assert_eq!(build.no_unique_dist_dir, Some(StringOrBool::Bool(true)));
+    }
+
+    #[test]
+    fn test_parse_amd64_variant_compact_flag() {
+        assert_eq!(
+            parse_amd64_variant_from_rustflags("-Ctarget-cpu=x86-64-v3"),
+            Some("v3".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_amd64_variant_spaced_flag() {
+        assert_eq!(
+            parse_amd64_variant_from_rustflags("-C target-cpu=x86-64-v2"),
+            Some("v2".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_amd64_variant_mixed_flags() {
+        assert_eq!(
+            parse_amd64_variant_from_rustflags(
+                "--remap-path-prefix=/build -C target-cpu=x86-64-v4 -C opt-level=3"
+            ),
+            Some("v4".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_amd64_variant_non_x86_cpu() {
+        assert_eq!(
+            parse_amd64_variant_from_rustflags("-Ctarget-cpu=native"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_parse_amd64_variant_no_flags() {
+        assert_eq!(parse_amd64_variant_from_rustflags(""), None);
+    }
+
+    #[test]
+    fn test_detect_amd64_variant_x86_64_with_rustflags() {
+        let mut env = HashMap::new();
+        env.insert(
+            "RUSTFLAGS".to_string(),
+            "-C target-cpu=x86-64-v3".to_string(),
+        );
+        assert_eq!(
+            detect_amd64_variant("x86_64-unknown-linux-gnu", &env),
+            Some("v3".to_string())
+        );
+    }
+
+    #[test]
+    fn test_detect_amd64_variant_non_x86_target() {
+        let mut env = HashMap::new();
+        env.insert(
+            "RUSTFLAGS".to_string(),
+            "-C target-cpu=x86-64-v3".to_string(),
+        );
+        assert_eq!(
+            detect_amd64_variant("aarch64-unknown-linux-gnu", &env),
+            None
+        );
+    }
+
+    #[test]
+    fn test_detect_amd64_variant_no_rustflags() {
+        let env = HashMap::new();
+        assert_eq!(detect_amd64_variant("x86_64-unknown-linux-gnu", &env), None);
     }
 }

@@ -1,6 +1,7 @@
 use anodize_core::config::Config;
 use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
+use anodize_core::scm::ScmTokenType;
 use anyhow::{Context as _, Result};
 
 /// Close milestones on the VCS provider after a release.
@@ -34,8 +35,10 @@ pub(super) fn close_milestones(
             continue;
         }
 
-        // Determine repo owner/name from milestone config or release config
-        let (owner, repo_name) = resolve_milestone_repo(milestone_cfg, &ctx.config);
+        // Determine repo owner/name from milestone config or release config.
+        // Prefer `ctx.token_type` when choosing among mixed-provider configs so
+        // a GitLab release run doesn't accidentally pick up a crate's GitHub block.
+        let (owner, repo_name) = resolve_milestone_repo(milestone_cfg, &ctx.config, ctx.token_type);
 
         if owner.is_empty() || repo_name.is_empty() {
             if milestone_cfg.fail_on_error.unwrap_or(false) {
@@ -58,36 +61,29 @@ pub(super) fn close_milestones(
             milestone_name, owner, repo_name
         ));
 
-        // GoReleaser parity: close milestones on GitHub, GitLab, and Gitea.
-        let provider = resolve_milestone_provider(milestone_cfg, &ctx.config);
+        // Prefer the effective SCM provider for this run (ctx.token_type) over
+        // a best-guess scan of crate configs. A mixed-provider config where the
+        // first crate's release block is GitHub but the user is running a
+        // GitLab release would otherwise misroute the milestone close.
         let api_url = resolve_milestone_api_url(milestone_cfg, &ctx.config);
-        let close_result = match provider.as_str() {
-            "github" => close_milestone_github(&token, &owner, &repo_name, &milestone_name),
-            "gitlab" => close_milestone_gitlab(
-                &token,
-                &owner,
-                &repo_name,
-                &milestone_name,
-                api_url.as_deref(),
-            ),
-            "gitea" => close_milestone_gitea(
-                &token,
-                &owner,
-                &repo_name,
-                &milestone_name,
-                api_url.as_deref(),
-            ),
-            other => {
-                let msg = format!(
-                    "milestone: unknown provider '{}' — cannot close milestone",
-                    other
-                );
-                if milestone_cfg.fail_on_error.unwrap_or(false) {
-                    anyhow::bail!("{}", msg);
-                }
-                log.warn(&msg);
-                continue;
+        let close_result = match ctx.token_type {
+            ScmTokenType::GitHub => {
+                close_milestone_github(&token, &owner, &repo_name, &milestone_name)
             }
+            ScmTokenType::GitLab => close_milestone_gitlab(
+                &token,
+                &owner,
+                &repo_name,
+                &milestone_name,
+                api_url.as_deref(),
+            ),
+            ScmTokenType::Gitea => close_milestone_gitea(
+                &token,
+                &owner,
+                &repo_name,
+                &milestone_name,
+                api_url.as_deref(),
+            ),
         };
         match close_result {
             Ok(()) => {
@@ -112,6 +108,7 @@ pub(super) fn close_milestones(
 fn resolve_milestone_repo(
     milestone_cfg: &anodize_core::config::MilestoneConfig,
     config: &Config,
+    token_type: ScmTokenType,
 ) -> (String, String) {
     if let Some(ref repo_cfg) = milestone_cfg.repo
         && !repo_cfg.owner.is_empty()
@@ -120,7 +117,35 @@ fn resolve_milestone_repo(
         return (repo_cfg.owner.clone(), repo_cfg.name.clone());
     }
 
-    // Fall back to the first crate's release config
+    // Fall back to the first crate's release config for the matching provider.
+    // Scans in preferred-provider order — first a release block on the active
+    // SCM (ctx.token_type), then anything else — so a mixed-provider repo
+    // doesn't pick up an irrelevant block.
+    for crate_cfg in &config.crates {
+        if let Some(ref release_cfg) = crate_cfg.release {
+            let matched = match token_type {
+                ScmTokenType::GitHub => release_cfg
+                    .github
+                    .as_ref()
+                    .map(|r| (r.owner.clone(), r.name.clone())),
+                ScmTokenType::GitLab => release_cfg
+                    .gitlab
+                    .as_ref()
+                    .map(|r| (r.owner.clone(), r.name.clone())),
+                ScmTokenType::Gitea => release_cfg
+                    .gitea
+                    .as_ref()
+                    .map(|r| (r.owner.clone(), r.name.clone())),
+            };
+            if let Some(pair) = matched {
+                return pair;
+            }
+        }
+    }
+
+    // Last resort: any release block regardless of provider. Keeps behaviour
+    // for older single-provider configs that never set a release block on the
+    // token's matching provider (e.g. GitLab API via a Gitea-style block).
     for crate_cfg in &config.crates {
         if let Some(ref release_cfg) = crate_cfg.release {
             if let Some(ref gh) = release_cfg.github {
@@ -136,32 +161,6 @@ fn resolve_milestone_repo(
     }
 
     (String::new(), String::new())
-}
-
-/// Determine the SCM provider type for milestone operations.
-/// Returns "github", "gitlab", "gitea", or "unknown".
-fn resolve_milestone_provider(
-    milestone_cfg: &anodize_core::config::MilestoneConfig,
-    config: &Config,
-) -> String {
-    // If the milestone config specifies a repo, check what provider type the
-    // first crate's release config uses (since MilestoneConfig.repo doesn't
-    // have a provider field).
-    let _ = milestone_cfg;
-    for crate_cfg in &config.crates {
-        if let Some(ref release_cfg) = crate_cfg.release {
-            if release_cfg.github.is_some() {
-                return "github".to_string();
-            }
-            if release_cfg.gitlab.is_some() {
-                return "gitlab".to_string();
-            }
-            if release_cfg.gitea.is_some() {
-                return "gitea".to_string();
-            }
-        }
-    }
-    "unknown".to_string()
 }
 
 /// Close a GitHub milestone by name using the REST API.

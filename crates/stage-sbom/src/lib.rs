@@ -394,15 +394,62 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
         }
     });
 
-    // Filter artifacts from the registry based on artifacts type
+    // Filter artifacts from the registry based on artifacts type.
+    //
+    // For `artifacts: binary` we match Binary + UploadableBinary + UniversalBinary
+    // and dedup by path, preferring UploadableBinary (this mirrors GoReleaser's
+    // `artifact.ByBinaryLikeArtifacts`: `internal/artifact/artifact.go:733-761`).
+    // Without this, each per-arch Binary *plus* its UploadableBinary registration
+    // would produce its own SBOM at the same path, causing file collisions.
     let matching_artifacts: Vec<(PathBuf, HashMap<String, String>, Option<String>)> =
         match artifacts_type {
             "any" => vec![],
+            "binary" => {
+                let uploadable_paths: std::collections::HashSet<PathBuf> = ctx
+                    .artifacts
+                    .all()
+                    .iter()
+                    .filter(|a| a.kind == ArtifactKind::UploadableBinary)
+                    .map(|a| a.path.clone())
+                    .collect();
+                ctx.artifacts
+                    .all()
+                    .iter()
+                    .filter(|a| {
+                        matches!(
+                            a.kind,
+                            ArtifactKind::Binary
+                                | ArtifactKind::UploadableBinary
+                                | ArtifactKind::UniversalBinary
+                        )
+                    })
+                    .filter(|a| {
+                        // Prefer UploadableBinary over a plain Binary at the same
+                        // path. UniversalBinary paths differ from component binaries
+                        // so they survive this filter and get their own SBOM.
+                        if a.kind == ArtifactKind::UploadableBinary {
+                            return true;
+                        }
+                        !uploadable_paths.contains(&a.path)
+                    })
+                    .filter(|a| {
+                        if let Some(ref ids) = sbom_cfg.ids {
+                            if let Some(art_id) = a.metadata.get("id") {
+                                ids.contains(art_id)
+                            } else {
+                                false
+                            }
+                        } else {
+                            true
+                        }
+                    })
+                    .map(|a| (a.path.clone(), a.metadata.clone(), a.target.clone()))
+                    .collect()
+            }
             _ => {
                 let kind = match artifacts_type {
                     "source" => ArtifactKind::SourceArchive,
                     "archive" => ArtifactKind::Archive,
-                    "binary" => ArtifactKind::Binary,
                     "package" => ArtifactKind::LinuxPackage,
                     "diskimage" => ArtifactKind::DiskImage,
                     "installer" => ArtifactKind::Installer,

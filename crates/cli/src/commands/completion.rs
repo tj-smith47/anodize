@@ -20,7 +20,8 @@ mod tests {
         let mut cmd = crate::Cli::command();
         let mut buf = Vec::new();
         generate(Shell::Bash, &mut cmd, "anodize", &mut buf);
-        let output = String::from_utf8(buf).expect("completions should be valid UTF-8");
+        let output = String::from_utf8(buf)
+            .unwrap_or_else(|e| panic!("completions should be valid UTF-8: {e}"));
         assert!(!output.is_empty(), "bash completions should not be empty");
         assert!(
             output.contains("anodize"),
@@ -33,7 +34,8 @@ mod tests {
         let mut cmd = crate::Cli::command();
         let mut buf = Vec::new();
         generate(Shell::Zsh, &mut cmd, "anodize", &mut buf);
-        let output = String::from_utf8(buf).expect("completions should be valid UTF-8");
+        let output = String::from_utf8(buf)
+            .unwrap_or_else(|e| panic!("completions should be valid UTF-8: {e}"));
         assert!(!output.is_empty(), "zsh completions should not be empty");
     }
 
@@ -42,7 +44,8 @@ mod tests {
         let mut cmd = crate::Cli::command();
         let mut buf = Vec::new();
         generate(Shell::Fish, &mut cmd, "anodize", &mut buf);
-        let output = String::from_utf8(buf).expect("completions should be valid UTF-8");
+        let output = String::from_utf8(buf)
+            .unwrap_or_else(|e| panic!("completions should be valid UTF-8: {e}"));
         assert!(!output.is_empty(), "fish completions should not be empty");
     }
 
@@ -51,7 +54,8 @@ mod tests {
         let mut cmd = crate::Cli::command();
         let mut buf = Vec::new();
         generate(Shell::PowerShell, &mut cmd, "anodize", &mut buf);
-        let output = String::from_utf8(buf).expect("completions should be valid UTF-8");
+        let output = String::from_utf8(buf)
+            .unwrap_or_else(|e| panic!("completions should be valid UTF-8: {e}"));
         assert!(
             !output.is_empty(),
             "powershell completions should not be empty"

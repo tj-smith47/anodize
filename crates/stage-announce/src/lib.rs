@@ -672,6 +672,13 @@ impl Stage for AnnounceStage {
                     );
                 }
                 let release_url = ctx.template_vars().get("ReleaseURL").map(|s| s.to_string());
+                // Template-render pds_url so users can reference env vars
+                // (e.g. `{{ .Env.BLUESKY_PDS }}`) for self-hosted instances.
+                let pds_url = cfg
+                    .pds_url
+                    .as_deref()
+                    .map(|u| ctx.render_template(u))
+                    .transpose()?;
 
                 dispatch(ctx, "bluesky", &message, || {
                     bluesky::send_bluesky(
@@ -679,6 +686,7 @@ impl Stage for AnnounceStage {
                         &app_password,
                         &message,
                         release_url.as_deref(),
+                        pds_url.as_deref(),
                     )
                 })
             })()
@@ -1890,6 +1898,7 @@ blocks:
                 enabled: Some(StringOrBool::Bool(true)),
                 username: Some("user.bsky.social".to_string()),
                 message_template: Some("{{ .ProjectName }} {{ .Tag }}".to_string()),
+                pds_url: None,
             }),
             ..Default::default()
         };
@@ -1919,6 +1928,7 @@ blocks:
                 enabled: Some(StringOrBool::Bool(true)),
                 username: None,
                 message_template: None,
+                pds_url: None,
             }),
             ..Default::default()
         };
@@ -1940,6 +1950,7 @@ blocks:
                 enabled: Some(StringOrBool::Bool(true)),
                 username: Some("user.bsky.social".to_string()),
                 message_template: None,
+                pds_url: None,
             }),
             ..Default::default()
         };
@@ -1960,6 +1971,7 @@ blocks:
                 enabled: Some(StringOrBool::Bool(true)),
                 username: Some("user.bsky.social".to_string()),
                 message_template: None,
+                pds_url: None,
             }),
             ..Default::default()
         };

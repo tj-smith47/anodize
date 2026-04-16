@@ -145,7 +145,7 @@ pub fn generate_nuspec(params: &NuspecParams<'_>) -> String {
 
     let mut tera = tera::Tera::default();
     tera.add_raw_template("nuspec", NUSPEC_TEMPLATE)
-        .expect("chocolatey: parse nuspec template");
+        .unwrap_or_else(|e| panic!("chocolatey: parse nuspec template: {e}"));
     tera.autoescape_on(vec![]);
 
     let mut ctx = tera::Context::new();
@@ -203,7 +203,7 @@ pub fn generate_nuspec(params: &NuspecParams<'_>) -> String {
     ctx.insert("dependencies", &dep_entries);
 
     tera.render("nuspec", &ctx)
-        .expect("chocolatey: render nuspec template")
+        .unwrap_or_else(|e| panic!("chocolatey: render nuspec template: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -228,21 +228,21 @@ pub fn generate_install_script(name: &str, url: &str, hash: &str, is_32bit: bool
     };
     let mut tera = tera::Tera::default();
     tera.add_raw_template("install", template)
-        .expect("chocolatey: parse install script template");
+        .unwrap_or_else(|e| panic!("chocolatey: parse install script template: {e}"));
     tera.autoescape_on(vec![]);
     let mut ctx = tera::Context::new();
     ctx.insert("name", name);
     ctx.insert("url", url);
     ctx.insert("hash", hash);
     tera.render("install", &ctx)
-        .expect("chocolatey: render install script template")
+        .unwrap_or_else(|e| panic!("chocolatey: render install script template: {e}"))
 }
 
 /// Generate a dual-arch install script with both 32-bit and 64-bit URLs.
 pub fn generate_install_script_dual(params: &InstallScriptDual<'_>) -> String {
     let mut tera = tera::Tera::default();
     tera.add_raw_template("install", INSTALL_SCRIPT_TEMPLATE_DUAL)
-        .expect("chocolatey: parse dual install script template");
+        .unwrap_or_else(|e| panic!("chocolatey: parse dual install script template: {e}"));
     tera.autoescape_on(vec![]);
     let mut ctx = tera::Context::new();
     ctx.insert("name", params.name);
@@ -251,7 +251,7 @@ pub fn generate_install_script_dual(params: &InstallScriptDual<'_>) -> String {
     ctx.insert("url64", params.url64);
     ctx.insert("hash64", params.hash64);
     tera.render("install", &ctx)
-        .expect("chocolatey: render dual install script template")
+        .unwrap_or_else(|e| panic!("chocolatey: render dual install script template: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -314,10 +314,10 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
     let tags = choco_cfg.tags.clone().unwrap_or_default();
 
     // Find both 32-bit and 64-bit Windows artifacts (GoReleaser parity).
-    // Apply IDs + goamd64 filter.
+    // Apply IDs + amd64_variant filter.
     let ids_filter = choco_cfg.ids.as_deref();
     let url_template = choco_cfg.url_template.as_deref();
-    let goamd64 = choco_cfg.goamd64.as_deref().or(Some("v1"));
+    let amd64_variant = choco_cfg.amd64_variant.as_deref().or(Some("v1"));
     let artifact_kind = util::resolve_artifact_kind(choco_cfg.use_artifact.as_deref());
     let all_artifacts = ctx.artifacts.by_kind_and_crate(artifact_kind, crate_name);
 
@@ -341,14 +341,14 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
                     true
                 }
         })
-        // Filter by goamd64 microarchitecture variant.
+        // Filter by amd64_variant microarchitecture variant.
         .filter(|a| {
             let target = a.target.as_deref().unwrap_or("");
             let (_, arch) = anodize_core::target::map_target(target);
             if arch == "amd64"
-                && let Some(want) = goamd64
+                && let Some(want) = amd64_variant
             {
-                return a.metadata.get("goamd64").is_none_or(|v| v == want);
+                return a.metadata.get("amd64_variant").is_none_or(|v| v == want);
             }
             true
         })
