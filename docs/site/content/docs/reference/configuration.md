@@ -33,7 +33,6 @@ Accepts two YAML forms: - **Map form**: `env: { MY_VAR: hello, DEPLOY_ENV: stagi
 Values are rendered through the template engine before being set, so expressions like `{{ .Tag }}` or `{{ .Date }}` are expanded. |
 | `env_files` | EnvFilesConfig | — | Environment file configuration. Accepts either: - A list of `.env` file paths: `[".env", ".release.env"]` - A struct with token file paths: `{ github_token: "~/.config/goreleaser/github_token" }` |
 | `force_token` | ForceTokenKind | — | Force a specific token type for authentication. When set, overrides automatic token detection from environment variables. |
-| `fury` | list of FuryConfig | — | GemFury publisher configurations. |
 | `git` | GitConfig | — | Git-level tag discovery and sorting settings. |
 | `gitea_urls` | GiteaUrlsConfig | — | Custom Gitea API/download URLs for self-hosted Gitea installations. |
 | `github_urls` | GitHubUrlsConfig | — | Custom GitHub API/upload/download URLs for GitHub Enterprise installations. |
@@ -46,7 +45,6 @@ Values are rendered through the template engine before being set, so expressions
 | `monorepo` | MonorepoConfig | — | GoReleaser Pro monorepo configuration. When configured, tag discovery filters by tag_prefix and the working directory is scoped to dir. |
 | `nightly` | NightlyConfig | — | Nightly release configuration. |
 | `notarize` | NotarizeConfig | — | macOS code signing and notarization configuration. |
-| `npms` | list of NpmConfig | — | NPM publisher configurations. |
 | `partial` | PartialConfig | — | Partial/split build configuration for fan-out CI pipelines. |
 | `project_name` | string | — | Human-readable project name used in templates and release titles. |
 | `publishers` | list of PublisherConfig | — | Generic artifact publisher configurations. |
@@ -69,8 +67,8 @@ Values are rendered through the template engine before being set, so expressions
 Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` and `post` lists of hook commands that run around the entire pipeline (not individual stages).
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `post` | list of HookEntry | — | Commands to run after the pipeline or stage completes. |
-| `pre` | list of HookEntry | — | Commands to run before the pipeline or stage starts. GoReleaser uses `hooks` as the field name under `before:`. We accept both `pre` and `hooks` for migration compatibility. |
+| `hooks` | list of HookEntry | — | Commands to run before the pipeline or stage starts. Matches GoReleaser `before.hooks` canonically. |
+| `post` | list of HookEntry | — | Commands to run after the pipeline or stage completes. Anodize extension (GoReleaser has no top-level `after:` block). |
 
 ## `announce`
 | Field | Type | Default | Description |
@@ -151,8 +149,8 @@ Artifactory upload configuration. Uploads artifacts to JFrog Artifactory reposit
 Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` and `post` lists of hook commands that run around the entire pipeline (not individual stages).
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `post` | list of HookEntry | — | Commands to run after the pipeline or stage completes. |
-| `pre` | list of HookEntry | — | Commands to run before the pipeline or stage starts. GoReleaser uses `hooks` as the field name under `before:`. We accept both `pre` and `hooks` for migration compatibility. |
+| `hooks` | list of HookEntry | — | Commands to run before the pipeline or stage starts. Matches GoReleaser `before.hooks` canonically. |
+| `post` | list of HookEntry | — | Commands to run after the pipeline or stage completes. Anodize extension (GoReleaser has no top-level `after:` block). |
 
 ## `binary_signs`
 | Field | Type | Default | Description |
@@ -269,16 +267,6 @@ DockerHub description sync configuration. Pushes image descriptions and README c
 | `images` | list of string | — | DockerHub image names to update (e.g. `myorg/myapp`). |
 | `secret_name` | string | — | Environment variable name containing the DockerHub token. |
 | `username` | string | — | DockerHub username for authentication. |
-
-## `fury`
-GemFury publisher configuration. Pushes packages to GemFury (fury.io) package hosting.
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `account` | string | — | GemFury account name. |
-| `disable` | StringOrBool | — | Disable this publisher. Accepts bool or template string. |
-| `formats` | list of string | — | Package format filter: only publish artifacts matching these formats (e.g. "deb", "rpm"). |
-| `ids` | list of string | — | Build IDs filter: only publish artifacts from builds whose `id` is in this list. |
-| `secret_name` | string | — | Environment variable name containing the GemFury push token. |
 
 ## `git`
 Git-level tag discovery and sorting settings.
@@ -418,30 +406,6 @@ Top-level notarization configuration supporting both cross-platform (`rcodesign`
 | `macos` | list of MacOSSignNotarizeConfig | — | Cross-platform signing/notarization (rcodesign-based, works on any OS). |
 | `macos_native` | list of MacOSNativeSignNotarizeConfig | — | Native signing/notarization (codesign + xcrun, macOS only). |
 
-## `npms`
-NPM publisher configuration. Publishes packages to NPM registries.
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `access` | string | — | NPM access level: "public" or "restricted". |
-| `author` | string | — | Package author (e.g. `"Jane Doe <jane@example.com>"`). |
-| `bugs` | string | — | Bug tracker URL for package.json. |
-| `description` | string | — | Package description. |
-| `disable` | StringOrBool | — | Disable this publisher. Accepts bool or template string. |
-| `extra` | map | — | Additional package.json fields as key-value pairs. |
-| `extra_files` | list of ExtraFileSpec | — | Extra files to include in the NPM package. |
-| `format` | string | — | Package format: "tgz" (default) or other supported NPM formats. |
-| `homepage` | string | — | Package homepage URL. |
-| `id` | string | — | Unique identifier for this NPM publisher (when multiple are configured). |
-| `ids` | list of string | — | Build IDs filter: only publish artifacts from builds whose `id` is in this list. |
-| `if` | string | — | Template-conditional: only run this publisher if the condition evaluates to true. |
-| `keywords` | list of string | — | Package keywords for NPM search. |
-| `license` | string | — | SPDX license identifier (e.g. "MIT", "Apache-2.0"). |
-| `name` | string | — | NPM package name (e.g. `@myorg/mypackage`). |
-| `repository` | string | — | Repository URL for package.json. |
-| `tag` | string | — | NPM dist-tag (e.g. "latest", "next", "beta"). |
-| `templated_extra_files` | list of TemplatedExtraFile | — | Extra files whose contents are rendered through the template engine before inclusion. |
-| `url_template` | string | — | Custom URL template for package downloads. |
-
 ## `partial`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -576,6 +540,8 @@ Accepts both map form (`KEY: value`) and GoReleaser list form (`- KEY=value`). V
 | `prerelease_suffix` | string | — | Suffix appended to pre-release versions (e.g., "beta"). |
 | `release_branches` | list of string | — | Branch name patterns (supports wildcards) that trigger releases (default: ["master", "main"]). |
 | `tag_context` | string | — | Source for determining the previous tag: "repo" (default) or "branch". |
+| `tag_post_hooks` | list of HookEntry | — | Commands to run after `anodize tag` successfully creates and pushes the tag. Env and template vars same as `tag_pre_hooks`. |
+| `tag_pre_hooks` | list of HookEntry | — | Commands to run before `anodize tag` creates the tag. Useful for updating lockfiles or committing sibling changes that must be part of the tagged commit. Env: `ANODIZE_CURRENT_TAG`, `ANODIZE_PREVIOUS_TAG` are set; template vars `{{ .Tag }}`, `{{ .PreviousTag }}`, `{{ .Version }}`, `{{ .PrefixedTag }}` are available. |
 | `tag_prefix` | string | — | Prefix prepended to version tags (e.g., "v" produces "v1.2.3"). |
 | `verbose` | bool | — | When true, print verbose tag calculation output. |
 
