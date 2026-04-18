@@ -12,16 +12,7 @@ use anodize_core::util::find_binary;
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Format a byte count as a human-readable string (B/KB/MB).
-fn format_size(bytes: u64) -> String {
-    if bytes >= 1_048_576 {
-        format!("{:.1}MB", bytes as f64 / 1_048_576.0)
-    } else if bytes >= 1024 {
-        format!("{:.1}KB", bytes as f64 / 1024.0)
-    } else {
-        format!("{}B", bytes)
-    }
-}
+use anodize_core::artifact::format_size;
 
 /// Match a target string against a glob-style pattern.
 /// Supports `*` as a wildcard that matches any sequence of characters.
@@ -33,26 +24,20 @@ pub(crate) fn target_matches_pattern(target: &str, pattern: &str) -> bool {
 
 /// Check if an artifact should be compressed by this UPX config.
 /// Returns `true` if the artifact matches the ids and targets filters.
+///
+/// Id matching follows GoReleaser `ByID` semantics: only the artifact's
+/// `id` metadata is consulted (no fallback to `name`).
 pub(crate) fn should_compress(
     upx_cfg: &UpxConfig,
     artifact_target: Option<&str>,
-    artifact_metadata_id: Option<&str>,
-    artifact_metadata_name: Option<&str>,
+    artifact_id: Option<&str>,
 ) -> bool {
-    // Filter by ids: if ids is set, at least one must match the artifact metadata
-    if let Some(ref ids) = upx_cfg.ids {
-        let matches_id = artifact_metadata_id
-            .map(|id| ids.contains(&id.to_string()))
-            .unwrap_or(false);
-        let matches_name = artifact_metadata_name
-            .map(|name| ids.contains(&name.to_string()))
-            .unwrap_or(false);
-        if !matches_id && !matches_name {
-            return false;
-        }
+    if let Some(ref ids) = upx_cfg.ids
+        && !artifact_id.is_some_and(|id| ids.iter().any(|i| i == id))
+    {
+        return false;
     }
 
-    // Filter by targets: if targets is set, at least one pattern must match
     if let Some(ref targets) = upx_cfg.targets {
         if let Some(target) = artifact_target {
             if !targets
@@ -62,7 +47,6 @@ pub(crate) fn should_compress(
                 return false;
             }
         } else {
-            // No target on artifact but targets filter is set => skip
             return false;
         }
     }
@@ -92,7 +76,7 @@ impl Stage for UpxStage {
         let parallelism = ctx.options.parallelism.max(1);
 
         for upx_cfg in &upx_configs {
-            // GoReleaser parity: enabled supports template strings via tmpl.Bool()
+            // enabled supports template strings via tmpl.Bool()
             let is_enabled = upx_cfg
                 .enabled
                 .as_ref()
@@ -130,7 +114,6 @@ impl Stage for UpxStage {
                         upx_cfg,
                         a.target.as_deref(),
                         a.metadata.get("id").map(|s| s.as_str()),
-                        a.metadata.get("name").map(|s| s.as_str()),
                     )
                 })
                 .map(|a| (a.path.clone(), a.target.clone()))
@@ -175,7 +158,7 @@ impl Stage for UpxStage {
                 continue;
             }
 
-            // GoReleaser parity: compress artifacts in parallel using
+            // compress artifacts in parallel using
             // semerrgroup-style bounded concurrency (upx.go uses
             // semerrgroup.New(ctx.Parallelism)). Shared helper in
             // anodize_core::parallel preserves bounded concurrency,
@@ -341,7 +324,6 @@ mod tests {
         assert!(should_compress(
             &cfg,
             Some("x86_64-unknown-linux-gnu"),
-            None,
             None
         ));
     }
@@ -349,7 +331,7 @@ mod tests {
     #[test]
     fn test_should_compress_no_filters_no_target() {
         let cfg = UpxConfig::default();
-        assert!(should_compress(&cfg, None, None, None));
+        assert!(should_compress(&cfg, None, None));
     }
 
     #[test]
@@ -362,21 +344,6 @@ mod tests {
             &cfg,
             Some("x86_64-unknown-linux-gnu"),
             Some("myapp"),
-            None
-        ));
-    }
-
-    #[test]
-    fn test_should_compress_ids_filter_matches_name() {
-        let cfg = UpxConfig {
-            ids: Some(vec!["myapp".to_string()]),
-            ..Default::default()
-        };
-        assert!(should_compress(
-            &cfg,
-            Some("x86_64-unknown-linux-gnu"),
-            None,
-            Some("myapp")
         ));
     }
 
@@ -390,7 +357,6 @@ mod tests {
             &cfg,
             Some("x86_64-unknown-linux-gnu"),
             Some("other"),
-            Some("other-name"),
         ));
     }
 
@@ -403,7 +369,6 @@ mod tests {
         assert!(!should_compress(
             &cfg,
             Some("x86_64-unknown-linux-gnu"),
-            None,
             None
         ));
     }
@@ -417,7 +382,6 @@ mod tests {
         assert!(should_compress(
             &cfg,
             Some("x86_64-unknown-linux-gnu"),
-            None,
             None
         ));
     }
@@ -431,7 +395,6 @@ mod tests {
         assert!(!should_compress(
             &cfg,
             Some("x86_64-unknown-linux-gnu"),
-            None,
             None
         ));
     }
@@ -442,7 +405,7 @@ mod tests {
             targets: Some(vec!["x86_64-*".to_string()]),
             ..Default::default()
         };
-        assert!(!should_compress(&cfg, None, None, None));
+        assert!(!should_compress(&cfg, None, None));
     }
 
     #[test]
@@ -454,19 +417,12 @@ mod tests {
         assert!(should_compress(
             &cfg,
             Some("x86_64-unknown-linux-gnu"),
-            None,
             None
         ));
-        assert!(should_compress(
-            &cfg,
-            Some("aarch64-apple-darwin"),
-            None,
-            None
-        ));
+        assert!(should_compress(&cfg, Some("aarch64-apple-darwin"), None));
         assert!(!should_compress(
             &cfg,
             Some("armv7-unknown-linux-gnueabihf"),
-            None,
             None
         ));
     }
@@ -478,26 +434,20 @@ mod tests {
             targets: Some(vec!["x86_64-*".to_string()]),
             ..Default::default()
         };
-        // Both filters must match
         assert!(should_compress(
             &cfg,
             Some("x86_64-unknown-linux-gnu"),
             Some("myapp"),
-            None,
         ));
-        // Correct id but wrong target
         assert!(!should_compress(
             &cfg,
             Some("aarch64-apple-darwin"),
             Some("myapp"),
-            None,
         ));
-        // Correct target but wrong id
         assert!(!should_compress(
             &cfg,
             Some("x86_64-unknown-linux-gnu"),
             Some("other"),
-            None,
         ));
     }
 

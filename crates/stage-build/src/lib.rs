@@ -413,16 +413,28 @@ fn build_universal_binary(
         }
     };
 
-    // Determine output path / name
+    // `binary_name` is the source binary filename — preserved for the
+    // `binary` metadata key (downstream consumers treat it as the binary's
+    // on-disk name).
     let binary_name = arm64_path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| crate_name.to_string());
 
+    // Determine output path / name.
+    //
+    // GoReleaser universalbinary.go:45 — the default `name_template` is
+    // `{{ .ProjectName }}`, NOT the source binary filename. We render the
+    // default explicitly so `.exe`-suffixed source names and custom
+    // `BuildConfig.binary` values do not leak into the universal output.
     let out_name = if let Some(ref tmpl) = ub.name_template {
         ctx.render_template_strict(tmpl, "universal_binaries name_template", &log)?
     } else {
-        binary_name.clone()
+        ctx.render_template_strict(
+            "{{ .ProjectName }}",
+            "universal_binaries name_template (default)",
+            &log,
+        )?
     };
 
     // Place the universal binary in dist/{crate_name}_darwin_all/{name}
@@ -1583,7 +1595,7 @@ impl Stage for BuildStage {
                         features.clone()
                     };
 
-                    // GoReleaser parity: template-render the flags string
+                    // template-render the flags string
                     // through the template engine before splitting on whitespace.
                     // This allows flags like `--cfg={{ .Os }}` to be resolved.
                     // Filter out empty results after rendering.
@@ -2122,23 +2134,17 @@ impl Stage for BuildStage {
                     let handles: Vec<_> = chunk
                         .iter()
                         .map(|job| {
-                            // Phase 1 always populates `job.cmd` for build jobs
-                            // (copy-from-only jobs run in a separate code path
-                            // above). Use `unwrap_or_else(panic!)` with a
-                            // diagnostic rather than `?` because this closure
-                            // can't propagate errors — the surrounding
-                            // `.map(|job| …)` returns `JoinHandle`, not
-                            // `Result`. A panic here surfaces a programmer bug.
-                            let cmd = job.cmd.as_ref().unwrap_or_else(|| {
-                                panic!(
-                                    "build job for crate {} has no cmd (programmer bug: Phase 1 should populate)",
-                                    job.crate_name
-                                )
-                            });
-                            let program = cmd.program.clone();
-                            let args = cmd.args.clone();
-                            let env = cmd.env.clone();
-                            let cwd = cmd.cwd.clone();
+                            // Phase 1 populates `job.cmd` for every build job (copy-from-only
+                            // jobs take a separate code path). If it's absent here, that's a
+                            // pipeline invariant violation — surface as an error, not a panic,
+                            // so the worker thread unwinds through the Result channel instead
+                            // of killing the process.
+                            let cmd_opt = job.cmd.clone();
+                            let crate_name_for_err = job.crate_name.clone();
+                            let program = cmd_opt.as_ref().map(|c| c.program.clone());
+                            let args = cmd_opt.as_ref().map(|c| c.args.clone());
+                            let env = cmd_opt.as_ref().map(|c| c.env.clone());
+                            let cwd = cmd_opt.as_ref().map(|c| c.cwd.clone());
                             let bin_path = job.bin_path.clone();
                             let artifact_kind = job.artifact_kind;
                             let target = job.target.clone();
@@ -2158,6 +2164,14 @@ impl Stage for BuildStage {
                             let thread_log = anodize_core::log::StageLogger::new("build", log.verbosity());
 
                             s.spawn(move || -> Result<BuildResult> {
+                                let program = program.ok_or_else(|| anyhow::anyhow!(
+                                    "build: Phase 1 invariant violation — job for crate {} reached Phase 2 without a cmd",
+                                    crate_name_for_err
+                                ))?;
+                                let args = args.unwrap_or_default();
+                                let env = env.unwrap_or_default();
+                                let cwd = cwd.unwrap_or_default();
+
                                 // Execute pre-build hooks before compilation
                                 if !pre_hooks.is_empty() {
                                     run_hooks(&pre_hooks, "pre-build", false, &thread_log, Some(&thread_tvars))?;
@@ -3154,7 +3168,8 @@ crate_type = ["dylib"]
         use anodize_core::config::UniversalBinaryConfig;
         use anodize_core::context::{Context, ContextOptions};
 
-        let config = anodize_core::config::Config::default();
+        let mut config = anodize_core::config::Config::default();
+        config.project_name = "myapp".to_string();
         let opts = ContextOptions {
             dry_run: true,
             ..Default::default()
@@ -3201,6 +3216,79 @@ crate_type = ["dylib"]
         assert_eq!(
             art.metadata.get("binary").map(|s| s.as_str()),
             Some("myapp")
+        );
+    }
+
+    /// Regression test for parity with GoReleaser universalbinary.go:45 —
+    /// default `name_template` is `{{ .ProjectName }}`, NOT the source binary
+    /// filename. Source binaries named `myapp-bin` with project_name `myapp`
+    /// must produce `myapp_darwin_all/myapp`, not `myapp_darwin_all/myapp-bin`.
+    #[test]
+    fn test_universal_binary_default_name_uses_project_name() {
+        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use anodize_core::config::UniversalBinaryConfig;
+        use anodize_core::context::{Context, ContextOptions};
+
+        let mut config = anodize_core::config::Config::default();
+        config.project_name = "myapp".to_string();
+        let opts = ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+
+        // Register source binaries with a distinct on-disk filename
+        // (`myapp-bin`) but the crate-matching `id` so the universal-binary
+        // filter selects them. The old bug — defaulting to source filename —
+        // would leak through as `myapp_darwin_all/myapp-bin`.
+        for target in ["aarch64-apple-darwin", "x86_64-apple-darwin"] {
+            let path = std::path::PathBuf::from(format!("target/{target}/release/myapp-bin"));
+            let mut meta = HashMap::new();
+            meta.insert("binary".to_string(), "myapp-bin".to_string());
+            meta.insert("id".to_string(), "myapp".to_string());
+            ctx.artifacts.add(Artifact {
+                kind: ArtifactKind::Binary,
+                name: String::new(),
+                path,
+                target: Some(target.to_string()),
+                crate_name: "myapp".to_string(),
+                metadata: meta,
+                size: None,
+            });
+        }
+
+        let ub = UniversalBinaryConfig {
+            id: None,
+            name_template: None,
+            replace: None,
+            ids: None,
+            hooks: None,
+            mod_timestamp: None,
+        };
+
+        build_universal_binary("myapp", &ub, &mut ctx, true).unwrap();
+
+        let universals: Vec<_> = ctx
+            .artifacts
+            .by_kind(ArtifactKind::UniversalBinary)
+            .into_iter()
+            .filter(|a| a.target.as_deref() == Some("darwin-universal"))
+            .collect();
+        assert_eq!(universals.len(), 1);
+        let art = universals[0];
+        let fname = art.path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        assert_eq!(
+            fname,
+            "myapp",
+            "default universal binary filename must render `{{{{ .ProjectName }}}}` (got `{}` — path {})",
+            fname,
+            art.path.display()
+        );
+        // `binary` metadata reflects the source filename, not the universal
+        // output name.
+        assert_eq!(
+            art.metadata.get("binary").map(|s| s.as_str()),
+            Some("myapp-bin")
         );
     }
 

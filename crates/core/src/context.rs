@@ -5,6 +5,7 @@ use crate::log::{StageLogger, Verbosity};
 use crate::partial::PartialTarget;
 use crate::scm::ScmTokenType;
 use crate::template::TemplateVars;
+use anyhow::Context as _;
 use chrono::Utc;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -137,7 +138,7 @@ pub struct Context {
     pub changelogs: HashMap<String, String>,
     /// The resolved SCM token type (GitHub, GitLab, or Gitea).
     pub token_type: ScmTokenType,
-    /// GoReleaser parity: set to true when any deprecated config field is used.
+    /// set to true when any deprecated config field is used.
     pub deprecated: bool,
     /// Tracks which deprecation notices have already been shown (dedup).
     notified_deprecations: std::collections::HashSet<String>,
@@ -203,6 +204,31 @@ impl Context {
 
     pub fn render_template(&self, template: &str) -> anyhow::Result<String> {
         crate::template::render(template, &self.template_vars)
+    }
+
+    /// Render a template if present, returning `None` for `None` input.
+    pub fn render_template_opt(&self, template: Option<&str>) -> anyhow::Result<Option<String>> {
+        template.map(|t| self.render_template(t)).transpose()
+    }
+
+    /// Evaluate a `disable` field, logging at INFO level when it resolves to true.
+    ///
+    /// Returns `false` when `disable` is `None` or evaluates falsy. On truthy,
+    /// writes `"{label} disabled"` via `log.status` and returns `true`.
+    pub fn is_disabled_with_log(
+        &self,
+        disable: &Option<crate::config::StringOrBool>,
+        log: &StageLogger,
+        label: &str,
+    ) -> bool {
+        let Some(d) = disable else {
+            return false;
+        };
+        let should_disable = d.is_disabled(|s| self.render_template(s));
+        if should_disable {
+            log.status(&format!("{} disabled", label));
+        }
+        should_disable
     }
 
     pub fn should_skip(&self, stage_name: &str) -> bool {
@@ -653,18 +679,90 @@ impl Context {
     ///
     /// Exposes the project metadata block as a nested map with PascalCase keys
     /// matching GoReleaser's `.Metadata.*` namespace:
-    /// `Description`, `Homepage`, `License`, `Maintainers`, `ModTimestamp`.
+    /// `Description`, `Homepage`, `License`, `Maintainers`, `ModTimestamp`,
+    /// `FullDescription` (resolved), `CommitAuthor.{Name,Email}`.
     /// Missing fields default to empty strings / empty arrays.
-    pub fn populate_metadata_var(&mut self) {
-        let meta = self.config.metadata.as_ref();
-        let description = meta.and_then(|m| m.description.as_deref()).unwrap_or("");
-        let homepage = meta.and_then(|m| m.homepage.as_deref()).unwrap_or("");
-        let license = meta.and_then(|m| m.license.as_deref()).unwrap_or("");
-        let maintainers: Vec<&str> = meta
-            .and_then(|m| m.maintainers.as_ref())
-            .map(|v| v.iter().map(|s| s.as_str()).collect())
-            .unwrap_or_default();
-        let mod_timestamp = meta.and_then(|m| m.mod_timestamp.as_deref()).unwrap_or("");
+    ///
+    /// `full_description` with `from_url` is NOT resolved here (avoids a
+    /// reqwest dep in core); the FromUrl case returns an error and the caller
+    /// should surface it. Inline and FromFile are resolved synchronously.
+    pub fn populate_metadata_var(&mut self) -> anyhow::Result<()> {
+        use crate::config::ContentSource;
+
+        // Clone the small scalar fields so we don't hold a borrow on self.config
+        // across the render_template calls below.
+        let (
+            description,
+            homepage,
+            license,
+            maintainers,
+            mod_timestamp,
+            full_desc_src,
+            commit_author,
+        ) = {
+            let meta = self.config.metadata.as_ref();
+            let description = meta
+                .and_then(|m| m.description.as_deref())
+                .unwrap_or("")
+                .to_string();
+            let homepage = meta
+                .and_then(|m| m.homepage.as_deref())
+                .unwrap_or("")
+                .to_string();
+            let license = meta
+                .and_then(|m| m.license.as_deref())
+                .unwrap_or("")
+                .to_string();
+            let maintainers: Vec<String> = meta
+                .and_then(|m| m.maintainers.as_ref())
+                .cloned()
+                .unwrap_or_default();
+            let mod_timestamp = meta
+                .and_then(|m| m.mod_timestamp.as_deref())
+                .unwrap_or("")
+                .to_string();
+            let full_desc_src = meta.and_then(|m| m.full_description.clone());
+            let commit_author = meta.and_then(|m| m.commit_author.clone());
+            (
+                description,
+                homepage,
+                license,
+                maintainers,
+                mod_timestamp,
+                full_desc_src,
+                commit_author,
+            )
+        };
+
+        // Resolve full_description (Inline + FromFile in-core; FromUrl errors here).
+        let full_description = match full_desc_src {
+            None => String::new(),
+            Some(ContentSource::Inline(s)) => s,
+            Some(ContentSource::FromFile { from_file }) => {
+                let rendered_path = self.render_template(&from_file).with_context(|| {
+                    format!("metadata.full_description: render path '{}'", from_file)
+                })?;
+                std::fs::read_to_string(&rendered_path).with_context(|| {
+                    format!(
+                        "metadata.full_description: read from_file '{}'",
+                        rendered_path
+                    )
+                })?
+            }
+            Some(ContentSource::FromUrl { .. }) => {
+                anyhow::bail!(
+                    "metadata.full_description: `from_url` is not yet supported at metadata \
+                     population time (core has no HTTP client). Use `from_file` with a \
+                     pre-fetched file, or inline the content. Tracked for future: move \
+                     URL resolution into a late-pipeline stage or add reqwest to core."
+                );
+            }
+        };
+
+        let commit_author_map = serde_json::json!({
+            "Name": commit_author.as_ref().and_then(|c| c.name.clone()).unwrap_or_default(),
+            "Email": commit_author.as_ref().and_then(|c| c.email.clone()).unwrap_or_default(),
+        });
 
         let meta_map = serde_json::json!({
             "Description": description,
@@ -672,9 +770,12 @@ impl Context {
             "License": license,
             "Maintainers": maintainers,
             "ModTimestamp": mod_timestamp,
+            "FullDescription": full_description,
+            "CommitAuthor": commit_author_map,
         });
         // serde_json::Value and tera::Value are the same type, so pass directly.
         self.template_vars.set_structured("Metadata", meta_map);
+        Ok(())
     }
 }
 
@@ -1613,7 +1714,7 @@ mod tests {
             ..Default::default()
         });
         let mut ctx = Context::new(config, ContextOptions::default());
-        ctx.populate_metadata_var();
+        ctx.populate_metadata_var().unwrap();
 
         // Metadata should be accessible as a nested map with PascalCase keys
         let result = ctx.render_template("{{ Metadata.ModTimestamp }}").unwrap();
@@ -1624,7 +1725,7 @@ mod tests {
     fn test_populate_metadata_var_empty_when_no_config() {
         let config = Config::default();
         let mut ctx = Context::new(config, ContextOptions::default());
-        ctx.populate_metadata_var();
+        ctx.populate_metadata_var().unwrap();
 
         // Should render empty strings for missing fields (PascalCase keys)
         let result = ctx.render_template("{{ Metadata.Description }}").unwrap();
@@ -1640,9 +1741,10 @@ mod tests {
             license: Some("MIT".to_string()),
             maintainers: Some(vec!["Alice".to_string(), "Bob".to_string()]),
             mod_timestamp: Some("1234567890".to_string()),
+            ..Default::default()
         });
         let mut ctx = Context::new(config, ContextOptions::default());
-        ctx.populate_metadata_var();
+        ctx.populate_metadata_var().unwrap();
 
         let desc = ctx.render_template("{{ Metadata.Description }}").unwrap();
         assert_eq!(desc, "A test project");
@@ -1655,6 +1757,94 @@ mod tests {
 
         let ts = ctx.render_template("{{ Metadata.ModTimestamp }}").unwrap();
         assert_eq!(ts, "1234567890");
+    }
+
+    #[test]
+    fn test_populate_metadata_var_full_description_inline() {
+        use crate::config::ContentSource;
+        let mut config = Config::default();
+        config.metadata = Some(crate::config::MetadataConfig {
+            full_description: Some(ContentSource::Inline(
+                "A long-form description of the project.".to_string(),
+            )),
+            ..Default::default()
+        });
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.populate_metadata_var().unwrap();
+        let rendered = ctx
+            .render_template("{{ Metadata.FullDescription }}")
+            .unwrap();
+        assert_eq!(rendered, "A long-form description of the project.");
+    }
+
+    #[test]
+    fn test_populate_metadata_var_full_description_from_file() {
+        use crate::config::ContentSource;
+        let tmp = tempfile::tempdir().unwrap();
+        let desc_path = tmp.path().join("DESCRIPTION.md");
+        std::fs::write(&desc_path, "read from disk").unwrap();
+        let mut config = Config::default();
+        config.metadata = Some(crate::config::MetadataConfig {
+            full_description: Some(ContentSource::FromFile {
+                from_file: desc_path.to_string_lossy().into_owned(),
+            }),
+            ..Default::default()
+        });
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.populate_metadata_var().unwrap();
+        let rendered = ctx
+            .render_template("{{ Metadata.FullDescription }}")
+            .unwrap();
+        assert_eq!(rendered, "read from disk");
+    }
+
+    #[test]
+    fn test_populate_metadata_var_full_description_from_url_errors() {
+        // Avoids silent-skip footgun (see W1 in pro-features-audit.md). If the user
+        // configures from_url for metadata.full_description, emit a clear, actionable
+        // error at context-populate time rather than quietly shipping an empty string.
+        use crate::config::ContentSource;
+        let mut config = Config::default();
+        config.metadata = Some(crate::config::MetadataConfig {
+            full_description: Some(ContentSource::FromUrl {
+                from_url: "https://example.com/description.md".to_string(),
+                headers: None,
+            }),
+            ..Default::default()
+        });
+        let mut ctx = Context::new(config, ContextOptions::default());
+        let err = ctx
+            .populate_metadata_var()
+            .expect_err("from_url must error");
+        let msg = format!("{:#}", err);
+        assert!(
+            msg.contains("metadata.full_description") && msg.contains("from_url"),
+            "error should mention the feature + limitation, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_populate_metadata_var_commit_author() {
+        use crate::config::CommitAuthorConfig;
+        let mut config = Config::default();
+        config.metadata = Some(crate::config::MetadataConfig {
+            commit_author: Some(CommitAuthorConfig {
+                name: Some("Alice Developer".to_string()),
+                email: Some("alice@example.com".to_string()),
+                signing: None,
+            }),
+            ..Default::default()
+        });
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.populate_metadata_var().unwrap();
+        let name = ctx
+            .render_template("{{ Metadata.CommitAuthor.Name }}")
+            .unwrap();
+        assert_eq!(name, "Alice Developer");
+        let email = ctx
+            .render_template("{{ Metadata.CommitAuthor.Email }}")
+            .unwrap();
+        assert_eq!(email, "alice@example.com");
     }
 
     #[test]

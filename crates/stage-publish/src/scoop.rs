@@ -114,7 +114,7 @@ pub fn generate_manifest_with_opts(
                     .iter()
                     .map(|exe| {
                         let alias = exe.strip_suffix(".exe").unwrap_or(exe);
-                        // GoReleaser parity (scoop.go:384): filepath.ToSlash → forward-slash.
+                        // filepath.ToSlash → forward-slash.
                         serde_json::json!([format!("{}/{}", dir, exe), alias])
                     })
                     .collect();
@@ -225,12 +225,21 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
 
     let version = ctx.version();
 
-    let description_raw = scoop_cfg.description.as_deref().unwrap_or(crate_name);
+    // GoReleaser Pro parity: fall back to project `metadata.*` when scoop config unset.
+    let description_raw = scoop_cfg
+        .description
+        .as_deref()
+        .or_else(|| ctx.config.meta_description())
+        .unwrap_or(crate_name);
     let description = ctx
         .render_template(description_raw)
         .unwrap_or_else(|_| description_raw.to_string());
 
-    let license = scoop_cfg.license.clone().unwrap_or_default();
+    let license = scoop_cfg
+        .license
+        .clone()
+        .or_else(|| ctx.config.meta_license().map(str::to_string))
+        .unwrap_or_default();
 
     // Use name override if set, otherwise crate name; render through template engine.
     let manifest_name_raw = scoop_cfg.name.as_deref().unwrap_or(crate_name);
@@ -326,7 +335,7 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         );
     }
 
-    // GoReleaser parity: validate only one archive exists per platform.
+    // validate only one archive exists per platform.
     // Multiple archives for the same architecture produces a broken manifest.
     {
         let mut seen_archs = std::collections::HashSet::new();
@@ -384,7 +393,10 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         .map(|gh| format!("{}/{}", gh.owner, gh.name));
 
     let opts = ManifestOptions {
-        homepage: scoop_cfg.homepage.as_deref(),
+        homepage: scoop_cfg
+            .homepage
+            .as_deref()
+            .or_else(|| ctx.config.meta_homepage()),
         github_slug,
         persist: scoop_cfg.persist.as_deref(),
         depends: scoop_cfg.depends.as_deref(),
@@ -442,9 +454,7 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         manifest_path.display()
     ));
 
-    // Render commit message from template or use Scoop-specific default.
-    // GoReleaser default: "Scoop update for {{ .ProjectName }} version {{ .Tag }}"
-    let scoop_default = "Scoop update for {{ name }} version {{ version }}";
+    let scoop_default = "Scoop update for {{ ProjectName }} version {{ Tag }}";
     let commit_msg = crate::homebrew::render_commit_msg(
         Some(
             scoop_cfg
@@ -637,7 +647,7 @@ mod tests {
         assert_eq!(arch_64["hash"], "aabbccdd1122334455667788");
         assert_eq!(arch_64["bin"], "anodize.exe");
 
-        // GoReleaser parity: checkver and autoupdate are NOT emitted.
+        // checkver and autoupdate are NOT emitted.
         assert!(
             json.get("checkver").is_none(),
             "should NOT have checkver key (GoReleaser parity)"
@@ -742,7 +752,7 @@ mod tests {
 
     #[test]
     fn test_manifest_no_autoupdate_even_with_slug() {
-        // GoReleaser parity: checkver/autoupdate are never emitted.
+        // checkver/autoupdate are never emitted.
         let opts = ManifestOptions {
             github_slug: Some("myorg/release-tool".to_string()),
             ..Default::default()
@@ -794,7 +804,7 @@ mod tests {
 
     #[test]
     fn test_scoop_manifest_no_checkver_autoupdate_with_slug() {
-        // GoReleaser parity: checkver/autoupdate are never emitted, even with a slug.
+        // checkver/autoupdate are never emitted, even with a slug.
         let opts = ManifestOptions {
             github_slug: Some("myorg/mytool".to_string()),
             ..Default::default()
@@ -1080,7 +1090,7 @@ mod tests {
         assert_eq!(arch["arm64"]["hash"], "hash_arm64");
         assert_eq!(arch["arm64"]["bin"], "app.exe");
 
-        // GoReleaser parity: checkver/autoupdate are never emitted.
+        // checkver/autoupdate are never emitted.
         assert!(
             json.get("checkver").is_none(),
             "should NOT have checkver key (GoReleaser parity)"
@@ -1311,8 +1321,8 @@ mod tests {
 
     #[test]
     fn test_scoop_commit_msg_default() {
-        // GoReleaser default: "Scoop update for {{ .ProjectName }} version {{ .Tag }}"
-        let scoop_default = "Scoop update for {{ name }} version {{ version }}";
+        // GoReleaser canonical default: "Scoop update for {{ .ProjectName }} version {{ .Tag }}"
+        let scoop_default = "Scoop update for {{ ProjectName }} version {{ Tag }}";
         let msg =
             crate::homebrew::render_commit_msg(Some(scoop_default), "mytool", "1.2.3", "manifest");
         assert_eq!(msg, "Scoop update for mytool version 1.2.3");

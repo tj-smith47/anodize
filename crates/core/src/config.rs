@@ -53,7 +53,7 @@ pub struct IncludeUrlConfig {
 // Top-level config
 // ---------------------------------------------------------------------------
 
-/// GoReleaser parity: `deny_unknown_fields` rejects typos and unknown config
+/// `deny_unknown_fields` rejects typos and unknown config
 /// fields at parse time, matching GoReleaser's `yaml.UnmarshalStrict`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -129,7 +129,7 @@ pub struct Config {
     /// CloudSmith publisher configurations.
     pub cloudsmiths: Option<Vec<CloudSmithConfig>>,
     /// Top-level Homebrew Cask configurations.
-    /// GoReleaser parity: `homebrew_casks` is a top-level array with its own
+    /// `homebrew_casks` is a top-level array with its own
     /// repository, commit_author, directory, skip_upload, hooks, dependencies,
     /// conflicts, completions, manpages, structured uninstall/zap, etc.
     pub homebrew_casks: Option<Vec<TopLevelHomebrewCaskConfig>>,
@@ -286,6 +286,49 @@ impl Config {
     /// Shorthand for `config.monorepo.as_ref().and_then(|m| m.dir.as_deref())`.
     pub fn monorepo_dir(&self) -> Option<&str> {
         self.monorepo.as_ref().and_then(|m| m.dir.as_deref())
+    }
+
+    // --- Project metadata defaulting helpers (GoReleaser Pro parity) ---
+    //
+    // Publishers that expose homepage/license/description/maintainer fields
+    // should fall back to these when their own field is unset, so a project
+    // only needs to declare metadata once. Pattern:
+    //
+    //   let homepage = nfpm_cfg.homepage
+    //       .as_deref()
+    //       .or_else(|| cfg.meta_homepage());
+    //
+    // Returns None if the `metadata` section is missing or the field is unset.
+
+    /// Project homepage from `metadata.homepage` (Pro default source for publishers).
+    pub fn meta_homepage(&self) -> Option<&str> {
+        self.metadata.as_ref().and_then(|m| m.homepage.as_deref())
+    }
+
+    /// Project license from `metadata.license`.
+    pub fn meta_license(&self) -> Option<&str> {
+        self.metadata.as_ref().and_then(|m| m.license.as_deref())
+    }
+
+    /// Project description from `metadata.description`.
+    pub fn meta_description(&self) -> Option<&str> {
+        self.metadata
+            .as_ref()
+            .and_then(|m| m.description.as_deref())
+    }
+
+    /// Project maintainers from `metadata.maintainers`.
+    pub fn meta_maintainers(&self) -> &[String] {
+        self.metadata
+            .as_ref()
+            .and_then(|m| m.maintainers.as_deref())
+            .unwrap_or(&[])
+    }
+
+    /// First maintainer as "Name <email>" or just "Name" (publisher convention).
+    /// Returns None when no maintainers are configured.
+    pub fn meta_first_maintainer(&self) -> Option<&str> {
+        self.meta_maintainers().first().map(|s| s.as_str())
     }
 }
 
@@ -742,6 +785,12 @@ pub struct CrateConfig {
     pub path: String,
     /// Git tag template used to tag and identify releases (supports templates).
     pub tag_template: String,
+    /// Pinned semver version. When set, `anodize bump --strict` refuses to
+    /// edit this crate's `Cargo.toml` to anything other than this value;
+    /// without `--strict`, the bump proceeds with a warning. Lets a release
+    /// captain freeze a crate's version while still running broad
+    /// `--workspace` bumps.
+    pub version: Option<String>,
     /// Other crates this crate depends on; ensures release ordering.
     pub depends_on: Option<Vec<String>>,
     /// Build configurations for this crate. One entry per binary by default.
@@ -810,6 +859,7 @@ impl Default for CrateConfig {
             name: String::new(),
             path: String::new(),
             tag_template: String::new(),
+            version: None,
             depends_on: None,
             builds: None,
             cross: None,
@@ -918,12 +968,18 @@ pub struct BuildConfig {
 /// hooks). The name is kept for backward compatibility with existing configs.
 /// **Not** to be confused with the top-level `HooksConfig` (which carries a
 /// flat `hooks: Vec<String>` list for `before`/`after` lifecycle hooks).
+///
+/// archive hooks in GoReleaser use `before`/`after`
+/// (not `pre`/`post`). Anodize accepts both spellings via serde aliases so
+/// configs copied from GoReleaser docs don't silently drop their hooks.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct BuildHooksConfig {
     /// Commands to run before the build (or archive) step.
+    #[serde(alias = "before")]
     pub pre: Option<Vec<HookEntry>>,
     /// Commands to run after the build (or archive) step.
+    #[serde(alias = "after")]
     pub post: Option<Vec<HookEntry>>,
 }
 
@@ -1115,6 +1171,10 @@ pub struct ArchiveConfig {
     /// or a string template for a custom directory name.
     pub wrap_in_directory: Option<WrapInDirectory>,
     /// Build IDs filter: only include artifacts from builds whose `id` is in this list.
+    ///
+    /// Also accepts the deprecated `builds` alias for GoReleaser pre-v1
+    /// compatibility (consistent with nfpm + docker manifests).
+    #[serde(alias = "builds")]
     pub ids: Option<Vec<String>>,
     /// When true, create archive with no binaries (metadata-only).
     pub meta: Option<bool>,
@@ -1223,6 +1283,9 @@ pub enum ExtraFileSpec {
     Glob(String),
     Detailed {
         glob: String,
+        /// Optional override for the upload filename. Accepts `name_template` or
+        /// `name` in YAML (aliased for ergonomics with older configs).
+        #[serde(alias = "name", default)]
         name_template: Option<String>,
     },
 }
@@ -1295,12 +1358,28 @@ pub struct ChecksumConfig {
 ///     from_file: ./RELEASE_HEADER.md
 ///   header:
 ///     from_url: https://example.com/header.md
+///   header:
+///     from_url: https://example.com/header.md
+///     headers:
+///       X-API-Token: "{{ .Env.API_TOKEN }}"
+///       Accept: "text/markdown"
+///
+/// Both `from_file` path and `from_url` URL are template-rendered before use.
+/// Header values are template-rendered. (GoReleaser Pro parity.)
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum ContentSource {
     Inline(String),
-    FromFile { from_file: String },
-    FromUrl { from_url: String },
+    FromFile {
+        from_file: String,
+    },
+    FromUrl {
+        from_url: String,
+        /// Optional HTTP headers (value templates allowed). Enables private
+        /// mirrors and authenticated endpoints.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        headers: Option<HashMap<String, String>>,
+    },
 }
 
 impl PartialEq for ContentSource {
@@ -1308,7 +1387,16 @@ impl PartialEq for ContentSource {
         match (self, other) {
             (Self::Inline(a), Self::Inline(b)) => a == b,
             (Self::FromFile { from_file: a }, Self::FromFile { from_file: b }) => a == b,
-            (Self::FromUrl { from_url: a }, Self::FromUrl { from_url: b }) => a == b,
+            (
+                Self::FromUrl {
+                    from_url: a,
+                    headers: ha,
+                },
+                Self::FromUrl {
+                    from_url: b,
+                    headers: hb,
+                },
+            ) => a == b && ha == hb,
             _ => false,
         }
     }
@@ -2886,6 +2974,21 @@ pub struct NfpmConfig {
     pub libdirs: Option<NfpmLibdirs>,
     /// Path to a YAML-format changelog file for deb/rpm packages.
     pub changelog: Option<String>,
+    /// Template-conditional: skip this nfpm config if rendered result is "false" or empty.
+    /// (GoReleaser Pro v2.4+.)
+    #[serde(rename = "if")]
+    pub if_condition: Option<String>,
+    /// Extra file contents whose source files are Tera-rendered before packaging (GoReleaser Pro).
+    /// Each entry mirrors `contents`; the difference is that at stage time the file at `src` is
+    /// read, rendered through the template engine, written to a temp file, and then included
+    /// in the package at `dst` using the temp file as the real source. Useful for shipping
+    /// config files with templated values (version, commit, maintainer, etc.).
+    pub templated_contents: Option<Vec<NfpmContent>>,
+    /// Lifecycle scripts whose script-file bodies are Tera-rendered before packaging
+    /// (GoReleaser Pro). Each path is read, rendered through the template engine, written to
+    /// a temp file, and used as the real script. If a field is set on both `scripts` and
+    /// `templated_scripts`, the templated version wins.
+    pub templated_scripts: Option<NfpmScripts>,
 }
 
 /// Installation directories for CGo library outputs.
@@ -3413,6 +3516,10 @@ pub struct DmgConfig {
     /// Which artifact type to package: "binary" (default) or "appbundle".
     #[serde(rename = "use")]
     pub use_: Option<String>,
+    /// Template-conditional: skip this DMG config if rendered result is "false"
+    /// or empty (GoReleaser Pro). Render failure hard-errors (not silent-skip).
+    #[serde(rename = "if")]
+    pub if_condition: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -3443,6 +3550,14 @@ pub struct MsiConfig {
     pub extra_files: Option<Vec<String>>,
     /// WiX extensions to enable (e.g., "WixUIExtension"). Templates allowed.
     pub extensions: Option<Vec<String>>,
+    /// Template-conditional: skip this MSI config if rendered result is "false"
+    /// or empty (GoReleaser Pro). Render failure hard-errors (not silent-skip).
+    #[serde(rename = "if")]
+    pub if_condition: Option<String>,
+    /// Pre/post MSI-build hooks (GoReleaser Pro v2.14+). Accepts `pre`/`post`
+    /// or `before`/`after` via BuildHooksConfig's serde aliases. Runs before
+    /// / after candle+light for each matched artifact.
+    pub hooks: Option<BuildHooksConfig>,
 }
 
 // ---------------------------------------------------------------------------
@@ -3476,6 +3591,10 @@ pub struct PkgConfig {
     /// Disable this PKG config. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub disable: Option<StringOrBool>,
+    /// Template-conditional: skip this PKG config if rendered result is "false"
+    /// or empty (GoReleaser Pro). Render failure hard-errors (not silent-skip).
+    #[serde(rename = "if")]
+    pub if_condition: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -3506,6 +3625,10 @@ pub struct NsisConfig {
     pub replace: Option<bool>,
     /// Output timestamp for reproducible builds.
     pub mod_timestamp: Option<String>,
+    /// Template-conditional: skip this NSIS config if rendered result is "false"
+    /// or empty (GoReleaser Pro). Render failure hard-errors (not silent-skip).
+    #[serde(rename = "if")]
+    pub if_condition: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -3538,6 +3661,10 @@ pub struct AppBundleConfig {
     /// Disable this app bundle config. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub disable: Option<StringOrBool>,
+    /// Template-conditional: skip this app bundle config if rendered result is
+    /// "false" or empty (GoReleaser Pro). Render failure hard-errors (not silent-skip).
+    #[serde(rename = "if")]
+    pub if_condition: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -3622,7 +3749,7 @@ pub struct BlobConfig {
     /// Also upload metadata.json and artifacts.json.
     pub include_meta: Option<bool>,
     /// Pre-existing files to upload (supports glob patterns).
-    pub extra_files: Option<Vec<ExtraFile>>,
+    pub extra_files: Option<Vec<ExtraFileSpec>>,
     /// Extra files whose contents are rendered through the template engine before upload.
     /// Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded.
     /// GoReleaser Pro feature.
@@ -3632,17 +3759,6 @@ pub struct BlobConfig {
     /// Maximum number of parallel uploads for this blob config.
     /// Overrides the global `--parallelism` setting when set.
     pub parallelism: Option<usize>,
-}
-
-/// An extra file to upload, with optional name override.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
-pub struct ExtraFile {
-    /// Glob pattern for the file(s) to upload.
-    pub glob: String,
-    /// Optional override for the upload filename.
-    #[serde(alias = "name_template")]
-    pub name: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -4374,6 +4490,15 @@ pub struct MetadataConfig {
     /// When set, rendered late in the pipeline and applied as file mtime.
     /// Exposed as `{{ .Metadata.ModTimestamp }}`.
     pub mod_timestamp: Option<String>,
+    /// Long-form project description (GoReleaser Pro v2.1+). Supports inline
+    /// string, `from_file`, or `from_url`. Exposed as `{{ .Metadata.FullDescription }}`.
+    /// FromUrl is resolved lazily (requires the release stage); FromFile is resolved
+    /// at context-populate time with template-rendered path.
+    pub full_description: Option<ContentSource>,
+    /// Commit author identity for Pro commit workflows (GoReleaser Pro v2.12+).
+    /// Reuses the shared `CommitAuthorConfig` (name + email + optional signing).
+    /// Exposed as `{{ .Metadata.CommitAuthor.Name }}` / `{{ .Metadata.CommitAuthor.Email }}`.
+    pub commit_author: Option<CommitAuthorConfig>,
 }
 
 // ---------------------------------------------------------------------------
@@ -4512,7 +4637,7 @@ pub struct TwitterAnnounce {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct MastodonAnnounce {
-    /// Enable Mastodon announcements. Requires MASTODON_CLIENT_ID, MASTODON_CLIENT_SECRET, MASTODON_ACCESS_TOKEN env vars (supports template expressions).
+    /// Enable Mastodon announcements. Requires `MASTODON_ACCESS_TOKEN` env var (supports template expressions).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub enabled: Option<StringOrBool>,
     /// Mastodon instance URL (e.g. "https://mastodon.social").
@@ -4921,7 +5046,7 @@ pub struct PublisherConfig {
     /// Include metadata artifacts in published artifacts.
     pub meta: Option<bool>,
     /// Extra files to include in publishing (glob patterns with optional name override).
-    pub extra_files: Option<Vec<ExtraFile>>,
+    pub extra_files: Option<Vec<ExtraFileSpec>>,
     /// Extra files whose contents are rendered through the template engine before publishing.
     /// Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded.
     /// GoReleaser Pro feature.
@@ -5609,7 +5734,7 @@ pub struct UploadConfig {
     /// When true, use the artifact name as-is (don't append to target URL).
     pub custom_artifact_name: Option<bool>,
     /// Extra files to include in uploading.
-    pub extra_files: Option<Vec<ExtraFile>>,
+    pub extra_files: Option<Vec<ExtraFileSpec>>,
     /// Upload only extra files, skip normal artifacts.
     pub extra_files_only: Option<bool>,
     /// Skip condition template (if rendered to "true", skip this upload).
@@ -6206,13 +6331,15 @@ crates:
         assert_eq!(
             release.header,
             Some(ContentSource::FromUrl {
-                from_url: "https://example.com/header.md".to_string()
+                from_url: "https://example.com/header.md".to_string(),
+                headers: None,
             })
         );
         assert_eq!(
             release.footer,
             Some(ContentSource::FromUrl {
-                from_url: "https://example.com/footer.md".to_string()
+                from_url: "https://example.com/footer.md".to_string(),
+                headers: None,
             })
         );
     }
@@ -7349,7 +7476,7 @@ mode = "tag"
 
     #[test]
     fn test_unknown_top_level_fields_rejected() {
-        // GoReleaser parity: strict YAML parsing rejects unknown fields
+        // strict YAML parsing rejects unknown fields
         let yaml = r#"
 project_name: test
 unknown_top_level_field: "this should be rejected"

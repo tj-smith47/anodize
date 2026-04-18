@@ -113,6 +113,7 @@ fn main() {
             fail_fast,
             split,
             merge,
+            prepare,
         } => {
             let duration = parse_timeout_or_exit(&timeout);
 
@@ -165,6 +166,7 @@ fn main() {
                     split,
                     merge,
                     strict: cli.strict,
+                    prepare,
                 })
             })
         }
@@ -305,6 +307,40 @@ fn main() {
             debug: cli.debug,
             quiet: cli.quiet,
         }),
+        Commands::Bump {
+            level_or_version,
+            package,
+            workspace,
+            exclude,
+            pre,
+            exact,
+            allow_dirty,
+            yes,
+            dry_run,
+            commit,
+            sign,
+            commit_message,
+            output,
+        } => commands::bump::run(commands::bump::BumpOpts {
+            level_or_version,
+            package,
+            workspace,
+            exclude,
+            pre,
+            exact,
+            allow_dirty,
+            yes,
+            dry_run,
+            commit,
+            sign,
+            commit_message,
+            output,
+            config_override: cli.config.clone(),
+            verbose: cli.verbose,
+            debug: cli.debug,
+            quiet: cli.quiet,
+            strict: cli.strict,
+        }),
         Commands::Announce {
             dry_run,
             dist,
@@ -358,6 +394,24 @@ mod tests {
             "CLI should parse release with new flags: {:?}",
             cli.err()
         );
+    }
+
+    #[test]
+    fn test_cli_parses_release_with_prepare_flag() {
+        // GoReleaser Pro `--prepare`: local prep stages, no upstream publish.
+        let cli = Cli::try_parse_from(["anodize", "release", "--prepare"]);
+        assert!(
+            cli.is_ok(),
+            "CLI should parse --prepare: {:?}",
+            cli.as_ref().err()
+        );
+        if let Ok(c) = cli
+            && let Commands::Release { prepare, .. } = c.command
+        {
+            assert!(prepare, "prepare bool should be true");
+        } else {
+            panic!("expected Release command with prepare=true");
+        }
     }
 
     #[test]

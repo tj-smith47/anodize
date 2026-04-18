@@ -6,6 +6,8 @@ Anodize reads a declarative config file and executes a full release pipeline: bu
 
 Written by [Claude](https://claude.ai); maintained by us.
 
+See the [Feature Dogfooding Matrix](https://tj-smith47.github.io/anodize/dogfooding/) for a per-feature tested / partial / untested status with proof links (CI runs, live release assets, unit + integration tests).
+
 ## Features
 
 **Build**

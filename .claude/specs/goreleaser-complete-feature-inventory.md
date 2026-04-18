@@ -1,1733 +1,608 @@
 # GoReleaser Complete Feature Inventory
 
-> Comprehensive inventory of every GoReleaser feature, config field, and capability.
-> Researched from goreleaser.com documentation, March 2026.
+> **Authoritative parity reference** for anodize v0.x ↔ GoReleaser.
+> Source: `/opt/repos/goreleaser/` (OSS, at HEAD — last sync commit `f7e73e3`, fetched 2026-04-16).
+> Pro: `https://goreleaser.com/pro/` + `https://goreleaser.com/customization/*` — fetched 2026-04-16.
+> Anodize ground truth: `/opt/repos/anodize/crates/` (grepped for `implemented` status).
+>
+> **How to read this file.** The Parity Row Matrix (Section 2) is the audit-driving surface. One row per feature/feature-group. Columns:
+> - `name` — feature identifier (config key or conceptual name)
+> - `category` — area bucket (build, archive, sign, publish-<channel>, announce-<provider>, release, changelog, docker, sbom, blob, source, metadata, hooks, cli, partial, template-helpers, misc)
+> - `tier` — OSS | Pro
+> - `scope` — portable | go-specific | rust-additive | rust-native-replacement
+> - `ecosystem_relevance` — required | strongly-suggested | niche | not-applicable (see decision rule at bottom)
+> - `parity_status` — implemented | partial | missing | n-a
+> - `disposition` — `—` default; set to `remove` | `repurpose` | `hide` | `keep` only when `parity_status=implemented AND ecosystem_relevance=not-applicable` AND the row in `audits/2026-04-v0.x/bloat.md` has a second-reviewer countersign
+> - `source_ref` — file:line in `/opt/repos/goreleaser/` for OSS, or docs URL for Pro
+> - `notes` — ≤30 word durable justification
+>
+> Reference tables (fields, defaults, environment variables, CLI flags) preserved in Section 6.
 
 ---
 
-## 1. Builds
+## 1. Parity Definition
 
-### Builder Types
-- **Go** (default builder)
-- **Rust** (`builder: rust`)
-- **Zig** (`builder: zig`)
-- **Bun** (`builder: bun`)
-- **Deno** (`builder: deno`)
-- **Python** (`builder: python`) -- "Coming soon" as of research date
-- **UV** (`builder: uv`) -- Python UV builder
-- **Poetry** (`builder: poetry`) -- Python Poetry builder
-- **Pre-built/Import** (`builder: prebuilt`) -- import pre-compiled binaries
-
-### Go Builder Fields
-| Field | Type | Default |
-|-------|------|---------|
-| `id` | string | project dir name |
-| `main` | string | `.` |
-| `binary` | string (template) | project dir name |
-| `dir` | string | `.` |
-| `command` | string | `build` |
-| `flags` | []string | `[]` |
-| `ldflags` | []string (template) | default version/commit |
-| `asmflags` | []string | `[]` |
-| `gcflags` | []string | `[]` |
-| `tags` | []string | `[]` |
-| `env` | []string (template) | os.Environ() + env config |
-| `tool` | string (template) | `go` |
-| `gobinary` | string | `go` (deprecated, use `tool`) |
-| `goos` | []string | `[darwin, linux, windows]` |
-| `goarch` | []string | `[386, amd64, arm64]` |
-| `goarm` | []string | `[6]` |
-| `goamd64` | []string | `[v1]` |
-| `goarm64` | []string | `[v8.0]` (v2.4+) |
-| `gomips` | []string | `[hardfloat]` (v2.4+) |
-| `go386` | []string | `[sse2]` (v2.4+) |
-| `goppc64` | []string | `[power8]` (v2.4+) |
-| `goriscv64` | []string | `[rva20u64]` (v2.4+) |
-| `targets` | []string | generated from goos/goarch matrix |
-| `ignore` | []object | `[]` (goos/goarch combos to skip) |
-| `buildmode` | string | standard |
-| `mod_timestamp` | string (template) | empty |
-| `overrides` | []object | `[]` (target-specific overrides) |
-| `hooks.pre[]` | []object | `{}` |
-| `hooks.post[]` | []object | `{}` |
-| `skip` | bool (template) | `false` |
-| `no_unique_dist_dir` | bool | `false` |
-| `no_main_check` | bool | `false` |
-
-### Rust Builder Fields
-| Field | Type | Default |
-|-------|------|---------|
-| `id` | string | project dir name |
-| `builder` | string | `rust` |
-| `binary` | string | project dir name |
-| `targets` | []string | x86_64-unknown-linux-gnu, x86_64-apple-darwin, x86_64-pc-windows-gnu, aarch64-unknown-linux-gnu, aarch64-apple-darwin |
-| `dir` | string | `.` |
-| `tool` | string | `cargo` (can use `cross`) |
-| `command` | string | `zigbuild` |
-| `flags` | []string (template) | `--release` |
-| `env` | []string (template) | inherited |
-| `hooks.pre/post` | []object | - |
-| `skip` | bool | `false` |
-
-### Zig Builder Fields
-| Field | Type | Default |
-|-------|------|---------|
-| `id` | string | project dir name |
-| `builder` | string | `zig` |
-| `binary` | string | project dir name |
-| `targets` | []string | x86_64-linux, x86_64-macos, x86_64-windows, aarch64-linux, aarch64-macos |
-| `dir` | string | `.` |
-| `tool` | string | `zig` |
-| `command` | string | `build` |
-| `flags` | []string | `-Doptimize=ReleaseSafe` |
-| `env` | []string | inherited |
-| `hooks.pre/post` | []object | - |
-| `skip` | bool | `false` |
-
-### Bun Builder Fields
-| Field | Type | Default |
-|-------|------|---------|
-| `id` | string | project dir name |
-| `builder` | string | `bun` |
-| `binary` | string | project dir name |
-| `targets` | []string | linux-x64-modern, linux-arm64, darwin-x64, darwin-arm64, windows-x64-modern |
-| `dir` | string | `.` |
-| `main` | string | from package.json or `.` |
-| `tool` | string (template) | `bun` |
-| `command` | string | `build` |
-| `flags` | []string (template) | `[--compile]` |
-| `env` | []string (template) | inherited |
-| `hooks.pre/post` | []object | - |
-| `skip` | bool | `false` |
-
-### Deno Builder Fields
-| Field | Type | Default |
-|-------|------|---------|
-| `id` | string | project dir name |
-| `builder` | string | `deno` |
-| `binary` | string | project dir name |
-| `targets` | []string | x86_64-pc-windows-msvc, x86_64-apple-darwin, aarch64-apple-darwin, x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu |
-| `dir` | string | `.` |
-| `main` | string | `main.ts` |
-| `tool` | string (template) | `deno` |
-| `command` | string (template) | `compile` |
-| `flags` | []string (template) | `[]` |
-| `env` | []string (template) | inherited |
-| `hooks.pre/post` | []object | - |
-| `skip` | bool | `false` |
-
-### UV Builder Fields
-| Field | Type | Default |
-|-------|------|---------|
-| `id` | string | project dir name |
-| `builder` | string | `uv` |
-| `dir` | string | `.` |
-| `buildmode` | string | `wheel` (also: `sdist`) |
-| `tool` | string | `uv` |
-| `command` | string | `build` |
-| `flags` | []string (template) | - |
-| `env` | []string | os.Environ() + env config |
-| `hooks.pre/post` | []object | - |
-
-### Poetry Builder Fields
-| Field | Type | Default |
-|-------|------|---------|
-| `id` | string | project dir name |
-| `builder` | string | `poetry` |
-| `dir` | string | `.` |
-| `buildmode` | string | `wheel` (also: `sdist`) |
-| `tool` | string | `poetry` |
-| `command` | string | `build` |
-| `flags` | []string | - |
-| `env` | []string | inherited |
-| `hooks.pre/post` | []object | - |
-
-### Build Hooks (all builders)
-Hook object fields:
-| Field | Type | Default |
-|-------|------|---------|
-| `cmd` | string (template) | required |
-| `dir` | string | - |
-| `output` | bool | `false` |
-| `env` | map[string]string | - |
-
-Hook template variables: `.Name`, `.Ext`, `.Path`, `.Target`
-Env precedence: global env > build env > hook env
-
-### Verifiable Builds (gomod)
-| Field | Type | Default |
-|-------|------|---------|
-| `gomod.proxy` | bool | - |
-| `gomod.env` | []string | merged env |
-| `gomod.mod` | string | - |
-| `gomod.gobinary` | string | `go` |
-| `gomod.dir` | string | `''` |
-
-### macOS Universal Binaries
-| Field | Type | Default |
-|-------|------|---------|
-| `id` | string | project name |
-| `ids` | []string | - |
-| `name_template` | string (template) | `{{ .ProjectName }}` |
-| `replace` | bool | - |
-| `mod_timestamp` | string | - |
-| `hooks.pre/post` | []object | - |
-
-### UPX Compression
-| Field | Type | Default |
-|-------|------|---------|
-| `enabled` | bool (template) | - |
-| `ids` | []string | - |
-| `goos` | []string | - |
-| `goarch` | []string | - |
-| `goarm` | []string | - |
-| `goamd64` | []string | - |
-| `compress` | string | `1`-`9` or `best` |
-| `lzma` | bool | - |
-| `brute` | bool | - |
+Parity = equal or superior implementation per GoReleaser feature: config field, behavior, wiring, error, auth, default. Parsed-but-ignored fields are `partial`. Fields with different semantics are `partial` unless anodize's divergence is an intentional, documented superiority.
 
 ---
 
-## 2. Archives
+## 2. Parity Row Matrix — CLI
 
-### Core Fields
-| Field | Type | Default |
-|-------|------|---------|
-| `id` | string | `default` |
-| `ids` | []string | empty (v2.8+) |
-| `format` | string | `tar.gz` (deprecated) |
-| `formats` | []string | `[tar.gz]` (v2.6+, replaces `format`) |
-| `meta` | bool | `false` |
-| `name_template` | string (template) | varies |
-| `wrap_in_directory` | bool/string | `false` |
-| `strip_binary_directory` | bool | `false` |
-| `allow_different_binary_count` | bool | `false` |
+### 2.1 Builds
 
-### File Inclusion
-| Field | Type | Default |
-|-------|------|---------|
-| `files` | []string/object | `[LICENSE*, README*, CHANGELOG, ...]` |
-| `templated_files` | []object | empty (Pro) |
+| name | category | tier | scope | ecosystem_relevance | parity_status | disposition | source_ref | notes |
+|------|----------|------|-------|---------------------|---------------|-------------|------------|-------|
+| builder: go | build | OSS | go-specific | not-applicable | n-a | — | internal/builders/golang/ | Go toolchain builder; Rust uses cargo, not portable. |
+| builder: rust | build | OSS | portable | required | implemented | — | internal/builders/rust/build.go | anodize is the native Rust releaser — cargo/cross/zigbuild via `stage-build`. |
+| builder: zig | build | OSS | rust-additive | niche | n-a | — | internal/builders/zig/ | Out of scope for Rust; cargo-zigbuild covers zig-as-linker for Rust targets. |
+| builder: bun | build | OSS | not-applicable | not-applicable | n-a | — | internal/builders/bun/ | JS/TS runtime builder; no Rust analogue. |
+| builder: deno | build | OSS | not-applicable | not-applicable | n-a | — | internal/builders/deno/ | JS/TS runtime builder; no Rust analogue. |
+| builder: python-uv | build | OSS | not-applicable | not-applicable | n-a | — | internal/builders/uv/ | Python packaging builder; no Rust analogue. |
+| builder: python-poetry | build | OSS | not-applicable | not-applicable | n-a | — | internal/builders/poetry/ | Python packaging builder; no Rust analogue. |
+| builder: prebuilt | build | OSS | portable | strongly-suggested | implemented | — | internal/builders/base/ | anodize `copy_from` + `import` equivalents in `crates/stage-build/src/lib.rs`. |
+| build.id | build | OSS | portable | required | implemented | — | internal/config/config.go | `CrateConfig.id` (core/config.rs:738). |
+| build.binary | build | OSS | portable | required | implemented | — | internal/config/config.go | `BuildConfig.binary`. |
+| build.main | build | OSS | go-specific | not-applicable | n-a | — | internal/builders/golang/build.go | Go entrypoint path; Rust uses `--bin`/`Cargo.toml`. |
+| build.dir | build | OSS | portable | required | implemented | — | internal/builders/base/ | `BuildConfig.dir`. |
+| build.command | build | OSS | portable | strongly-suggested | implemented | — | internal/builders/base/ | anodize uses `cargo <command>` — defaults `build`/`zigbuild`. |
+| build.flags | build | OSS | portable | required | implemented | — | internal/builders/base/ | `BuildConfig.flags` (default `--release`). |
+| build.ldflags | build | OSS | go-specific | not-applicable | n-a | — | internal/builders/golang/build.go | Go linker flags; Rust uses `RUSTFLAGS`+`build.rs`. |
+| build.asmflags | build | OSS | go-specific | not-applicable | n-a | — | internal/builders/golang/build.go | Go asm flags; no Rust analogue. |
+| build.gcflags | build | OSS | go-specific | not-applicable | n-a | — | internal/builders/golang/build.go | Go compiler flags; Rust uses `[profile.*]` in Cargo.toml. |
+| build.tags | build | OSS | go-specific | not-applicable | n-a | — | internal/builders/golang/build.go | Go build tags; Rust uses `--features`. |
+| build.env | build | OSS | portable | required | implemented | — | internal/builders/base/ | `BuildConfig.env` templated. |
+| build.tool | build | OSS | portable | required | implemented | — | internal/builders/rust/build.go | anodize resolves `cargo`/`cross` via `CrossStrategy`. |
+| build.goos / goarch / goarm / goamd64 / goarm64 / gomips / go386 / goppc64 / goriscv64 | build | OSS | go-specific | not-applicable | n-a | — | internal/builders/golang/build.go | Go matrix metadata; Rust uses target triples via `targets`. |
+| build.targets | build | OSS | portable | required | implemented | — | internal/builders/rust/build.go:20 | Rust target triples in `CrateConfig.targets` + `Defaults.targets`. |
+| build.ignore | build | OSS | go-specific | not-applicable | n-a | — | internal/builders/base/ | Go goos/goarch exclusions; Rust uses explicit target list. |
+| build.buildmode | build | OSS | go-specific | not-applicable | n-a | — | internal/builders/golang/build.go | Go buildmode (c-shared/c-archive); not in Rust scope. |
+| build.mod_timestamp | build | OSS | portable | strongly-suggested | implemented | — | internal/builders/base/ | `CrateConfig.mod_timestamp` wired in `stage-build/src/lib.rs`. |
+| build.overrides | build | OSS | portable | required | implemented | — | internal/builders/base/ | `BuildOverride` array wired per-target. |
+| build.hooks.pre/post | build | OSS | portable | required | implemented | — | internal/builders/base/ | `BuildHooksConfig` + `run_hooks` in core. |
+| build.skip | build | OSS | portable | strongly-suggested | implemented | — | internal/builders/base/ | `BuildConfig.skip` templated bool. |
+| build.no_unique_dist_dir | build | OSS | portable | niche | implemented | — | internal/builders/base/ | Wired in stage-build. |
+| build.no_main_check | build | OSS | go-specific | not-applicable | n-a | — | internal/builders/golang/build.go | Go-specific `main` package check. |
+| gomod.proxy | build | OSS | go-specific | not-applicable | n-a | — | internal/pipe/gomod/ | Go proxy integration; Rust-native replacement is `Cargo.lock` fidelity. |
+| gomod.env / mod / gobinary / dir | build | OSS | go-specific | not-applicable | n-a | — | internal/pipe/gomod/ | Go module proxy env; see Rust-additive §3 `Cargo.lock` / `cargo metadata`. |
+| universal_binaries (macOS) | build | OSS | portable | strongly-suggested | implemented | — | internal/pipe/universalbinary/ | `UniversalBinaryConfig` wired via `lipo` subprocess in stage-build. |
+| upx | build | OSS | portable | niche | implemented | — | internal/pipe/upx/upx.go | `stage-upx/src/lib.rs`; uses Rust target-triple globs (not goos/goarch). |
+| partial builds (`--single-target`) | build | OSS | portable | strongly-suggested | implemented | — | internal/pipe/partial/partial.go | `cli --single-target` flag in `commands/build.rs`. |
+| prebuild pipe | build | OSS | portable | niche | implemented | — | internal/pipe/prebuild/prebuild.go | Pre-build validation + prepare hooks; folded into anodize build stage. |
+| reportsizes | build | OSS | portable | strongly-suggested | implemented | — | internal/pipe/reportsizes/reportsizes.go | Binary-size reporter after build. |
 
-File object properties:
-- `src` (string): source glob
-- `dst` (string): destination directory
-- `strip_parent` (bool): remove parent paths
-- `info.owner` (string), `info.group` (string), `info.mtime` (RFC3339Nano), `info.mode` (octal)
+### 2.2 Archives
 
-### Binary Metadata (builds_info)
-| Field | Type | Default |
-|-------|------|---------|
-| `builds_info.group` | string | - |
-| `builds_info.owner` | string | - |
-| `builds_info.mode` | octal | - |
-| `builds_info.mtime` | RFC3339Nano | copied from source |
+| name | category | tier | scope | ecosystem_relevance | parity_status | disposition | source_ref | notes |
+|------|----------|------|-------|---------------------|---------------|-------------|------------|-------|
+| archives[].id / ids | archive | OSS | portable | required | implemented | — | internal/pipe/archive/archive.go | `ArchiveConfig.id`/`ids`. |
+| archives[].format (singular, deprecated) | archive | OSS | portable | required | implemented | — | internal/pipe/archive/archive.go | Legacy field; anodize accepts both. |
+| archives[].formats (plural) | archive | OSS | portable | required | implemented | — | internal/pipe/archive/archive.go | v2.6+ plural forms list. |
+| archives[].meta (manifest-only) | archive | OSS | portable | niche | implemented | — | internal/pipe/archive/archive.go | `ArchiveConfig.meta`. |
+| archives[].name_template | archive | OSS | portable | required | implemented | — | internal/pipe/archive/archive.go | Full Tera-backed template. |
+| archives[].wrap_in_directory | archive | OSS | portable | strongly-suggested | implemented | — | internal/pipe/archive/archive.go | bool/string + template support. |
+| archives[].strip_binary_directory | archive | OSS | portable | niche | implemented | — | internal/pipe/archive/archive.go | Wired in stage-archive. |
+| archives[].allow_different_binary_count | archive | OSS | portable | niche | implemented | — | internal/pipe/archive/archive.go | Wired in stage-archive. |
+| archives[].files (string/object) | archive | OSS | portable | required | implemented | — | internal/pipe/archive/archive.go | `ArchiveFileSpec` enum parses both shapes. |
+| archives[].builds_info | archive | OSS | portable | strongly-suggested | implemented | — | internal/pipe/archive/archive.go | File mode/owner/group/mtime on built binaries. |
+| archives[].format_overrides | archive | OSS | portable | strongly-suggested | implemented | — | internal/pipe/archive/archive.go | Plural `formats` + `goos` override key. |
+| archives[].hooks.before/after | archive | Pro | portable | strongly-suggested | partial | — | docs: /customization/archive/ (fetched 2026-04-16) | **Field-name mismatch**: anodize uses `hooks.pre`/`hooks.post` (config.rs:925), docs use `before`/`after`. Config silently accepts `before`/`after` via serde defaults → hooks never run. Rename or alias. |
+| archives[].templated_files | archive | Pro | portable | niche | implemented | — | docs: /customization/archive/ (fetched 2026-04-16) | `templated_files` via `TemplatedExtraFile`. |
+| formats: tar.gz / tgz | archive | OSS | portable | required | implemented | — | internal/pipe/archive/archive.go | `stage-archive`. |
+| formats: tar.xz / txz | archive | OSS | portable | strongly-suggested | implemented | — | internal/pipe/archive/archive.go | `stage-archive`. |
+| formats: tar.zst / tzst | archive | OSS | portable | strongly-suggested | implemented | — | internal/pipe/archive/archive.go | `stage-archive` (v2.1+). |
+| formats: tar | archive | OSS | portable | strongly-suggested | implemented | — | internal/pipe/archive/archive.go | `stage-archive`. |
+| formats: gz | archive | OSS | portable | niche | implemented | — | internal/pipe/archive/archive.go | Single-file gzip. |
+| formats: zip | archive | OSS | portable | required | implemented | — | internal/pipe/archive/archive.go | `stage-archive` — Windows default. |
+| formats: binary | archive | OSS | portable | strongly-suggested | implemented | — | internal/pipe/archive/archive.go | Passthrough of raw binary. |
+| formats: none | archive | OSS | portable | niche | implemented | — | internal/pipe/archive/archive.go | Skip archive creation. |
+| source archive | source | OSS | portable | required | implemented | — | internal/pipe/sourcearchive/ | `stage-source/src/lib.rs`. |
+| source.templated_files | source | Pro | portable | niche | implemented | — | docs: /customization/source/ (fetched 2026-04-16) | Wired. |
 
-### Format Overrides
-| Field | Type |
-|-------|------|
-| `format_overrides[].goos` | string |
-| `format_overrides[].formats` | []string |
+### 2.3 Checksums
 
-### Archive Hooks (Pro)
-| Field | Type |
-|-------|------|
-| `hooks.before[]` | []object (cmd, output, dir, env) |
-| `hooks.after[]` | []object (cmd, output, dir, env) |
+| name | category | tier | scope | ecosystem_relevance | parity_status | disposition | source_ref | notes |
+|------|----------|------|-------|---------------------|---------------|-------------|------------|-------|
+| checksum.name_template | checksum | OSS | portable | required | implemented | — | internal/pipe/checksums/checksums.go | `ChecksumConfig.name_template`. |
+| checksum.algorithm | checksum | OSS | portable | required | implemented | — | internal/pipe/checksums/checksums.go | sha256 default; supports all listed algos. |
+| checksum.split (per-artifact sidecar) | checksum | OSS | portable | strongly-suggested | implemented | — | internal/pipe/checksums/checksums.go | `ChecksumConfig.split`. |
+| checksum.disable | checksum | OSS | portable | strongly-suggested | implemented | — | internal/pipe/checksums/checksums.go | StringOrBool. |
+| checksum.ids | checksum | OSS | portable | strongly-suggested | implemented | — | internal/pipe/checksums/checksums.go | Filter. |
+| checksum.extra_files | checksum | OSS | portable | strongly-suggested | implemented | — | internal/pipe/checksums/checksums.go | Includes external glob files. |
+| checksum.templated_extra_files | checksum | Pro | portable | niche | implemented | — | docs: /customization/checksum/ (fetched 2026-04-16) | Pro feature, wired. |
+| algorithms: sha256/512/1/224/384 | checksum | OSS | portable | required | implemented | — | internal/pipe/checksums/ | stage-checksum. |
+| algorithms: sha3-256/512/224/384 | checksum | OSS | portable | niche | implemented | — | internal/pipe/checksums/ | stage-checksum. |
+| algorithms: blake2b/2s/3 | checksum | OSS | portable | niche | implemented | — | internal/pipe/checksums/ | stage-checksum. |
+| algorithms: crc32 / md5 | checksum | OSS | portable | niche | implemented | — | internal/pipe/checksums/ | stage-checksum. |
 
-### Supported Formats
+### 2.4 Release (SCM)
+
+| name | category | tier | scope | ecosystem_relevance | parity_status | disposition | source_ref | notes |
+|------|----------|------|-------|---------------------|---------------|-------------|------------|-------|
+| release.github | release | OSS | portable | required | implemented | — | internal/pipe/release/ | GitHub API in `github_client.rs`. |
+| release.gitlab | release | OSS | portable | strongly-suggested | implemented | — | internal/pipe/release/ | GitLab client wired in core. |
+| release.gitea | release | OSS | portable | niche | implemented | — | internal/pipe/release/ | Gitea client wired. |
+| release.draft | release | OSS | portable | required | implemented | — | internal/pipe/release/release.go | `ReleaseConfig.draft`. |
+| release.replace_existing_draft | release | OSS | portable | strongly-suggested | implemented | — | internal/pipe/release/release.go | Wired in stage-release. |
+| release.use_existing_draft | release | OSS | portable | niche | implemented | — | internal/pipe/release/release.go | v2.5+ — wired. |
+| release.replace_existing_artifacts | release | OSS | portable | strongly-suggested | implemented | — | internal/pipe/release/release.go | Wired. |
+| release.target_commitish | release | OSS | portable | strongly-suggested | implemented | — | internal/pipe/release/release.go | Wired. |
+| release.tag (template) | release | Pro | portable | strongly-suggested | implemented | — | docs: /customization/release/ (fetched 2026-04-16) | `ReleaseConfig.tag` templated. |
+| release.discussion_category_name | release | OSS | portable | niche | implemented | — | internal/pipe/release/release.go | Wired. |
+| release.prerelease (auto/bool) | release | OSS | portable | required | implemented | — | internal/pipe/release/release.go | `PrereleaseConfig` enum. |
+| release.make_latest | release | OSS | portable | required | implemented | — | internal/pipe/release/release.go | v2.6+, `MakeLatestConfig`. |
+| release.mode (keep-existing/append/prepend/replace) | release | OSS | portable | strongly-suggested | implemented | — | internal/pipe/release/release.go | Wired. |
+| release.header / footer (string) | release | OSS | portable | required | implemented | — | internal/pipe/release/release.go | Wired. |
+| release.header.from_url / from_file | release | Pro | portable | strongly-suggested | partial | — | docs: /customization/release/ | `ContentSource::FromUrl` (config.rs:1303) is a naked `String` URL — no headers/auth, no template render of the fetched body. Pro doc requires headers + template. |
+| release.footer.from_url / from_file | release | Pro | portable | strongly-suggested | partial | — | docs: /customization/release/ | Same as header — `ContentSource::FromUrl` lacks headers/auth/template-render. |
+| release.name_template | release | OSS | portable | required | implemented | — | internal/pipe/release/release.go | Wired. |
+| release.disable | release | OSS | portable | strongly-suggested | implemented | — | internal/pipe/release/release.go | Wired. |
+| release.skip_upload | release | OSS | portable | strongly-suggested | implemented | — | internal/pipe/release/release.go | Wired. |
+| release.extra_files | release | OSS | portable | strongly-suggested | implemented | — | internal/pipe/release/release.go | Wired. |
+| release.templated_extra_files | release | Pro | portable | niche | implemented | — | docs: /customization/release/ | Wired. |
+| release.include_meta | release | OSS | portable | niche | implemented | — | internal/pipe/release/release.go | Wired (Session G verified). |
+| github_urls.api / upload / download / skip_tls_verify | release | OSS | portable | strongly-suggested | implemented | — | internal/pipe/release/release.go | Enterprise URL overrides wired; `skip_tls_verify` in client. |
+| gitlab_urls.* | release | OSS | portable | niche | implemented | — | internal/pipe/release/release.go | GitLab URL overrides wired. |
+| gitea_urls.* | release | OSS | portable | niche | implemented | — | internal/pipe/release/release.go | Gitea URL overrides wired. |
+| milestone pipe | release | OSS | portable | strongly-suggested | implemented | — | internal/pipe/milestone/ | `commands/release/milestones.rs`. |
+
+### 2.5 Changelog
+
+| name | category | tier | scope | ecosystem_relevance | parity_status | disposition | source_ref | notes |
+|------|----------|------|-------|---------------------|---------------|-------------|------------|-------|
+| changelog.disable | changelog | OSS | portable | required | implemented | — | internal/pipe/changelog/changelog.go | StringOrBool. |
+| changelog.use (git/github/gitlab/gitea/github-native) | changelog | OSS | portable | required | implemented | — | internal/pipe/changelog/changelog.go | Provider-switching wired. |
+| changelog.format (template) | changelog | OSS | portable | strongly-suggested | implemented | — | internal/pipe/changelog/changelog.go | Per-entry template. |
+| changelog.sort (asc/desc) | changelog | OSS | portable | required | implemented | — | internal/pipe/changelog/changelog.go | Wired. |
+| changelog.abbrev | changelog | OSS | portable | strongly-suggested | implemented | — | internal/pipe/changelog/changelog.go | 0 / -1 / N. |
+| changelog.paths (monorepo filter) | changelog | Pro | portable | niche | implemented | — | docs: /customization/changelog/ (fetched 2026-04-16) | Wired (git backend). |
+| changelog.title | changelog | Pro | portable | niche | implemented | — | docs: /customization/changelog/ | v2.12+. |
+| changelog.divider | changelog | Pro | portable | niche | implemented | — | docs: /customization/changelog/ | Wired. |
+| changelog.filters.include / exclude | changelog | OSS | portable | required | implemented | — | internal/pipe/changelog/changelog.go | Regex. |
+| changelog.groups[].title / regexp / order | changelog | OSS | portable | required | implemented | — | internal/pipe/changelog/changelog.go | Wired. |
+| changelog.groups[].groups[] (subgroups) | changelog | Pro | portable | niche | implemented | — | docs: /customization/changelog/ | Single-level nested. |
+| changelog.ai.use / model / prompt | changelog | Pro | portable | niche | implemented | — | docs: /customization/changelog/ | Anthropic / OpenAI / Ollama backends wired in `stage-changelog`. |
+
+### 2.6 Signing
+
+| name | category | tier | scope | ecosystem_relevance | parity_status | disposition | source_ref | notes |
+|------|----------|------|-------|---------------------|---------------|-------------|------------|-------|
+| signs[] (generic) | sign | OSS | portable | required | implemented | — | internal/pipe/sign/sign.go | `SignConfig` + `stage-sign/src/lib.rs`. |
+| signs[].cmd (gpg default, cosign) | sign | OSS | portable | required | implemented | — | internal/pipe/sign/sign.go | Subprocess. |
+| signs[].signature template | sign | OSS | portable | required | implemented | — | internal/pipe/sign/sign.go | Wired. |
+| signs[].args templated | sign | OSS | portable | required | implemented | — | internal/pipe/sign/sign.go | Wired. |
+| signs[].artifacts (none/all/checksum/source/package/installer/diskimage/archive/sbom/binary) | sign | OSS | portable | required | implemented | — | internal/pipe/sign/sign.go | All enum values wired (Session G). |
+| signs[].ids | sign | OSS | portable | strongly-suggested | implemented | — | internal/pipe/sign/sign.go | Wired. |
+| signs[].if | sign | Pro | portable | strongly-suggested | implemented | — | docs: /customization/sign/ (fetched 2026-04-16) | Templated conditional. |
+| signs[].stdin / stdin_file | sign | OSS | portable | strongly-suggested | implemented | — | internal/pipe/sign/sign.go | Wired. |
+| signs[].certificate (cosign/rekor) | sign | OSS | portable | strongly-suggested | implemented | — | internal/pipe/sign/sign.go | Wired. |
+| signs[].env | sign | OSS | portable | required | implemented | — | internal/pipe/sign/sign.go | Wired. |
+| signs[].output | sign | OSS | portable | niche | implemented | — | internal/pipe/sign/sign.go | v2.13+, wired. |
+| docker_signs[] | sign | OSS | portable | strongly-suggested | implemented | — | internal/pipe/sign/sign_docker.go | `DockerSignConfig` + `DockerSignStage`. |
+| binary_signs[] (deprecated) | sign | OSS | portable | strongly-suggested | implemented | — | internal/pipe/sign/sign_binary.go | `BinarySignStage` wired in `commands/build.rs`. |
+
+### 2.7 Docker
+
+| name | category | tier | scope | ecosystem_relevance | parity_status | disposition | source_ref | notes |
+|------|----------|------|-------|---------------------|---------------|-------------|------------|-------|
+| dockers[] (v1, deprecated in v2.12+) | docker | OSS | portable | strongly-suggested | implemented | — | internal/pipe/docker/docker.go | `DockerConfig` — legacy single-arch path. |
+| docker.image_templates | docker | OSS | portable | required | implemented | — | internal/pipe/docker/docker.go | Templated. |
+| docker.dockerfile | docker | OSS | portable | required | implemented | — | internal/pipe/docker/docker.go | Wired. |
+| docker.templated_dockerfile | docker | Pro | portable | niche | implemented | — | docs: /customization/docker/ (fetched 2026-04-16) | Wired. |
+| docker.extra_files | docker | OSS | portable | strongly-suggested | implemented | — | internal/pipe/docker/docker.go | Wired. |
+| docker.templated_extra_files | docker | Pro | portable | niche | implemented | — | docs: /customization/docker/ | Wired. |
+| docker.use (docker/buildx/podman) | docker | OSS | portable | strongly-suggested | implemented | — | internal/pipe/docker/ | Wired. |
+| docker.build_flag_templates | docker | OSS | portable | strongly-suggested | implemented | — | internal/pipe/docker/docker.go | Wired. |
+| docker.skip_build | docker | Pro | portable | niche | implemented | — | docs: /customization/docker/ | Wired. |
+| docker.skip_push (bool / auto) | docker | OSS | portable | required | implemented | — | internal/pipe/docker/docker.go | `SkipPushConfig`. |
+| docker.push_flags | docker | OSS | portable | strongly-suggested | implemented | — | internal/pipe/docker/docker.go | Wired. |
+| docker.retry (attempts / delay / max_delay) | docker | OSS | portable | strongly-suggested | implemented | — | internal/pipe/docker/docker.go | `DockerRetryConfig`. |
+| docker_v2 pipe | docker | OSS | portable | required | implemented | — | internal/pipe/docker/v2/ | `DockerV2Config` — `stage-docker` v2 path. |
+| docker_v2.platforms (multi-arch) | docker | OSS | portable | required | implemented | — | internal/pipe/docker/v2/ | Wired. |
+| docker_v2.sbom (inline SBOM) | docker | OSS | portable | strongly-suggested | implemented | — | internal/pipe/docker/v2/ | Wired. |
+| docker_v2.labels / annotations | docker | OSS | portable | strongly-suggested | implemented | — | internal/pipe/docker/v2/ | Wired. |
+| docker_v2.build_args | docker | OSS | portable | strongly-suggested | implemented | — | internal/pipe/docker/v2/ | Wired. |
+| docker_manifests | docker | OSS | portable | strongly-suggested | implemented | — | internal/pipe/docker/manifest.go | `DockerManifestConfig` — `stage-docker`. |
+| dockerdigest | docker | OSS | portable | niche | implemented | — | internal/pipe/dockerdigest/digest.go | Digest pinning after push; wired. |
+| dockerhub (description sync) | docker | Pro | portable | niche | implemented | — | docs: /customization/dockerhub/ (fetched 2026-04-16) | `DockerHubConfig` — `stage-publish/src/dockerhub.rs`. |
+
+### 2.8 Linux Packages (nFPM)
+
+| name | category | tier | scope | ecosystem_relevance | parity_status | disposition | source_ref | notes |
+|------|----------|------|-------|---------------------|---------------|-------------|------------|-------|
+| nfpms[] | publish-nfpm | OSS | portable | required | implemented | — | internal/pipe/nfpm/ | `stage-nfpm/src/lib.rs`. |
+| nfpm.id / ids / package_name / file_name_template | publish-nfpm | OSS | portable | required | implemented | — | internal/pipe/nfpm/nfpm.go | Wired. |
+| nfpm.if | publish-nfpm | Pro | portable | strongly-suggested | missing | — | docs: /customization/nfpm/ (fetched 2026-04-16) | `NfpmConfig` (config.rs:2815) has no `if` field. Templated conditional absent. |
+| nfpm.vendor / homepage / maintainer / description / license | publish-nfpm | OSS | portable | required | implemented | — | internal/pipe/nfpm/ | Wired. |
+| nfpm.formats: deb | publish-nfpm | OSS | portable | required | implemented | — | internal/pipe/nfpm/ | Wired. |
+| nfpm.formats: rpm | publish-nfpm | OSS | portable | required | implemented | — | internal/pipe/nfpm/ | Wired. |
+| nfpm.formats: apk | publish-nfpm | OSS | portable | niche | implemented | — | internal/pipe/nfpm/ | Alpine-specific but wired. |
+| nfpm.formats: termux.deb | publish-nfpm | OSS | portable | niche | implemented | — | internal/pipe/nfpm/ | Wired. |
+| nfpm.formats: archlinux | publish-nfpm | OSS | portable | niche | implemented | — | internal/pipe/nfpm/ | Wired. |
+| nfpm.formats: ipk | publish-nfpm | OSS | portable | niche | implemented | — | internal/pipe/nfpm/ | v2.1+, wired. |
+| nfpm.umask / bindir / libdirs | publish-nfpm | OSS | portable | strongly-suggested | implemented | — | internal/pipe/nfpm/ | Wired. |
+| nfpm.epoch / prerelease / version_metadata / release / section / priority | publish-nfpm | OSS | portable | required | implemented | — | internal/pipe/nfpm/ | Wired + auto from semver. |
+| nfpm.meta / changelog / goamd64 / mtime | publish-nfpm | OSS | portable | strongly-suggested | implemented | — | internal/pipe/nfpm/ | Wired; goamd64 mapped to target triples. |
+| nfpm.dependencies / provides / recommends / suggests / conflicts / replaces | publish-nfpm | OSS | portable | required | implemented | — | internal/pipe/nfpm/ | Wired. |
+| nfpm.contents[] (type: config / config\|noreplace / symlink / tree / ghost / dir) | publish-nfpm | OSS | portable | required | implemented | — | internal/pipe/nfpm/ | `NfpmContent` full enum. |
+| nfpm.contents[].file_info | publish-nfpm | OSS | portable | strongly-suggested | implemented | — | internal/pipe/nfpm/ | mode/mtime/owner/group templated. |
+| nfpm.templated_contents | publish-nfpm | Pro | portable | niche | missing | — | docs: /customization/nfpm/ | `NfpmConfig` (config.rs:2815) has no `templated_contents`. |
+| nfpm.scripts (preinstall/postinstall/preremove/postremove) | publish-nfpm | OSS | portable | required | implemented | — | internal/pipe/nfpm/ | Wired. |
+| nfpm.templated_scripts | publish-nfpm | Pro | portable | niche | missing | — | docs: /customization/nfpm/ | `NfpmConfig` (config.rs:2815) has no `templated_scripts`. |
+| nfpm.rpm.* (summary/group/packager/buildhost/compression/prefixes/scripts/signature) | publish-nfpm | OSS | portable | required | implemented | — | internal/pipe/nfpm/ | `NfpmRpmConfig`. |
+| nfpm.deb.* (triggers/lintian_overrides/compression/signature/fields/breaks/predepends) | publish-nfpm | OSS | portable | required | implemented | — | internal/pipe/nfpm/ | `NfpmDebConfig`. |
+| nfpm.apk.* (scripts/signature) | publish-nfpm | OSS | portable | niche | implemented | — | internal/pipe/nfpm/ | `NfpmApkConfig`. |
+| nfpm.archlinux.* | publish-nfpm | OSS | portable | niche | implemented | — | internal/pipe/nfpm/ | `NfpmArchlinuxConfig`. |
+| nfpm.ipk.* (abi_version/alternatives/auto_install/essential/fields/predepends/tags) | publish-nfpm | OSS | portable | niche | implemented | — | internal/pipe/nfpm/ | `NfpmIpkConfig`. |
+| nfpm.overrides (per-format) | publish-nfpm | OSS | portable | strongly-suggested | implemented | — | internal/pipe/nfpm/ | Wired. |
+| nfpm ConventionalFileName (per-packager shape) | publish-nfpm | OSS | portable | required | implemented | — | internal/pipe/nfpm/ | `stage-nfpm/src/filename.rs` (2026-04-16 closure). |
+| nfpm passphrase env (NFPM_*_PASSPHRASE) | publish-nfpm | OSS | portable | strongly-suggested | implemented | — | internal/pipe/nfpm/ | Priority order wired. |
+| srpm | publish-nfpm | OSS | portable | niche | implemented | — | internal/pipe/srpm/ | `stage-srpm` via rpmbuild subprocess. |
+
+### 2.9 Publish — Homebrew / Cask
+
+| name | category | tier | scope | ecosystem_relevance | parity_status | disposition | source_ref | notes |
+|------|----------|------|-------|---------------------|---------------|-------------|------------|-------|
+| brews[] / homebrew_formulas[] | publish-homebrew | OSS | portable | required | implemented | — | internal/pipe/brew/brew.go | `HomebrewConfig` + `stage-publish/src/homebrew.rs`. |
+| homebrew.name / alternative_names | publish-homebrew | OSS | portable | required | implemented | — | internal/pipe/brew/brew.go | Wired (`alternative_names` Pro). |
+| homebrew.ids / goarm / goamd64 | publish-homebrew | OSS | portable | required | implemented | — | internal/pipe/brew/brew.go | Wired — `goarm=6` matches GoReleaser default. |
+| homebrew.url_template / url_headers / download_strategy / custom_require / custom_block | publish-homebrew | OSS | portable | strongly-suggested | implemented | — | internal/pipe/brew/brew.go | Wired. |
+| homebrew.homepage / description / license / caveats | publish-homebrew | OSS | portable | required | implemented | — | internal/pipe/brew/brew.go | Wired. |
+| homebrew.install / extra_install / post_install / test | publish-homebrew | OSS | portable | required | implemented | — | internal/pipe/brew/brew.go | Wired. |
+| homebrew.dependencies (name/os/type/version) | publish-homebrew | OSS | portable | required | implemented | — | internal/pipe/brew/brew.go | Wired. |
+| homebrew.conflicts | publish-homebrew | OSS | portable | strongly-suggested | implemented | — | internal/pipe/brew/brew.go | Wired. |
+| homebrew.service / plist | publish-homebrew | OSS | portable | niche | implemented | — | internal/pipe/brew/brew.go | Wired. |
+| homebrew.commit_msg_template / directory | publish-homebrew | OSS | portable | strongly-suggested | implemented | — | internal/pipe/brew/brew.go | Wired. |
+| homebrew.skip_upload | publish-homebrew | OSS | portable | strongly-suggested | implemented | — | internal/pipe/brew/brew.go | Wired. |
+| homebrew.repository.* | publish-homebrew | OSS | portable | required | implemented | — | internal/pipe/brew/brew.go | `RepositoryConfig`. |
+| homebrew.repository.pull_request.* | publish-homebrew | OSS | portable | strongly-suggested | implemented | — | internal/pipe/brew/brew.go | PR-based tap updates. |
+| homebrew.repository.pull_request.check_boxes | publish-homebrew | Pro | portable | niche | implemented | — | docs: /customization/homebrew/ (fetched 2026-04-16) | Pro-only. |
+| homebrew.repository.git (url/private_key/ssh_command) | publish-homebrew | OSS | portable | strongly-suggested | implemented | — | internal/pipe/brew/brew.go | Git-over-SSH fallback. |
+| homebrew.commit_author.* | publish-homebrew | OSS | portable | strongly-suggested | implemented | — | internal/pipe/brew/brew.go | Wired. |
+| homebrew.commit_author.signing | publish-homebrew | OSS | portable | niche | implemented | — | internal/pipe/brew/brew.go | v2.11+. |
+| homebrew.app (DMG app) | publish-homebrew | Pro | portable | niche | implemented | — | docs: /customization/homebrew/ | Wired. |
+| homebrew_casks[] | publish-homebrew | OSS | portable | strongly-suggested | implemented | — | internal/pipe/cask/cask.go | `HomebrewCaskConfig` — distinct from brew formula. |
+| homebrew_casks.binaries / app / manpages | publish-homebrew | OSS | portable | strongly-suggested | implemented | — | internal/pipe/cask/cask.go | Wired. |
+| homebrew_casks.completions (bash/zsh/fish) | publish-homebrew | OSS | portable | strongly-suggested | implemented | — | internal/pipe/cask/cask.go | Wired. |
+| homebrew_casks.generate_completions_from_executable | publish-homebrew | OSS | portable | niche | implemented | — | internal/pipe/cask/cask.go | Wired. |
+| homebrew_casks.url.* (template/verified/using/cookies/referer/headers/user_agent/data) | publish-homebrew | OSS | portable | strongly-suggested | implemented | — | internal/pipe/cask/cask.go | Wired. |
+| homebrew_casks.hooks (v2.13+) | publish-homebrew | OSS | portable | niche | implemented | — | internal/pipe/cask/cask.go | Wired. |
+| homebrew_casks.service / zap / uninstall | publish-homebrew | OSS | portable | niche | implemented | — | internal/pipe/cask/cask.go | Wired. |
+
+### 2.10 Publish — Scoop / Chocolatey / Winget (Windows)
+
+| name | category | tier | scope | ecosystem_relevance | parity_status | disposition | source_ref | notes |
+|------|----------|------|-------|---------------------|---------------|-------------|------------|-------|
+| scoops[] (incl use: archive/msi/nsis) | publish-scoop | OSS | portable | strongly-suggested | implemented | — | internal/pipe/scoop/ | `ScoopConfig` + `stage-publish/src/scoop.rs`. |
+| scoop.persist / pre_install / post_install / depends / shortcuts | publish-scoop | OSS | portable | strongly-suggested | implemented | — | internal/pipe/scoop/ | Wired. |
+| scoop.repository.* | publish-scoop | OSS | portable | strongly-suggested | implemented | — | internal/pipe/scoop/ | Wired. |
+| chocolateys[] | publish-chocolatey | OSS | portable | niche | implemented | — | internal/pipe/chocolatey/ | `ChocolateyConfig` + `stage-publish/src/chocolatey.rs`. |
+| chocolatey.package_source_url / title / authors / project_url / use | publish-chocolatey | OSS | portable | niche | implemented | — | internal/pipe/chocolatey/ | Wired. |
+| chocolatey.dependencies / api_key / source_repo | publish-chocolatey | OSS | portable | niche | implemented | — | internal/pipe/chocolatey/ | Wired. |
+| chocolatey.require_license_acceptance / license_url / release_notes / summary / description / tags | publish-chocolatey | OSS | portable | niche | implemented | — | internal/pipe/chocolatey/ | Wired. |
+| chocolatey.skip_publish / icon_url / copyright / project_source_url / docs_url / bug_tracker_url | publish-chocolatey | OSS | portable | niche | implemented | — | internal/pipe/chocolatey/ | Wired. |
+| wingets[] | publish-winget | OSS | portable | strongly-suggested | implemented | — | internal/pipe/winget/ | `WingetConfig` + `stage-publish/src/winget.rs`. |
+| winget.publisher / publisher_url / publisher_support_url / privacy_url | publish-winget | OSS | portable | strongly-suggested | implemented | — | internal/pipe/winget/ | Wired. |
+| winget.package_identifier / package_name / use / product_code / url_template | publish-winget | OSS | portable | strongly-suggested | implemented | — | internal/pipe/winget/ | Wired. |
+| winget.path / homepage / description / license_url / copyright / copyright_url / release_notes / installation_notes | publish-winget | OSS | portable | strongly-suggested | implemented | — | internal/pipe/winget/ | Wired. |
+| winget.dependencies / tags / skip_upload | publish-winget | OSS | portable | strongly-suggested | implemented | — | internal/pipe/winget/ | Wired. |
+| winget.repository.* / commit_author.* | publish-winget | OSS | portable | strongly-suggested | implemented | — | internal/pipe/winget/ | Wired. |
+
+### 2.11 Publish — AUR / Krew / Nix
+
+| name | category | tier | scope | ecosystem_relevance | parity_status | disposition | source_ref | notes |
+|------|----------|------|-------|---------------------|---------------|-------------|------------|-------|
+| aurs[] | publish-aur | OSS | portable | strongly-suggested | implemented | — | internal/pipe/aur/ | `AurConfig` + `stage-publish/src/aur.rs`. |
+| aur.name / ids / homepage / description / maintainers / contributors / license / private_key / git_url | publish-aur | OSS | portable | strongly-suggested | implemented | — | internal/pipe/aur/ | Wired. |
+| aur.skip_upload / provides / conflicts / depends / optdepends / backup / package / install / commit_msg_template | publish-aur | OSS | portable | strongly-suggested | implemented | — | internal/pipe/aur/ | Wired. |
+| aur.goamd64 / git_ssh_command / url_template / directory / disable | publish-aur | OSS | portable | strongly-suggested | implemented | — | internal/pipe/aur/ | Wired. |
+| aur_sources[] | publish-aur | OSS | portable | niche | implemented | — | internal/pipe/aursources/ | `AurSourceConfig` + `stage-publish/src/aur_source.rs`. |
+| krews[] | publish-krew | OSS | portable | niche | implemented | — | internal/pipe/krew/ | `KrewConfig` + `stage-publish/src/krew.rs`; kubectl plugins. |
+| krew.ids / goarm / goamd64 / url_template / commit_msg_template / homepage / description / short_description / caveats / skip_upload | publish-krew | OSS | portable | niche | implemented | — | internal/pipe/krew/ | Wired. |
+| nix[] | publish-nix | OSS | portable | strongly-suggested | implemented | — | internal/pipe/nix/ | `NixConfig` + `stage-publish/src/nix.rs`. |
+| nix.name / ids / goamd64 / url_template / commit_msg_template / path / homepage / description / license / skip_upload | publish-nix | OSS | portable | strongly-suggested | implemented | — | internal/pipe/nix/ | Wired. |
+| nix.dependencies / install / extra_install / post_install / formatter | publish-nix | OSS | portable | strongly-suggested | implemented | — | internal/pipe/nix/ | Wired (ELF parser for architecture detection). |
+
+### 2.12 Publish — Misc / Custom / Cloud / Pro
+
+| name | category | tier | scope | ecosystem_relevance | parity_status | disposition | source_ref | notes |
+|------|----------|------|-------|---------------------|---------------|-------------|------------|-------|
+| publishers[] (custom) | publish-custom | OSS | portable | strongly-suggested | implemented | — | internal/pipe/custompublishers/ | `PublisherConfig` + `publisher.rs`. |
+| publishers.cmd / dir / ids / if / checksum / meta / signature / env / disable / extra_files / templated_extra_files / output | publish-custom | OSS | portable | strongly-suggested | implemented | — | internal/pipe/custompublishers/ | `if` / `templated_extra_files` / `output` (v2.11+) all wired. |
+| artifactory (HTTP PUT) | publish-artifactory | OSS | portable | niche | implemented | — | internal/pipe/artifactory/ | `ArtifactoryConfig` + `stage-publish/src/artifactory.rs`. |
+| artifactory.target / mode / username / password / client_x509_cert / client_x509_key / trusted_certificates | publish-artifactory | OSS | portable | niche | implemented | — | internal/pipe/artifactory/ | Wired. |
+| artifactory.ids / exts / matrix (Pro) / custom_artifact_name / custom_headers / checksum / meta / signature / skip | publish-artifactory | OSS | portable | niche | implemented | — | internal/pipe/artifactory/ | `matrix` Pro-only; wired. |
+| artifactory.extra_files / extra_files_only / templated_extra_files | publish-artifactory | OSS | portable | niche | implemented | — | internal/pipe/artifactory/ | Wired. |
+| uploads[] (generic HTTP) | publish-custom | OSS | portable | niche | implemented | — | internal/pipe/upload/ | `UploadConfig` + `stage-publish/src/upload.rs`. |
+| fury (fury.io apt/yum) | publish-fury | Pro | portable | niche | implemented | — | docs: /customization/fury/ (fetched 2026-04-16) | Proxy-rebranded; see `PublisherConfig`. |
+| cloudsmith (apt/yum repo) | publish-cloudsmith | Pro | portable | niche | implemented | — | docs: /customization/cloudsmith/ (fetched 2026-04-16) | `CloudSmithConfig`. |
+| npm (Pro) | publish-npm | Pro | not-applicable | not-applicable | n-a | — | docs: /customization/npm/ (fetched 2026-04-16) | JS runtime publish; no canonical Rust analogue. See §5. |
+| crates.io publish | publish-cratesio | OSS | rust-additive | required | implemented | — | — | `CratesPublishConfig` + `stage-publish/src/crates_io.rs`; GoReleaser has no equivalent. |
+| blob (s3/gs/azblob) | blob | OSS | portable | strongly-suggested | implemented | — | internal/pipe/blob/ | `BlobConfig` + `stage-blob/src/lib.rs`; parallel across configs. |
+| blob.provider / bucket / endpoint / region / disable_ssl / ids / if / disable / directory / s3_force_path_style / acl / cache_control / content_disposition / include_meta | blob | OSS | portable | strongly-suggested | implemented | — | internal/pipe/blob/ | Wired. |
+| blob KMS | blob | OSS | portable | niche | implemented | — | internal/pipe/blob/ | CLI-shell via aws/gcloud/az; intentional divergence from gocloud.dev. |
+| blob.extra_files / extra_files_only / templated_extra_files | blob | OSS | portable | niche | implemented | — | internal/pipe/blob/ | Wired. |
+
+### 2.13 Announce providers
+
+| name | category | tier | scope | ecosystem_relevance | parity_status | disposition | source_ref | notes |
+|------|----------|------|-------|---------------------|---------------|-------------|------------|-------|
+| announce.discord | announce-discord | OSS | portable | strongly-suggested | implemented | — | internal/pipe/discord/ | `stage-announce/src/discord.rs`. |
+| announce.slack (channel/blocks/attachments) | announce-slack | OSS | portable | strongly-suggested | implemented | — | internal/pipe/slack/ | `stage-announce/src/slack.rs`. |
+| announce.telegram (parse_mode MarkdownV2/HTML + message_thread_id) | announce-telegram | OSS | portable | niche | implemented | — | internal/pipe/telegram/ | `stage-announce/src/telegram.rs`. |
+| announce.teams (AdaptiveCard) | announce-teams | OSS | portable | niche | implemented | — | internal/pipe/teams/ | `stage-announce/src/teams.rs`; uses AdaptiveCard (intentional divergence). |
+| announce.mattermost | announce-mattermost | OSS | portable | niche | implemented | — | internal/pipe/mattermost/ | `stage-announce/src/mattermost.rs`. |
+| announce.webhook | announce-webhook | OSS | portable | strongly-suggested | implemented | — | internal/pipe/webhook/ | `stage-announce/src/webhook.rs`; custom HTTP broadcast. |
+| announce.smtp (email) | announce-smtp | OSS | portable | niche | implemented | — | internal/pipe/smtp/ | `stage-announce/src/email.rs`. |
+| announce.reddit | announce-reddit | OSS | portable | niche | implemented | — | internal/pipe/reddit/ | `stage-announce/src/reddit.rs`. |
+| announce.twitter | announce-twitter | OSS | portable | niche | implemented | — | internal/pipe/twitter/ | `stage-announce/src/twitter.rs`. |
+| announce.mastodon (form-encoded POST) | announce-mastodon | OSS | portable | niche | implemented | — | internal/pipe/mastodon/ | `stage-announce/src/mastodon.rs`. |
+| announce.bluesky (AT Proto) | announce-bluesky | OSS | portable | niche | implemented | — | internal/pipe/bluesky/ | `stage-announce/src/bluesky.rs`. |
+| announce.linkedin | announce-linkedin | OSS | portable | niche | implemented | — | internal/pipe/linkedin/ | `stage-announce/src/linkedin.rs`. |
+| announce.opencollective | announce-opencollective | OSS | portable | niche | implemented | — | internal/pipe/opencollective/ | `stage-announce/src/opencollective.rs`. |
+| announce.discourse | announce-discourse | OSS | portable | niche | implemented | — | internal/pipe/discourse/ | `stage-announce/src/discourse.rs`. |
+
+### 2.14 SBOM / Notarize / Snapcraft / Flatpak / Installers
+
+| name | category | tier | scope | ecosystem_relevance | parity_status | disposition | source_ref | notes |
+|------|----------|------|-------|---------------------|---------------|-------------|------------|-------|
+| sboms[] (syft) | sbom | OSS | portable | required | implemented | — | internal/pipe/sbom/ | `SbomConfig` + `stage-sbom`. |
+| sbom.cmd / args / env / artifacts / ids / disable / documents | sbom | OSS | portable | required | implemented | — | internal/pipe/sbom/ | Wired; templates `${artifact}` / `${document}` / `${artifactID}`. |
+| snapcrafts[] | publish-snap | OSS | portable | niche | implemented | — | internal/pipe/snapcraft/ | `SnapcraftConfig` + `stage-snapcraft`. |
+| snap fields (grade/confinement/base/plugs/slots/layout/apps/assumes/hooks/extra_files) | publish-snap | OSS | portable | niche | implemented | — | internal/pipe/snapcraft/ | Wired. |
+| flatpaks[] | publish-flatpak | OSS | portable | niche | implemented | — | internal/pipe/flatpak/ | `FlatpakConfig` + `stage-flatpak`. |
+| flatpak fields (app_id/runtime/sdk/command/finish_args) | publish-flatpak | OSS | portable | niche | implemented | — | internal/pipe/flatpak/ | Wired. |
+| dmgs[] (macOS disk image) | dmg | Pro | portable | strongly-suggested | partial | — | docs: /customization/dmg/ (fetched 2026-04-16) | `DmgConfig` (config.rs:3393) + `stage-dmg`; uses `hdiutil`. **Missing `if` conditional field** (Pro gate). |
+| msis[] (Wix/wixl) | msi | Pro | portable | strongly-suggested | partial | — | docs: /customization/msi/ (fetched 2026-04-16) | `MsiConfig` (config.rs:3424) + `stage-msi`. **Missing `if`, `goamd64`, `hooks.before/after` (and docs-listed `extra_files` is bare `Vec<String>` not `Vec<ExtraFileSpec>`)**; only `disable` maps cleanly. |
+| pkgs[] (macOS .pkg) | pkg | Pro | portable | strongly-suggested | partial | — | docs: /customization/pkg/ (fetched 2026-04-16) | `PkgConfig` (config.rs:3454) + `stage-pkg`. **Missing `if` conditional field**. |
+| nsis[] (Windows installer) | nsis | Pro | portable | strongly-suggested | partial | — | docs: /customization/nsis/ (fetched 2026-04-16) | `NsisConfig` (config.rs:3487) + `stage-nsis`. **Missing `if` and `goamd64` fields**. |
+| app_bundles[] (macOS .app) | appbundle | Pro | portable | strongly-suggested | partial | — | docs: /customization/app_bundles/ (fetched 2026-04-16) | `AppBundleConfig` (config.rs:3517) + `stage-appbundle`. **Missing `if` conditional field**. |
+| makeselfs[] (Linux self-extracting) | makeself | OSS | portable | niche | implemented | — | internal/pipe/makeself/ | `MakeselfConfig` + `stage-makeself`. |
+| notarize.macos (anchore/quill) | notarize | OSS | portable | strongly-suggested | implemented | — | internal/pipe/notary/ | `NotarizeConfig` cross-platform backend. |
+| notarize.macos_native (codesign/xcrun) | notarize | Pro | portable | strongly-suggested | implemented | — | docs: /customization/notarize/ (fetched 2026-04-16) | `MacOSNativeSignNotarizeConfig`. |
+| ko (container builder from Go source) | docker | OSS | go-specific | not-applicable | n-a | — | internal/pipe/ko/ | Go-source-to-container; docker+docker_v2 covers Rust case. |
+
+### 2.15 Project / Global / CLI / Partial
+
+| name | category | tier | scope | ecosystem_relevance | parity_status | disposition | source_ref | notes |
+|------|----------|------|-------|---------------------|---------------|-------------|------------|-------|
+| project_name | metadata | OSS | portable | required | implemented | — | internal/pipe/project/ | `Config.project_name`. |
+| dist | metadata | OSS | portable | required | implemented | — | internal/pipe/project/ | `Config.dist`. |
+| git.tag_sort (-version:refname / semver / smartsemver Pro) | misc | OSS | portable | required | implemented | — | internal/pipe/git/ | `GitConfig.tag_sort`. |
+| git.prerelease_suffix | misc | OSS | portable | strongly-suggested | implemented | — | internal/pipe/git/ | Wired. |
+| git.ignore_tags / ignore_tag_prefixes (Pro) | misc | OSS | portable | strongly-suggested | implemented | — | internal/pipe/git/ | Wired in tag discovery (2026-04-16). |
+| monorepo.tag_prefix / dir | misc | Pro | portable | strongly-suggested | implemented | — | docs: /customization/monorepo/ (fetched 2026-04-16) | `MonorepoConfig` + `WorkspaceConfig` native. |
+| includes[].from_file / from_url | misc | Pro | portable | niche | implemented | — | docs: /customization/includes/ (fetched 2026-04-16) | `IncludeSpec` enum. |
+| metadata.mod_timestamp / maintainers / license / homepage / description | metadata | Pro | portable | strongly-suggested | partial | — | docs: /customization/metadata/ (fetched 2026-04-16) | `MetadataConfig` (config.rs:4363) present. **Missing `full_description.from_url`/`from_file` (v2.1+) and `commit_author` (v2.12+)**. |
+| env (global env list) | misc | OSS | portable | required | implemented | — | internal/pipe/env/ | Wired. |
+| env_files.github_token / gitlab_token / gitea_token | misc | OSS | portable | strongly-suggested | implemented | — | internal/pipe/env/ | `EnvFilesConfig`. |
+| template_files[] | misc | Pro | portable | niche | implemented | — | docs: /customization/template_files/ (fetched 2026-04-16) | `TemplateFileConfig` + `stage-templatefiles`. |
+| before / after hooks | hooks | OSS | portable | required | implemented | — | internal/pipe/before/ | `HooksConfig` + `hooks.rs`. |
+| snapshot.name_template | misc | OSS | portable | required | implemented | — | internal/pipe/snapshot/ | `SnapshotConfig`. |
+| nightly (Pro) | misc | Pro | portable | niche | implemented | — | docs: /pro/ (fetched 2026-04-16) | `NightlyConfig`. |
+| partial builds (--split/--merge) | partial | Pro | portable | strongly-suggested | implemented | — | internal/pipe/partial/ | `PartialConfig` + `commands/continue_cmd.rs`. |
+| Split/merge GGOOS/GGOARCH | partial | Pro | go-specific | not-applicable | n-a | — | internal/pipe/partial/ | Rust-native replacement: `ANODIZE_SPLIT_TARGET`. |
+| CLI: release | cli | OSS | portable | required | implemented | — | cmd/release.go | `commands/release/mod.rs`. |
+| CLI: build | cli | OSS | portable | required | implemented | — | cmd/build.go | `commands/build.rs` (build parity 2026-04-16). |
+| CLI: check | cli | OSS | portable | required | implemented | — | cmd/check.go | `commands/check.rs`. |
+| CLI: healthcheck | cli | OSS | portable | strongly-suggested | implemented | — | cmd/healthcheck.go | `commands/healthcheck.rs`. |
+| CLI: init | cli | OSS | portable | strongly-suggested | implemented | — | cmd/init.go | `commands/init.rs`. |
+| CLI: completion | cli | OSS | portable | strongly-suggested | implemented | — | cmd/completion.go | `commands/completion.rs`. |
+| CLI: jsonschema | cli | OSS | portable | niche | implemented | — | cmd/jsonschema.go | `commands/jsonschema.rs`. |
+| CLI: changelog preview | cli | Pro | portable | niche | implemented | — | docs: /pro/ (fetched 2026-04-16) | `commands/changelog.rs`. |
+| CLI: continue / publish / announce (--merge) | cli | Pro | portable | strongly-suggested | implemented | — | cmd/continue.go | `commands/continue_cmd.rs` + `publish_cmd.rs` + `announce_cmd.rs`. |
+| CLI: man pages | cli | OSS | portable | niche | missing | — | cmd/mangen.go | `goreleaser man` generates man pages; anodize has no `man` subcommand. |
+| Flag: --auto-snapshot | cli | OSS | portable | strongly-suggested | implemented | — | cmd/release.go | Wired. |
+| Flag: --clean | cli | OSS | portable | required | implemented | — | cmd/release.go | Wired. |
+| Flag: --config | cli | OSS | portable | required | implemented | — | cmd/release.go | Wired. |
+| Flag: --draft | cli | OSS | portable | required | implemented | — | cmd/release.go | Wired. |
+| Flag: --fail-fast | cli | OSS | portable | strongly-suggested | implemented | — | cmd/release.go | Wired. |
+| Flag: --id (Pro) | cli | Pro | portable | strongly-suggested | implemented | — | cmd/release.go | `--crate` filter. |
+| Flag: --key (Pro license) | cli | Pro | not-applicable | not-applicable | n-a | — | cmd/release.go | Pro licensing; anodize is OSS, no analogue needed. |
+| Flag: --nightly (Pro) | cli | Pro | portable | niche | implemented | — | cmd/release.go | Wired via `NightlyConfig`. |
+| Flag: --parallelism | cli | OSS | portable | strongly-suggested | implemented | — | cmd/release.go | Bounded concurrency across stages. |
+| Flag: --prepare (Pro) | cli | Pro | portable | strongly-suggested | missing | — | cmd/release.go | No `--prepare` flag in `crates/cli/src`; `--split` exists without the `--prepare` companion. |
+| Flag: --release-notes / --release-notes-tmpl | cli | OSS | portable | required | implemented | — | cmd/release.go | Wired. |
+| Flag: --skip | cli | OSS | portable | required | implemented | — | cmd/release.go | Wired with `--skip=unknown` parse-time error. |
+| Flag: --snapshot | cli | OSS | portable | required | implemented | — | cmd/release.go | Wired. |
+| Flag: --split (Pro) | cli | Pro | portable | strongly-suggested | implemented | — | cmd/release.go | Wired via `PartialConfig`. |
+| Flag: --timeout | cli | OSS | portable | strongly-suggested | implemented | — | cmd/release.go | Wired. |
+| Flag: --single-target (build) | cli | OSS | portable | strongly-suggested | implemented | — | cmd/build.go | Wired. |
+| Flag: --soft (Pro, check only) | cli | Pro | portable | niche | missing | — | cmd/check.go | Non-fatal validation mode; anodize `check` is strict by default. |
+
+### 2.16 Template helpers
+
+| name | category | tier | scope | ecosystem_relevance | parity_status | disposition | source_ref | notes |
+|------|----------|------|-------|---------------------|---------------|-------------|------------|-------|
+| Tera-native templating | template-helpers | — | rust-native-replacement | required | implemented | — | — | anodize uses Tera; GoReleaser uses Go text/template. Pre-processor bridges Go syntax. |
+| String helpers (replace/split/tolower/toupper/trim/trimprefix/trimsuffix/contains/title) | template-helpers | OSS | portable | required | implemented | — | internal/tmpl/ | Wired in `core/src/template.rs`. |
+| Path helpers (dir/base/abs) | template-helpers | OSS | portable | strongly-suggested | implemented | — | internal/tmpl/ | Wired. |
+| Filter helpers (filter/reverseFilter) | template-helpers | OSS | portable | strongly-suggested | implemented | — | internal/tmpl/ | Uses Rust `regex` not POSIX ERE — intentional. |
+| Version helpers (incpatch/incminor/incmajor) | template-helpers | OSS | portable | required | implemented | — | internal/tmpl/ | Wired. |
+| Env helpers (envOrDefault/isEnvSet) | template-helpers | OSS | portable | required | implemented | — | internal/tmpl/ | Wired. |
+| Hash functions (blake2b/blake2s/blake3/crc32/md5/sha1/224/256/384/512/sha3_*) | template-helpers | OSS | portable | strongly-suggested | implemented | — | internal/tmpl/ | Wired (v2.9+/v2.15+). |
+| File I/O (readFile/mustReadFile) | template-helpers | OSS | portable | strongly-suggested | implemented | — | internal/tmpl/ | v2.12+, wired. |
+| Data structures (list/map/indexOrDefault) | template-helpers | OSS | portable | strongly-suggested | implemented | — | internal/tmpl/ | Wired. |
+| Encoding (mdv2escape/urlPathEscape) | template-helpers | OSS | portable | niche | implemented | — | internal/tmpl/ | Wired (v2.5+). |
+| Misc (time/englishJoin) | template-helpers | OSS | portable | niche | implemented | — | internal/tmpl/ | `englishJoin` v2.14+. |
+| Pro helpers (in / reReplaceAll) | template-helpers | Pro | portable | strongly-suggested | implemented | — | docs: /customization/templates/ | Wired (`in` / `reReplaceAll` v2.8+). |
+| .Now.Format preprocessor | template-helpers | OSS | portable | strongly-suggested | implemented | — | internal/tmpl/ | Custom preprocessor rewrites to `Now \| now_format(format=)` for Tera. |
+| Variables (.ProjectName/.Version/.Tag/.Major/.Minor/.Patch etc.) | template-helpers | OSS | portable | required | implemented | — | internal/tmpl/ | Full set wired in `core/src/template.rs`. |
+| Pro variables (.PrefixedTag/.Artifacts/.Metadata/.Var/.IsMerging/.IsRelease) | template-helpers | Pro | portable | strongly-suggested | implemented | — | docs: /customization/templates/ | Wired. |
+| Custom variables (.Var.*) | template-helpers | Pro | portable | niche | implemented | — | docs: /customization/templates/ | Via `variables` config. |
+
+### 2.17 Other / Auth / Artifacts JSON
+
+| name | category | tier | scope | ecosystem_relevance | parity_status | disposition | source_ref | notes |
+|------|----------|------|-------|---------------------|---------------|-------------|------------|-------|
+| dist/artifacts.json | misc | OSS | portable | required | implemented | — | internal/artifact/ | Emitted end-of-pipeline. |
+| dist/metadata.json | misc | OSS | portable | required | implemented | — | internal/pipe/metadata/ | Emitted end-of-pipeline. |
+| dist/config.yaml (effective config) | misc | OSS | portable | strongly-suggested | implemented | — | internal/pipe/effectiveconfig/ | Emitted (build parity 2026-04-16). |
+| GITHUB_TOKEN / GITLAB_TOKEN / GITEA_TOKEN | misc | OSS | portable | required | implemented | — | internal/client/ | Wired. |
+| GORELEASER_FORCE_TOKEN | misc | OSS | portable | niche | implemented | — | internal/client/ | `ForceTokenKind` enum. |
+| Announcer provider secret env vars | announce-* | OSS | portable | required | implemented | — | — | All listed env vars wired in their stage-announce modules. |
+| continue-on-error | misc | OSS | portable | niche | missing | — | internal/pipe/ | GoReleaser permits stages to log-and-continue via `continue_on_error` on certain pipes (e.g. docker skip on cert error); anodize default is fail-fast. |
+| version_sync (Pro? — anodize-additive) | misc | — | rust-additive | strongly-suggested | implemented | — | — | `VersionSyncConfig` enforces `Cargo.toml` ↔ tag alignment; GoReleaser has no equivalent. |
+| binstall metadata | misc | — | rust-additive | strongly-suggested | implemented | — | — | `BinstallConfig` emits `cargo-binstall` hints in release metadata. |
+| skip memento (operator-visible skip summary) | misc | — | rust-additive | strongly-suggested | implemented | — | — | `anodize_core::pipe_skip::SkipMemento`; end-of-pipeline report of intentional skips. |
+
+---
+
+## 3. Rust-additive features (beyond GoReleaser)
+
+Features anodize added beyond what GoReleaser provides. Not parity gaps — these are dogfooding-matrix rows.
+
+| name | category | source_ref | value |
+|------|----------|------------|-------|
+| crates.io publish (`publish.crates_io`) | publish-cratesio | `crates/stage-publish/src/crates_io.rs` | Native `cargo publish` integration, `Cargo.lock` fidelity, optional version gate. |
+| cargo-binstall metadata | misc | `crates/stage-publish/src/binstall.rs` | Populates `binstall` block in `Cargo.toml` / emits install hints; GoReleaser has no equivalent. |
+| Cargo-workspace awareness (tag → crate resolution) | misc | `crates/core/src/config.rs` `WorkspaceConfig` + `commands/resolve_tag.rs` | Workspace monorepo model native to Cargo. |
+| Version_sync | misc | `crates/stage-build/src/version_sync.rs` | `Cargo.toml` version ↔ tag alignment check. |
+| SkipMemento | misc | `crates/core/src/pipe_skip.rs` | Operator-visible intentional-skip summary at end of pipeline. |
+| ConventionalFileName per-packager | publish-nfpm | `crates/stage-nfpm/src/filename.rs` | nfpm v2.44 per-format filename logic (deb/rpm/apk/archlinux/ipk/termux.deb). |
+| Parallelism helper (`run_parallel_chunks`) | misc | `crates/core/src/parallel.rs` | Bounded concurrency + submission-order + fail-fast + panic attribution across 10 stages. |
+| Retry for uploads (HTTP/publishers) | publish-* | (candidate, see known-bugs pre-seed) | GoReleaser does not retry for artifactory/fury/cloudsmith/custom; anodize could reuse Docker V2's retry/backoff. |
+| `targets --json` subcommand | cli | `crates/cli/src/commands/targets.rs` | JSON matrix for GH Actions `strategy.matrix`, used by anodize-action. |
+| `resolve-tag` subcommand | cli | `crates/cli/src/commands/resolve_tag.rs` | Tag → crate path resolution for monorepos. |
+| ANODIZE_CURRENT_TAG / ANODIZE_PREVIOUS_TAG env | misc | `crates/core/src/git.rs` | Operator tag override that still runs upstream HEAD validation. |
+| Tag hooks (`tag_pre_hooks` / `tag_post_hooks`) | hooks | `crates/cli/src/commands/tag.rs` | Tag-subcommand-scoped hooks with templated vars. |
+| UPX target-triple glob | build | `crates/stage-upx/src/lib.rs` | Uses Rust target triples (more precise than goos/goarch). |
+
+---
+
+## 4. Permanent negative space (not-applicable)
+
+Durable decisions — never re-adjudicated. Each row has a short durable justification.
+
+| name | reason | recorded |
+|------|--------|----------|
+| Go builder (`builder: go`) | Rust releaser — cargo is native, not portable from Go toolchain. | 2026-04-16 |
+| Go matrix axes (goos/goarch/goarm/goamd64/goarm64/gomips/go386/goppc64/goriscv64/build.ignore/build.buildmode/build.no_main_check) | Go compile-matrix metadata; Rust uses target triples. | 2026-04-16 |
+| ldflags / asmflags / gcflags | Go toolchain flags; Rust uses `RUSTFLAGS`+`build.rs`+`[profile.*]`. | 2026-04-16 |
+| build.tags | Go build tags; Rust uses `--features`. | 2026-04-16 |
+| gomod (proxy/env/mod/gobinary/dir) | Go module proxying; replaced by `Cargo.lock` + `cargo metadata`. | 2026-04-16 |
+| Zig / Bun / Deno / Python-uv / Python-poetry builders | Non-Rust language runtimes; no Rust analogue (zig-as-linker is covered via cargo-zigbuild under `tool`). | 2026-04-16 |
+| ko (Go-source-to-container) | Go-source container image; `docker` + `docker_v2` cover the Rust case. | 2026-04-16 |
+| npm publish | JS/TS runtime registry; no canonical Rust parallel. Project-specific JS wrappers remain opt-in. | 2026-04-16 |
+| Pro license flag (`--key`) | Pro licensing mechanism; anodize is OSS, no analogue. | 2026-04-16 |
+| GGOOS / GGOARCH (split filter) | Go matrix axes; Rust-native replacement is target-triple filtering via `ANODIZE_SPLIT_TARGET`. | 2026-04-16 |
+
+---
+
+## 5. Completion / Gaps / Bloat
+
+### Rust-appropriate gaps (parity_status ∈ {partial, missing}, ecosystem_relevance ∈ {required, strongly-suggested})
+
+**11 rows require remediation.** Uncovered during the 2026-04-16 pro-features-skeptic (task A5) countersign of the A1 inventory. The A1 first-pass marked several Pro rows `implemented` based on config-struct *presence* without verifying individual *field*-level coverage; reclassified below.
+
+| name | status | ecosystem | gap |
+|------|--------|-----------|-----|
+| `nfpm.if` (templated conditional) | missing | strongly-suggested | `NfpmConfig` (config.rs:2815) has no `if` field. Must be added + wired into `stage-nfpm` filter loop. |
+| `--prepare` CLI flag (Pro) | missing | strongly-suggested | No `--prepare` flag in `crates/cli/src/`; `--split` exists without its companion for the "prepare-then-publish" multi-stage flow. |
+| `archives[].hooks.before/after` | partial | strongly-suggested | **Silent-skip bug**: anodize uses `hooks.pre`/`hooks.post` (config.rs:925); GoReleaser docs document `before`/`after`. A config written to the docs spec parses OK but hooks never run. Add serde aliases or rename. |
+| `release.header.from_url` / `from_file` | partial | strongly-suggested | `ContentSource::FromUrl` (config.rs:1303) is a naked `String` URL with no headers/auth support and no template-render of the fetched body. Pro docs require both. |
+| `release.footer.from_url` / `from_file` | partial | strongly-suggested | Same shape as `header` — both share the `ContentSource` enum. |
+| `metadata.full_description.from_url` / `from_file` + `metadata.commit_author` | partial | strongly-suggested | `MetadataConfig` (config.rs:4363) lacks both fields. Pro doc lists them (v2.1+/v2.12+). |
+| `dmgs[].if` | partial | strongly-suggested | `DmgConfig` (config.rs:3393) has no `if` conditional. |
+| `msis[].if`, `msis[].goamd64`, `msis[].hooks.before/after` | partial | strongly-suggested | `MsiConfig` (config.rs:3424) — only `disable` present. `extra_files` is bare `Vec<String>` not `Vec<ExtraFileSpec>`. |
+| `pkgs[].if` | partial | strongly-suggested | `PkgConfig` (config.rs:3454) — no `if`. |
+| `nsis[].if`, `nsis[].goamd64` | partial | strongly-suggested | `NsisConfig` (config.rs:3487) — both fields absent. |
+| `app_bundles[].if` | partial | strongly-suggested | `AppBundleConfig` (config.rs:3517) — no `if`. |
+
+### Other missing rows (non-blocking, niche)
+
+| name | status | ecosystem | gap |
+|------|--------|-----------|-----|
+| `goreleaser man` (man page generation) | missing | niche | Not a blocker. `clap_mangen` would be the implementation path. |
+| `--soft` flag on check | missing | niche | Pro feature; anodize check is strict. |
+| `continue_on_error` per-stage | missing | niche | Anodize is fail-fast. |
+
+### Bloat candidates (implemented ∧ not-applicable)
+
+No rows qualify. Every `not-applicable` row is `parity_status=n-a`, meaning anodize does **not** implement it. There is no bloat to disposition.
+
+---
+
+## 6. Reference tables (preserved)
+
+These tables remain for auditor reference — fields, defaults, env vars, CLI flags. Authoritative but informational; parity conclusions are drawn from Section 2.
+
+### 6.1 Builder Types
+- **Go** (default) · **Rust** (`builder: rust`) · **Zig** · **Bun** · **Deno** · **Python** (coming soon) · **UV** · **Poetry** · **Pre-built/Import** (`builder: prebuilt`)
+
+### 6.2 Rust Builder Fields (anodize native)
+`id`, `builder: rust`, `binary`, `targets[]`, `dir`, `tool (cargo/cross)`, `command (build/zigbuild)`, `flags[] (template)`, `env[] (template)`, `hooks.pre/post[]`, `skip`. Rust defaults: `x86_64-unknown-linux-gnu`, `x86_64-apple-darwin`, `x86_64-pc-windows-gnu`, `aarch64-unknown-linux-gnu`, `aarch64-apple-darwin`. Default flags: `--release`.
+
+### 6.3 Archive formats
 `tar.gz`, `tgz`, `tar.xz`, `txz`, `tar.zst`, `tzst` (v2.1+), `tar`, `gz`, `zip`, `binary`, `none`
 
----
+### 6.4 Checksum algorithms
+`sha256` (default), `sha512`, `sha1`, `crc32`, `md5`, `sha224`, `sha384`, `sha3-256`, `sha3-512`, `sha3-224`, `sha3-384`, `blake2s`, `blake2b`, `blake3`
 
-## 3. Checksums
+### 6.5 Sign artifact scopes
+`none`, `all`, `checksum`, `source`, `package`, `installer`, `diskimage`, `archive`, `sbom`, `binary`
 
-| Field | Type | Default |
-|-------|------|---------|
-| `name_template` | string (template) | `{{ .ProjectName }}_{{ .Version }}_checksums.txt` (normal) or `{{ .ArtifactName }}.{{ .Algorithm }}` (split) |
-| `algorithm` | string | `sha256` |
-| `split` | bool | `false` |
-| `disable` | bool (template) | `false` |
-| `ids` | []string | empty (all published) |
-| `extra_files` | []object | empty |
-| `templated_extra_files` | []object | empty (Pro) |
+### 6.6 nFPM formats & passphrase env priority
+Formats: `apk`, `deb`, `rpm`, `termux.deb`, `archlinux`, `ipk`. Passphrase priority: `NFPM_[ID]_[FORMAT]_PASSPHRASE` > `NFPM_[ID]_PASSPHRASE` > `NFPM_PASSPHRASE`.
 
-Extra files object: `glob`, `name_template`
+### 6.7 Publisher channels
+Homebrew (brew / cask), Scoop, Chocolatey, Winget, AUR (binary + source), Krew, Nix, Snapcraft, Flatpak, Makeself, Custom publishers, Artifactory, Uploads, Fury.io (Pro), CloudSmith (Pro), NPM (Pro, n-a), crates.io (Rust-additive).
 
-### Supported Algorithms
-`sha256`, `sha512`, `sha1`, `crc32`, `md5`, `sha224`, `sha384`, `sha3-256`, `sha3-512`, `sha3-224`, `sha3-384`, `blake2s`, `blake2b`, `blake3`
+### 6.8 Announce providers
+Discord, Slack, Telegram, Teams, Mattermost, Webhook, SMTP, Reddit, Twitter/X, Mastodon, Bluesky, LinkedIn, OpenCollective, Discourse.
 
----
+### 6.9 Key environment variables
+Auth: `GITHUB_TOKEN`, `GITLAB_TOKEN`, `GITEA_TOKEN`, `GORELEASER_FORCE_TOKEN`.
+Announcers: `DISCORD_WEBHOOK_ID/TOKEN`, `SLACK_WEBHOOK`, `TELEGRAM_TOKEN`, `TEAMS_WEBHOOK`, `MATTERMOST_WEBHOOK`, `SMTP_*`, `REDDIT_*`, `TWITTER_*`, `MASTODON_*`, `BLUESKY_APP_PASSWORD`, `LINKEDIN_ACCESS_TOKEN`, `OPENCOLLECTIVE_TOKEN`, `DISCOURSE_API_KEY`.
+Publishers: `FURY_TOKEN`, `CLOUDSMITH_TOKEN`, `DOCKER_PASSWORD`, `KO_DOCKER_REPO`.
+nFPM: `NFPM_*_PASSPHRASE`.
 
-## 4. Release (GitHub/GitLab/Gitea)
+### 6.10 CLI commands
+`release`, `build`, `check`, `healthcheck`, `init`, `completion`, `jsonschema`, `changelog` (Pro), `continue` (Pro), `publish` (Pro), `announce` (Pro), `man` (missing in anodize, niche).
 
-### GitHub-Specific
-| Field | Type | Default |
-|-------|------|---------|
-| `github.owner` | string | - |
-| `github.name` | string | - |
-| `ids` | []string | empty (all) |
-| `draft` | bool | `false` |
-| `replace_existing_draft` | bool | - |
-| `use_existing_draft` | bool | - (v2.5+) |
-| `replace_existing_artifacts` | bool | - |
-| `target_commitish` | string | - |
-| `tag` | string (template) | - (Pro) |
-| `discussion_category_name` | string | - |
-| `prerelease` | string/bool | `auto`/`true`/`false` |
-| `make_latest` | bool | - (v2.6+) |
-| `mode` | string | `keep-existing`/`append`/`prepend`/`replace` |
-| `header` | string (template) | - |
-| `header.from_url` | object | - (Pro) |
-| `header.from_file` | object | - (Pro) |
-| `footer` | string (template) | - |
-| `footer.from_url` | object | - (Pro) |
-| `footer.from_file` | object | - (Pro) |
-| `name_template` | string (template) | `{{.Tag}}` |
-| `disable` | bool | `false` |
-| `skip_upload` | bool | `false` |
-| `extra_files` | []object | - |
-| `templated_extra_files` | []object | - (Pro) |
-| `include_meta` | bool | - |
+### 6.11 Pro-only features (full list, docs-backed)
 
-### GitLab-Specific
-| Field | Type |
-|-------|------|
-| `gitlab.owner` | string |
-| `gitlab.name` | string (or project ID) |
-| `ids` | []string |
-| `name_template` | string (template) |
-| `disable` | bool |
-| `mode` | string |
-| `extra_files` | []object |
+1. macOS .pkg, 2. Windows NSIS .exe, 3. Smart SemVer tag sort, 4. NPM registry publishing (n-a), 5. Native macOS codesign/notarize, 6. AI changelog (anthropic/openai/ollama), 7. `if` conditional filters, 8. macOS .app bundles, 9. CloudSmith, 10. Global metadata defaults, 11. Pre-publishing hooks, 12. Cross-platform publishing, 13. DockerHub description sync, 14. macOS .dmg, 15. Windows .msi with Wix, 16. Single-target release building, 17. Template files, 18. `.Artifacts` variable, 19. Split/merge builds, 20. Enhanced changelog (path filtering, subgroups, dividers), 21. Archive hooks, 22. Multi-stage release (prepare/publish/announce), 23. Changelog preview, 24. Nightly builds, 25. Prebuilt binary import, 26. Podman support, 27. GemFury, 28. Includes (config reuse), 29. Global after hooks, 30. Monorepo, 31. Custom template variables, 32. Flatpak, 33. Templated extra_files/contents/scripts/dockerfiles.
 
-### Gitea-Specific
-| Field | Type |
-|-------|------|
-| `gitea.owner` | string |
-| `gitea.name` | string |
-| `ids` | []string |
-| `name_template` | string (template) |
-| `disable` | bool |
-| `mode` | string |
-| `extra_files` | []object |
+### 6.12 Decision rule for ecosystem_relevance
 
-### GitHub Enterprise URLs
-| Field | Type |
-|-------|------|
-| `github_urls.api` | string |
-| `github_urls.upload` | string |
-| `github_urls.download` | string |
-| `github_urls.skip_tls_verify` | bool |
+Applied at row-write time (2026-04-16):
+1. *Would a reasonable Rust CLI/library author expect anodize to support this?* If no → `not-applicable`.
+2. *Among Rust tools with first-class release tooling (ripgrep, bat, fd, starship, uv, ruff, biome, sea-orm, tauri, cargo-dist), how many support this channel?*
+   - 0–1 → `niche`; 2–5 → `strongly-suggested`; 6+ or universal → `required`.
+
+Head-count sources: community READMEs (fetched 2026-04-16 via prior sessions; not re-fetched row-by-row), cargo-dist feature matrix.
 
 ---
 
-## 5. Changelog
-
-| Field | Type | Default |
-|-------|------|---------|
-| `disable` | string (template) | `false` |
-| `use` | string | `git` (`github`, `gitlab`, `gitea`, `github-native`) |
-| `format` | string (template) | provider-dependent |
-| `sort` | string | empty (`asc`, `desc`) |
-| `abbrev` | int | 0 (0=default, -1=remove, N=length) |
-| `paths` | []string | monorepo.dir (Pro, git only) |
-| `title` | string (template) | `Changelog` (Pro, v2.12+) |
-| `divider` | string | none (Pro) |
-| `filters.exclude` | []string | regex patterns |
-| `filters.include` | []string | regex patterns |
-| `groups[].title` | string | - |
-| `groups[].regexp` | string | RE2 regex |
-| `groups[].order` | int | - |
-| `groups[].groups[]` | []object | nested subgroups (Pro, single level) |
-
-### AI Enhancement (Pro)
-| Field | Type | Default |
-|-------|------|---------|
-| `ai.use` | string | - (`anthropic`, `openai`, `ollama`) |
-| `ai.model` | string | provider default |
-| `ai.prompt` | string/object | default |
-| `ai.prompt.from_url` | object | - |
-| `ai.prompt.from_file` | object | - |
-
-### Format Template Variables
-`SHA`, `Message`, `Authors`, `Logins`
-
----
-
-## 6. Signing
-
-### signs[] (archive/checksum signing)
-| Field | Type | Default |
-|-------|------|---------|
-| `id` | string | `default` |
-| `cmd` | string | `gpg` |
-| `signature` | string (template) | `${artifact}.sig` |
-| `args` | []string (template) | `[--output, ${signature}, --detach-sign, ${artifact}]` |
-| `artifacts` | enum | `none` -- values: `none`, `all`, `checksum`, `source`, `package`, `installer`, `diskimage`, `archive`, `sbom`, `binary` |
-| `ids` | []string | - |
-| `if` | string (template) | - |
-| `stdin` | string (template) | - |
-| `stdin_file` | string | - |
-| `certificate` | string (template) | - |
-| `env` | []string | - |
-| `output` | bool | `false` (v2.13+) |
-
-Template variables: `${artifact}`, `${artifactID}`, `${certificate}`, `${signature}`
-
-### docker_signs[] (same fields apply)
-### binary_signs[] (same fields apply, deprecated since v2.12)
-
----
-
-## 7. Docker
-
-### Docker Images (deprecated since v2.12)
-| Field | Type | Default |
-|-------|------|---------|
-| `id` | string | - |
-| `image_templates` | []string (template) | - |
-| `goos` | string | `linux` |
-| `goarch` | string | `amd64` |
-| `goarm` | string | `6` |
-| `goamd64` | string | `v1` |
-| `ids` | []string | - |
-| `dockerfile` | string | `Dockerfile` |
-| `templated_dockerfile` | string | - (Pro) |
-| `extra_files` | []string | - |
-| `templated_extra_files` | []object | - (Pro, src/dst/mode) |
-| `use` | string | `docker` (`buildx`, `podman`) |
-| `build_flag_templates` | []string (template) | - |
-| `skip_build` | bool | `false` (Pro) |
-| `skip_push` | bool/`auto` | `false` |
-| `push_flags` | []string | - |
-| `retry.attempts` | int | `10` |
-| `retry.delay` | duration | `10s` |
-| `retry.max_delay` | duration | `5m` |
-
-### Docker Images v2 (replacement)
-| Field | Type | Default |
-|-------|------|---------|
-| `id` | string | project name |
-| `dockerfile` | string | `Dockerfile` |
-| `ids` | []string | - |
-| `images` | []string | - |
-| `tags` | []string (template) | - |
-| `extra_files` | []string | - |
-| `labels` | map[string]string | - |
-| `annotations` | map[string]string | - |
-| `platforms` | []string | `[linux/amd64, linux/arm64]` |
-| `disable` | string (template) | - |
-| `sbom` | bool | `true` |
-| `build_args` | map[string]string | - |
-| `flags` | []string | - |
-| `skip_push` | bool | - |
-| `push_flags` | []string | - |
-| `retry.attempts` | int | `10` |
-| `retry.delay` | duration | `10s` |
-| `retry.max_delay` | duration | `5m` |
-
-### Docker Manifests
-| Field | Type | Default |
-|-------|------|---------|
-| `id` | string | - |
-| `name_template` | string (template) | - |
-| `image_templates` | []string (template) | - |
-| `create_flags` | []string | - |
-| `push_flags` | []string | - |
-| `skip_push` | bool/`auto` | `false` |
-| `use` | string | `docker` (`podman`) |
-| `retry.attempts` | int | `10` |
-| `retry.delay` | duration | `10s` |
-| `retry.max_delay` | duration | `5m` |
-
----
-
-## 8. nFPM (Linux Packages)
-
-### Core Fields
-| Field | Type | Default |
-|-------|------|---------|
-| `id` | string | `default` |
-| `package_name` | string (template) | ProjectName |
-| `file_name_template` | string (template) | - |
-| `ids` | []string | all builds |
-| `if` | string (template) | - (Pro, v2.4+) |
-| `vendor` | string | - |
-| `homepage` | string | inferred from metadata |
-| `maintainer` | string | inferred from metadata |
-| `description` | string | inferred from metadata |
-| `license` | string | inferred from metadata |
-| `formats` | []string | apk, deb, rpm, termux.deb, archlinux |
-| `umask` | octal | `0o002` |
-| `bindir` | string | `/usr/bin` |
-| `libdirs.header` | string | `/usr/include` |
-| `libdirs.cshared` | string | `/usr/lib` |
-| `libdirs.carchive` | string | `/usr/lib` |
-| `epoch` | int | auto from semver |
-| `prerelease` | string | auto from semver |
-| `version_metadata` | string | auto from semver |
-| `release` | string | - |
-| `section` | string | - |
-| `priority` | string | - |
-| `meta` | bool | `false` |
-| `changelog` | string | - (YAML path) |
-| `goamd64` | string | - (v2.14+) |
-| `mtime` | string (template) | - (v2.6+) |
-
-### Dependencies
-| Field | Type |
-|-------|------|
-| `dependencies` | []string |
-| `provides` | []string |
-| `recommends` | []string |
-| `suggests` | []string |
-| `conflicts` | []string |
-| `replaces` | []string |
-
-### Contents
-| Field | Type |
-|-------|------|
-| `contents[].src` | string |
-| `contents[].dst` | string |
-| `contents[].type` | string (config, config\|noreplace, symlink, tree, ghost, dir) |
-| `contents[].file_info.mode` | octal |
-| `contents[].file_info.mtime` | string (template, v2.6+) |
-| `contents[].file_info.owner` | string (template, v2.6+) |
-| `contents[].file_info.group` | string (template, v2.6+) |
-| `templated_contents` | []object (Pro) |
-
-### Scripts
-| Field | Type |
-|-------|------|
-| `scripts.preinstall` | string |
-| `scripts.postinstall` | string |
-| `scripts.preremove` | string |
-| `scripts.postremove` | string |
-| `templated_scripts` | object (Pro) |
-
-### RPM-Specific
-| Field | Type | Default |
-|-------|------|---------|
-| `rpm.summary` | string | first line of description |
-| `rpm.group` | string | - (deprecated, CentOS 5) |
-| `rpm.packager` | string | maintainer fallback |
-| `rpm.buildhost` | string | os.Hostname() (v2.10+) |
-| `rpm.compression` | string | `gzip` (also: `lzma`, `xz`) |
-| `rpm.prefixes` | []string | - |
-| `rpm.scripts.pretrans` | string | - |
-| `rpm.scripts.posttrans` | string | - |
-| `rpm.signature.key_file` | string (template) | - |
-
-### Deb-Specific
-| Field | Type | Default |
-|-------|------|---------|
-| `deb.lintian_overrides` | []string | - |
-| `deb.scripts.rules` | string | - |
-| `deb.scripts.templates` | string | - |
-| `deb.triggers.interest` | []string | - |
-| `deb.triggers.interest_await` | []string | - |
-| `deb.triggers.interest_noawait` | []string | - |
-| `deb.triggers.activate` | []string | - |
-| `deb.triggers.activate_await` | []string | - |
-| `deb.triggers.activate_noawait` | []string | - |
-| `deb.breaks` | []string | - |
-| `deb.compression` | string | `gzip` (also: `xz`, `zstd`, `none`) |
-| `deb.signature.key_file` | string (template) | - |
-| `deb.signature.type` | string | `origin` (also: `maint`, `archive`) |
-| `deb.fields` | map[string]string | - |
-| `deb.predepends` | []string | - |
-
-### APK-Specific
-| Field | Type |
-|-------|------|
-| `apk.scripts.preupgrade` | string |
-| `apk.scripts.postupgrade` | string |
-| `apk.signature.key_file` | string (template) |
-| `apk.signature.key_name` | string (template, default: maintainer email) |
-
-### Archlinux-Specific
-| Field | Type |
-|-------|------|
-| `archlinux.scripts.preupgrade` | string |
-| `archlinux.scripts.postupgrade` | string |
-| `archlinux.pkgbase` | string |
-| `archlinux.packager` | string |
-
-### IPK-Specific (v2.1+)
-| Field | Type |
-|-------|------|
-| `ipk.abi_version` | string |
-| `ipk.alternatives[].priority` | int |
-| `ipk.alternatives[].target` | string |
-| `ipk.alternatives[].link_name` | string |
-| `ipk.auto_install` | bool |
-| `ipk.essential` | bool |
-| `ipk.fields` | map[string]string |
-| `ipk.predepends` | []string |
-| `ipk.tags` | []string |
-
-### Overrides
-`overrides` section allows format-specific overrides for `deb`, `rpm`, `apk` with the same field structure.
-
-### Signing Passphrase Env Vars
-Priority order: `NFPM_[ID]_[FORMAT]_PASSPHRASE` > `NFPM_[ID]_PASSPHRASE` > `NFPM_PASSPHRASE`
-
----
-
-## 9. Publish - Homebrew
-
-### Homebrew Formulas (deprecated since v2.10, section: `brews` or `homebrew_formulas`)
-| Field | Type | Default |
-|-------|------|---------|
-| `name` | string | project name |
-| `alternative_names` | []string | - (Pro) |
-| `ids` | []string | all |
-| `goarm` | string | `6` |
-| `goamd64` | string | `v1` |
-| `app` | string | - (Pro, DMG app) |
-| `url_template` | string (template) | client-dependent |
-| `url_headers` | []string | - |
-| `download_strategy` | string | - |
-| `custom_require` | string | - |
-| `custom_block` | string | - |
-| `homepage` | string | inferred |
-| `description` | string | inferred |
-| `license` | string | inferred |
-| `caveats` | string | - |
-| `install` | string | `bin.install` default |
-| `extra_install` | string | - |
-| `post_install` | string | - |
-| `test` | string | - |
-| `dependencies[].name` | string | - |
-| `dependencies[].os` | string | `mac`/`linux` |
-| `dependencies[].type` | string | `optional` |
-| `dependencies[].version` | string | - |
-| `conflicts` | []string | - |
-| `plist` | string | - (deprecated by Homebrew) |
-| `service` | string | - |
-| `commit_msg_template` | string (template) | - |
-| `directory` | string | `Formula` |
-| `skip_upload` | bool/`auto` | `false` |
-| `repository.owner` | string | - |
-| `repository.name` | string | - |
-| `repository.branch` | string | default branch |
-| `repository.token` | string | - |
-| `repository.token_type` | string | - (Pro: github/gitlab/gitea) |
-| `repository.pull_request.enabled` | bool | `false` |
-| `repository.pull_request.draft` | bool | `false` |
-| `repository.pull_request.check_boxes` | bool | `false` (Pro) |
-| `repository.pull_request.body` | string | - (v2.12+) |
-| `repository.pull_request.base.owner` | string | - |
-| `repository.pull_request.base.name` | string | - |
-| `repository.pull_request.base.branch` | string | - |
-| `repository.git.url` | string | - |
-| `repository.git.private_key` | string | - |
-| `repository.git.ssh_command` | string | - |
-| `commit_author.name` | string | inferred |
-| `commit_author.email` | string | inferred |
-| `commit_author.signing.enabled` | bool | `false` (v2.11+) |
-| `commit_author.signing.key` | string | - |
-| `commit_author.signing.program` | string | `gpg` |
-| `commit_author.signing.format` | string | `openpgp` (also: `x509`, `ssh`) |
-
-### Homebrew Casks (new, section: `homebrew_casks`)
-| Field | Type | Default |
-|-------|------|---------|
-| `name` | string | project name |
-| `alternative_names` | []string | - (Pro) |
-| `ids` | []string | all |
-| `binaries` | []string | cask name |
-| `app` | string | - (Pro, DMG app) |
-| `manpages` | []string | - |
-| `completions.bash` | string | - |
-| `completions.zsh` | string | - |
-| `completions.fish` | string | - |
-| `generate_completions_from_executable.executable` | string | first binary |
-| `generate_completions_from_executable.args` | []string | - |
-| `generate_completions_from_executable.base_name` | string | binary name |
-| `generate_completions_from_executable.shell_parameter_format` | string | - |
-| `generate_completions_from_executable.shells` | []string | `[bash, zsh, fish]` |
-| `url.template` | string | SCM-dependent |
-| `url.verified` | string | - |
-| `url.using` | string | - |
-| `url.cookies` | map | - |
-| `url.referer` | string | - |
-| `url.headers` | []string | - |
-| `url.user_agent` | string | - |
-| `url.data` | map | - |
-| `commit_msg_template` | string (template) | - |
-| `directory` | string | `Casks` |
-| `caveats` | string | - |
-| `homepage` | string | inferred |
-| `description` | string | inferred |
-| `skip_upload` | bool/`auto` | `false` |
-| `custom_block` | string | - |
-| `dependencies` | []object | - |
-| `conflicts` | []object | - |
-| `hooks` | object | - (v2.13+, pre/post install/uninstall) |
-| `service` | string | - |
-| `zap` | object | - |
-| `uninstall` | object | - |
-| `repository.*` | (same as formulas) | - |
-| `commit_author.*` | (same as formulas) | - |
-
----
-
-## 10. Publish - Scoop
-
-| Field | Type | Default |
-|-------|------|---------|
-| `name` | string | project name |
-| `url_template` | string (template) | - |
-| `directory` | string | - |
-| `use` | string | `archive` (also: `msi`, `nsis`) |
-| `commit_msg_template` | string (template) | - |
-| `homepage` | string | - |
-| `description` | string | - |
-| `license` | string | - |
-| `skip_upload` | bool/`auto` | `false` |
-| `persist` | []string | - |
-| `pre_install` | []string | - |
-| `post_install` | []string | - |
-| `depends` | []string | - |
-| `shortcuts` | [][]string | - |
-| `goamd64` | string | `v1` |
-| `repository.owner` | string | - |
-| `repository.name` | string | - |
-| `repository.branch` | string | default branch |
-| `repository.token` | string | - |
-| `repository.token_type` | string | - |
-| `repository.pull_request.*` | (same structure as Homebrew) | - |
-| `repository.git.*` | (same structure as Homebrew) | - |
-| `commit_author.*` | (same structure as Homebrew) | - |
-
----
-
-## 11. Publish - Chocolatey
-
-| Field | Type | Default |
-|-------|------|---------|
-| `name` | string | project name |
-| `ids` | []string | all |
-| `package_source_url` | string | - |
-| `owners` | string | - |
-| `title` | string | project name |
-| `authors` | string | - |
-| `project_url` | string | required |
-| `use` | string | `archive` (also: `msi`, `nsis`) |
-| `url_template` | string (template) | - |
-| `icon_url` | string | - |
-| `copyright` | string (template) | - |
-| `license_url` | string | - |
-| `require_license_acceptance` | bool | `false` |
-| `project_source_url` | string | - |
-| `docs_url` | string | - |
-| `bug_tracker_url` | string | - |
-| `tags` | string | - |
-| `summary` | string | - |
-| `description` | string | - |
-| `release_notes` | string | - |
-| `dependencies` | []object | - |
-| `api_key` | string | - |
-| `source_repo` | string | - |
-| `skip_publish` | bool | `false` |
-| `goamd64` | string | `v1` |
-
----
-
-## 12. Publish - Winget
-
-| Field | Type | Default |
-|-------|------|---------|
-| `name` | string | project name |
-| `publisher` | string | required |
-| `short_description` | string | inferred |
-| `license` | string | inferred |
-| `publisher_url` | string | - |
-| `publisher_support_url` | string | - |
-| `privacy_url` | string | - |
-| `package_identifier` | string | project name |
-| `package_name` | string | name value |
-| `ids` | []string | all |
-| `use` | string | `''` (archives/binaries) |
-| `goamd64` | string | `v1` |
-| `product_code` | string | - |
-| `url_template` | string (template) | - |
-| `commit_msg_template` | string (template) | - |
-| `path` | string | `manifests/<publisher>/<name>/<version>` |
-| `homepage` | string | inferred |
-| `description` | string | inferred |
-| `license_url` | string | - |
-| `copyright` | string | - |
-| `copyright_url` | string | - |
-| `skip_upload` | bool | `false` |
-| `release_notes` | string | - |
-| `release_notes_url` | string | - |
-| `installation_notes` | string | - |
-| `tags` | []string | - |
-| `dependencies[].package_identifier` | string | - |
-| `dependencies[].minimum_version` | string | - |
-| `repository.*` | (same structure as Homebrew) | - |
-| `commit_author.*` | (same structure as Homebrew) | - |
-
----
-
-## 13. Publish - AUR
-
-| Field | Type | Default |
-|-------|------|---------|
-| `name` | string | ProjectName-bin |
-| `ids` | []string | empty |
-| `homepage` | string | inferred |
-| `description` | string | inferred |
-| `maintainers` | []string | inferred |
-| `contributors` | []string | - |
-| `license` | string | inferred |
-| `private_key` | string | - |
-| `git_url` | string | - |
-| `skip_upload` | bool/string | `false` |
-| `provides` | []string | project name |
-| `conflicts` | []string | project name |
-| `depends` | []string | - |
-| `optdepends` | map[string]string | - |
-| `backup` | []string | - |
-| `package` | string | default install to /usr/bin/ |
-| `install` | string | - |
-| `commit_msg_template` | string | `Update to {{ .Tag }}` |
-| `goamd64` | string | `v1` |
-| `git_ssh_command` | string | `ssh -i {{ .KeyPath }} -o StrictHostKeyChecking=accept-new -F /dev/null` |
-| `url_template` | string | client-dependent |
-| `directory` | string | `.` |
-| `disable` | bool/string | `false` |
-| `commit_author.*` | (same structure) | - |
-
----
-
-## 14. Publish - Krew
-
-| Field | Type | Default |
-|-------|------|---------|
-| `name` | string | project name |
-| `ids` | []string | - |
-| `goarm` | string | `6` |
-| `goamd64` | string | `v3` |
-| `url_template` | string | SCM defaults |
-| `commit_msg_template` | string | - |
-| `homepage` | string | inferred |
-| `description` | string | inferred |
-| `short_description` | string | inferred |
-| `caveats` | string | - |
-| `skip_upload` | bool/string | `false` |
-| `repository.*` | (same structure) | - |
-| `commit_author.*` | (same structure) | - |
-
----
-
-## 15. Publish - Nix
-
-| Field | Type | Default |
-|-------|------|---------|
-| `name` | string | project name |
-| `ids` | []string | all |
-| `goamd64` | string | `v1` |
-| `url_template` | string | client-dependent |
-| `commit_msg_template` | string | `{{ .ProjectName }}: {{ .Tag }}` |
-| `path` | string | `pkgs/<name>/default.nix` |
-| `homepage` | string | inferred |
-| `description` | string | inferred |
-| `license` | string | inferred |
-| `skip_upload` | bool/string | `false` |
-| `dependencies[].name` | string | - |
-| `dependencies[].os` | string | - |
-| `install` | string | default mkdir/cp |
-| `extra_install` | string | - |
-| `post_install` | string | - |
-| `formatter` | string | - |
-| `repository.*` | (same structure) | - |
-| `commit_author.*` | (same structure) | - |
-
----
-
-## 16. Publish - Custom Publishers
-
-| Field | Type | Default |
-|-------|------|---------|
-| `name` | string | required (unique) |
-| `cmd` | string (template) | required |
-| `dir` | string | - |
-| `ids` | []string | - |
-| `if` | string (template) | - |
-| `checksum` | bool | - |
-| `meta` | bool | - |
-| `signature` | bool | - |
-| `env` | []string | - |
-| `disable` | string (template) | - |
-| `extra_files` | []object | - |
-| `templated_extra_files` | []object | - (Pro) |
-| `output` | string | - (v2.11+) |
-
-Template vars: `Version`, `Tag`, `ProjectName`, `ArtifactName`, `ArtifactPath`, `Os`, `Arch`, `Arm`, `.Env.NAME`
-
----
-
-## 17. Publish - Artifactory
-
-| Field | Type | Default |
-|-------|------|---------|
-| `name` | string | required |
-| `target` | string (template) | required |
-| `mode` | string | `archive` (also: `binary`) |
-| `username` | string (template) | - |
-| `password` | string (template) | - |
-| `client_x509_cert` | string | - |
-| `client_x509_key` | string | - |
-| `trusted_certificates` | string | - |
-| `ids` | []string | - |
-| `exts` | []string | - |
-| `matrix` | map | - (Pro) |
-| `custom_artifact_name` | bool | `false` |
-| `custom_headers` | map (template) | - |
-| `checksum` | bool | - |
-| `meta` | bool | - |
-| `signature` | bool | - |
-| `skip` | string (template) | - |
-| `extra_files` | []object | - |
-| `templated_extra_files` | []object | - (Pro) |
-| `extra_files_only` | bool | `false` (v2.1+) |
-
----
-
-## 18. Publish - Fury.io (Pro)
-
-| Field | Type | Default |
-|-------|------|---------|
-| `account` | string (template) | required |
-| `disable` | string (template) | `false` |
-| `secret_name` | string | `FURY_TOKEN` |
-| `ids` | []string | all |
-| `formats` | []string | `[apk, deb, rpm]` |
-
----
-
-## 19. Publish - CloudSmith (Pro)
-
-| Field | Type | Default |
-|-------|------|---------|
-| `organization` | string (template) | required |
-| `repository` | string (template) | required |
-| `skip` | string (template) | - |
-| `secret_name` | string | `CLOUDSMITH_TOKEN` |
-| `ids` | []string | - |
-| `formats` | []string | `[apk, deb, rpm]` |
-| `distributions` | map | - (v2.8+) |
-| `component` | string | - (v2.7+) |
-| `republish` | bool (template) | - (v2.11+) |
-
----
-
-## 20. Publish - NPM (Pro)
-
-| Field | Type | Default |
-|-------|------|---------|
-| `id` | string | project name |
-| `ids` | []string | all |
-| `name` | string | required |
-| `description` | string (template) | - |
-| `homepage` | string | - |
-| `keywords` | []string | - |
-| `license` | string (template) | required |
-| `author` | string (template) | - |
-| `repository` | string (template) | - |
-| `bugs` | string (template) | - |
-| `extra_files` | []object | `[README*, LICENSE*]` |
-| `templated_extra_files` | []object | - |
-| `access` | string | `public`/`restricted` |
-| `tag` | string (template) | `latest` (v2.13+) |
-| `format` | string | - |
-| `if` | string (template) | - |
-| `disable` | string (template) | - |
-| `url_template` | string | - (v2.10+) |
-| `extra` | map | - (v2.13+) |
-
----
-
-## 21. Announce Providers
-
-### Discord
-| Field | Type | Default |
-|-------|------|---------|
-| `enabled` | bool (template) | `true` |
-| `message_template` | string (template) | `{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}` |
-| `author` | string | `GoReleaser` |
-| `color` | string (decimal) | `3888754` |
-| `icon_url` | string | `https://goreleaser.com/static/avatar.png` |
-Env: `DISCORD_WEBHOOK_ID`, `DISCORD_WEBHOOK_TOKEN`
-
-### Slack
-| Field | Type | Default |
-|-------|------|---------|
-| `enabled` | bool | - |
-| `message_template` | string (template) | `{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}` |
-| `channel` | string | - |
-| `username` | string | `""` |
-| `icon_emoji` | string | `""` |
-| `icon_url` | string | `""` |
-| `blocks` | []object (template) | `[]` |
-| `attachments` | []object (template) | `[]` |
-Env: `SLACK_WEBHOOK`
-
-### Telegram
-| Field | Type | Default |
-|-------|------|---------|
-| `enabled` | bool (template) | - |
-| `chat_id` | string (template) | - |
-| `message_thread_id` | int | - (v2.15) |
-| `message_template` | string (template) | MarkdownV2 escaped default |
-| `parse_mode` | string | `MarkdownV2` (also: `HTML`) |
-Env: `TELEGRAM_TOKEN`
-
-### Teams
-| Field | Type | Default |
-|-------|------|---------|
-| `enabled` | bool (template) | - |
-| `title_template` | string (template) | `{{ .ProjectName }} {{ .Tag }} is out!` |
-| `message_template` | string (template) | `{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}` |
-| `color` | string (hex) | `#2D313E` |
-| `icon_url` | string | `https://goreleaser.com/static/avatar.png` |
-Env: `TEAMS_WEBHOOK`
-
-### Mattermost
-| Field | Type | Default |
-|-------|------|---------|
-| `enabled` | bool (template) | `true` |
-| `title_template` | string (template) | `{{ .ProjectName }} {{ .Tag }} is out!` |
-| `message_template` | string (template) | `{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}` |
-| `color` | string (hex) | `#2D313E` |
-| `channel` | string | required |
-| `username` | string | - |
-| `icon_emoji` | string | - |
-| `icon_url` | string | - |
-Env: `MATTERMOST_WEBHOOK`
-
-### Webhook
-| Field | Type | Default |
-|-------|------|---------|
-| `enabled` | bool (template) | - |
-| `skip_tls_verify` | bool | - |
-| `message_template` | string (template) | default |
-| `content_type` | string | `application/json; charset=utf-8` |
-| `endpoint_url` | string | - |
-| `headers` | map[string]string | - |
-| `expected_status_codes` | []int | `[200, 201, 202, 204]` |
-Env: `BASIC_AUTH_HEADER_VALUE`, `BEARER_TOKEN_HEADER_VALUE`
-
-### SMTP / Email
-| Field | Type | Default |
-|-------|------|---------|
-| `enabled` | bool (template) | - |
-| `host` | string | `$SMTP_HOST` |
-| `port` | int | `$SMTP_PORT` |
-| `from` | string | required |
-| `to` | []string | required |
-| `username` | string | `$SMTP_USERNAME` |
-| `subject_template` | string (template) | `{{ .ProjectName }} {{ .Tag }} is out!` |
-| `body_template` | string (template) | `You can view details from: {{ .ReleaseURL }}` |
-Env: `SMTP_PASSWORD`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`
-
-### Reddit
-| Field | Type | Default |
-|-------|------|---------|
-| `enabled` | bool | `true` |
-| `application_id` | string | - |
-| `username` | string | - |
-| `url_template` | string (template) | `{{ .ReleaseURL }}` |
-| `title_template` | string (template) | `{{ .ProjectName }} {{ .Tag }} is out!` |
-Env: `REDDIT_SECRET`, `REDDIT_PASSWORD`
-
-### Twitter/X
-| Field | Type | Default |
-|-------|------|---------|
-| `enabled` | bool (template) | - |
-| `message_template` | string (template) | default |
-Env: `TWITTER_CONSUMER_KEY`, `TWITTER_CONSUMER_SECRET`, `TWITTER_ACCESS_TOKEN`, `TWITTER_ACCESS_TOKEN_SECRET`
-
-### Mastodon
-| Field | Type | Default |
-|-------|------|---------|
-| `enabled` | bool (template) | `true` |
-| `message_template` | string (template) | default |
-| `server` | string | `https://mastodon.social` |
-Env: `MASTODON_CLIENT_ID`, `MASTODON_CLIENT_SECRET`, `MASTODON_ACCESS_TOKEN`
-
-### Bluesky
-| Field | Type | Default |
-|-------|------|---------|
-| `enabled` | bool | `true` |
-| `message_template` | string (template) | default |
-| `username` | string | required |
-Env: `BLUESKY_APP_PASSWORD`
-
-### LinkedIn
-| Field | Type | Default |
-|-------|------|---------|
-| `enabled` | bool (template) | `true` |
-| `message_template` | string (template) | default |
-Env: `LINKEDIN_ACCESS_TOKEN`
-
-### OpenCollective
-| Field | Type | Default |
-|-------|------|---------|
-| `enabled` | bool | `true` |
-| `slug` | string | required |
-| `title_template` | string (template) | `{{ .Tag }}` |
-| `message_template` | string (template) | HTML default |
-Env: `OPENCOLLECTIVE_TOKEN`
-
-### Discourse
-| Field | Type | Default |
-|-------|------|---------|
-| `enabled` | bool (template) | - |
-| `server` | string | required (FQDN, no trailing slash) |
-| `title_template` | string (template) | `{{ .ProjectName }} {{ .Tag }} is out!` |
-| `message_template` | string (template) | default |
-| `username` | string | `system` |
-| `category_id` | int | required |
-Env: `DISCOURSE_API_KEY`
-
----
-
-## 22. Templates
-
-### Common Variables
-| Variable | Description |
-|----------|-------------|
-| `.ProjectName` | project identifier |
-| `.Version` | release version (v stripped) |
-| `.Branch` | current git branch |
-| `.Tag` | current git tag |
-| `.PreviousTag` | prior git tag |
-| `.ShortCommit` | abbreviated commit hash |
-| `.FullCommit` | complete commit hash |
-| `.Commit` | commit hash (deprecated) |
-| `.CommitDate` | UTC commit date (RFC 3339) |
-| `.CommitTimestamp` | UTC commit date (Unix) |
-| `.GitURL` | remote repository URL |
-| `.GitTreeState` | `clean` or `dirty` |
-| `.IsGitClean` / `.IsGitDirty` | booleans |
-| `.Major`, `.Minor`, `.Patch` | SemVer components |
-| `.Prerelease` | prerelease identifier |
-| `.RawVersion` | `{Major}.{Minor}.{Patch}` |
-| `.ReleaseNotes` | generated notes |
-| `.IsDraft`, `.IsSnapshot`, `.IsNightly`, `.IsSingleTarget` | state flags |
-| `.Env` | environment variables map |
-| `.Date` | current UTC date (RFC 3339) |
-| `.Now` | current `time.Time` struct |
-| `.Timestamp` | current Unix timestamp |
-| `.ModulePath` | Go module path |
-| `.ReleaseURL` | download URL |
-| `.Summary` | git summary |
-| `.TagSubject` | annotated tag subject |
-| `.TagContents` | full annotated tag message |
-| `.TagBody` | tag message body |
-| `.Runtime.Goos` / `.Runtime.Goarch` | runtime identifiers |
-| `.Outputs` | custom outputs (v2.11+) |
-
-### Pro-Exclusive Variables
-| Variable | Description |
-|----------|-------------|
-| `.PrefixedTag` | tag with monorepo prefix |
-| `.PrefixedPreviousTag` | previous tag with prefix |
-| `.PrefixedSummary` | summary with prefix |
-| `.IsRelease`, `.IsMerging` | state flags (v2.8+) |
-| `.Artifacts` | current artifacts list |
-| `.Metadata` | project metadata (v2.13+) |
-| `.Metadata.Description` | project summary |
-| `.Metadata.Homepage` | project URL |
-| `.Metadata.License` | licensing info |
-| `.Metadata.Maintainers` | maintainer list |
-| `.Metadata.ModTimestamp` | mod timestamp template |
-| `.Var.variableName` | custom variables |
-
-### Single-Artifact Variables
-`.Os`, `.Arch`, `.Arm`, `.Mips`, `.Amd64`, `.Arm64`, `.Mips64`, `.Ppc64`, `.Riscv64`, `.I386`,
-`.Target`, `.Binary`, `.ArtifactID` (Pro), `.ArtifactName`, `.ArtifactPath`, `.ArtifactExt`
-
-### nFPM-Specific Variables
-`.Release`, `.Epoch`, `.PackageName`, `.ConventionalFileName`, `.ConventionalExtension`, `.Format`
-
-### Release Body Variables
-`.Checksums` -- checksum file contents or filename/content map
-
-### Template Functions
-
-**String:**
-- `replace "text" "old" "new"` -- ReplaceAll
-- `split "text" "sep"` -- split string
-- `tolower "TEXT"` -- lowercase
-- `toupper "text"` -- uppercase
-- `trim " text "` -- trim whitespace
-- `trimprefix "prefix_text" "prefix"` -- remove prefix
-- `trimsuffix "text_suffix" "suffix"` -- remove suffix
-- `contains "haystack" "needle"` -- substring check
-- `title "text"` -- English title case
-
-**Path:**
-- `dir .Path` -- directory component
-- `base .Path` -- filename component
-- `abs .Path` -- absolute path
-
-**Filtering:**
-- `filter "text" "regex"` -- grep-like matching
-- `reverseFilter "text" "regex"` -- inverse matching
-
-**Version:**
-- `incpatch "v1.2.4"` -- increment patch
-- `incminor "v1.2.4"` -- increment minor
-- `incmajor "v1.2.4"` -- increment major
-
-**Environment:**
-- `envOrDefault "VAR" "default"` -- env with fallback
-- `isEnvSet "VAR"` -- existence check
-
-**Hash (v2.9+):**
-- `blake2b`, `blake2s`, `blake3` (v2.15+)
-- `crc32`, `md5`, `sha1`
-- `sha224`, `sha256`, `sha384`, `sha512`
-- `sha3_224`, `sha3_256`, `sha3_384`, `sha3_512`
-
-**File I/O (v2.12+):**
-- `readFile "/path"` -- read or empty
-- `mustReadFile "/path"` -- read or fail
-
-**Data Structures:**
-- `list "a" "b" "c"` -- create string slice
-- `map "KEY" "VALUE"` -- create map from pairs
-- `indexOrDefault $m "KEY" "default"` -- map lookup with fallback
-
-**Encoding/Escaping:**
-- `mdv2escape "text"` -- MarkdownV2 escaping
-- `urlPathEscape "path/seg"` -- URL path encoding (v2.5+)
-
-**Miscellaneous:**
-- `time "02/01/2006"` -- formatted current UTC time
-- `englishJoin` -- English conjunction joining (v2.14+)
-
-**Pro-Exclusive Functions:**
-- `in (list "a" "b") "a"` -- slice membership
-- `reReplaceAll "(.*)" "foo" "bar-$1"` -- regex replace (v2.8+)
-
----
-
-## 23. Global Hooks
-
-### before / after hooks
-| Field | Type | Default |
-|-------|------|---------|
-| `hooks[].cmd` | string (template) | required |
-| `hooks[].output` | bool | `false` |
-| `hooks[].dir` | string | - |
-| `hooks[].env` | []string (template) | - |
-| `hooks[].if` | string (template) | - (v2.7+) |
-
----
-
-## 24. Blob / Cloud Storage
-
-| Field | Type | Default |
-|-------|------|---------|
-| `provider` | string | `s3`, `azblob`, `gs` |
-| `bucket` | string | required |
-| `endpoint` | string | - (S3-compatible) |
-| `region` | string | - (S3 only) |
-| `disable_ssl` | bool | - (S3 only) |
-| `ids` | []string | - |
-| `if` | string (template) | - |
-| `disable` | bool | - |
-| `directory` | string (template) | `{{ .ProjectName }}/{{ .Tag }}` |
-| `extra_files` | []object | - |
-| `templated_extra_files` | []object | - (Pro) |
-| `extra_files_only` | bool | - |
-| `s3_force_path_style` | bool | `true` |
-| `acl` | string | - |
-| `cache_control` | string | - |
-| `content_disposition` | string | `attachment;filename={{.Filename}}` |
-| `include_meta` | bool | - |
-
----
-
-## 25. Source Archives
-
-| Field | Type | Default |
-|-------|------|---------|
-| `source.enabled` | bool | - |
-| `source.name_template` | string (template) | `{{ .ProjectName }}-{{ .Version }}` |
-| `source.format` | string | `tar.gz` (also: `tar`, `tgz`, `zip`) |
-| `source.prefix_template` | string (template) | `{{ .ProjectName }}-{{ .Version }}/` |
-| `source.files` | []object | - (src/dst/strip_parent/info) |
-| `source.templated_files` | []object | - (Pro) |
-
----
-
-## 26. Snapcraft
-
-### Core Fields
-| Field | Type | Default |
-|-------|------|---------|
-| `id` | string | `default` |
-| `ids` | []string | all |
-| `name_template` | string (template) | complex default |
-| `name` | string | project name |
-| `title` | string | - |
-| `icon` | string | - |
-| `publish` | bool | - |
-| `summary` | string | max 79 chars |
-| `description` | string | under 100 words |
-| `disable` | bool | - |
-| `channel_templates` | []string | varies by grade |
-| `grade` | string | `stable` |
-| `confinement` | string | `strict` (also: `devmode`, `classic`) |
-| `license` | string | SPDX |
-| `base` | string | e.g. `core18` |
-| `assumes` | []string | - |
-| `hooks` | map | - |
-| `extra_files` | []object | src/dst/mode |
-| `templated_extra_files` | []object | - (Pro) |
-| `layout` | map | bind/symlink/type |
-| `plugs` | map | personal-files etc. |
-| `slots` | map | - |
-
-### App Sub-Fields (per app)
-`args`, `adapter`, `after`, `aliases`, `autostart`, `before`, `bus_name`, `command_chain`, `common_id`, `completer`, `command`, `daemon` (simple/forking/notify/dbus), `desktop`, `environment`, `extensions`, `install_mode` (disable/enable), `passthrough`, `plugs`, `post_stop_command`, `refresh_mode` (endure/restart), `reload_command`, `restart_condition` (always/on-failure), `slots`, `sockets`, `start_timeout`, `stop_command`, `stop_mode`, `stop_timeout`, `timer`, `watchdog_timeout`
-
----
-
-## 27. DMG (macOS Disk Images) -- Pro
-
-| Field | Type | Default |
-|-------|------|---------|
-| `id` | string | project name |
-| `name` | string (template) | `{{.ProjectName}}_{{.Arch}}` |
-| `ids` | []string | all |
-| `use` | string | `binary` (also: `appbundle`) |
-| `if` | string (template) | - |
-| `goamd64` | string | `v1` |
-| `extra_files` | []object | - |
-| `templated_extra_files` | []object | - |
-| `replace` | bool | `false` |
-| `mod_timestamp` | string (template) | - |
-
----
-
-## 28. MSI (Windows Installer) -- Pro
-
-| Field | Type | Default |
-|-------|------|---------|
-| `id` | string | project name |
-| `name` | string (template) | `{{.ProjectName}}_{{.MsiArch}}` |
-| `wxs` | string | required |
-| `ids` | []string | all |
-| `goamd64` | string | `v1` |
-| `extra_files` | []string | - |
-| `extensions` | []string | - |
-| `disable` | string (template) | - |
-| `replace` | bool | `false` |
-| `mod_timestamp` | string (template) | - |
-| `version` | string | inferred (v3 or v4) |
-| `hooks.before[]` | []object | - |
-| `hooks.after[]` | []object | - |
-
-Architectures: amd64, 386, arm64 only.
-
----
-
-## 29. NSIS (Windows Installer) -- Pro
-
-| Field | Type | Default |
-|-------|------|---------|
-| `id` | string | project name |
-| `name` | string (template) | `{{.ProjectName}}_{{.Arch}}_setup` |
-| `script` | string | required (templated) |
-| `ids` | []string | all |
-| `goamd64` | string | `v1` |
-| `extra_files` | []object | - |
-| `templated_extra_files` | []object | - |
-| `disable` | string (template) | - |
-| `replace` | bool | - |
-| `mod_timestamp` | string (template) | - |
-
-Template vars: `.Name`, `.Arch` (x86/x64/arm64), `.ProgramFiles`
-
----
-
-## 30. PKG (macOS Packages) -- Pro (v2.14+)
-
-| Field | Type | Default |
-|-------|------|---------|
-| `id` | string | project name |
-| `name` | string (template) | `{{.ProjectName}}_{{.Arch}}` |
-| `ids` | []string | all |
-| `use` | string | `binary` (also: `appbundle`) |
-| `if` | string (template) | - |
-| `identifier` | string (template) | required |
-| `install_location` | string (template) | `/usr/local/bin` |
-| `scripts` | string (template) | - (dir with preinstall/postinstall) |
-| `replace` | bool | `false` |
-| `mod_timestamp` | string (template) | - |
-
----
-
-## 31. App Bundles (macOS .app) -- Pro
-
-| Field | Type | Default |
-|-------|------|---------|
-| `id` | string | project name |
-| `name` | string (template) | `{{.ProjectName}}` |
-| `ids` | []string | all |
-| `if` | string (template) | - |
-| `icon` | string (template) | - (must be .icns) |
-| `bundle` | string (template) | - (reverse DNS) |
-| `mod_timestamp` | string (template) | - |
-| `extra_files` | []object | - (src/dst/info.mtime) |
-| `templated_extra_files` | []object | - (src/dst/info.mtime) |
-
----
-
-## 32. SBOM
-
-| Field | Type | Default |
-|-------|------|---------|
-| `id` | string | `default` |
-| `documents` | []string | varies by artifact type |
-| `cmd` | string | `syft` |
-| `args` | []string | `[$artifact, --output, spdx-json=$document, --enrich, all]` |
-| `env` | []string | `[SYFT_FILE_METADATA_CATALOGER_ENABLED=true]` |
-| `artifacts` | string | `archive` (also: `any`, `source`, `package`, `installer`, `diskimage`, `binary`, `sbom`) |
-| `ids` | []string | - |
-| `disable` | bool (template) | `true` |
-
-Template vars: `${artifact}`, `${artifactID}`, `${document}`, `${document#}`
-
----
-
-## 33. Flatpak
-
-| Field | Type | Default |
-|-------|------|---------|
-| `id` | string | `default` |
-| `ids` | []string | all |
-| `name_template` | string (template) | detailed default |
-| `app_id` | string | required (reverse DNS) |
-| `runtime` | string | required |
-| `runtime_version` | string | required |
-| `sdk` | string | required |
-| `command` | string | first binary |
-| `finish_args` | []string | - (sandbox permissions) |
-| `disable` | string (template) | - |
-
----
-
-## 34. Ko (Container Image Builder)
-
-| Field | Type | Default |
-|-------|------|---------|
-| `id` | string | - |
-| `build` | string | - (build ID to import from) |
-| `main` | string | `build.main` |
-| `working_dir` | string | `build.dir` |
-| `base_image` | string | `cgr.dev/chainguard/static` |
-| `labels` | map | - |
-| `annotations` | map | - |
-| `user` | string | - |
-| `repositories` | []string | `[$KO_DOCKER_REPO]` |
-| `repository` | string | `$KO_DOCKER_REPO` (deprecated) |
-| `platforms` | []string | `[linux/amd64]` |
-| `tags` | []string (template) | `[latest]` |
-| `creation_time` | string (template) | - |
-| `ko_data_creation_time` | string (template) | - |
-| `sbom` | string | `spdx` (also: `none`) |
-| `sbom_directory` | string | - |
-| `local_domain` | string | `goreleaser.ko.local` |
-| `ldflags` | []string | `build.ldflags` |
-| `flags` | []string | `build.flags` |
-| `env` | []string | `build.env` |
-| `disable` | string (template) | - |
-| `bare` | bool | - |
-| `preserve_import_paths` | bool | - |
-| `base_import_paths` | bool | - |
-
----
-
-## 35. Notarize (macOS)
-
-### Cross-Platform (anchore/quill)
-| Field | Type | Default |
-|-------|------|---------|
-| `notarize.macos[].enabled` | bool | `false` |
-| `notarize.macos[].ids` | []string | project name |
-| `notarize.macos[].sign.certificate` | string | - (P12 path or base64) |
-| `notarize.macos[].sign.password` | string | - |
-| `notarize.macos[].sign.entitlements` | string | - |
-| `notarize.macos[].notarize.issuer_id` | string | - (App Store Connect UUID) |
-| `notarize.macos[].notarize.key_id` | string | - |
-| `notarize.macos[].notarize.key` | string | - (P8 path or base64) |
-| `notarize.macos[].notarize.wait` | bool | `false` |
-| `notarize.macos[].notarize.timeout` | duration | `10m` |
-
-### Native (codesign/xcrun) -- Pro
-| Field | Type | Default |
-|-------|------|---------|
-| `notarize.macos_native[].enabled` | bool | `false` |
-| `notarize.macos_native[].ids` | []string | project name |
-| `notarize.macos_native[].use` | string | `dmg` (also: `pkg`) |
-| `notarize.macos_native[].sign.keychain` | string | - |
-| `notarize.macos_native[].sign.identity` | string | - |
-| `notarize.macos_native[].sign.options` | []string | - |
-| `notarize.macos_native[].sign.entitlements` | string | - |
-| `notarize.macos_native[].notarize.profile_name` | string | - |
-| `notarize.macos_native[].notarize.wait` | bool | `false` |
-
----
-
-## 36. DockerHub Description Sync -- Pro
-
-| Field | Type | Default |
-|-------|------|---------|
-| `username` | string | `{{ .Env.DOCKER_USERNAME }}` |
-| `secret_name` | string | `DOCKER_PASSWORD` |
-| `images` | []string | - |
-| `disable` | string (template) | - |
-| `description` | string | global metadata |
-| `full_description.from_url` | string | - |
-| `full_description.from_file` | string | - |
-
----
-
-## 37. Split & Merge -- Pro
-
-### Configuration
-| Field | Type | Default |
-|-------|------|---------|
-| `partial.by` | string | `goos` (also: `target`) |
-
-### Commands
-- `goreleaser release --clean --split` (with `GOOS`/`GOARCH` or `GGOOS`/`GGOARCH` env vars)
-- `goreleaser continue --merge`
-- `goreleaser publish --merge`
-- `goreleaser announce --merge`
-
-`GOOS`/`GOARCH`: affects build targets AND hook execution
-`GGOOS`/`GGOARCH`: filters targets only, does not affect hooks
-
----
-
-## 38. Project Configuration
-
-### General
-| Field | Type | Default |
-|-------|------|---------|
-| `project_name` | string | inferred from SCM |
-| `dist` | string | `./dist` |
-
-### Git Configuration
-| Field | Type | Default |
-|-------|------|---------|
-| `git.tag_sort` | string | `-version:refname` (also: `semver`, `smartsemver` Pro) |
-| `git.prerelease_suffix` | string | - |
-| `git.ignore_tags` | []string (template) | - |
-| `git.ignore_tag_prefixes` | []string (template) | - (Pro) |
-
-### Monorepo -- Pro
-| Field | Type | Default |
-|-------|------|---------|
-| `monorepo.tag_prefix` | string | - |
-| `monorepo.dir` | string | - |
-
-### Includes -- Pro
-| Field | Type |
-|-------|------|
-| `includes[].from_file.path` | string |
-| `includes[].from_url.url` | string |
-| `includes[].from_url.headers` | map[string]string |
-
-### Metadata -- Pro
-| Field | Type | Default |
-|-------|------|---------|
-| `metadata.mod_timestamp` | string (template) | - |
-| `metadata.maintainers` | []object | - (v2.1+) |
-| `metadata.license` | string (template) | - (v2.1+) |
-| `metadata.homepage` | string (template) | - (v2.1+) |
-| `metadata.description` | string (template) | - (v2.1+) |
-| `metadata.full_description.from_url` | string | - |
-| `metadata.full_description.from_file` | string | - |
-| `metadata.commit_author.*` | (same structure) | - (v2.12+) |
-
-### Environment
-| Field | Type |
-|-------|------|
-| `env` | []string (template) |
-| `env_files.github_token` | string (default: `~/.config/goreleaser/github_token`) |
-| `env_files.gitlab_token` | string (default: `~/.config/goreleaser/gitlab_token`) |
-| `env_files.gitea_token` | string (default: `~/.config/goreleaser/gitea_token`) |
-
-### Template Files -- Pro
-| Field | Type | Default |
-|-------|------|---------|
-| `template_files[].id` | string | `default` |
-| `template_files[].src` | string (template) | - |
-| `template_files[].dst` | string (template) | - |
-| `template_files[].mode` | octal | `0655` |
-
----
-
-## 39. Environment Variables
-
-### Authentication Tokens
-| Variable | Purpose |
-|----------|---------|
-| `GITHUB_TOKEN` | GitHub API auth (repo scope) |
-| `GITLAB_TOKEN` | GitLab API auth (api scope) |
-| `GITEA_TOKEN` | Gitea API auth |
-| `GORELEASER_FORCE_TOKEN` | Force specific token when multiple set |
-
-### Announce Provider Tokens
-| Variable | Provider |
-|----------|----------|
-| `DISCORD_WEBHOOK_ID` | Discord |
-| `DISCORD_WEBHOOK_TOKEN` | Discord |
-| `SLACK_WEBHOOK` | Slack |
-| `TELEGRAM_TOKEN` | Telegram |
-| `TEAMS_WEBHOOK` | Teams |
-| `MATTERMOST_WEBHOOK` | Mattermost |
-| `SMTP_PASSWORD`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME` | Email |
-| `REDDIT_SECRET`, `REDDIT_PASSWORD` | Reddit |
-| `TWITTER_CONSUMER_KEY`, `TWITTER_CONSUMER_SECRET`, `TWITTER_ACCESS_TOKEN`, `TWITTER_ACCESS_TOKEN_SECRET` | Twitter/X |
-| `MASTODON_CLIENT_ID`, `MASTODON_CLIENT_SECRET`, `MASTODON_ACCESS_TOKEN` | Mastodon |
-| `BLUESKY_APP_PASSWORD` | Bluesky |
-| `LINKEDIN_ACCESS_TOKEN` | LinkedIn |
-| `OPENCOLLECTIVE_TOKEN` | OpenCollective |
-| `DISCOURSE_API_KEY` | Discourse |
-
-### Publisher Tokens
-| Variable | Publisher |
-|----------|----------|
-| `FURY_TOKEN` | Fury.io |
-| `CLOUDSMITH_TOKEN` | CloudSmith |
-| `DOCKER_PASSWORD` | DockerHub |
-| `KO_DOCKER_REPO` | Ko |
-
-### nFPM Signing
-| Variable | Purpose |
-|----------|---------|
-| `NFPM_PASSPHRASE` | Generic passphrase |
-| `NFPM_[ID]_PASSPHRASE` | Per-config passphrase |
-| `NFPM_[ID]_[FORMAT]_PASSPHRASE` | Per-config-per-format passphrase |
-
----
-
-## 40. CLI Commands
-
-### Commands
-| Command | Description |
-|---------|-------------|
-| `goreleaser release` | Full release pipeline |
-| `goreleaser build` | Build binaries only |
-| `goreleaser check` | Validate config |
-| `goreleaser healthcheck` | Verify dependencies |
-| `goreleaser init` | Generate example config |
-| `goreleaser completion` | Generate shell completions |
-| `goreleaser jsonschema` | Generate JSON schema |
-| `goreleaser changelog` | Preview changelog (Pro) |
-| `goreleaser continue` | Continue a previously prepared release (with `--merge`) |
-| `goreleaser publish` | Publish artifacts (with `--merge`) |
-| `goreleaser announce` | Announce release (with `--merge`) |
-| `goreleaser man` | Generate man pages |
-
-### Release Flags
-| Flag | Type | Default |
-|------|------|---------|
-| `--auto-snapshot` | bool | auto-snapshot if dirty |
-| `--clean` | bool | remove dist/ |
-| `-f, --config` | string | config file path |
-| `--draft` | bool | set release to draft |
-| `--fail-fast` | bool | abort on first error |
-| `--id` | []string | build IDs (Pro) |
-| `-k, --key` | string | Pro license key |
-| `--nightly` | bool | nightly build (Pro) |
-| `-p, --parallelism` | int | concurrent tasks |
-| `--prepare` | bool | prepare only, publish later (Pro) |
-| `--release-notes` | string | release notes file |
-| `--release-notes-tmpl` | string | notes template file |
-| `--skip` | []string | skip options |
-| `--snapshot` | bool | unversioned snapshot |
-| `--split` | string | split by GOOS (Pro, implies --prepare) |
-| `--timeout` | duration | `1h0m0s` |
-
-### Build Flags
-| Flag | Type | Default |
-|------|------|---------|
-| `--auto-snapshot` | bool | - |
-| `--clean` | bool | - |
-| `-f, --config` | string | - |
-| `--id` | []string | build IDs |
-| `-p, --parallelism` | int | CPU count |
-| `--single-target` | bool | current GOOS/GOARCH only |
-| `--skip` | []string | - |
-| `--snapshot` | bool | - |
-| `--timeout` | duration | `1h0m0s` |
-
-### Check Flags
-| Flag | Type |
-|------|------|
-| `-q, --quiet` | bool |
-| `--soft` | bool (Pro, exit 1 only on syntax errors) |
-| `--verbose` | bool |
-
----
-
-## 41. Artifacts JSON
-
-Generated at `dist/artifacts.json` with fields per artifact:
-- `name`, `path`, `type`, `target`
-- `goos`, `goarch`, `goamd64`, `goarm`, `gomips`
-- `extra.ID`, `extra.Checksum`, `extra.Format`, `extra.Size`, `extra.Binaries`, `extra.Digest`
-
-30+ artifact type classifications including: Binary, Archive, Package, Docker Image, Docker Manifest, MSI, NSIS, DMG, Snap, Flatpak, NPM, Python wheel, Homebrew formula, Checksum, Signature, SBOM, Certificate.
-
----
-
-## 42. Pro-Only Features Summary
-
-1. macOS Installers (.pkg)
-2. Windows NSIS Installers (.exe)
-3. Smart SemVer Tag Sorting (smartsemver)
-4. NPM Registry Publishing
-5. Native macOS Signing & Notarization (codesign/xcrun)
-6. AI-Enhanced Release Notes (anthropic/openai/ollama)
-7. Conditional Artifact Filtering (`if` statements)
-8. macOS App Bundles (.app)
-9. CloudSmith Repository Integration
-10. Global Metadata Defaults
-11. Pre-Publishing Hooks
-12. Cross-Platform Publishing (e.g. GitLab + Homebrew)
-13. DockerHub Description Sync
-14. macOS Disk Images (.dmg)
-15. Windows MSI Installers (.msi) with Wix
-16. Single-Target Release Building
-17. Template Files
-18. Artifacts Template Variable
-19. Split & Merge Builds
-20. Enhanced Changelog (path filtering, subgroups, dividers)
-21. Archive Hooks
-22. Multi-Stage Release (prepare/publish/announce)
-23. Changelog Preview command
-24. Nightly Builds
-25. Prebuilt Binary Import
-26. Podman Support
-27. GemFury Repository Integration
-28. Configuration File Reuse (includes)
-29. Global After Hooks
-30. Monorepo Support
-31. Custom Template Variables
-32. Flatpak packages
-33. Templated extra files, contents, scripts, dockerfiles
+## Completion statement
+
+- Total GoReleaser OSS features catalogued: 278
+- Total GoReleaser Pro features catalogued: 50
+- required rows: 89
+- strongly-suggested rows: 127
+- niche rows: 96
+- not-applicable rows: 20
+- anodize implemented (required): 89/89
+- anodize implemented (strongly-suggested): 116/127 (9 partial, 2 missing — 11 gaps total)
+- Completion achieved: **no**
+- Reasoning: The A1 first-pass classified several Pro rows `implemented` based on config-struct presence alone. A5's pro-features-skeptic countersigned those rows and found 10 cases (reclassified as 11 rows in §5) where the anodize struct is present but individual docs-required *fields* are missing or silently mis-named. Field-level verification — not just struct-presence — is required for an `implemented` mark. Reclassified rows: `nfpm.if` and `--prepare` (missing); `archives[].hooks.before/after` (silent-skip bug — anodize uses `pre`/`post` not `before`/`after`); `release.header.from_url`/`from_file` and `release.footer.from_url`/`from_file` (naked `String` URL, no headers/auth, no template-render); `metadata.full_description`+`commit_author` (absent); `dmgs[].if`, `msis[].if`+`goamd64`+`hooks`, `pkgs[].if`, `nsis[].if`+`goamd64`, `app_bundles[].if` (all `if` conditional-filter fields absent across Pro installers). The 3 `niche` missing rows (`goreleaser man`, `--soft`, `continue_on_error`) remain informational. The 12 Rust-additive features (§3) are unaffected. Two Pro features inspected via docs only (`goreleaser changelog` preview, `--soft`) have been countersigned by A5.
+
+## Completion statement (generated)
+
+Parity target: GoReleaser HEAD (commit `f7e73e3`, refreshed 2026-04-16; A1-rev applied after A5 countersign).
+
+- Rust-appropriate features (ecosystem_relevance ∈ {required, strongly-suggested}): 216
+  - parity_status=implemented: 205
+  - parity_status=partial:     9   ← blocks completion
+  - parity_status=missing:     2   ← blocks completion
+- Bloat (implemented ∧ not-applicable): 0
+  - dispositioned:  0
+  - undecided:      0
+  - resolved:       0
+  - unresolved:     0
+- Rust-additive rows: 12 (§3; enumerated for dogfooding matrix)
+- Permanent negative space (ecosystem_relevance=not-applicable): 21
+
+Completion achieved: **no** — 11 Rust-appropriate rows are not `implemented`. 9 partials (silent-skip or missing sub-fields: archive hooks, release header/footer URL, metadata full_description/commit_author, dmg/msi/pkg/nsis/appbundle `if` fields) and 2 missing (`nfpm.if`, CLI `--prepare`). Remediation tracked as BLOCKER findings; each row will flip to `implemented` only after a field-level match with docs is verified.
+
+**Audit-refresh note for downstream teammates (A10 consolidation):** the 11 gaps above should be added to `/opt/repos/anodize/.claude/known-bugs.md` as actionable items. Five are pure code-adds (add the `if` field to five installer configs + wire it); two are thinly wrapped (header/footer `from_url` needs `headers`/`auth` + body template-render); one is a serde-alias fix (archive hooks `before`/`after`); two add missing CLI/config fields (`--prepare`, `nfpm.if`); one adds two MetadataConfig fields (`full_description`, `commit_author`).

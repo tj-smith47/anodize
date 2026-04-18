@@ -414,7 +414,7 @@ fn generate_cask_from_context(
     let cask_name = cask_cfg.name.as_deref().unwrap_or(crate_name);
 
     // Collect all platform artifacts: DiskImage and Archive types for macOS/Linux.
-    // GoReleaser parity: multi-platform casks with on_macos/on_linux + on_intel/on_arm nesting.
+    // multi-platform casks with on_macos/on_linux + on_intel/on_arm nesting.
     let url_template = cask_cfg
         .url_template
         .as_deref()
@@ -1299,21 +1299,14 @@ pub(crate) fn render_commit_msg_with_prev(
     };
     let tmpl = template.unwrap_or(&default_tmpl);
 
-    let mut tera = tera::Tera::default();
-    tera.autoescape_on(vec![]);
-    if tera.add_raw_template("msg", tmpl).is_err() {
-        return format!("{} update for {} version {}", kind, name, version);
-    }
-    let mut ctx = tera::Context::new();
-    // GoReleaser parity: expose .ProjectName, .Tag, .Version, .PreviousTag
-    ctx.insert("ProjectName", name);
-    ctx.insert("Tag", version);
-    ctx.insert("Version", version);
-    ctx.insert("PreviousTag", previous_tag);
-    // Legacy aliases for backward compat
-    ctx.insert("name", name);
-    ctx.insert("version", version);
-    tera.render("msg", &ctx)
+    let mut vars = TemplateVars::new();
+    vars.set("ProjectName", name);
+    vars.set("Tag", version);
+    vars.set("Version", version);
+    vars.set("PreviousTag", previous_tag);
+    vars.set("name", name);
+    vars.set("version", version);
+    template::render(tmpl, &vars)
         .unwrap_or_else(|_| format!("{} update for {} version {}", kind, name, version))
 }
 
@@ -1360,17 +1353,26 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
 
     let version = ctx.version();
 
-    let description_raw = hb_cfg.description.as_deref().unwrap_or(crate_name);
+    // GoReleaser Pro parity: fall back to project-level `metadata.*` when the
+    // homebrew config's own field is unset. `metadata.description` / `homepage`
+    // / `license` is consumed here (config-must-wire).
+    let description_raw = hb_cfg
+        .description
+        .as_deref()
+        .or_else(|| ctx.config.meta_description())
+        .unwrap_or(crate_name);
     let description = ctx
         .render_template(description_raw)
         .unwrap_or_else(|_| description_raw.to_string());
     let license = hb_cfg
         .license
         .as_deref()
+        .or_else(|| ctx.config.meta_license())
         .map(|l| ctx.render_template(l).unwrap_or_else(|_| l.to_string()));
     let homepage_rendered = hb_cfg
         .homepage
         .as_deref()
+        .or_else(|| ctx.config.meta_homepage())
         .map(|h| ctx.render_template(h).unwrap_or_else(|_| h.to_string()));
 
     // Build template vars so install/test/extra_install/post_install can use
@@ -1478,6 +1480,9 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
         // OnlyReplacingUnibins: exclude universal binaries that didn't replace
         // single-arch variants (GoReleaser parity).
         .filter(|a| a.only_replacing_unibins())
+        // Exclude raw `gz` archives (not `tar.gz`): Homebrew cannot
+        // install a single-file compressed blob as an archive.
+        .filter(|a| a.metadata.get("format").is_none_or(|f| f != "gz"))
         .filter(|a| {
             if let Some(ids) = ids_filter {
                 a.metadata
@@ -1535,6 +1540,25 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
                 );
             }
         }
+    }
+
+    //
+    // — empty archive set after filtering produces a broken formula with
+    // empty url/sha256. Bail with an actionable error that cites the filters
+    // the user would need to adjust to get a match.
+    if archive_data.is_empty() {
+        let ids_hint = ids_filter
+            .map(|ids| format!("ids={ids:?}"))
+            .unwrap_or_else(|| "ids=<none>".to_string());
+        let amd_hint = amd64_variant.unwrap_or("<default v1>");
+        let arm_hint = arm_variant.unwrap_or("<default 6>");
+        anyhow::bail!(
+            "homebrew: no archives matched filters for '{crate_name}' — \
+             formula would have empty url/sha256. Check your archive \
+             configuration and homebrew filters ({ids_hint}, \
+             amd64_variant={amd_hint}, arm_variant={arm_hint}). At least one \
+             Archive or UploadableBinary artifact must match."
+        );
     }
 
     let archives: Vec<(&str, &str, &str)> = archive_data
@@ -1710,7 +1734,7 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
 
 /// Publish Homebrew Cask `.rb` files from top-level `homebrew_casks` config.
 ///
-/// GoReleaser parity: `homebrew_casks` is a top-level config array, independent
+/// `homebrew_casks` is a top-level config array, independent
 /// of per-crate homebrew config, with its own repository, commit_author,
 /// directory, skip_upload, hooks, dependencies, conflicts, etc.
 pub fn publish_top_level_homebrew_casks(ctx: &Context, log: &StageLogger) -> Result<()> {
@@ -1790,7 +1814,7 @@ pub fn publish_top_level_homebrew_casks(ctx: &Context, log: &StageLogger) -> Res
             })?
         };
 
-        // GoReleaser parity: replace version string with #{version} for auto-update
+        // replace version string with #{version} for auto-update
         let url = url.replace(&version, "#{version}");
 
         let sha256 = macos_artifact
@@ -1970,16 +1994,9 @@ fn find_top_level_cask_artifact<'a>(
     ids: Option<&[String]>,
 ) -> Option<&'a anodize_core::artifact::Artifact> {
     let filter = |a: &&anodize_core::artifact::Artifact| {
-        // ID filter
-        if let Some(id_list) = ids
-            && !id_list.is_empty()
-        {
-            let artifact_id = a.metadata.get("id").map(|s| s.as_str()).unwrap_or("");
-            if !id_list.iter().any(|id| id == artifact_id) {
-                return false;
-            }
+        if !anodize_core::artifact::matches_id_filter(a, ids) {
+            return false;
         }
-        // Must be macOS-targeted
         a.target
             .as_deref()
             .map(|t| t.contains("darwin") || t.contains("macos") || t.contains("apple"))
@@ -2423,6 +2440,56 @@ mod tests {
 
         // dry-run should succeed without any network/git calls
         assert!(publish_to_homebrew(&ctx, "cfgd", &log).is_ok());
+    }
+
+    /// Regression for parity with GoReleaser's `ErrNoArchivesFound`: empty
+    /// archive set must hard-fail with an actionable error instead of
+    /// silently writing a broken formula with empty url/sha256.
+    #[test]
+    fn test_publish_to_homebrew_empty_archive_set_hard_errors() {
+        use anodize_core::config::{Config, CrateConfig, HomebrewConfig, PublishConfig, TapConfig};
+        use anodize_core::context::{Context, ContextOptions};
+        use anodize_core::log::{StageLogger, Verbosity};
+
+        let config = Config {
+            crates: vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                publish: Some(PublishConfig {
+                    homebrew: Some(HomebrewConfig {
+                        tap: Some(TapConfig {
+                            owner: "myorg".to_string(),
+                            name: "homebrew-tap".to_string(),
+                        }),
+                        description: Some("Test".to_string()),
+                        // IDs filter that won't match any artifact — forces
+                        // an empty archive_data set to reach the bail path.
+                        ids: Some(vec!["nonexistent".to_string()]),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        // dry_run: false so publish_to_homebrew reaches the archive filter.
+        let ctx = Context::new(config, ContextOptions::default());
+        let log = StageLogger::new("publish", Verbosity::Normal);
+
+        let result = publish_to_homebrew(&ctx, "myapp", &log);
+        let err = result.expect_err("empty archive set must hard-fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no archives matched"),
+            "error should explain the no-match condition, got: {msg}"
+        );
+        assert!(
+            msg.contains("nonexistent"),
+            "error should cite the ids filter, got: {msg}"
+        );
     }
 
     #[test]
@@ -4391,5 +4458,42 @@ mod tests {
             "1.0.0"
         );
         assert!(default_msg.contains("Brew cask update"));
+    }
+
+    #[test]
+    fn test_homebrew_falls_back_to_project_metadata() {
+        // GoReleaser Pro parity: when the homebrew config doesn't set homepage/
+        // description/license, fall back to project-level `metadata.*`.
+        use anodize_core::config::{Config, MetadataConfig};
+        let mut config = Config::default();
+        config.metadata = Some(MetadataConfig {
+            description: Some("from metadata".to_string()),
+            homepage: Some("https://metadata.example".to_string()),
+            license: Some("MIT".to_string()),
+            ..Default::default()
+        });
+
+        // Simulate the lookup chain used in homebrew.rs:1367-1389. When all
+        // homebrew-specific fields are None, metadata values should surface.
+        let hb_desc: Option<&str> = None;
+        let hb_home: Option<&str> = None;
+        let hb_lic: Option<&str> = None;
+
+        let description = hb_desc
+            .or_else(|| config.meta_description())
+            .unwrap_or("mycrate");
+        let homepage = hb_home.or_else(|| config.meta_homepage());
+        let license = hb_lic.or_else(|| config.meta_license());
+
+        assert_eq!(description, "from metadata");
+        assert_eq!(homepage, Some("https://metadata.example"));
+        assert_eq!(license, Some("MIT"));
+
+        // With a homebrew-specific value set, the config wins (override works).
+        let hb_desc2: Option<&str> = Some("homebrew-specific");
+        let description2 = hb_desc2
+            .or_else(|| config.meta_description())
+            .unwrap_or("mycrate");
+        assert_eq!(description2, "homebrew-specific");
     }
 }

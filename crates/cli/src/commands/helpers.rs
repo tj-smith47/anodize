@@ -353,7 +353,7 @@ pub fn setup_env(
             }
         }
     } else {
-        // GoReleaser parity (env.go:setDefaultTokenFiles): always check default
+        // always check default
         // token file paths even when env_files is not configured.
         let default_config = anodize_core::config::EnvFilesTokenConfig::default();
         let token_vars = anodize_core::config::load_token_files(&default_config, log)

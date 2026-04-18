@@ -63,7 +63,8 @@ impl PartialTarget {
 ///
 /// Priority chain (matching GoReleaser Pro's approach):
 /// 1. `TARGET` env var — exact target triple (highest priority)
-/// 2. `ANODIZE_OS` + optional `ANODIZE_ARCH` — OS/arch filter
+/// 2. `ANODIZE_OS`/`ANODIZE_ARCH` (canonical) or `GGOOS`/`GGOARCH` (GoReleaser
+///    alias; filter-only — does not override the host's `GOOS`/`GOARCH` for hooks)
 /// 3. Host detection via `rustc -vV`, interpreted per `partial.by` config
 pub fn resolve_partial_target(config: &Option<PartialConfig>) -> Result<PartialTarget> {
     // Priority 1: TARGET env var — exact target triple
@@ -73,11 +74,17 @@ pub fn resolve_partial_target(config: &Option<PartialConfig>) -> Result<PartialT
         return Ok(PartialTarget::Exact(t));
     }
 
-    // Priority 2: ANODIZE_OS + optional ANODIZE_ARCH
-    if let Ok(os) = std::env::var("ANODIZE_OS")
-        && !os.is_empty()
-    {
-        let arch = std::env::var("ANODIZE_ARCH").ok().filter(|a| !a.is_empty());
+    // Priority 2: ANODIZE_OS/ANODIZE_ARCH, or GGOOS/GGOARCH alias for GoReleaser
+    // compatibility. Canonical vars win when both are set.
+    let os = std::env::var("ANODIZE_OS")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| std::env::var("GGOOS").ok().filter(|s| !s.is_empty()));
+    if let Some(os) = os {
+        let arch = std::env::var("ANODIZE_ARCH")
+            .ok()
+            .filter(|a| !a.is_empty())
+            .or_else(|| std::env::var("GGOARCH").ok().filter(|a| !a.is_empty()));
         return Ok(PartialTarget::OsArch { os, arch });
     }
 

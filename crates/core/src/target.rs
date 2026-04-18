@@ -87,7 +87,7 @@ pub fn is_aix(triple: &str) -> bool {
 
 /// Returns `true` if the target triple is eligible for nfpm packaging.
 ///
-/// GoReleaser parity (nfpm.go:144): nfpm filters artifacts by
+/// nfpm filters artifacts by
 /// `ByGooses("linux", "ios", "android", "aix")`.
 pub fn is_nfpm_target(triple: &str) -> bool {
     is_linux(triple) || is_ios(triple) || triple.contains("android") || is_aix(triple)

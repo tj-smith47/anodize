@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 
-use anodize_core::artifact::{Artifact, ArtifactKind};
+use anodize_core::artifact::{Artifact, ArtifactKind, matches_id_filter};
 use anodize_core::config::{DockerDigestConfig, DockerRetryConfig, SkipPushConfig, StringOrBool};
 use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
@@ -1199,6 +1199,16 @@ fn stage_binaries(
     log: &StageLogger,
     prefix: &str,
 ) -> Result<()> {
+    // GoReleaser v1 parity: `pipe/docker/docker.go` stages not only Binary
+    // but also LinuxPackage + CArchive + CShared under `binaries/<arch>/`.
+    // `binary_filter` still applies to Binary kind only (it matches on the
+    // `binary` metadata key which non-Binary artifacts don't have).
+    let extra_kinds = [
+        ArtifactKind::LinuxPackage,
+        ArtifactKind::CArchive,
+        ArtifactKind::CShared,
+    ];
+
     for platform in platforms {
         let arch = platform_to_arch(platform);
         let binaries_dir = staging_dir.join("binaries").join(arch);
@@ -1221,11 +1231,8 @@ fn stage_binaries(
                 if artifact_arch != arch {
                     return false;
                 }
-                if let Some(ids) = ids_filter {
-                    let artifact_id = b.metadata.get("id").map(|s| s.as_str()).unwrap_or("");
-                    if !ids.iter().any(|id| id == artifact_id) {
-                        return false;
-                    }
+                if !matches_id_filter(b, ids_filter.map(Vec::as_slice)) {
+                    return false;
                 }
                 match binary_filter {
                     None => true,
@@ -1237,7 +1244,30 @@ fn stage_binaries(
             })
             .collect();
 
-        if matching_binaries.is_empty() {
+        // Collect LinuxPackage + CArchive + CShared for this arch. These
+        // are architecture-scoped and filtered by ids only (not binary_filter).
+        let matching_extras: Vec<_> = extra_kinds
+            .iter()
+            .flat_map(|kind| {
+                ctx.artifacts
+                    .by_kind_and_crate(*kind, crate_name)
+                    .into_iter()
+                    .filter(|a| {
+                        let artifact_arch = a
+                            .target
+                            .as_deref()
+                            .map(|t| map_target(t).1)
+                            .unwrap_or_default();
+                        if artifact_arch != arch {
+                            return false;
+                        }
+                        matches_id_filter(a, ids_filter.map(Vec::as_slice))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+
+        if matching_binaries.is_empty() && matching_extras.is_empty() {
             log.warn(&format!(
                 "no binaries found for platform {} — check ids/binary filters",
                 platform
@@ -1276,6 +1306,37 @@ fn stage_binaries(
                         "{}: copy binary {} to {}",
                         prefix,
                         bin_artifact.path.display(),
+                        dest.display()
+                    )
+                })?;
+            }
+        }
+
+        for extra in matching_extras {
+            let file_name = extra
+                .path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("artifact");
+            let dest = binaries_dir.join(file_name);
+
+            if dry_run {
+                log.status(&format!(
+                    "(dry-run) would copy {} -> {}",
+                    extra.path.display(),
+                    dest.display()
+                ));
+            } else {
+                log.status(&format!(
+                    "staging {} -> {}",
+                    extra.path.display(),
+                    dest.display()
+                ));
+                fs::copy(&extra.path, &dest).with_context(|| {
+                    format!(
+                        "{}: copy {} to {}",
+                        prefix,
+                        extra.path.display(),
                         dest.display()
                     )
                 })?;
@@ -1335,14 +1396,7 @@ fn stage_artifacts_v2(
                         true
                     }
                 })
-                .filter(|a| {
-                    if let Some(ids) = ids_filter {
-                        let artifact_id = a.metadata.get("id").map(|s| s.as_str()).unwrap_or("");
-                        ids.iter().any(|id| id == artifact_id)
-                    } else {
-                        true
-                    }
-                })
+                .filter(|a| matches_id_filter(a, ids_filter.map(Vec::as_slice)))
                 .collect();
 
             platform_artifact_count += artifacts.len();
@@ -1661,7 +1715,7 @@ impl Stage for DockerStage {
                     })?;
                 }
 
-                // GoReleaser parity (docker.go:170-172): when `ids:` is set
+                // when `ids:` is set
                 // with N values, the number of distinct artifact IDs actually
                 // matched must equal N. A typo like `ids: [foo, baz]` where
                 // only `foo` exists would otherwise silently build the image
@@ -2325,8 +2379,9 @@ impl Stage for DockerStage {
                 handles
                     .into_iter()
                     .map(|h| {
-                        h.join()
-                            .unwrap_or_else(|_| panic!("docker build thread panicked"))
+                        h.join().unwrap_or_else(|_| {
+                            Err(anyhow::anyhow!("docker build worker thread panicked"))
+                        })
                     })
                     .collect()
             });
@@ -2798,20 +2853,27 @@ impl Stage for DockerStage {
             if !digest_lines.is_empty() {
                 digest_lines.sort();
                 digest_lines.dedup();
-                // GoReleaser parity (dockerdigest/digest.go): `docker_digest.name_template`
-                // controls the combined digest filename. Resolve the first non-empty
-                // template across configured crates; fall back to `digests.txt`.
-                let rendered_name: Option<String> = ctx
-                    .config
-                    .crates
-                    .iter()
-                    .filter_map(|k| k.docker_digest.as_ref())
-                    .find_map(|dc| {
-                        dc.name_template
-                            .as_ref()
-                            .and_then(|tmpl| ctx.render_template(tmpl).ok())
-                            .filter(|s| !s.is_empty())
-                    });
+                // Resolve the first non-empty `docker_digest.name_template`
+                // across configured crates; fall back to `digests.txt`.
+                let mut rendered_name: Option<String> = None;
+                for krate in &ctx.config.crates {
+                    let Some(dc) = krate.docker_digest.as_ref() else {
+                        continue;
+                    };
+                    let Some(tmpl) = dc.name_template.as_ref() else {
+                        continue;
+                    };
+                    let rendered = ctx.render_template(tmpl).with_context(|| {
+                        format!(
+                            "docker: render docker_digest.name_template '{}' for crate {}",
+                            tmpl, krate.name
+                        )
+                    })?;
+                    if !rendered.is_empty() {
+                        rendered_name = Some(rendered);
+                        break;
+                    }
+                }
                 let digest_filename = rendered_name.unwrap_or_else(|| "digests.txt".to_string());
                 let digest_file = dist.join(&digest_filename);
                 if let Err(e) = fs::write(&digest_file, digest_lines.join("\n") + "\n") {

@@ -119,6 +119,11 @@ pub enum Commands {
             help = "Merge artifacts from split build jobs and resume the pipeline from post-build stages"
         )]
         merge: bool,
+        #[arg(
+            long,
+            help = "Run local build + archive + sign + checksum + sbom stages but skip release / publish / announce (GoReleaser Pro parity). Artifacts stay in dist/ for inspection."
+        )]
+        prepare: bool,
     },
     /// Build binaries only (always runs in snapshot mode)
     Build {
@@ -243,6 +248,65 @@ pub enum Commands {
         token: Option<String>,
         #[arg(long, help = "Custom dist directory (overrides config)")]
         dist: Option<PathBuf>,
+    },
+    /// Bump crate versions (Conventional Commits → semver level)
+    ///
+    /// Infers the per-crate level from commits since each crate's last tag
+    /// when no positional argument is given. `patch|minor|major`, an explicit
+    /// version, or `release` (strip prerelease) are also accepted.
+    Bump {
+        #[arg(help = "patch | minor | major | <version> | release (omit to infer)")]
+        level_or_version: Option<String>,
+        #[arg(
+            long,
+            short = 'p',
+            visible_alias = "crate",
+            action = clap::ArgAction::Append,
+            help = "Bump a specific crate (repeatable)"
+        )]
+        package: Vec<String>,
+        #[arg(
+            long,
+            alias = "all",
+            conflicts_with = "package",
+            help = "Bump every workspace member (excluding publish=false)"
+        )]
+        workspace: bool,
+        #[arg(
+            long,
+            action = clap::ArgAction::Append,
+            help = "Exclude a crate from --workspace (repeatable)"
+        )]
+        exclude: Vec<String>,
+        #[arg(long, help = "Append a prerelease identifier (e.g. rc.1)")]
+        pre: Option<String>,
+        #[arg(long, help = "Do not rewrite dependents' [dependencies] version specs")]
+        exact: bool,
+        #[arg(
+            long,
+            help = "Proceed even if the working tree has uncommitted changes"
+        )]
+        allow_dirty: bool,
+        #[arg(long, short = 'y', help = "Skip confirmation prompt")]
+        yes: bool,
+        #[arg(long, help = "Print the plan without editing any files")]
+        dry_run: bool,
+        #[arg(long, help = "Stage edits and create a single commit")]
+        commit: bool,
+        #[arg(
+            long,
+            requires = "commit",
+            help = "GPG-sign the commit (requires --commit)"
+        )]
+        sign: bool,
+        #[arg(long, help = "Override the default commit message template")]
+        commit_message: Option<String>,
+        #[arg(
+            long,
+            default_value = "text",
+            help = "Output format: text | json (json requires --dry-run)"
+        )]
+        output: String,
     },
     /// Run only the announce stage from a completed dist/
     Announce {

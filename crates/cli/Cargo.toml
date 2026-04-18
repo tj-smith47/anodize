@@ -55,6 +55,7 @@ clap_complete.workspace = true
 colored.workspace = true
 regex.workspace = true
 reqwest.workspace = true
+semver.workspace = true
 tokio.workspace = true
 serde.workspace = true
 schemars.workspace = true

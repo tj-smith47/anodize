@@ -341,15 +341,25 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     let package_name = ctx
         .render_template(&package_name_raw)
         .unwrap_or_else(|_| package_name_raw.clone());
-    let description_raw = aur_cfg.description.as_deref().unwrap_or(crate_name);
+    // GoReleaser Pro parity: fall back to project `metadata.*` when aur config unset.
+    let description_raw = aur_cfg
+        .description
+        .as_deref()
+        .or_else(|| ctx.config.meta_description())
+        .unwrap_or(crate_name);
     let description = ctx
         .render_template(description_raw)
         .unwrap_or_else(|_| description_raw.to_string());
-    let license = aur_cfg.license.clone().unwrap_or_default();
+    let license = aur_cfg
+        .license
+        .clone()
+        .or_else(|| ctx.config.meta_license().map(str::to_string))
+        .unwrap_or_default();
     let url = aur_cfg
         .url
         .as_deref()
         .or(aur_cfg.homepage.as_deref())
+        .or_else(|| ctx.config.meta_homepage())
         .map(|s| s.to_string());
     let url = if let Some(u) = url {
         u
@@ -363,7 +373,10 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         );
     };
 
-    let maintainers = aur_cfg.maintainers.clone().unwrap_or_default();
+    let maintainers = aur_cfg
+        .maintainers
+        .clone()
+        .unwrap_or_else(|| ctx.config.meta_maintainers().to_vec());
     let contributors = aur_cfg.contributors.clone().unwrap_or_default();
     let depends = aur_cfg.depends.clone().unwrap_or_default();
     let optdepends = aur_cfg.optdepends.clone().unwrap_or_default();
@@ -401,20 +414,25 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
 
     let url_template = aur_cfg.url_template.as_deref();
 
-    let sources: Vec<(String, String, String)> = if linux_artifacts.is_empty() {
-        log.warn(&format!(
-            "aur: no linux artifacts found for '{}', using placeholder URLs",
-            crate_name
-        ));
-        vec![(
-            "x86_64".to_string(),
-            format!(
-                "https://github.com/{0}/releases/download/v{1}/{0}-{1}-linux-amd64.tar.gz",
-                crate_name, version
-            ),
-            String::new(),
-        )]
-    } else {
+    //
+    // — empty linux-archive set produces a PKGBUILD with placeholder URL and
+    // empty sha256 that users would have to hand-fix. Hard-fail with an
+    // actionable error instead.
+    if linux_artifacts.is_empty() {
+        let ids_hint = ids_filter
+            .map(|ids| format!("ids={ids:?}"))
+            .unwrap_or_else(|| "ids=<none>".to_string());
+        let amd_hint = amd64_variant.unwrap_or("<default v1>");
+        anyhow::bail!(
+            "aur: no linux archives matched filters for '{crate_name}' — \
+             PKGBUILD would have placeholder URL and empty sha256. Check your \
+             archive configuration and aur filters ({ids_hint}, \
+             amd64_variant={amd_hint}, arm_variant=7 [hardcoded]). At least \
+             one linux Archive artifact must match."
+        );
+    }
+
+    let sources: Vec<(String, String, String)> = {
         // Deduplicate by architecture — AUR -bin packages expect one source per
         // architecture. When multiple artifacts share the same arch (e.g.
         // multiple linux-amd64 archives), keep only the first match.
@@ -1051,6 +1069,51 @@ mod tests {
         let log = StageLogger::new("publish", Verbosity::Normal);
 
         assert!(publish_to_aur(&ctx, "mytool", &log).is_ok());
+    }
+
+    /// Regression for parity with GoReleaser's `ErrNoArchivesFound`: an empty
+    /// linux-archive set must hard-fail with an actionable error instead of
+    /// silently writing a PKGBUILD with placeholder URL + empty sha256.
+    #[test]
+    fn test_publish_to_aur_empty_linux_archive_set_hard_errors() {
+        use anodize_core::config::{AurConfig, Config, CrateConfig, PublishConfig};
+        use anodize_core::context::{Context, ContextOptions};
+        use anodize_core::log::{StageLogger, Verbosity};
+
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                aur: Some(AurConfig {
+                    git_url: Some("ssh://aur@aur.archlinux.org/mytool.git".to_string()),
+                    url: Some("https://example.com/mytool".to_string()),
+                    description: Some("A great tool".to_string()),
+                    // ids filter that matches nothing forces empty archive set.
+                    ids: Some(vec!["nonexistent".to_string()]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+
+        // dry_run: false so we reach the archive-set check.
+        let ctx = Context::new(config, ContextOptions::default());
+        let log = StageLogger::new("publish", Verbosity::Normal);
+
+        let result = publish_to_aur(&ctx, "mytool", &log);
+        let err = result.expect_err("empty linux archive set must hard-fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no linux archives matched"),
+            "error should explain the no-match condition, got: {msg}"
+        );
+        assert!(
+            msg.contains("nonexistent"),
+            "error should cite ids filter, got: {msg}"
+        );
     }
 
     #[test]

@@ -120,7 +120,7 @@ fn is_already_published(crate_name: &str, version: &str) -> Result<bool> {
 
 /// Poll the crates.io sparse index until `crate_name` at `version` appears or
 /// the deadline (seconds) is exceeded.  Uses exponential back-off starting at
-/// 5 s, capped at 60 s.
+/// `INITIAL_POLL_DELAY`, capped at `MAX_POLL_DELAY`.
 ///
 /// Returns `Ok(())` when the version is confirmed, `Err` on timeout.
 fn poll_crates_io_index(
@@ -131,6 +131,9 @@ fn poll_crates_io_index(
 ) -> Result<()> {
     use std::time::{Duration, Instant};
 
+    const INITIAL_POLL_DELAY: Duration = Duration::from_secs(5);
+    const MAX_POLL_DELAY: Duration = Duration::from_secs(60);
+
     let start = Instant::now();
     let deadline = Duration::from_secs(timeout_secs);
     let url = sparse_index_url(crate_name);
@@ -140,8 +143,7 @@ fn poll_crates_io_index(
         .build()
         .context("publish: build HTTP client for index polling")?;
 
-    let mut backoff = Duration::from_secs(5);
-    let cap = Duration::from_secs(60);
+    let mut backoff = INITIAL_POLL_DELAY;
 
     loop {
         match client.get(&url).send() {
@@ -187,7 +189,7 @@ fn poll_crates_io_index(
         }
 
         std::thread::sleep(backoff);
-        backoff = (backoff * 2).min(cap);
+        backoff = (backoff * 2).min(MAX_POLL_DELAY);
     }
 }
 

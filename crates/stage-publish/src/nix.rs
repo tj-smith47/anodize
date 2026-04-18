@@ -743,17 +743,30 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     }
 
     let version = ctx.version();
-    let description_raw = nix_cfg.description.as_deref().unwrap_or("");
+    // GoReleaser Pro parity: fall back to project `metadata.*` when nix config unset.
+    let description_raw = nix_cfg
+        .description
+        .as_deref()
+        .or_else(|| ctx.config.meta_description())
+        .unwrap_or("");
     let description_rendered = ctx
         .render_template(description_raw)
         .unwrap_or_else(|_| description_raw.to_string());
     let description = description_rendered.as_str();
-    let homepage_raw = nix_cfg.homepage.as_deref().unwrap_or("");
+    let homepage_raw = nix_cfg
+        .homepage
+        .as_deref()
+        .or_else(|| ctx.config.meta_homepage())
+        .unwrap_or("");
     let homepage_rendered = ctx
         .render_template(homepage_raw)
         .unwrap_or_else(|_| homepage_raw.to_string());
     let homepage = homepage_rendered.as_str();
-    let license = nix_cfg.license.as_deref().unwrap_or("");
+    let license = nix_cfg
+        .license
+        .as_deref()
+        .or_else(|| ctx.config.meta_license())
+        .unwrap_or("");
 
     // Validate license identifier against known Nix licenses (skip if empty).
     if !license.is_empty() {
@@ -782,7 +795,7 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
             } else {
                 a.url.clone()
             };
-            // GoReleaser parity: convert hex SHA256 to nix-native base32 format
+            // convert hex SHA256 to nix-native base32 format
             // (the same output as `nix-hash --type sha256 --flat --base32`).
             let nix_hash = if a.sha256.is_empty() {
                 a.sha256.clone()
@@ -834,7 +847,7 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         lines
     } else {
         let mut lines = vec!["mkdir -p $out/bin".to_string()];
-        // GoReleaser parity: install ALL binaries from the archive, not just
+        // install ALL binaries from the archive, not just
         // the package name.  Collect binary names from build configs; fall back
         // to the crate/derivation name when no builds are configured.
         let bin_names: Vec<String> = {

@@ -4,7 +4,7 @@ use std::process::Command;
 
 use anyhow::{Context as _, Result, bail};
 
-use anodize_core::artifact::{Artifact, ArtifactKind};
+use anodize_core::artifact::{Artifact, ArtifactKind, matches_id_filter};
 use anodize_core::config::{SbomConfig, SourceFileEntry};
 use anodize_core::context::Context;
 use anodize_core::stage::Stage;
@@ -858,18 +858,7 @@ impl SourceStage {
                         .all()
                         .iter()
                         .filter(|a| a.kind == kind)
-                        .filter(|a| {
-                            // Filter by ids if specified
-                            if let Some(ref ids) = sbom_cfg.ids {
-                                if let Some(art_id) = a.metadata.get("id") {
-                                    ids.contains(art_id)
-                                } else {
-                                    false
-                                }
-                            } else {
-                                true
-                            }
-                        })
+                        .filter(|a| matches_id_filter(a, sbom_cfg.ids.as_deref()))
                         .map(|a| (a.path.clone(), a.metadata.clone(), a.target.clone()))
                         .collect();
 
@@ -1006,7 +995,7 @@ impl SourceStage {
             let mut command = Command::new(cmd);
             command.args(&rendered_args);
             command.current_dir(dist);
-            // GoReleaser parity (sbom.go): restrict environment to a small
+            // restrict environment to a small
             // whitelist to prevent accidental leakage of tokens/credentials.
             command.env_clear();
             for key in &[

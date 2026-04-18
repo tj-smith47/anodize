@@ -86,6 +86,10 @@ pub fn detect_deprecated_aliases(raw: &serde_yaml_ng::Value) -> Vec<(String, Str
     // top-level `gemfury:` / `fury:` / `npms:` — removed publishers.
     // Emit a deprecation message so users porting GoReleaser configs see why
     // their configs stopped working instead of a silent "unknown field" error.
+    //
+    // Also covers the v1→v2 migration paths that GoReleaser itself phased out:
+    //   - `dockers:` → v2 `docker_v2:` (per-crate)
+    //   - `brews:`   → `homebrew_casks:` (top-level)
     for (key, msg) in &[
         (
             "gemfury",
@@ -98,6 +102,14 @@ pub fn detect_deprecated_aliases(raw: &serde_yaml_ng::Value) -> Vec<(String, Str
         (
             "npms",
             "`npms:` publisher was removed (NPM targets JavaScript packages). Publish Rust binaries through `homebrew:`, `scoop:`, `chocolatey:`, `winget:`, `aur:`, or `docker:` instead.",
+        ),
+        (
+            "dockers",
+            "top-level `dockers:` (GoReleaser v1 pipeline) is being phased out. Move Docker image configs under each crate's `docker_v2:` array (anodize v2 pipeline) — v1 docker is deprecated upstream.",
+        ),
+        (
+            "brews",
+            "top-level `brews:` is being phased out in favor of `homebrew_casks:`. Move Homebrew cask configs under the top-level `homebrew_casks:` array; use per-crate `homebrew:` only for classic formula publishing.",
         ),
     ] {
         if map.contains_key(k(key)) {
@@ -1831,6 +1843,34 @@ url = "https://example.com/config.yaml"
         assert!(ks.contains(&"gemfury"), "got: {:?}", ks);
         assert!(ks.contains(&"fury"), "got: {:?}", ks);
         assert!(ks.contains(&"npms"), "got: {:?}", ks);
+    }
+
+    /// Regression: top-level `dockers:` (GoReleaser v1) must surface a
+    /// deprecation notice directing users to per-crate `docker_v2:`.
+    #[test]
+    fn detect_top_level_dockers_deprecation() {
+        let got = detect_deprecated_aliases(&yaml("dockers: []\n"));
+        let ks = keys(&got);
+        assert!(ks.contains(&"dockers"), "got: {:?}", ks);
+        let msg = &got.iter().find(|(k, _)| k == "dockers").unwrap().1;
+        assert!(
+            msg.contains("docker_v2"),
+            "migration hint should mention docker_v2, got: {msg}"
+        );
+    }
+
+    /// Regression: top-level `brews:` must surface a deprecation notice
+    /// directing users to `homebrew_casks:`.
+    #[test]
+    fn detect_top_level_brews_deprecation() {
+        let got = detect_deprecated_aliases(&yaml("brews: []\n"));
+        let ks = keys(&got);
+        assert!(ks.contains(&"brews"), "got: {:?}", ks);
+        let msg = &got.iter().find(|(k, _)| k == "brews").unwrap().1;
+        assert!(
+            msg.contains("homebrew_casks"),
+            "migration hint should mention homebrew_casks, got: {msg}"
+        );
     }
 
     #[test]

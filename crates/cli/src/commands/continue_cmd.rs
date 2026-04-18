@@ -45,7 +45,7 @@ pub fn run(opts: ContinueOpts) -> Result<()> {
         ctx.deprecate(prop, msg);
     }
     helpers::setup_context(&mut ctx, &config, &log)?;
-    ctx.populate_metadata_var();
+    ctx.populate_metadata_var()?;
 
     super::release::run_merge(&mut ctx, &config, &log, opts.dry_run, opts.dist.as_deref())
 }

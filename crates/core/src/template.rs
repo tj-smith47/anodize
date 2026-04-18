@@ -514,24 +514,23 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     // Go-style: {{ in (list "a" "b" "c") "b" }} → true
     // Named:    {{ in(items=["a","b","c"], value="b") }} → true
     // Compares all elements as strings.
-    tera.register_function(
-        "in",
-        |args: &HashMap<String, Value>| -> tera::Result<Value> {
-            let items = args
-                .get("items")
-                .and_then(|v| v.as_array())
-                .ok_or_else(|| {
-                    tera::Error::msg("in requires `items` argument (must be an array)")
-                })?;
-            let value = args
-                .get("value")
-                .ok_or_else(|| tera::Error::msg("in requires `value` argument"))?;
-            // Convert the search value to a string for comparison.
-            let needle = value_to_string(value);
-            let found = items.iter().any(|item| value_to_string(item) == needle);
-            Ok(Value::Bool(found))
-        },
-    );
+    let in_fn = |args: &HashMap<String, Value>| -> tera::Result<Value> {
+        let items = args
+            .get("items")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| tera::Error::msg("in requires `items` argument (must be an array)"))?;
+        let value = args
+            .get("value")
+            .ok_or_else(|| tera::Error::msg("in requires `value` argument"))?;
+        // Convert the search value to a string for comparison.
+        let needle = value_to_string(value);
+        let found = items.iter().any(|item| value_to_string(item) == needle);
+        Ok(Value::Bool(found))
+    };
+    tera.register_function("in", in_fn);
+    // `contains_any` alias — avoids the Tera `in` keyword clash inside
+    // `{% set x = ... %}` / `{% if ... %}` bodies.
+    tera.register_function("contains_any", in_fn);
 
     // reReplaceAll(pattern="...", input="...", replacement="...") — regex replace (GoReleaser Pro parity)
     // Go-style: {{ reReplaceAll "(.*)" .Message "$1" }}
@@ -1154,7 +1153,7 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
 
     // in — filter form: {{ myList | in(value="x") }}
     // Checks whether the piped array contains the given value (string comparison).
-    tera.register_filter("in", |value: &Value, args: &HashMap<String, Value>| {
+    let in_filter = |value: &Value, args: &HashMap<String, Value>| {
         let items = value
             .as_array()
             .ok_or_else(|| tera::Error::msg("in filter requires an array as input"))?;
@@ -1164,7 +1163,9 @@ static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
         let needle_str = value_to_string(needle);
         let found = items.iter().any(|item| value_to_string(item) == needle_str);
         Ok(Value::Bool(found))
-    });
+    };
+    tera.register_filter("in", in_filter);
+    tera.register_filter("contains_any", in_filter);
 
     tera
 });

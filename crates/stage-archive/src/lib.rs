@@ -8,7 +8,7 @@ use chrono::DateTime;
 use flate2::Compression;
 use flate2::write::GzEncoder;
 
-use anodize_core::artifact::{Artifact, ArtifactKind};
+use anodize_core::artifact::{Artifact, ArtifactKind, matches_id_filter};
 use anodize_core::config::{
     ArchiveConfig, ArchiveFileSpec, ArchivesConfig, FormatOverride, VALID_ARCHIVE_FORMATS,
     parse_octal_mode,
@@ -421,6 +421,12 @@ pub struct ResolvedExtraFile {
     /// When true, strip the parent directory from the source path so the file
     /// is placed at the archive root (or directly under wrap_in_directory).
     pub strip_parent: bool,
+    /// True when this entry came from the auto-resolved default file list
+    /// (LICENSE/README/CHANGELOG glob), not user-configured `files:`.
+    /// Mirrors GoReleaser's `Default: true` flag on archive file entries —
+    /// useful for diagnostics that need to distinguish user intent from
+    /// automatic defaults.
+    pub default: bool,
 }
 
 /// Resolve a list of ArchiveFileSpec entries into concrete file paths with
@@ -437,6 +443,7 @@ pub fn resolve_file_specs(specs: &[ArchiveFileSpec]) -> Result<Vec<ResolvedExtra
                         dst: None,
                         info: None,
                         strip_parent: false,
+                        default: false,
                     });
                 }
             }
@@ -499,6 +506,7 @@ pub fn resolve_file_specs(specs: &[ArchiveFileSpec]) -> Result<Vec<ResolvedExtra
                             dst: Some(dest),
                             info: info.clone(),
                             strip_parent: false,
+                            default: false,
                         });
                     }
                 } else if dst.is_some() && do_strip {
@@ -521,6 +529,7 @@ pub fn resolve_file_specs(specs: &[ArchiveFileSpec]) -> Result<Vec<ResolvedExtra
                             dst: Some(dest),
                             info: info.clone(),
                             strip_parent: false,
+                            default: false,
                         });
                     }
                 } else {
@@ -530,6 +539,7 @@ pub fn resolve_file_specs(specs: &[ArchiveFileSpec]) -> Result<Vec<ResolvedExtra
                             dst: dst.clone(),
                             info: info.clone(),
                             strip_parent: do_strip,
+                            default: false,
                         });
                     }
                 }
@@ -566,6 +576,10 @@ fn resolve_default_extra_files() -> Vec<ResolvedExtraFile> {
                         dst: None,
                         info: None,
                         strip_parent: false,
+                        // GoReleaser `Default: true` parity — distinguishes
+                        // auto-resolved LICENSE/README/CHANGELOG from
+                        // user-configured `files:` entries for diagnostics.
+                        default: true,
                     });
                 }
             }
@@ -984,10 +998,10 @@ impl Stage for ArchiveStage {
                 let binaries: Vec<Artifact> = if is_meta {
                     // Meta archives have no binaries
                     Vec::new()
-                } else if let Some(ref ids) = archive_cfg.ids {
+                } else if archive_cfg.ids.is_some() {
                     all_binaries
                         .iter()
-                        .filter(|a| matches!(a.metadata.get("id"), Some(id) if ids.contains(id)))
+                        .filter(|a| matches_id_filter(a, archive_cfg.ids.as_deref()))
                         .cloned()
                         .collect()
                 } else {
@@ -1013,10 +1027,17 @@ impl Stage for ArchiveStage {
                 // allow_different_binary_count check: when false (default),
                 // error if different targets have different binary counts
                 // (matches GoReleaser behavior which errors, not warns).
-                // GoReleaser exempts the "binary" format from this check
-                // (archive/archive.go:131).
-                let archive_format = archive_cfg.format.as_deref().unwrap_or("tar.gz");
-                if archive_format != "binary"
+                // GoReleaser archive/archive.go:129 exempts the "binary"
+                // format from this check via `slices.Contains(archive.Formats,
+                // "binary")` — plural-form `formats: ["binary"]` must exempt
+                // the check the same way singular `format: "binary"` does.
+                let is_binary_format = archive_cfg.format.as_deref() == Some("binary")
+                    || archive_cfg
+                        .formats
+                        .as_ref()
+                        .map(|fs| fs.iter().any(|f| f == "binary"))
+                        .unwrap_or(false);
+                if !is_binary_format
                     && !archive_cfg.allow_different_binary_count.unwrap_or(false)
                     && by_target.len() > 1
                 {
@@ -1057,9 +1078,16 @@ impl Stage for ArchiveStage {
                 // strip_binary_directory: place binaries at archive root
                 let strip_bin_dir = archive_cfg.strip_binary_directory.unwrap_or(false);
 
-                // Pre-archive hooks
+                // Archive-scope template vars expose `.Format` to hook templates.
+                let mut hook_vars = template_vars.clone();
+                hook_vars.set("Format", singular_format);
+
+                let archive_id = archive_cfg.id.as_deref().unwrap_or("default");
+                let pre_label = format!("pre-archive[{archive_id}]");
+                let post_label = format!("post-archive[{archive_id}]");
+
                 if let Some(pre) = archive_cfg.hooks.as_ref().and_then(|h| h.pre.as_ref()) {
-                    run_hooks(pre, "pre-archive", dry_run, &log, Some(&template_vars))?;
+                    run_hooks(pre, &pre_label, dry_run, &log, Some(&hook_vars))?;
                 }
 
                 for (target, target_bins) in &by_target {
@@ -1284,6 +1312,18 @@ impl Stage for ArchiveStage {
                     let sorted = sort_entries(deduped);
                     let all_entries: Vec<&ArchiveEntry> = sorted.iter().collect();
 
+                    // a meta archive must have
+                    // at least one file. Silently emitting an empty archive masks
+                    // a config bug (user set `meta: true` but no `files:` patterns
+                    // matched). Hard-error with a clear message.
+                    if is_meta && all_entries.is_empty() {
+                        bail!(
+                            "archive: meta archive for crate '{crate_name}' target '{target}' \
+                             has zero files. Check your `files:` patterns — meta archives \
+                             must bundle at least one file."
+                        );
+                    }
+
                     // For gz/binary formats, collect flat path refs (these formats
                     // don't support per-entry metadata)
                     let all_src_paths: Vec<PathBuf> =
@@ -1319,15 +1359,24 @@ impl Stage for ArchiveStage {
                             continue;
                         }
 
-                        // For binary format, no extension; otherwise append format.
+                        // For binary format, no extension by default; on Windows
+                        // targets append `.exe` to match upstream GoReleaser
+                        // (archive.go:298-302 — Windows binaries keep their
+                        // executable suffix even in binary-format archives).
+                        // For non-binary formats, append the format as the extension.
                         // GoReleaser uses {{ .Binary }} prefix (not {{ .ProjectName }})
                         // for binary format when no custom name_template is set.
                         let archive_filename = if format == "binary" {
-                            if has_custom_name_tmpl {
+                            let stem = if has_custom_name_tmpl {
                                 archive_stem.clone()
                             } else {
                                 ctx.render_template(default_binary_name_template())
                                     .unwrap_or_else(|_| archive_stem.clone())
+                            };
+                            if anodize_core::target::is_windows(target) && !stem.ends_with(".exe") {
+                                format!("{stem}.exe")
+                            } else {
+                                stem
                             }
                         } else {
                             format!("{archive_stem}.{format}")
@@ -1520,7 +1569,7 @@ impl Stage for ArchiveStage {
                             metadata.insert("extra_binaries".to_string(), bin_names.join(","));
                         }
 
-                        // GoReleaser parity (archive Default): propagate
+                        // propagate
                         // Replaces + DynamicallyLinked from source binaries so
                         // publishers (Homebrew, AUR, nfpm) can consume them.
                         //   - Replaces: first non-empty value wins.
@@ -1560,9 +1609,8 @@ impl Stage for ArchiveStage {
                     }
                 }
 
-                // Post-archive hooks
                 if let Some(post) = archive_cfg.hooks.as_ref().and_then(|h| h.post.as_ref()) {
-                    run_hooks(post, "post-archive", dry_run, &log, Some(&template_vars))?;
+                    run_hooks(post, &post_label, dry_run, &log, Some(&hook_vars))?;
                 }
             }
         }
@@ -1740,6 +1788,40 @@ mod tests {
     // ---------------------------------------------------------------------------
     // New tests: glob pattern resolution
     // ---------------------------------------------------------------------------
+
+    /// Regression: auto-resolved LICENSE/README/CHANGELOG entries must carry
+    /// `default: true` so diagnostics can distinguish them from user-specified
+    /// `files:`. User-configured globs keep `default: false`.
+    #[test]
+    fn test_resolve_default_extra_files_marks_default_flag() {
+        use std::sync::Mutex;
+        // cwd is a process-wide mutable — serialize this test against any
+        // other test that might also mutate it. No other test in this module
+        // does, but this guards against future additions.
+        static CWD_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = CWD_LOCK.lock().unwrap();
+
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join("LICENSE"), b"mit").unwrap();
+        fs::write(tmp.path().join("README.md"), b"# readme").unwrap();
+
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let results = resolve_default_extra_files();
+        std::env::set_current_dir(&original).unwrap();
+
+        assert!(
+            !results.is_empty(),
+            "LICENSE and README should be picked up"
+        );
+        for r in &results {
+            assert!(
+                r.default,
+                "auto-resolved default file must set default=true: {:?}",
+                r.src
+            );
+        }
+    }
 
     #[test]
     fn test_resolve_glob_patterns() {
@@ -4300,6 +4382,46 @@ crates:
         }
     }
 
+    #[test]
+    fn test_config_parse_archive_hooks_goreleaser_spelling() {
+        // docs use `before:` / `after:` for archive hooks.
+        // Serde aliases on BuildHooksConfig mean both spellings land on the
+        // same fields. Regression guard: before 2026-04-16, configs copied
+        // from GoReleaser docs silently parsed but hooks never ran.
+        use anodize_core::config::Config;
+        let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+    archives:
+      - hooks:
+          before:
+            - echo pre-archive-goreleaser-spelling
+          after:
+            - echo post-archive-goreleaser-spelling
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        if let ArchivesConfig::Configs(cfgs) = &config.crates[0].archives {
+            let hooks = cfgs[0].hooks.as_ref().unwrap();
+            let pre = hooks
+                .pre
+                .as_ref()
+                .expect("`before:` yaml should populate `pre` via serde alias");
+            assert_eq!(pre.len(), 1);
+            assert_eq!(pre[0], "echo pre-archive-goreleaser-spelling");
+            let post = hooks
+                .post
+                .as_ref()
+                .expect("`after:` yaml should populate `post` via serde alias");
+            assert_eq!(post.len(), 1);
+            assert_eq!(post[0], "echo post-archive-goreleaser-spelling");
+        } else {
+            panic!("expected Configs variant");
+        }
+    }
+
     // -----------------------------------------------------------------------
     // gz format tests
     // -----------------------------------------------------------------------
@@ -4574,6 +4696,79 @@ crates:
         assert!(
             err.contains("allow_different_binary_count"),
             "error should suggest the fix, got: {err}"
+        );
+    }
+
+    /// Regression test for parity with GoReleaser archive/archive.go:129 —
+    /// plural `formats: ["binary"]` must exempt allow_different_binary_count
+    /// the same way singular `format: "binary"` does.
+    #[test]
+    fn test_binary_format_plural_exempts_different_binary_count_check() {
+        use anodize_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
+        use anodize_core::test_helpers::TestContextBuilder;
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+
+        let linux_bin = tmp.path().join("myapp-linux");
+        let win_bin1 = tmp.path().join("myapp-win1");
+        let win_bin2 = tmp.path().join("myapp-win2");
+        fs::write(&linux_bin, b"linux binary").unwrap();
+        fs::write(&win_bin1, b"windows binary 1").unwrap();
+        fs::write(&win_bin2, b"windows binary 2").unwrap();
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .tag("v1.0.0")
+            .dist(dist)
+            .crates(vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                    // plural-only `formats` — the old bug would miss this
+                    // because the exemption checked only `format`.
+                    formats: Some(vec!["binary".to_string()]),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }])
+            .build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: linux_bin,
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("binary".to_string(), "myapp".to_string())]),
+            size: None,
+        });
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: win_bin1,
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("binary".to_string(), "myapp".to_string())]),
+            size: None,
+        });
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: win_bin2,
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("binary".to_string(), "helper".to_string())]),
+            size: None,
+        });
+
+        let result = ArchiveStage.run(&mut ctx);
+        assert!(
+            result.is_ok(),
+            "plural `formats: [binary]` must exempt the mismatched-count \
+             check (got error: {:?})",
+            result.err()
         );
     }
 
@@ -5155,5 +5350,163 @@ crates:
 
         let result = ctx.render_template(default_name_template()).unwrap();
         assert_eq!(result, "myapp_1.0.0_linux_amd64");
+    }
+
+    // --- Windows binary-format archives get .exe suffix ---
+
+    #[test]
+    fn test_archive_binary_format_windows_appends_exe() {
+        // Windows binaries keep their
+        // executable suffix even when packaged as `format: binary`.
+        use anodize_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        let bin_path = tmp.path().join("myapp.exe");
+        fs::write(&bin_path, b"raw windows binary").unwrap();
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                name_template: Some(
+                    "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}".to_string(),
+                ),
+                format: Some("binary".to_string()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = dist.clone();
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: bin_path.clone(),
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: {
+                let mut m = HashMap::new();
+                m.insert("binary".to_string(), "myapp".to_string());
+                m
+            },
+            size: None,
+        });
+
+        ArchiveStage.run(&mut ctx).unwrap();
+
+        let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+        assert_eq!(archives.len(), 1);
+        let name = archives[0].path.file_name().unwrap().to_string_lossy();
+        assert!(
+            name.ends_with(".exe"),
+            "Windows binary-format archive must end with .exe, got: {name}"
+        );
+        assert!(archives[0].path.exists());
+    }
+
+    #[test]
+    fn test_archive_meta_empty_files_hard_errors() {
+        // meta archive with zero files must
+        // hard-error rather than silently emit an empty archive. Previously was
+        // a silent failure mode that masked a real config bug.
+        use anodize_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                name_template: Some("{{ .ProjectName }}-meta".to_string()),
+                format: Some("tar.gz".to_string()),
+                meta: Some(true),
+                // No files configured — auto-include is also disabled for meta.
+                files: Some(vec![]),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![crate_cfg];
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+        let err = ArchiveStage
+            .run(&mut ctx)
+            .expect_err("meta archive with zero files must bail");
+        let msg = format!("{:#}", err);
+        assert!(
+            msg.contains("meta archive") && msg.contains("zero files"),
+            "error should name the meta/zero-files condition, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_archive_binary_format_linux_keeps_no_extension() {
+        // Regression guard: Linux/macOS binary-format archives should NOT get .exe.
+        use anodize_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        let bin_path = tmp.path().join("myapp");
+        fs::write(&bin_path, b"raw linux binary").unwrap();
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                name_template: Some(
+                    "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}".to_string(),
+                ),
+                format: Some("binary".to_string()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = dist.clone();
+        config.crates = vec![crate_cfg];
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: bin_path.clone(),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: {
+                let mut m = HashMap::new();
+                m.insert("binary".to_string(), "myapp".to_string());
+                m
+            },
+            size: None,
+        });
+        ArchiveStage.run(&mut ctx).unwrap();
+        let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+        assert_eq!(archives.len(), 1);
+        let name = archives[0].path.file_name().unwrap().to_string_lossy();
+        assert!(
+            !name.ends_with(".exe"),
+            "Linux binary-format archive should not get .exe, got: {name}"
+        );
     }
 }

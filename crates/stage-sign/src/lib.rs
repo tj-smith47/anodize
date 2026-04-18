@@ -416,13 +416,14 @@ fn process_sign_configs(
                     }
                 }
                 Err(e) => {
-                    let reason = format!("if condition render failed: {}", e);
-                    log.warn(&format!(
-                        "{} '{}': {} ({}), skipping",
-                        label, sub_label, reason, condition
-                    ));
-                    ctx.remember_skip(label, &sub_label, &reason);
-                    continue;
+                    // Hard-fail: silent skip would ship unsigned artifacts.
+                    anyhow::bail!(
+                        "{} '{}': if condition render failed ({}): {}",
+                        label,
+                        sub_label,
+                        condition,
+                        e
+                    );
                 }
             }
         }
@@ -737,7 +738,7 @@ fn process_sign_configs(
             )?;
 
             // Template-render each env value (GoReleaser sign.go:180-185, 310-320).
-            // GoReleaser parity (sign.go:244): the same shell-style variables
+            // the same shell-style variables
             // available for arg substitution (artifact, signature, certificate,
             // artifactName, artifactID, digest) are ALSO injected as env vars
             // for the sign subprocess. Skip keys with empty values.
@@ -810,36 +811,19 @@ fn process_sign_configs(
         // Collect all new artifacts from jobs to register after execution.
         let mut all_new_artifacts: Vec<anodize_core::artifact::Artifact> = Vec::new();
 
-        for chunk in sign_jobs.chunks(parallelism) {
-            let results: Vec<Result<()>> = std::thread::scope(|s| {
-                let handles: Vec<_> = chunk
-                    .iter()
-                    .map(|job| {
-                        let thread_log = anodize_core::log::StageLogger::new(
-                            label_to_static(label),
-                            log.verbosity(),
-                        );
-                        s.spawn(move || execute_sign_job(job, &thread_log))
-                    })
-                    .collect();
-                handles
-                    .into_iter()
-                    .map(|h| h.join().unwrap_or_else(|_| panic!("sign thread panicked")))
-                    .collect()
-            });
+        let static_label = label_to_static(label);
+        let verbosity = log.verbosity();
+        let stage_name: &'static str = match static_label {
+            "binary-sign" => "binary-sign",
+            _ => "sign",
+        };
+        anodize_core::parallel::run_parallel_chunks(&sign_jobs, parallelism, stage_name, |job| {
+            let thread_log = anodize_core::log::StageLogger::new(static_label, verbosity);
+            execute_sign_job(job, &thread_log)
+        })?;
 
-            // Check for errors — fail fast on the first error in this chunk.
-            for result in &results {
-                if let Err(e) = result {
-                    // Re-create the error since we can't move out of a reference.
-                    anyhow::bail!("{}", e);
-                }
-            }
-
-            // Register artifacts from successful jobs in this chunk.
-            for job in chunk {
-                all_new_artifacts.extend(job.new_artifacts.iter().cloned());
-            }
+        for job in &sign_jobs {
+            all_new_artifacts.extend(job.new_artifacts.iter().cloned());
         }
 
         for artifact in all_new_artifacts {
@@ -1019,13 +1003,13 @@ impl Stage for DockerSignStage {
                             }
                         }
                         Err(e) => {
-                            let reason = format!("if condition render failed: {}", e);
-                            log.warn(&format!(
-                                "docker-sign '{}' {} ({}), skipping",
-                                sign_id, reason, condition
-                            ));
-                            ctx.remember_skip("docker-sign", sign_id, &reason);
-                            continue;
+                            // Hard-fail: silent skip would ship unsigned images.
+                            anyhow::bail!(
+                                "docker-sign '{}': if condition render failed ({}): {}",
+                                sign_id,
+                                condition,
+                                e
+                            );
                         }
                     }
                 }

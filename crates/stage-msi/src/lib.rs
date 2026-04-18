@@ -284,6 +284,27 @@ impl Stage for MsiStage {
                 .collect();
 
             for msi_cfg in msi_configs {
+                let msi_id_for_log = msi_cfg.id.as_deref().unwrap_or("default").to_string();
+
+                // GoReleaser Pro `msi.if`: template-conditional skip (opt-in).
+                // Rendered "false"/empty => skip; render error => hard bail (W1 avoidance).
+                if let Some(ref condition) = msi_cfg.if_condition {
+                    let rendered = ctx.render_template(condition).with_context(|| {
+                        format!(
+                            "msi config '{}' for crate '{}': `if` template render failed (expression: {})",
+                            msi_id_for_log, krate.name, condition
+                        )
+                    })?;
+                    let trimmed = rendered.trim();
+                    if trimmed.is_empty() || trimmed == "false" {
+                        log.status(&format!(
+                            "skipping msi config '{}' for crate {}: if condition evaluated to '{}'",
+                            msi_id_for_log, krate.name, trimmed
+                        ));
+                        continue;
+                    }
+                }
+
                 // Skip disabled configs (supports bool or template string)
                 if let Some(ref d) = msi_cfg.disable
                     && d.is_disabled(|s| ctx.render_template(s))
@@ -293,6 +314,19 @@ impl Stage for MsiStage {
                         krate.name
                     ));
                     continue;
+                }
+
+                // GoReleaser Pro `msi.hooks.before` (alias `pre`): run once per MSI
+                // config before any artifacts are built. Hard-errors on hook failure.
+                if let Some(pre) = msi_cfg.hooks.as_ref().and_then(|h| h.pre.as_ref()) {
+                    let tmpl_vars = ctx.template_vars().clone();
+                    anodize_core::hooks::run_hooks(pre, "pre-msi", dry_run, &log, Some(&tmpl_vars))
+                        .with_context(|| {
+                            format!(
+                                "msi config '{}' for crate '{}': pre-msi hooks failed",
+                                msi_id_for_log, krate.name
+                            )
+                        })?;
                 }
 
                 // C2: Apply ids filtering
@@ -596,6 +630,25 @@ impl Stage for MsiStage {
                         ctx,
                         &mut archives_to_remove,
                     ));
+                }
+
+                // GoReleaser Pro `msi.hooks.after` (alias `post`): run once per MSI
+                // config after all artifacts are built. Hard-errors on hook failure.
+                if let Some(post) = msi_cfg.hooks.as_ref().and_then(|h| h.post.as_ref()) {
+                    let tmpl_vars = ctx.template_vars().clone();
+                    anodize_core::hooks::run_hooks(
+                        post,
+                        "post-msi",
+                        dry_run,
+                        &log,
+                        Some(&tmpl_vars),
+                    )
+                    .with_context(|| {
+                        format!(
+                            "msi config '{}' for crate '{}': post-msi hooks failed",
+                            msi_id_for_log, krate.name
+                        )
+                    })?;
                 }
             }
         }
@@ -2091,5 +2144,99 @@ crates:
             msi.extensions.as_ref().unwrap(),
             &["WixUIExtension".to_string(), "WixUtilExtension".to_string()]
         );
+    }
+
+    // --- `msi.if` + `msi.hooks` (GoReleaser Pro) ---
+
+    fn msi_test_ctx_with_if(if_expr: Option<&str>) -> anodize_core::context::Context {
+        use anodize_core::config::{Config, CrateConfig, MsiConfig};
+        use anodize_core::context::{Context, ContextOptions};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&config.dist).unwrap();
+        let msi_cfg = MsiConfig {
+            wxs: Some("dummy.wxs".to_string()),
+            if_condition: if_expr.map(str::to_string),
+            ..Default::default()
+        };
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            msis: Some(vec![msi_cfg]),
+            ..Default::default()
+        }];
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Os", "windows");
+        ctx
+    }
+
+    #[test]
+    fn test_msi_if_false_skips_config() {
+        let mut ctx = msi_test_ctx_with_if(Some("false"));
+        MsiStage.run(&mut ctx).unwrap();
+        assert_eq!(
+            ctx.artifacts.by_kind(ArtifactKind::Installer).len(),
+            0,
+            "msi if=false should skip"
+        );
+    }
+
+    #[test]
+    fn test_msi_if_render_failure_is_hard_error() {
+        let mut ctx = msi_test_ctx_with_if(Some("{{ undefined_function 42 }}"));
+        let err = MsiStage
+            .run(&mut ctx)
+            .expect_err("unrenderable `if` should hard-error");
+        let msg = format!("{:#}", err);
+        assert!(
+            msg.contains("`if` template render failed"),
+            "error should name `if` render failure, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_config_parse_msi_hooks_before_after_aliases() {
+        // Serde aliases on BuildHooksConfig mean `before:`/`after:` (GoReleaser
+        // docs) and `pre:`/`post:` both populate the same fields.
+        use anodize_core::config::Config;
+        let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+    msis:
+      - wxs: installer.wxs
+        hooks:
+          before:
+            - echo pre-msi-build
+          after:
+            - echo post-msi-build
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let msis = config.crates[0].msis.as_ref().unwrap();
+        let hooks = msis[0].hooks.as_ref().unwrap();
+        let pre = hooks
+            .pre
+            .as_ref()
+            .expect("`before:` yaml should populate `pre`");
+        assert_eq!(pre.len(), 1);
+        assert_eq!(pre[0], "echo pre-msi-build");
+        let post = hooks
+            .post
+            .as_ref()
+            .expect("`after:` yaml should populate `post`");
+        assert_eq!(post.len(), 1);
+        assert_eq!(post[0], "echo post-msi-build");
     }
 }

@@ -18,7 +18,7 @@ pub fn send_reddit(
     url: &str,
 ) -> Result<()> {
     let client = reqwest::blocking::Client::builder()
-        .user_agent("anodize/1.0")
+        .user_agent(concat!("anodize/", env!("CARGO_PKG_VERSION")))
         .build()?;
 
     // Step 1: Get OAuth token

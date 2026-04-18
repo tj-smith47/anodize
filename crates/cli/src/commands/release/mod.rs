@@ -42,9 +42,30 @@ pub struct ReleaseOpts {
     pub split: bool,
     pub merge: bool,
     pub strict: bool,
+    /// `--prepare` (GoReleaser Pro parity): run local build/archive/sign/checksum/sbom
+    /// stages but NOT release/publish/announce. Implemented by augmenting `skip` with
+    /// those three stages at the top of `run()`; artifacts still land under `dist/`.
+    pub prepare: bool,
 }
 
-pub fn run(opts: ReleaseOpts) -> Result<()> {
+/// GoReleaser Pro `--prepare`: runs local build/archive/sign/checksum/sbom stages
+/// but skips anything that reaches upstream (release + publish + announce).
+/// Idempotent — won't duplicate stages already present in `skip`.
+pub(crate) fn apply_prepare_mode_to_skip(skip: &mut Vec<String>) {
+    for stage in ["release", "publish", "announce"] {
+        if !skip.iter().any(|s| s == stage) {
+            skip.push(stage.to_string());
+        }
+    }
+}
+
+pub fn run(mut opts: ReleaseOpts) -> Result<()> {
+    // Augment skip BEFORE any stage wiring so the semantic matches
+    // `--skip=release,publish,announce` exactly.
+    if opts.prepare {
+        apply_prepare_mode_to_skip(&mut opts.skip);
+    }
+
     let log = StageLogger::new(
         "release",
         Verbosity::from_flags(opts.quiet, opts.verbose, opts.debug),
@@ -286,7 +307,7 @@ pub fn run(opts: ReleaseOpts) -> Result<()> {
     helpers::resolve_scm_token_type(&mut ctx, &config);
     ctx.populate_time_vars();
     ctx.populate_runtime_vars();
-    ctx.populate_metadata_var();
+    ctx.populate_metadata_var()?;
 
     // Populate user-defined env vars into template context
     helpers::setup_env(&mut ctx, &config, &log)?;
@@ -989,5 +1010,50 @@ mod tests {
             Some(true),
             "CLI --draft should override config draft=false"
         );
+    }
+
+    // --- `--prepare` flag (GoReleaser Pro) ---
+
+    #[test]
+    fn test_apply_prepare_mode_to_skip_from_empty() {
+        let mut skip: Vec<String> = Vec::new();
+        apply_prepare_mode_to_skip(&mut skip);
+        assert_eq!(
+            skip,
+            vec![
+                "release".to_string(),
+                "publish".to_string(),
+                "announce".to_string()
+            ],
+            "--prepare on empty skip should add all three upstream stages"
+        );
+    }
+
+    #[test]
+    fn test_apply_prepare_mode_to_skip_preserves_user_skip() {
+        let mut skip = vec!["docker".to_string(), "sign".to_string()];
+        apply_prepare_mode_to_skip(&mut skip);
+        assert!(
+            skip.contains(&"docker".to_string()) && skip.contains(&"sign".to_string()),
+            "existing user skips must be preserved"
+        );
+        assert!(
+            skip.contains(&"release".to_string())
+                && skip.contains(&"publish".to_string())
+                && skip.contains(&"announce".to_string()),
+            "--prepare adds release/publish/announce alongside user skips"
+        );
+    }
+
+    #[test]
+    fn test_apply_prepare_mode_to_skip_is_idempotent() {
+        let mut skip = vec!["release".to_string(), "publish".to_string()];
+        apply_prepare_mode_to_skip(&mut skip);
+        // No duplicate "release" or "publish" — only "announce" added.
+        let release_count = skip.iter().filter(|s| s.as_str() == "release").count();
+        let publish_count = skip.iter().filter(|s| s.as_str() == "publish").count();
+        assert_eq!(release_count, 1, "no duplicate release");
+        assert_eq!(publish_count, 1, "no duplicate publish");
+        assert!(skip.contains(&"announce".to_string()));
     }
 }

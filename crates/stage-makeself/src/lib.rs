@@ -5,7 +5,7 @@ use std::process::Command;
 
 use anyhow::{Context as _, Result};
 
-use anodize_core::artifact::{Artifact, ArtifactKind};
+use anodize_core::artifact::{Artifact, ArtifactKind, matches_id_filter};
 use anodize_core::context::Context;
 use anodize_core::stage::Stage;
 
@@ -227,16 +227,7 @@ impl Stage for MakeselfStage {
                             | ArtifactKind::CShared
                     )
                 })
-                .filter(|a| {
-                    // Filter by IDs if configured
-                    if let Some(ref ids) = cfg.ids {
-                        let a_id = a.metadata.get("id").map(|s| s.as_str()).unwrap_or("");
-                        let a_name = a.metadata.get("name").map(|s| s.as_str()).unwrap_or("");
-                        ids.iter().any(|id| id == a_id || id == a_name)
-                    } else {
-                        true
-                    }
-                })
+                .filter(|a| matches_id_filter(a, cfg.ids.as_deref()))
                 .filter(|a| {
                     // Filter by goos
                     if let Some(ref target) = a.target {

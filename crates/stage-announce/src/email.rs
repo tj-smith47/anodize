@@ -54,10 +54,21 @@ pub fn send_smtp(params: &EmailParams<'_>, smtp: &SmtpParams<'_>) -> Result<()> 
     let creds = Credentials::new(smtp.username.to_string(), smtp.password.to_string());
     let port = smtp.port;
 
-    let mut transport = SmtpTransport::starttls_relay(smtp.host)
-        .context(format!("failed to create SMTP transport for {}", smtp.host))?
-        .port(port)
-        .credentials(creds);
+    // Port 465 is SMTPS (implicit TLS on connect); other ports use STARTTLS.
+    let mut transport = if port == 465 {
+        SmtpTransport::relay(smtp.host)
+            .context(format!(
+                "failed to create SMTPS transport for {}",
+                smtp.host
+            ))?
+            .port(port)
+            .credentials(creds)
+    } else {
+        SmtpTransport::starttls_relay(smtp.host)
+            .context(format!("failed to create SMTP transport for {}", smtp.host))?
+            .port(port)
+            .credentials(creds)
+    };
 
     if smtp.insecure_skip_verify {
         let tls = TlsParameters::builder(smtp.host.to_string())
@@ -133,9 +144,9 @@ pub fn send_sendmail(params: &EmailParams<'_>) -> Result<()> {
     let message = build_rfc2822_message(params)?;
 
     // Try sendmail first, then msmtp
-    let (program, args) = if which_exists("sendmail") {
+    let (program, args) = if anodize_core::util::find_binary("sendmail") {
         ("sendmail", vec!["-t"])
-    } else if which_exists("msmtp") {
+    } else if anodize_core::util::find_binary("msmtp") {
         ("msmtp", vec!["-t"])
     } else {
         anyhow::bail!(
@@ -165,11 +176,6 @@ pub fn send_sendmail(params: &EmailParams<'_>) -> Result<()> {
     }
 
     Ok(())
-}
-
-/// Check whether a program exists on PATH using the shared `find_binary` helper.
-fn which_exists(program: &str) -> bool {
-    anodize_core::util::find_binary(program)
 }
 
 // ---------------------------------------------------------------------------

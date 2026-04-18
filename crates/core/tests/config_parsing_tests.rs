@@ -319,6 +319,36 @@ fn test_parse_defaults_archives_omitted() {
     assert!(config.defaults.unwrap().archives.is_none());
 }
 
+/// Regression: pre-v1 GoReleaser used `builds:` on archives (renamed to `ids:`
+/// in v1). The deprecated alias must still parse so migrating users don't hit
+/// "unknown field" errors (consistent with nfpm + docker_manifests).
+#[test]
+fn test_parse_archives_accepts_deprecated_builds_alias() {
+    use anodize_core::config::ArchivesConfig;
+    let yaml = r#"
+project_name: test
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ .Version }}"
+    archives:
+      - format: tar.gz
+        builds: [myid, otherid]
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let archives = &config.crates[0].archives;
+    match archives {
+        ArchivesConfig::Configs(v) => {
+            assert_eq!(v.len(), 1);
+            assert_eq!(
+                v[0].ids,
+                Some(vec!["myid".to_string(), "otherid".to_string()])
+            );
+        }
+        _ => panic!("expected Configs variant, got {archives:?}"),
+    }
+}
+
 // ---- defaults.checksum tests ----
 
 #[test]

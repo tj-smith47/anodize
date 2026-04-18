@@ -346,7 +346,7 @@ impl TestContextBuilder {
             ctx.populate_git_vars();
         }
 
-        ctx.populate_metadata_var();
+        ctx.populate_metadata_var().unwrap();
 
         ctx
     }

@@ -1,9 +1,17 @@
+use std::sync::LazyLock;
+
 use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
+use anodize_core::template::{self, TemplateVars};
+use anodize_core::util::static_regex;
 use anyhow::{Context as _, Result};
+use regex::Regex;
 use serde::Serialize;
 
 use crate::util;
+
+static PACKAGE_IDENTIFIER_RE: LazyLock<Regex> =
+    LazyLock::new(|| static_regex(r#"^[^\.\s\\/:\*\?"<>\|]+(\.[^\.\s\\/:\*\?"<>\|]+){1,7}$"#));
 
 // ---------------------------------------------------------------------------
 // PackageIdentifier validation
@@ -17,10 +25,7 @@ use crate::util;
 ///
 /// Pattern: `^[^\.\s\\\/:\*\?"<>\|]+(\.[^\.\s\\\/:\*\?"<>\|]+){1,7}$`
 pub fn validate_package_identifier(id: &str) -> Result<()> {
-    let re = regex::Regex::new(r#"^[^\.\s\\/:\*\?"<>\|]+(\.[^\.\s\\/:\*\?"<>\|]+){1,7}$"#)
-        .unwrap_or_else(|e| panic!("winget: compile PackageIdentifier regex: {e}"));
-
-    if re.is_match(id) {
+    if PACKAGE_IDENTIFIER_RE.is_match(id) {
         Ok(())
     } else {
         anyhow::bail!(
@@ -43,18 +48,12 @@ fn render_winget_commit_msg(template: Option<&str>, package_id: &str, version: &
     let default_tmpl = "New version: {{ PackageIdentifier }} {{ Version }}";
     let tmpl = template.unwrap_or(default_tmpl);
 
-    let mut tera = tera::Tera::default();
-    tera.autoescape_on(vec![]);
-    if tera.add_raw_template("msg", tmpl).is_err() {
-        return format!("New version: {} {}", package_id, version);
-    }
-    let mut ctx = tera::Context::new();
-    ctx.insert("PackageIdentifier", package_id);
-    ctx.insert("Version", version);
-    // Legacy aliases for backward compat
-    ctx.insert("name", package_id);
-    ctx.insert("version", version);
-    tera.render("msg", &ctx)
+    let mut vars = TemplateVars::new();
+    vars.set("PackageIdentifier", package_id);
+    vars.set("Version", version);
+    vars.set("name", package_id);
+    vars.set("version", version);
+    template::render(tmpl, &vars)
         .unwrap_or_else(|_| format!("New version: {} {}", package_id, version))
 }
 
@@ -560,26 +559,49 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
 
     let version = ctx.version();
     // Replace tabs in descriptions with two spaces (WinGet YAML convention).
-    let description_raw_cfg = winget_cfg.description.as_deref().unwrap_or("");
+    // GoReleaser Pro parity: fall back to project `metadata.*` when winget config unset.
+    let description_raw_cfg = winget_cfg
+        .description
+        .as_deref()
+        .or_else(|| ctx.config.meta_description())
+        .unwrap_or("");
     let description_tmpl = ctx
         .render_template(description_raw_cfg)
         .unwrap_or_else(|_| description_raw_cfg.to_string());
     let description = description_tmpl.replace('\t', "  ");
     let description = description.as_str();
+    // GoReleaser parity (`errNoShortDescription` in
+    // `internal/pipe/winget/winget.go`) — short_description is required.
+    // Fall back to winget.description or meta.description (both semantically
+    // valid descriptions), but NEVER silently substitute the crate_name —
+    // that produces a meaningless winget manifest like "ShortDescription:
+    // mytool" that the Microsoft reviewers will reject.
     let short_desc_raw = winget_cfg
         .short_description
         .as_deref()
         .or(winget_cfg.description.as_deref())
-        .unwrap_or(crate_name);
+        .or_else(|| ctx.config.meta_description())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "winget: short_description is required but not configured for \
+                 '{crate_name}'. Set `publish.winget.short_description`, or a \
+                 fallback via `publish.winget.description` or top-level \
+                 `metadata.description`."
+            )
+        })?;
     let short_desc = short_desc_raw.replace('\t', "  ");
     let short_desc = short_desc.as_str();
-    let license = winget_cfg.license.as_deref().ok_or_else(|| {
-        anyhow::anyhow!(
-            "winget: license is required but not configured for '{}'. \
+    let license = winget_cfg
+        .license
+        .as_deref()
+        .or_else(|| ctx.config.meta_license())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "winget: license is required but not configured for '{}'. \
              Set `publish.winget.license` in your config.",
-            crate_name
-        )
-    })?;
+                crate_name
+            )
+        })?;
 
     // Find windows Archive artifacts for this crate with IDs + amd64_variant filtering.
     let ids_filter = winget_cfg.ids.as_deref();
@@ -612,7 +634,7 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
     };
 
     // Collect both archive (.zip only) and portable binary artifacts.
-    // GoReleaser parity: winget.go:187 filters ByFormats("zip") for archives,
+    // winget.go:187 filters ByFormats("zip") for archives,
     // plus ByType(UploadableBinary) for portable binaries. Filter on
     // `UploadableBinary` — not `Binary` — because `Binary` includes raw
     // build outputs that get packaged into archives (not uploaded standalone).
@@ -806,7 +828,12 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
     let publisher_url_rendered = render(winget_cfg.publisher_url.as_deref());
     let publisher_support_rendered = render(winget_cfg.publisher_support_url.as_deref());
     let privacy_url_rendered = render(winget_cfg.privacy_url.as_deref());
-    let homepage_rendered = render(winget_cfg.homepage.as_deref());
+    let homepage_rendered = render(
+        winget_cfg
+            .homepage
+            .as_deref()
+            .or_else(|| ctx.config.meta_homepage()),
+    );
     let author_rendered = render(winget_cfg.author.as_deref());
     let copyright_rendered = render(winget_cfg.copyright.as_deref());
     let copyright_url_rendered = render(winget_cfg.copyright_url.as_deref());
@@ -1153,6 +1180,53 @@ mod tests {
 
         // dry-run should succeed without any network/command calls
         assert!(publish_to_winget(&ctx, "mytool", &log).is_ok());
+    }
+
+    /// Regression for parity with GoReleaser's `errNoShortDescription`:
+    /// when short_description, description, and meta.description are all
+    /// unset, winget must hard-fail with an actionable error. The old
+    /// lenient fallback to `crate_name` produced a meaningless manifest.
+    #[test]
+    fn test_publish_to_winget_missing_short_description_hard_errors() {
+        use anodize_core::config::{
+            Config, CrateConfig, PublishConfig, WingetConfig, WingetManifestsRepoConfig,
+        };
+        use anodize_core::context::{Context, ContextOptions};
+        use anodize_core::log::{StageLogger, Verbosity};
+
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                winget: Some(WingetConfig {
+                    manifests_repo: Some(WingetManifestsRepoConfig {
+                        owner: "myorg".to_string(),
+                        name: "winget-pkgs".to_string(),
+                    }),
+                    package_identifier: Some("MyOrg.MyTool".to_string()),
+                    publisher: Some("My Org".to_string()),
+                    license: Some("MIT".to_string()),
+                    // description + short_description both unset
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+
+        // dry_run: false so we reach the short_description check.
+        let ctx = Context::new(config, ContextOptions::default());
+        let log = StageLogger::new("publish", Verbosity::Normal);
+
+        let result = publish_to_winget(&ctx, "mytool", &log);
+        let err = result.expect_err("missing short_description must hard-fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("short_description is required"),
+            "error should explain the missing field, got: {msg}"
+        );
     }
 
     #[test]

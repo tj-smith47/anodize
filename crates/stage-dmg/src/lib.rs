@@ -147,6 +147,29 @@ impl Stage for DmgStage {
                 continue;
             };
             for dmg_cfg in dmgs {
+                let dmg_id_for_log = dmg_cfg.id.as_deref().unwrap_or("default").to_string();
+
+                // GoReleaser Pro `dmg.if`: template-conditional skip (opt-in).
+                // Rendered "false"/empty => skip with info log; render error => hard bail
+                // (avoids W1 silent-skip footgun: user's typo must surface, not silently
+                // ship a release without the DMG they asked for).
+                if let Some(ref condition) = dmg_cfg.if_condition {
+                    let rendered = ctx.render_template(condition).with_context(|| {
+                        format!(
+                            "dmg config '{}' for crate '{}': `if` template render failed (expression: {})",
+                            dmg_id_for_log, krate.name, condition
+                        )
+                    })?;
+                    let trimmed = rendered.trim();
+                    if trimmed.is_empty() || trimmed == "false" {
+                        log.status(&format!(
+                            "skipping dmg config '{}' for crate {}: if condition evaluated to '{}'",
+                            dmg_id_for_log, krate.name, trimmed
+                        ));
+                        continue;
+                    }
+                }
+
                 // Skip disabled configs (supports bool or template string)
                 if let Some(ref d) = dmg_cfg.disable
                     && d.is_disabled(|s| ctx.render_template(s))
@@ -1673,6 +1696,80 @@ crates:
         assert!(
             dmgs.is_empty(),
             "should produce no DMGs when use=appbundle but no appbundles exist"
+        );
+    }
+
+    // --- `dmg.if` template-conditional (GoReleaser Pro) ---
+
+    fn dmg_if_test_ctx(if_expr: Option<&str>) -> anodize_core::context::Context {
+        use anodize_core::config::{Config, CrateConfig, DmgConfig};
+        use anodize_core::context::{Context, ContextOptions};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&config.dist).unwrap();
+        let dmg_cfg = DmgConfig {
+            if_condition: if_expr.map(str::to_string),
+            ..Default::default()
+        };
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            dmgs: Some(vec![dmg_cfg]),
+            ..Default::default()
+        }];
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Os", "darwin");
+        // Seed a binary so DmgStage has something to package.
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+        ctx
+    }
+
+    #[test]
+    fn test_dmg_if_false_skips_config() {
+        let mut ctx = dmg_if_test_ctx(Some("false"));
+        DmgStage.run(&mut ctx).unwrap();
+        assert_eq!(
+            ctx.artifacts.by_kind(ArtifactKind::DiskImage).len(),
+            0,
+            "dmg if=false should skip, producing no DiskImage artifacts"
+        );
+    }
+
+    #[test]
+    fn test_dmg_if_empty_string_skips_config() {
+        let mut ctx = dmg_if_test_ctx(Some("{{ if false }}{{ end }}"));
+        DmgStage.run(&mut ctx).unwrap();
+        assert_eq!(ctx.artifacts.by_kind(ArtifactKind::DiskImage).len(), 0);
+    }
+
+    #[test]
+    fn test_dmg_if_render_failure_is_hard_error() {
+        let mut ctx = dmg_if_test_ctx(Some("{{ undefined_function 42 }}"));
+        let err = DmgStage
+            .run(&mut ctx)
+            .expect_err("unrenderable `if` should hard-error");
+        let msg = format!("{:#}", err);
+        assert!(
+            msg.contains("`if` template render failed"),
+            "error should name the `if` render failure, got: {msg}"
         );
     }
 }

@@ -1600,7 +1600,7 @@ crates:
     );
 }
 
-/// GoReleaser parity: unknown YAML fields should be rejected (strict parsing).
+/// unknown YAML fields should be rejected (strict parsing).
 #[test]
 fn test_check_unknown_yaml_fields_rejected() {
     let tmp = TempDir::new().unwrap();

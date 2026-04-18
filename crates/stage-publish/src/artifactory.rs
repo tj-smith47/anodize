@@ -1,11 +1,10 @@
 use anodize_core::artifact::{Artifact, ArtifactKind};
 use anodize_core::context::Context;
+use anodize_core::hashing::sha256_file;
 use anodize_core::log::StageLogger;
 use anyhow::{Context as _, Result, bail};
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
-use std::io::Read;
 
 // ---------------------------------------------------------------------------
 // validate_upload_mode
@@ -21,28 +20,6 @@ pub fn validate_upload_mode(mode: &str) -> Result<()> {
             other
         ),
     }
-}
-
-// ---------------------------------------------------------------------------
-// sha256_file
-// ---------------------------------------------------------------------------
-
-/// Compute the hex-encoded SHA-256 digest of a file.
-fn sha256_file(path: &std::path::Path) -> Result<String> {
-    let mut file = fs::File::open(path)
-        .with_context(|| format!("artifactory: failed to open '{}'", path.display()))?;
-    let mut hasher = Sha256::new();
-    let mut buf = [0u8; 8192];
-    loop {
-        let n = file
-            .read(&mut buf)
-            .with_context(|| format!("artifactory: failed to read '{}'", path.display()))?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    Ok(format!("{:x}", hasher.finalize()))
 }
 
 // ---------------------------------------------------------------------------

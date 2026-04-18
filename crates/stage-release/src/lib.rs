@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use anodize_core::artifact::ArtifactKind;
+use anodize_core::artifact::{ArtifactKind, matches_id_filter};
 use anodize_core::config::{
     ContentSource, ExtraFileSpec, GitHubUrlsConfig, MakeLatestConfig, PrereleaseConfig,
 };
@@ -42,7 +42,7 @@ fn percent_encode_path(s: &str) -> String {
 // check_github_rate_limit — proactive rate limit checking
 // ---------------------------------------------------------------------------
 
-/// GoReleaser parity (github.go:checkRateLimit): proactively check GitHub API
+/// proactively check GitHub API
 /// rate limits before making requests. If remaining calls are below the
 /// threshold, sleep until the reset time.
 async fn check_github_rate_limit(client: &reqwest::Client, token: &str, threshold: u64) {
@@ -461,7 +461,13 @@ pub(crate) fn build_release_body(
         parts.push(f);
     }
 
-    parts.join("\n")
+    if parts.is_empty() {
+        String::new()
+    } else {
+        let mut s = parts.join("\n");
+        s.push('\n');
+        s
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -473,7 +479,7 @@ pub(crate) fn build_release_body(
 /// a `name_template`, the template is rendered using the provided `Context` and
 /// returned as the second element; the upload loop should use this as the
 /// upload filename instead of the filesystem name.
-/// GoReleaser parity (internal/extrafiles/extra_files.go): invalid glob patterns
+/// invalid glob patterns
 /// and patterns that match zero files are hard errors, not silent skips.
 pub(crate) fn collect_extra_files(
     specs: &[ExtraFileSpec],
@@ -599,25 +605,95 @@ pub(crate) fn resolve_release_mode(mode: Option<&str>) -> Result<String> {
 // ---------------------------------------------------------------------------
 
 /// Resolve a `ContentSource` to its string content.
+///
 /// - Inline: returns the string directly.
-/// - FromFile: reads the file from disk.
-/// - FromUrl: fetches the URL content via HTTP GET.
-pub(crate) fn resolve_content_source(source: &ContentSource) -> Result<String> {
+/// - FromFile: template-renders the path, reads the file from disk.
+/// - FromUrl: template-renders URL and header values, fetches via HTTP GET
+///   with the supplied headers and retries (3 attempts, 500ms * 2^n backoff)
+///   on transient network errors and 5xx responses. 4xx responses fail fast.
+///
+/// GoReleaser Pro parity: header/footer from_url supports `headers:` map for
+/// authenticated private mirrors; URL and both sides of the headers map are
+/// template-rendered.
+pub(crate) fn resolve_content_source(
+    source: &ContentSource,
+    ctx: &anodize_core::context::Context,
+) -> Result<String> {
     match source {
         ContentSource::Inline(s) => Ok(s.clone()),
-        ContentSource::FromFile { from_file } => std::fs::read_to_string(from_file)
-            .map_err(|e| anyhow::anyhow!("failed to read {}: {}", from_file, e)),
-        ContentSource::FromUrl { from_url } => {
-            let response = reqwest::blocking::Client::builder()
-                .timeout(std::time::Duration::from_secs(30))
-                .build()?
-                .get(from_url)
-                .send()
-                .map_err(|e| anyhow::anyhow!("failed to fetch content URL: {}", e))?;
-            if !response.status().is_success() {
-                bail!("content URL returned HTTP {}", response.status());
+        ContentSource::FromFile { from_file } => {
+            let rendered_path = ctx
+                .render_template(from_file)
+                .with_context(|| format!("render from_file path: {}", from_file))?;
+            std::fs::read_to_string(&rendered_path)
+                .map_err(|e| anyhow::anyhow!("failed to read {}: {}", rendered_path, e))
+        }
+        ContentSource::FromUrl { from_url, headers } => {
+            let rendered_url = ctx
+                .render_template(from_url)
+                .with_context(|| format!("render from_url: {}", from_url))?;
+
+            // Render header values (keys are literal per GoReleaser docs).
+            let mut rendered_headers: Vec<(String, String)> = Vec::new();
+            if let Some(map) = headers {
+                for (k, v) in map {
+                    let rendered_v = ctx.render_template(v).with_context(|| {
+                        format!("render header value for '{}' at URL {}", k, rendered_url)
+                    })?;
+                    rendered_headers.push((k.clone(), rendered_v));
+                }
             }
-            Ok(response.text()?)
+
+            let client = reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()?;
+
+            // Retry loop: 3 attempts total, exponential backoff 500ms/1s/2s.
+            // Retry on request errors + 5xx; bail immediately on 4xx.
+            const MAX_ATTEMPTS: u32 = 3;
+            let mut last_err: Option<anyhow::Error> = None;
+            for attempt in 0..MAX_ATTEMPTS {
+                if attempt > 0 {
+                    let backoff_ms = 500u64 * (1u64 << (attempt - 1));
+                    std::thread::sleep(std::time::Duration::from_millis(backoff_ms));
+                }
+                let mut req = client.get(&rendered_url);
+                for (k, v) in &rendered_headers {
+                    req = req.header(k.as_str(), v.as_str());
+                }
+                match req.send() {
+                    Ok(response) => {
+                        let status = response.status();
+                        if status.is_success() {
+                            return Ok(response.text()?);
+                        }
+                        if status.is_client_error() {
+                            bail!(
+                                "content URL {} returned HTTP {} (no retry on 4xx)",
+                                rendered_url,
+                                status
+                            );
+                        }
+                        last_err = Some(anyhow::anyhow!(
+                            "content URL {} returned HTTP {} (attempt {}/{})",
+                            rendered_url,
+                            status,
+                            attempt + 1,
+                            MAX_ATTEMPTS
+                        ));
+                    }
+                    Err(e) => {
+                        last_err = Some(anyhow::anyhow!(
+                            "fetch {} failed (attempt {}/{}): {}",
+                            rendered_url,
+                            attempt + 1,
+                            MAX_ATTEMPTS,
+                            e
+                        ));
+                    }
+                }
+            }
+            Err(last_err.unwrap_or_else(|| anyhow::anyhow!("fetch failed without captured error")))
         }
     }
 }
@@ -1035,11 +1111,13 @@ impl Stage for ReleaseStage {
             ctx.refresh_artifacts_var();
 
             // Resolve and template-render header/footer before building release body.
+            // resolve_content_source now template-renders the from_file path and the
+            // from_url URL + header values internally; body still rendered here.
             let rendered_header = release_cfg
                 .header
                 .as_ref()
                 .map(|src| {
-                    let raw = resolve_content_source(src).with_context(|| {
+                    let raw = resolve_content_source(src, ctx).with_context(|| {
                         format!("release: resolve header for crate '{}'", crate_name)
                     })?;
                     ctx.render_template(&raw).with_context(|| {
@@ -1051,7 +1129,7 @@ impl Stage for ReleaseStage {
                 .footer
                 .as_ref()
                 .map(|src| {
-                    let raw = resolve_content_source(src).with_context(|| {
+                    let raw = resolve_content_source(src, ctx).with_context(|| {
                         format!("release: resolve footer for crate '{}'", crate_name)
                     })?;
                     ctx.render_template(&raw).with_context(|| {
@@ -1073,6 +1151,21 @@ impl Stage for ReleaseStage {
                 release_cfg.tag.as_deref(),
                 &crate_cfg.name,
             )?;
+
+            // Warn loudly when `release.tag` resolves to something other than
+            // the pushed git tag: GitHub will auto-create the override tag at
+            // target_commitish, diverging from the source-of-truth tag that
+            // triggered the release.
+            if release_cfg.tag.is_some()
+                && let Some(pushed_tag) = ctx.template_vars().get("Tag")
+                && !pushed_tag.is_empty()
+                && pushed_tag != tag.as_str()
+            {
+                log.warn(&format!(
+                    "release: release.tag override '{}' differs from pushed git tag '{}' (crate '{}') — GitHub will create a new tag at the target commit",
+                    tag, pushed_tag, crate_cfg.name
+                ));
+            }
 
             // Resolve release name (GoReleaser defaults to "{{.Tag}}").
             let name_tmpl = release_cfg.name_template.as_deref().unwrap_or("{{ Tag }}");
@@ -1126,35 +1219,19 @@ impl Stage for ReleaseStage {
             // Collect uploadable artifacts for this crate, applying ids filter.
             // Each entry is (path, optional_custom_name). The custom name is only
             // set for extra_files with a name_template; regular artifacts use None.
-            // GoReleaser uploads archives, packages, and signatures — NOT raw
-            // binaries (Binary kind).  Raw binaries share the same filename
-            // across platforms, causing "already_exists" collisions.
             //
-            // Matches GoReleaser `internal/pipe/release/release.go:160-167`:
-            //   types := artifact.ReleaseUploadableTypes()
-            //   if ctx.Config.Release.IncludeMeta { types = append(types, artifact.Metadata) }
-            let mut upload_kinds: Vec<ArtifactKind> = vec![
-                ArtifactKind::Archive,
-                ArtifactKind::UploadableBinary,
-                ArtifactKind::UniversalBinary,
-                ArtifactKind::Checksum,
-                ArtifactKind::LinuxPackage,
-                ArtifactKind::Snap,
-                ArtifactKind::DiskImage,
-                ArtifactKind::Installer,
-                ArtifactKind::MacOsPackage,
-                ArtifactKind::SourceArchive,
-                ArtifactKind::SourceRpm,
-                ArtifactKind::Makeself,
-                ArtifactKind::Flatpak,
-                ArtifactKind::Sbom,
-                ArtifactKind::UploadableFile,
-                ArtifactKind::Signature,
-                ArtifactKind::Certificate,
-                ArtifactKind::Header,
-                ArtifactKind::CArchive,
-                ArtifactKind::CShared,
-            ];
+            // Reference the canonical helper `release_uploadable_kinds()` to
+            // stay in sync with GoReleaser `internal/pipe/release/release.go`
+            // which calls `artifact.ReleaseUploadableTypes()`. Previously this
+            // hardcoded 20 kinds and over-uploaded Snap + Pro-only types
+            // (CArchive/CShared/Header/DiskImage/Installer/MacOsPackage/
+            // UniversalBinary) on GitHub — Snap belongs on the Snap store,
+            // and the Pro kinds aren't in GoReleaser's release list.
+            //
+            // When `IncludeMeta` is true the Metadata kind is appended, per
+            // `release.go:160-167`.
+            let mut upload_kinds: Vec<ArtifactKind> =
+                anodize_core::artifact::release_uploadable_kinds().to_vec();
             if include_meta {
                 upload_kinds.push(ArtifactKind::Metadata);
             }
@@ -1165,18 +1242,9 @@ impl Stage for ReleaseStage {
                         .artifacts
                         .by_kind_and_crate(kind, &crate_cfg.name)
                         .into_iter();
-                    if let Some(ids) = ids_filter {
+                    if ids_filter.is_some() {
                         artifacts
-                            .filter(|a| {
-                                // Checksums and source archives are ID-agnostic
-                                // (always included regardless of IDs filter, matching GoReleaser).
-                                // Note: extra files (UploadableFile in GoReleaser) are also exempt,
-                                // but those are handled separately via collect_extra_files.
-                                matches!(
-                                    a.kind,
-                                    ArtifactKind::Checksum | ArtifactKind::SourceArchive
-                                ) || matches!(a.metadata.get("id"), Some(id) if ids.contains(id))
-                            })
+                            .filter(|a| matches_id_filter(a, ids_filter.map(Vec::as_slice)))
                             .map(|a| (a.path.clone(), None))
                             .collect::<Vec<_>>()
                     } else {
@@ -2027,7 +2095,7 @@ impl Stage for ReleaseStage {
                             "/repos/{}/{}/releases/{}",
                             github.owner, github.name, existing.id
                         );
-                        // GoReleaser parity (github.go:541): preserve the existing
+                        // preserve the existing
                         // release's draft state on PATCH. Our default json_body is
                         // built with `draft=true` for the create path; when updating
                         // an existing release we must not flip it back to draft.
@@ -2262,7 +2330,7 @@ impl Stage for ReleaseStage {
                                                 }
                                             }
 
-                                            // GoReleaser parity: handle rate limiting
+                                            // handle rate limiting
                                             // (403/429) by sleeping and retrying.
                                             let is_rate_limited = matches!(
                                                 &err,
@@ -2759,35 +2827,34 @@ mod tests {
             Some("# Release v1.0"),
             Some("---\nPowered by anodize"),
         );
-        // GoReleaser parity: single newline separator between header, body, footer
         assert_eq!(
             body,
-            "# Release v1.0\n## Changes\n- Fixed a bug\n---\nPowered by anodize"
+            "# Release v1.0\n## Changes\n- Fixed a bug\n---\nPowered by anodize\n"
         );
     }
 
     #[test]
     fn test_build_release_body_header_only() {
         let body = build_release_body("changelog content", Some("HEADER"), None);
-        assert_eq!(body, "HEADER\nchangelog content");
+        assert_eq!(body, "HEADER\nchangelog content\n");
     }
 
     #[test]
     fn test_build_release_body_footer_only() {
         let body = build_release_body("changelog content", None, Some("FOOTER"));
-        assert_eq!(body, "changelog content\nFOOTER");
+        assert_eq!(body, "changelog content\nFOOTER\n");
     }
 
     #[test]
     fn test_build_release_body_no_header_footer() {
         let body = build_release_body("changelog content", None, None);
-        assert_eq!(body, "changelog content");
+        assert_eq!(body, "changelog content\n");
     }
 
     #[test]
     fn test_build_release_body_empty_changelog() {
         let body = build_release_body("", Some("HEADER"), Some("FOOTER"));
-        assert_eq!(body, "HEADER\nFOOTER");
+        assert_eq!(body, "HEADER\nFOOTER\n");
     }
 
     #[test]
@@ -2800,7 +2867,7 @@ mod tests {
     fn test_build_release_body_empty_string_header_footer() {
         // Empty strings should be treated as absent
         let body = build_release_body("changes", Some(""), Some(""));
-        assert_eq!(body, "changes");
+        assert_eq!(body, "changes\n");
     }
 
     // ---- collect_extra_files tests ----
@@ -2815,7 +2882,7 @@ mod tests {
     #[test]
     fn test_collect_extra_files_no_matches() {
         let ctx = TestContextBuilder::new().build();
-        // GoReleaser parity: a glob that matches nothing is a hard error.
+        // a glob that matches nothing is a hard error.
         let result = collect_extra_files(
             &[ExtraFileSpec::Glob(
                 "/tmp/anodize_test_nonexistent_dir_12345/*.xyz".to_string(),
@@ -3006,7 +3073,7 @@ mod tests {
 
     #[test]
     fn test_dry_run_with_extra_files() {
-        // GoReleaser parity: extra_files globs that match nothing are hard
+        // extra_files globs that match nothing are hard
         // errors. Create a real file so the stage completes successfully.
         let tmp = std::env::temp_dir().join("anodize_test_dry_extra_files");
         let _ = std::fs::create_dir_all(&tmp);
@@ -3215,7 +3282,7 @@ mod tests {
     #[test]
     fn test_collect_extra_files_invalid_glob_pattern() {
         let ctx = TestContextBuilder::new().build();
-        // GoReleaser parity: invalid glob patterns are hard errors, not silent skips.
+        // invalid glob patterns are hard errors, not silent skips.
         let result = collect_extra_files(&[ExtraFileSpec::Glob("[invalid-glob".to_string())], &ctx);
         assert!(result.is_err());
     }
@@ -3281,7 +3348,7 @@ mod tests {
         let create_calls = mock.create_release_calls();
         assert_eq!(create_calls[0].owner, "testowner");
         assert_eq!(create_calls[0].tag_name, "v1.0.0");
-        assert_eq!(create_calls[0].body, "# v1.0.0\n- initial release");
+        assert_eq!(create_calls[0].body, "# v1.0.0\n- initial release\n");
         assert!(!create_calls[0].prerelease);
 
         let upload_calls = mock.upload_asset_calls();
@@ -3304,9 +3371,9 @@ mod tests {
         assert!(body.starts_with("## Release v2.0"));
         assert!(body.contains("- Fixed bug A"));
         assert!(body.contains("- Added feature B"));
-        assert!(body.ends_with("Thank you for using our tool!"));
+        assert!(body.ends_with("Thank you for using our tool!\n"));
 
-        // GoReleaser parity: parts separated by single newline
+        // parts separated by single newline
         assert!(body.contains("## Release v2.0\n- Fixed bug A"));
         assert!(body.contains("Added feature B\n---"));
     }
@@ -4125,8 +4192,6 @@ draft: true
 
     #[test]
     fn test_ids_filter_unit_logic() {
-        // Directly test the filter logic used in the release stage:
-        // artifacts whose metadata "id" is in the ids list pass; others don't.
         use anodize_core::artifact::{Artifact, ArtifactKind};
         use std::collections::HashMap;
         use std::path::PathBuf;
@@ -4172,23 +4237,19 @@ draft: true
             },
         ];
 
-        // Apply the same filter logic as the stage
         let filtered: Vec<_> = artifacts
             .iter()
-            .filter(|a| matches!(a.metadata.get("id"), Some(id) if ids.contains(id)))
+            .filter(|a| anodize_core::artifact::matches_id_filter(a, Some(&ids)))
             .collect();
 
-        assert_eq!(filtered.len(), 2, "should match linux and windows only");
         assert_eq!(
-            filtered[0].path,
-            PathBuf::from("/tmp/linux.tar.gz"),
-            "first match should be linux"
+            filtered.len(),
+            3,
+            "should match linux + windows archives plus the Checksum (always-pass per GoReleaser ByID)"
         );
-        assert_eq!(
-            filtered[1].path,
-            PathBuf::from("/tmp/windows.zip"),
-            "second match should be windows"
-        );
+        assert_eq!(filtered[0].path, PathBuf::from("/tmp/linux.tar.gz"));
+        assert_eq!(filtered[1].path, PathBuf::from("/tmp/windows.zip"));
+        assert_eq!(filtered[2].path, PathBuf::from("/tmp/checksums.txt"));
     }
 
     #[test]
@@ -4210,10 +4271,10 @@ draft: true
             size: None,
         };
 
-        let matches = matches!(artifact_no_id.metadata.get("id"), Some(id) if ids.contains(id));
+        let matches = anodize_core::artifact::matches_id_filter(&artifact_no_id, Some(&ids));
         assert!(
             !matches,
-            "artifact without id metadata should not match ids filter"
+            "Archive artifact without id metadata should not match ids filter"
         );
     }
 
@@ -4474,14 +4535,27 @@ draft: true
 
     // ---- resolve_content_source tests ----
 
+    fn content_source_test_ctx() -> anodize_core::context::Context {
+        use anodize_core::config::Config;
+        use anodize_core::context::{Context, ContextOptions};
+        let mut config = Config::default();
+        config.project_name = "test".to_string();
+        Context::new(config, ContextOptions::default())
+    }
+
     #[test]
     fn test_resolve_content_source_inline() {
+        let ctx = content_source_test_ctx();
         let source = ContentSource::Inline("hello world".to_string());
-        assert_eq!(resolve_content_source(&source).unwrap(), "hello world");
+        assert_eq!(
+            resolve_content_source(&source, &ctx).unwrap(),
+            "hello world"
+        );
     }
 
     #[test]
     fn test_resolve_content_source_from_file() {
+        let ctx = content_source_test_ctx();
         let dir = tempfile::tempdir().unwrap();
         let file_path = dir.path().join("header.md");
         std::fs::write(&file_path, "# Release Header\nFrom file.").unwrap();
@@ -4489,18 +4563,80 @@ draft: true
         let source = ContentSource::FromFile {
             from_file: file_path.to_string_lossy().into_owned(),
         };
-        let result = resolve_content_source(&source).unwrap();
+        let result = resolve_content_source(&source, &ctx).unwrap();
         assert_eq!(result, "# Release Header\nFrom file.");
     }
 
     #[test]
     fn test_resolve_content_source_from_file_not_found() {
+        let ctx = content_source_test_ctx();
         let source = ContentSource::FromFile {
             from_file: "/tmp/anodize_nonexistent_file_12345.md".to_string(),
         };
-        let result = resolve_content_source(&source);
+        let result = resolve_content_source(&source, &ctx);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("failed to read"));
+    }
+
+    #[test]
+    fn test_resolve_content_source_from_file_path_is_template_rendered() {
+        // GoReleaser docs say `from_file: "./release-{{ .Tag }}.md"` should work —
+        // previously the path was read raw. Regression-guard: template-render path first.
+        let mut ctx = content_source_test_ctx();
+        ctx.template_vars_mut().set("Tag", "v9.8.7");
+
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("release-v9.8.7.md");
+        std::fs::write(&file_path, "rendered path worked").unwrap();
+
+        let tmpl_path = format!("{}/release-{{{{ .Tag }}}}.md", dir.path().to_string_lossy());
+        let source = ContentSource::FromFile {
+            from_file: tmpl_path,
+        };
+        let result = resolve_content_source(&source, &ctx).unwrap();
+        assert_eq!(result, "rendered path worked");
+    }
+
+    #[test]
+    fn test_content_source_from_url_with_headers_parses() {
+        // Schema: new `headers` map on FromUrl variant (GoReleaser Pro parity).
+        use anodize_core::config::ContentSource;
+        let yaml = r#"
+from_url: https://example.com/h.md
+headers:
+  X-API-Token: "{{ .Env.TOKEN }}"
+  Accept: text/markdown
+"#;
+        let parsed: ContentSource = serde_yaml_ng::from_str(yaml).unwrap();
+        match parsed {
+            ContentSource::FromUrl { from_url, headers } => {
+                assert_eq!(from_url, "https://example.com/h.md");
+                let h = headers.expect("headers should deserialize");
+                assert_eq!(
+                    h.get("X-API-Token").map(String::as_str),
+                    Some("{{ .Env.TOKEN }}")
+                );
+                assert_eq!(h.get("Accept").map(String::as_str), Some("text/markdown"));
+            }
+            other => panic!("expected FromUrl, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_content_source_from_url_without_headers_parses() {
+        // Backwards compat — old config with just `from_url:` still works.
+        use anodize_core::config::ContentSource;
+        let yaml = r#"
+from_url: https://example.com/h.md
+"#;
+        let parsed: ContentSource = serde_yaml_ng::from_str(yaml).unwrap();
+        match parsed {
+            ContentSource::FromUrl { from_url, headers } => {
+                assert_eq!(from_url, "https://example.com/h.md");
+                assert!(headers.is_none());
+            }
+            other => panic!("expected FromUrl, got {:?}", other),
+        }
     }
 
     // ---- new config field parsing tests ----
@@ -4682,7 +4818,7 @@ draft: true
 
     #[test]
     fn test_dry_run_with_all_new_fields() {
-        // GoReleaser parity: extra_files globs must match at least one file.
+        // extra_files globs must match at least one file.
         let tmp = std::env::temp_dir().join("anodize_test_dry_all_fields");
         let _ = std::fs::create_dir_all(&tmp);
         let file = tmp.join("extra.sig");

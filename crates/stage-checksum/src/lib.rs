@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -7,38 +7,19 @@ use anyhow::{Context as _, Result, bail};
 use blake2::{Blake2b512, Blake2s256};
 use md5::Md5;
 use sha1::Sha1;
-use sha2::{Digest, Sha224, Sha256, Sha384, Sha512};
+use sha2::{Sha224, Sha384, Sha512};
 use sha3::{Sha3_224, Sha3_256, Sha3_384, Sha3_512};
 
-use anodize_core::artifact::{Artifact, ArtifactKind};
-use anodize_core::config::{ExtraFileSpec, StringOrBool};
+use anodize_core::artifact::{Artifact, ArtifactKind, matches_id_filter};
+use anodize_core::config::ExtraFileSpec;
 use anodize_core::context::Context;
-use anodize_core::log::StageLogger;
 use anodize_core::stage::Stage;
 
 // ---------------------------------------------------------------------------
 // Hash helpers
 // ---------------------------------------------------------------------------
 
-/// Generic helper: open a file, feed it to any `Digest` hasher, return hex.
-fn hash_file_with<D: Digest>(path: &Path, algo_name: &str) -> Result<String> {
-    let mut file =
-        File::open(path).with_context(|| format!("{algo_name}: open {}", path.display()))?;
-    let mut hasher = D::new();
-    let mut buf = [0u8; 8192];
-    loop {
-        let n = file
-            .read(&mut buf)
-            .with_context(|| format!("{algo_name}: read {}", path.display()))?;
-        if n == 0 {
-            break;
-        }
-        Digest::update(&mut hasher, &buf[..n]);
-    }
-    let result = hasher.finalize();
-    let hex: String = result.iter().map(|b| format!("{:02x}", b)).collect();
-    Ok(hex)
-}
+use anodize_core::hashing::hash_file_with;
 
 pub fn sha1_file(path: &Path) -> Result<String> {
     hash_file_with::<Sha1>(path, "sha1")
@@ -48,9 +29,7 @@ pub fn sha224_file(path: &Path) -> Result<String> {
     hash_file_with::<Sha224>(path, "sha224")
 }
 
-pub fn sha256_file(path: &Path) -> Result<String> {
-    hash_file_with::<Sha256>(path, "sha256")
-}
+pub use anodize_core::hashing::sha256_file;
 
 pub fn sha384_file(path: &Path) -> Result<String> {
     hash_file_with::<Sha384>(path, "sha384")
@@ -176,63 +155,28 @@ struct ResolvedExtraFile {
     name_template: Option<String>,
 }
 
-/// Resolve a list of extra file specs into deduplicated, sorted file paths.
-fn resolve_extra_files(specs: &[ExtraFileSpec]) -> Result<Vec<ResolvedExtraFile>> {
-    let mut seen: HashSet<PathBuf> = HashSet::new();
-    let mut results: Vec<ResolvedExtraFile> = Vec::new();
-    for spec in specs {
-        let pattern = spec.glob();
-        let name_tmpl = spec.name_template().map(|s| s.to_owned());
-        let matches: Vec<_> = glob::glob(pattern)
-            .with_context(|| format!("checksum: invalid extra_files glob: {pattern}"))?
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .with_context(|| format!("checksum: error reading glob results for: {pattern}"))?;
-        // GoReleaser constraint (extra_files.go:33-34): when name_template is set,
-        // the glob must match exactly one entry. Check BEFORE directory filtering
-        // to match GoReleaser's behavior.
-        if let Some(ref tmpl) = name_tmpl
-            && matches.len() > 1
-        {
-            bail!(
-                "checksum: extra_files glob '{}' -> '{}': glob matches {} files",
-                pattern,
-                tmpl,
-                matches.len()
-            );
-        }
-        let file_matches: Vec<_> = matches.into_iter().filter(|m| m.is_file()).collect();
-        for m in file_matches {
-            if seen.insert(m.clone()) {
-                results.push(ResolvedExtraFile {
-                    path: m,
-                    name_template: name_tmpl.clone(),
-                });
-            }
-        }
-    }
-    results.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(results)
+/// Resolve `extra_files` via the canonical `core::extrafiles::resolve` — thin
+/// adapter that returns the local `ResolvedExtraFile` shape expected by the
+/// rest of this module.
+fn resolve_extra_files(
+    specs: &[ExtraFileSpec],
+    log: &anodize_core::log::StageLogger,
+) -> Result<Vec<ResolvedExtraFile>> {
+    anodize_core::extrafiles::resolve(specs, log)
+        .map(|v| {
+            v.into_iter()
+                .map(|r| ResolvedExtraFile {
+                    path: r.path,
+                    name_template: r.name_template,
+                })
+                .collect()
+        })
+        .with_context(|| "checksum: resolve extra_files")
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-fn is_disabled(
-    disable: &Option<StringOrBool>,
-    ctx: &Context,
-    log: &StageLogger,
-    label: &str,
-) -> bool {
-    let Some(d) = disable else {
-        return false;
-    };
-    let should_disable = d.is_disabled(|s| ctx.render_template(s));
-    if should_disable {
-        log.status(&format!("{} disabled", label));
-    }
-    should_disable
-}
 
 // ---------------------------------------------------------------------------
 // ChecksumStage
@@ -268,7 +212,7 @@ impl Stage for ChecksumStage {
             .and_then(|d| d.checksum.as_ref());
 
         let global_disable = global_cksum.and_then(|c| c.disable.clone());
-        if is_disabled(&global_disable, ctx, &log, "checksum globally") {
+        if ctx.is_disabled_with_log(&global_disable, &log, "checksum globally") {
             return Ok(());
         }
 
@@ -298,9 +242,8 @@ impl Stage for ChecksumStage {
 
             // Skip crates that have checksum explicitly disabled
             let crate_disable = crate_cfg.checksum.as_ref().and_then(|c| c.disable.clone());
-            if is_disabled(
+            if ctx.is_disabled_with_log(
                 &crate_disable,
-                ctx,
                 &log,
                 &format!("checksum for crate {crate_name}"),
             ) {
@@ -347,12 +290,9 @@ impl Stage for ChecksumStage {
                     .by_kind_and_crate(kind, crate_name)
                     .into_iter()
                     .cloned();
-                if let Some(ref ids) = ids_filter {
-                    source_artifacts.extend(
-                        artifacts.filter(
-                            |a| matches!(a.metadata.get("id"), Some(id) if ids.contains(id)),
-                        ),
-                    );
+                if ids_filter.is_some() {
+                    source_artifacts
+                        .extend(artifacts.filter(|a| matches_id_filter(a, ids_filter.as_deref())));
                 } else {
                     source_artifacts.extend(artifacts);
                 }
@@ -360,7 +300,7 @@ impl Stage for ChecksumStage {
 
             // Resolve extra_files globs and create synthetic artifacts for them
             if let Some(ref specs) = extra_files {
-                let resolved = resolve_extra_files(specs)?;
+                let resolved = resolve_extra_files(specs, &log)?;
                 for ef in resolved {
                     let mut metadata =
                         HashMap::from([("extra_file".to_string(), "true".to_string())]);
@@ -452,6 +392,11 @@ impl Stage for ChecksumStage {
                     let mut vars = ctx.template_vars().clone();
                     vars.set("ArtifactName", filename);
                     vars.set("ArtifactExt", artifact_ext);
+                    // `Algorithm` parity with the sidecar name_template path
+                    // below — users writing `{{ .ArtifactName }}.{{ .Algorithm
+                    // }}` in extra_files name_template expect it available
+                    // here too.
+                    vars.set("Algorithm", &algorithm);
                     anodize_core::template::render(tmpl, &vars)
                         .unwrap_or_else(|_| filename.to_string())
                 } else {
@@ -526,6 +471,17 @@ impl Stage for ChecksumStage {
 
             // Sort combined lines by filename (the part after "  ") for
             // deterministic output and reproducible builds.
+            //
+            // Edge case — inherited from GoReleaser (checksums.go:171-174
+            // uses `strings.Split(a, "  ")[1]`): filenames that themselves
+            // contain a two-space sequence will be sorted by the prefix
+            // before the *first* double-space, producing a wrong sort key.
+            // This is intentionally matched to GoReleaser behavior; changing
+            // it would diverge and the divergence test
+            // `test_combined_sort_doublespace_divergence` will flag a fix.
+            // In practice artifact filenames never contain double-spaces so
+            // this is benign — but documented so future refactors don't
+            // silently "improve" it.
             combined_lines.sort_by(|a, b| {
                 let name_a = a.split_once("  ").map(|(_, n)| n).unwrap_or(a);
                 let name_b = b.split_once("  ").map(|(_, n)| n).unwrap_or(b);
@@ -595,7 +551,7 @@ impl Stage for ChecksumStage {
                 ));
             }
 
-            // GoReleaser parity: store the computed checksum back into each
+            // store the computed checksum back into each
             // source artifact's metadata as "Checksum" = "algorithm:hash".
             // Publishers (Homebrew, Krew, etc.) read this to get per-artifact
             // checksums without re-hashing.
@@ -712,6 +668,28 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+
+    /// Divergence test — pins the inherited GoReleaser sort behavior for
+    /// filenames that contain a two-space sequence. If this assertion ever
+    /// breaks, someone "fixed" the sort and diverged from GoReleaser.
+    /// Update the source comment if that is intentional.
+    #[test]
+    fn test_combined_sort_doublespace_divergence() {
+        // Mirrors the `split_once("  ")` keying used in the combined-line
+        // sort above. A filename containing a double-space splits early,
+        // producing a wrong key — inherited from GoReleaser checksums.go.
+        let line = "deadbeef  weird  name.tar.gz";
+        let (_hash, rest) = line.split_once("  ").unwrap();
+        assert_eq!(
+            rest, "weird  name.tar.gz",
+            "split_once extracts everything after the first double-space"
+        );
+        // And the sort key for a line where the filename itself contains
+        // a double-space picks up only the prefix before the *next*
+        // double-space — the documented divergence point.
+        let key = rest.split_once("  ").map(|(p, _)| p).unwrap_or(rest);
+        assert_eq!(key, "weird", "inherited divergence — not a real filename");
+    }
 
     // -- Algorithm unit tests with known test vectors -------------------------
 
@@ -1861,6 +1839,68 @@ ids:
         assert!(
             content.contains("extra-file.txt"),
             "combined should include extra file"
+        );
+    }
+
+    /// Regression: `{{ .Algorithm }}` must be available inside
+    /// extra_files[].name_template (combined-checksum alias rendering path).
+    /// Previously `Algorithm` was only set on the sidecar name_template vars
+    /// bag — users writing `"{{ .ArtifactName }}.{{ .Algorithm }}"` saw
+    /// render failure and fell back to the raw filename.
+    #[test]
+    fn test_extra_files_name_template_exposes_algorithm_var() {
+        use anodize_core::config::{ChecksumConfig, Config, CrateConfig, ExtraFileSpec};
+        use anodize_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        fs::create_dir_all(&dist).unwrap();
+
+        let archive = dist.join("app.tar.gz");
+        fs::write(&archive, b"archive content").unwrap();
+
+        let extra = dist.join("extra-file.txt");
+        fs::write(&extra, b"extra content").unwrap();
+
+        let config = Config {
+            project_name: "app".to_string(),
+            dist: dist.clone(),
+            crates: vec![CrateConfig {
+                name: "app".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                checksum: Some(ChecksumConfig {
+                    algorithm: Some("sha256".to_string()),
+                    extra_files: Some(vec![ExtraFileSpec::Detailed {
+                        glob: extra.to_string_lossy().into_owned(),
+                        name_template: Some("{{ .ArtifactName }}.{{ .Algorithm }}".to_string()),
+                    }]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            name: String::new(),
+            path: archive,
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        ChecksumStage.run(&mut ctx).unwrap();
+
+        let combined = dist.join("app_1.0.0_checksums.txt");
+        let content = fs::read_to_string(&combined).unwrap();
+        assert!(
+            content.contains("extra-file.txt.sha256"),
+            "combined should include Algorithm-rendered alias; got:\n{content}"
         );
     }
 

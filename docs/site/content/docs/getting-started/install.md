@@ -53,10 +53,10 @@ anodize healthcheck
 | `cargo` | Building | Comes with Rust |
 | `git` | Version detection, changelog | System package manager |
 | `docker` | Docker stage | [docker.com](https://docs.docker.com/get-docker/) |
-| `nfpm` | Linux packages (.deb, .rpm, .apk) | [nfpm.goreleaser.com](https://nfpm.goreleaser.com/install/) |
+| `nfpm` | Linux packages (.deb, .rpm, .apk) | [nfpm.goreleaser.com](https://nfpm.goreleaser.com/) |
 | `cargo-zigbuild` | Cross-compilation (zigbuild strategy) | `cargo install cargo-zigbuild` |
 | `cross` | Cross-compilation (cross strategy) | `cargo install cross` |
 | `gpg` | GPG signing | System package manager |
-| `cosign` | Cosign signing | [sigstore.dev](https://docs.sigstore.dev/cosign/installation/) |
+| `cosign` | Cosign signing | [sigstore.dev](https://docs.sigstore.dev/cosign/system_config/installation/) |
 
 Only `cargo` and `git` are required for basic usage. Other tools are only needed if you enable the corresponding stages.

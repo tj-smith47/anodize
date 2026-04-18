@@ -175,17 +175,6 @@
         }
       ]
     },
-    "fury": {
-      "description": "GemFury publisher configurations.",
-      "default": null,
-      "type": [
-        "array",
-        "null"
-      ],
-      "items": {
-        "$ref": "#/definitions/FuryConfig"
-      }
-    },
     "git": {
       "description": "Git-level tag discovery and sorting settings.",
       "default": null,
@@ -322,17 +311,6 @@
           "type": "null"
         }
       ]
-    },
-    "npms": {
-      "description": "NPM publisher configurations.",
-      "default": null,
-      "type": [
-        "array",
-        "null"
-      ],
-      "items": {
-        "$ref": "#/definitions/NpmConfig"
-      }
     },
     "partial": {
       "description": "Partial/split build configuration for fan-out CI pipelines.",
@@ -757,6 +735,14 @@
             "type": "string"
           }
         },
+        "if": {
+          "description": "Template-conditional: skip this app bundle config if rendered result is \"false\" or empty (GoReleaser Pro). Render failure hard-errors (not silent-skip).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "mod_timestamp": {
           "description": "Output timestamp for reproducible builds.",
           "default": null,
@@ -890,7 +876,7 @@
           ]
         },
         "ids": {
-          "description": "Build IDs filter: only include artifacts from builds whose `id` is in this list.",
+          "description": "Build IDs filter: only include artifacts from builds whose `id` is in this list.\n\nAlso accepts the deprecated `builds` alias for GoReleaser pre-v1 compatibility (consistent with nfpm + docker manifests).",
           "default": null,
           "type": [
             "array",
@@ -1165,6 +1151,14 @@
     "AurConfig": {
       "type": "object",
       "properties": {
+        "amd64_variant": {
+          "description": "amd64 microarchitecture variant filter (e.g. \"v1\", \"v2\", \"v3\", \"v4\"). Only artifacts matching this variant are included. Default: \"v1\".",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "backup": {
           "description": "List of config files to preserve on upgrade (relative to `/`).",
           "default": null,
@@ -1267,14 +1261,6 @@
         },
         "git_url": {
           "description": "AUR SSH git URL (e.g., `ssh://aur@aur.archlinux.org/<package>.git`).",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "goamd64": {
-          "description": "amd64 microarchitecture variant filter (e.g. \"v1\", \"v2\", \"v3\", \"v4\"). Only artifacts matching this variant are included. Default: \"v1\".",
           "default": null,
           "type": [
             "string",
@@ -1914,6 +1900,14 @@
             "null"
           ]
         },
+        "pds_url": {
+          "description": "Override the Bluesky PDS (Personal Data Server) URL. Defaults to `https://bsky.social`. Set this to point at a self-hosted PDS or alternative instance (e.g. `https://pds.example.com`).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "username": {
           "description": "Bluesky handle/username (e.g. \"user.bsky.social\").",
           "default": null,
@@ -2110,7 +2104,7 @@
       }
     },
     "BuildHooksConfig": {
-      "description": "Pre/post hook configuration shared across multiple stages. Despite the `Build` prefix in the name, this type is used by both the **build** stage (pre/post compilation hooks) and the **archive** stage (pre/post archiving hooks). The name is kept for backward compatibility with existing configs. **Not** to be confused with the top-level `HooksConfig` (which carries a flat `hooks: Vec<String>` list for `before`/`after` lifecycle hooks).",
+      "description": "Pre/post hook configuration shared across multiple stages. Despite the `Build` prefix in the name, this type is used by both the **build** stage (pre/post compilation hooks) and the **archive** stage (pre/post archiving hooks). The name is kept for backward compatibility with existing configs. **Not** to be confused with the top-level `HooksConfig` (which carries a flat `hooks: Vec<String>` list for `before`/`after` lifecycle hooks).\n\nGoReleaser parity: archive hooks in GoReleaser use `before`/`after` (not `pre`/`post`). Anodize accepts both spellings via serde aliases so configs copied from GoReleaser docs don't silently drop their hooks.",
       "type": "object",
       "properties": {
         "post": {
@@ -2550,6 +2544,14 @@
     "ChocolateyConfig": {
       "type": "object",
       "properties": {
+        "amd64_variant": {
+          "description": "amd64 microarchitecture variant filter (e.g. \"v1\", \"v2\", \"v3\", \"v4\"). Only artifacts matching this variant are included. Default: \"v1\".",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "api_key": {
           "description": "Chocolatey API key for `choco push`. Falls back to `CHOCOLATEY_API_KEY` env var.",
           "default": null,
@@ -2615,14 +2617,6 @@
         },
         "docs_url": {
           "description": "Documentation URL.",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "goamd64": {
-          "description": "amd64 microarchitecture variant filter (e.g. \"v1\", \"v2\", \"v3\", \"v4\"). Only artifacts matching this variant are included. Default: \"v1\".",
           "default": null,
           "type": [
             "string",
@@ -3034,7 +3028,7 @@
       }
     },
     "ContentSource": {
-      "description": "A content source that can be an inline string, read from a file, or fetched from a URL. Used for release header/footer values.\n\nYAML examples: header: \"inline text\" header: from_file: ./RELEASE_HEADER.md header: from_url: https://example.com/header.md",
+      "description": "A content source that can be an inline string, read from a file, or fetched from a URL. Used for release header/footer values.\n\nYAML examples: header: \"inline text\" header: from_file: ./RELEASE_HEADER.md header: from_url: https://example.com/header.md header: from_url: https://example.com/header.md headers: X-API-Token: \"{{ .Env.API_TOKEN }}\" Accept: \"text/markdown\"\n\nBoth `from_file` path and `from_url` URL are template-rendered before use. Header values are template-rendered. (GoReleaser Pro parity.)",
       "anyOf": [
         {
           "type": "string"
@@ -3058,6 +3052,16 @@
           "properties": {
             "from_url": {
               "type": "string"
+            },
+            "headers": {
+              "description": "Optional HTTP headers (value templates allowed). Enables private mirrors and authenticated endpoints.",
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": {
+                "type": "string"
+              }
             }
           }
         }
@@ -3630,6 +3634,14 @@
           "items": {
             "type": "string"
           }
+        },
+        "if": {
+          "description": "Template-conditional: skip this DMG config if rendered result is \"false\" or empty (GoReleaser Pro). Render failure hard-errors (not silent-skip).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "mod_timestamp": {
           "description": "Output timestamp for reproducible builds.",
@@ -4767,62 +4779,6 @@
         }
       }
     },
-    "FuryConfig": {
-      "description": "GemFury publisher configuration. Pushes packages to GemFury (fury.io) package hosting.",
-      "type": "object",
-      "properties": {
-        "account": {
-          "description": "GemFury account name.",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "disable": {
-          "description": "Disable this publisher. Accepts bool or template string.",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/StringOrBool"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "formats": {
-          "description": "Package format filter: only publish artifacts matching these formats (e.g. \"deb\", \"rpm\").",
-          "default": null,
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "string"
-          }
-        },
-        "ids": {
-          "description": "Build IDs filter: only publish artifacts from builds whose `id` is in this list.",
-          "default": null,
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "string"
-          }
-        },
-        "secret_name": {
-          "description": "Environment variable name containing the GemFury push token.",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      }
-    },
     "GitConfig": {
       "description": "Git-level tag discovery and sorting settings.\n\nControls how anodize discovers and orders tags when determining the current and previous versions. This is separate from `TagConfig`, which controls version *bumping* logic.",
       "type": "object",
@@ -5514,6 +5470,22 @@
     "HomebrewConfig": {
       "type": "object",
       "properties": {
+        "amd64_variant": {
+          "description": "amd64 microarchitecture variant filter (e.g. \"v1\", \"v2\", \"v3\", \"v4\"). Only artifacts matching this variant are included. Default: \"v1\".",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "arm_variant": {
+          "description": "ARM version filter (e.g. \"6\", \"7\"). Only artifacts matching this variant are included.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "cask": {
           "description": "Homebrew Cask configuration (macOS .app bundles).",
           "default": null,
@@ -5616,6 +5588,14 @@
             "null"
           ]
         },
+        "directory": {
+          "description": "Formula directory in the tap (e.g. \"Formula\"). Matches GoReleaser `directory`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "download_strategy": {
           "description": "Custom download strategy class name (e.g. `:using => GitHubPrivateRepositoryReleaseDownloadStrategy`).",
           "default": null,
@@ -5626,30 +5606,6 @@
         },
         "extra_install": {
           "description": "Additional install commands appended after the main install block.",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "folder": {
-          "description": "Formula directory in the tap (e.g. \"Formula\").",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "goamd64": {
-          "description": "amd64 microarchitecture variant filter (e.g. \"v1\", \"v2\", \"v3\", \"v4\"). Only artifacts matching this variant are included. Default: \"v1\".",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "goarm": {
-          "description": "ARM version filter (e.g. \"6\", \"7\"). Only artifacts matching this variant are included.",
           "default": null,
           "type": [
             "string",
@@ -5860,8 +5816,8 @@
       "description": "Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` and `post` lists of hook commands that run around the entire pipeline (not individual stages).",
       "type": "object",
       "properties": {
-        "post": {
-          "description": "Commands to run after the pipeline or stage completes.",
+        "hooks": {
+          "description": "Commands to run before the pipeline or stage starts. Matches GoReleaser `before.hooks` canonically.",
           "default": null,
           "type": [
             "array",
@@ -5871,8 +5827,8 @@
             "$ref": "#/definitions/HookEntry"
           }
         },
-        "pre": {
-          "description": "Commands to run before the pipeline or stage starts. GoReleaser uses `hooks` as the field name under `before:`. We accept both `pre` and `hooks` for migration compatibility.",
+        "post": {
+          "description": "Commands to run after the pipeline or stage completes. Anodize extension (GoReleaser has no top-level `after:` block).",
           "default": null,
           "type": [
             "array",
@@ -5956,6 +5912,22 @@
     "KrewConfig": {
       "type": "object",
       "properties": {
+        "amd64_variant": {
+          "description": "amd64 microarchitecture variant filter (e.g. \"v1\", \"v2\", \"v3\", \"v4\"). Only artifacts matching this variant are included. Default: \"v1\".",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "arm_variant": {
+          "description": "ARM version filter (e.g. \"6\", \"7\"). Only artifacts matching this variant are included.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "caveats": {
           "description": "Post-install message shown to the user.",
           "default": null,
@@ -5986,22 +5958,6 @@
         },
         "description": {
           "description": "Full description of the kubectl plugin.",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "goamd64": {
-          "description": "amd64 microarchitecture variant filter (e.g. \"v1\", \"v2\", \"v3\", \"v4\"). Only artifacts matching this variant are included. Default: \"v1\".",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "goarm": {
-          "description": "ARM version filter (e.g. \"6\", \"7\"). Only artifacts matching this variant are included.",
           "default": null,
           "type": [
             "string",
@@ -6589,7 +6545,7 @@
       "type": "object",
       "properties": {
         "enabled": {
-          "description": "Enable Mastodon announcements. Requires MASTODON_CLIENT_ID, MASTODON_CLIENT_SECRET, MASTODON_ACCESS_TOKEN env vars (supports template expressions).",
+          "description": "Enable Mastodon announcements. Requires `MASTODON_ACCESS_TOKEN` env var (supports template expressions).",
           "default": null,
           "anyOf": [
             {
@@ -6702,12 +6658,36 @@
     "MetadataConfig": {
       "type": "object",
       "properties": {
+        "commit_author": {
+          "description": "Commit author identity for Pro commit workflows (GoReleaser Pro v2.12+). Reuses the shared `CommitAuthorConfig` (name + email + optional signing). Exposed as `{{ .Metadata.CommitAuthor.Name }}` / `{{ .Metadata.CommitAuthor.Email }}`.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CommitAuthorConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "description": {
           "description": "Human-readable project description (exposed as `{{ .Metadata.Description }}`).",
           "default": null,
           "type": [
             "string",
             "null"
+          ]
+        },
+        "full_description": {
+          "description": "Long-form project description (GoReleaser Pro v2.1+). Supports inline string, `from_file`, or `from_url`. Exposed as `{{ .Metadata.FullDescription }}`. FromUrl is resolved lazily (requires the release stage); FromFile is resolved at context-populate time with template-rendered path.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ContentSource"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "homepage": {
@@ -6808,7 +6788,8 @@
             "null"
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "MsiConfig": {
       "type": "object",
@@ -6847,6 +6828,18 @@
             "type": "string"
           }
         },
+        "hooks": {
+          "description": "Pre/post MSI-build hooks (GoReleaser Pro v2.14+). Accepts `pre`/`post` or `before`/`after` via BuildHooksConfig's serde aliases. Runs before / after candle+light for each matched artifact.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BuildHooksConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "id": {
           "description": "Unique identifier for this MSI config.",
           "default": null,
@@ -6865,6 +6858,14 @@
           "items": {
             "type": "string"
           }
+        },
+        "if": {
+          "description": "Template-conditional: skip this MSI config if rendered result is \"false\" or empty (GoReleaser Pro). Render failure hard-errors (not silent-skip).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "mod_timestamp": {
           "description": "Output timestamp for reproducible builds.",
@@ -7163,6 +7164,14 @@
             "type": "string"
           }
         },
+        "if": {
+          "description": "Template-conditional: skip this nfpm config if rendered result is \"false\" or empty. (GoReleaser Pro v2.4+.)",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "ipk": {
           "description": "IPK-specific configuration (OpenWrt packages).",
           "default": null,
@@ -7336,6 +7345,29 @@
             "type": "string"
           }
         },
+        "templated_contents": {
+          "description": "Extra file contents whose source files are Tera-rendered before packaging (GoReleaser Pro). Each entry mirrors `contents`; the difference is that at stage time the file at `src` is read, rendered through the template engine, written to a temp file, and then included in the package at `dst` using the temp file as the real source. Useful for shipping config files with templated values (version, commit, maintainer, etc.).",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/NfpmContent"
+          }
+        },
+        "templated_scripts": {
+          "description": "Lifecycle scripts whose script-file bodies are Tera-rendered before packaging (GoReleaser Pro). Each path is read, rendered through the template engine, written to a temp file, and used as the real script. If a field is set on both `scripts` and `templated_scripts`, the templated version wins.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/NfpmScripts"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "umask": {
           "description": "File permission umask (e.g. \"0o002\").",
           "default": null,
@@ -7450,6 +7482,14 @@
     "NfpmDebConfig": {
       "type": "object",
       "properties": {
+        "arch_variant": {
+          "description": "amd64 microarchitecture variant propagated to nfpm's `deb.arch_variant` (`v1`, `v2`, `v3`, `v4`). Auto-derived from artifact metadata's `amd64_variant` when unset.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "breaks": {
           "description": "Packages this package breaks (Breaks relationship).",
           "default": null,
@@ -7984,6 +8024,14 @@
     "NixConfig": {
       "type": "object",
       "properties": {
+        "amd64_variant": {
+          "description": "amd64 microarchitecture variant filter (e.g. \"v1\", \"v2\", \"v3\", \"v4\"). Only artifacts matching this variant are included. Default: \"v1\".",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "commit_author": {
           "description": "Commit author with optional signing.",
           "default": null,
@@ -8033,14 +8081,6 @@
         },
         "formatter": {
           "description": "Nix formatter to run on the generated file: \"alejandra\" or \"nixfmt\".",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "goamd64": {
-          "description": "amd64 microarchitecture variant filter (e.g. \"v1\", \"v2\", \"v3\", \"v4\"). Only artifacts matching this variant are included. Default: \"v1\".",
           "default": null,
           "type": [
             "string",
@@ -8163,6 +8203,18 @@
       "description": "Top-level notarization configuration supporting both cross-platform (`rcodesign`) and native macOS (`codesign` + `xcrun notarytool`) modes.",
       "type": "object",
       "properties": {
+        "disable": {
+          "description": "Disable all notarization. Accepts bool or template string.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "macos": {
           "description": "Cross-platform signing/notarization (rcodesign-based, works on any OS).",
           "default": null,
@@ -8184,181 +8236,6 @@
           "items": {
             "$ref": "#/definitions/MacOSNativeSignNotarizeConfig"
           }
-        }
-      }
-    },
-    "NpmConfig": {
-      "description": "NPM publisher configuration. Publishes packages to NPM registries.",
-      "type": "object",
-      "properties": {
-        "access": {
-          "description": "NPM access level: \"public\" or \"restricted\".",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "author": {
-          "description": "Package author (e.g. `\"Jane Doe <jane@example.com>\"`).",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "bugs": {
-          "description": "Bug tracker URL for package.json.",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "description": {
-          "description": "Package description.",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "disable": {
-          "description": "Disable this publisher. Accepts bool or template string.",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/StringOrBool"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "extra": {
-          "description": "Additional package.json fields as key-value pairs.",
-          "default": null,
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": true
-        },
-        "extra_files": {
-          "description": "Extra files to include in the NPM package.",
-          "default": null,
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "$ref": "#/definitions/ExtraFileSpec"
-          }
-        },
-        "format": {
-          "description": "Package format: \"tgz\" (default) or other supported NPM formats.",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "homepage": {
-          "description": "Package homepage URL.",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "id": {
-          "description": "Unique identifier for this NPM publisher (when multiple are configured).",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "ids": {
-          "description": "Build IDs filter: only publish artifacts from builds whose `id` is in this list.",
-          "default": null,
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "string"
-          }
-        },
-        "if": {
-          "description": "Template-conditional: only run this publisher if the condition evaluates to true.",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "keywords": {
-          "description": "Package keywords for NPM search.",
-          "default": null,
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "string"
-          }
-        },
-        "license": {
-          "description": "SPDX license identifier (e.g. \"MIT\", \"Apache-2.0\").",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "name": {
-          "description": "NPM package name (e.g. `@myorg/mypackage`).",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "repository": {
-          "description": "Repository URL for package.json.",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "tag": {
-          "description": "NPM dist-tag (e.g. \"latest\", \"next\", \"beta\").",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "templated_extra_files": {
-          "description": "Extra files whose contents are rendered through the template engine before inclusion.",
-          "default": null,
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "$ref": "#/definitions/TemplatedExtraFile"
-          }
-        },
-        "url_template": {
-          "description": "Custom URL template for package downloads.",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
         }
       }
     },
@@ -8406,6 +8283,14 @@
           "items": {
             "type": "string"
           }
+        },
+        "if": {
+          "description": "Template-conditional: skip this NSIS config if rendered result is \"false\" or empty (GoReleaser Pro). Render failure hard-errors (not silent-skip).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "mod_timestamp": {
           "description": "Output timestamp for reproducible builds.",
@@ -8558,6 +8443,14 @@
           "items": {
             "type": "string"
           }
+        },
+        "if": {
+          "description": "Template-conditional: skip this PKG config if rendered result is \"false\" or empty (GoReleaser Pro). Render failure hard-errors (not silent-skip).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "install_location": {
           "description": "Installation path. Default: /usr/local/bin.",
@@ -9378,6 +9271,14 @@
     "ScoopConfig": {
       "type": "object",
       "properties": {
+        "amd64_variant": {
+          "description": "amd64 microarchitecture variant filter (e.g. \"v1\", \"v2\", \"v3\", \"v4\"). Only artifacts matching this variant are included. Default: \"v1\".",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "bucket": {
           "description": "Legacy bucket config (owner/name). Prefer `repository` for new configs.",
           "default": null,
@@ -9447,14 +9348,6 @@
         },
         "directory": {
           "description": "Subdirectory in the bucket repo for manifest placement.",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "goamd64": {
-          "description": "amd64 microarchitecture variant filter (e.g. \"v1\", \"v2\", \"v3\", \"v4\"). Only artifacts matching this variant are included. Default: \"v1\".",
           "default": null,
           "type": [
             "string",
@@ -10993,6 +10886,28 @@
             "null"
           ]
         },
+        "tag_post_hooks": {
+          "description": "Commands to run after `anodize tag` successfully creates and pushes the tag. Env and template vars same as `tag_pre_hooks`.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/HookEntry"
+          }
+        },
+        "tag_pre_hooks": {
+          "description": "Commands to run before `anodize tag` creates the tag. Useful for updating lockfiles or committing sibling changes that must be part of the tagged commit. Env: `ANODIZE_CURRENT_TAG`, `ANODIZE_PREVIOUS_TAG` are set; template vars `{{ .Tag }}`, `{{ .PreviousTag }}`, `{{ .Version }}`, `{{ .PrefixedTag }}` are available.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/HookEntry"
+          }
+        },
         "tag_prefix": {
           "description": "Prefix prepended to version tags (e.g., \"v\" produces \"v1.2.3\").",
           "default": null,
@@ -11501,6 +11416,14 @@
             }
           ]
         },
+        "id": {
+          "description": "Unique identifier for this universal binary, propagated into the artifact's metadata as `id` (GoReleaser universalbinary.go:42-44).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "ids": {
           "description": "Build IDs filter: only combine artifacts from builds whose `id` is in this list.",
           "default": null,
@@ -11899,6 +11822,14 @@
     "WingetConfig": {
       "type": "object",
       "properties": {
+        "amd64_variant": {
+          "description": "amd64 microarchitecture variant filter (e.g. \"v1\", \"v2\", \"v3\", \"v4\"). Only artifacts matching this variant are included. Default: \"v1\".",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "author": {
           "description": "Author name.",
           "default": null,
@@ -11956,14 +11887,6 @@
         },
         "description": {
           "description": "Full package description displayed in the WinGet gallery.",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "goamd64": {
-          "description": "amd64 microarchitecture variant filter (e.g. \"v1\", \"v2\", \"v3\", \"v4\"). Only artifacts matching this variant are included. Default: \"v1\".",
           "default": null,
           "type": [
             "string",
@@ -12289,8 +12212,17 @@
           "items": {
             "$ref": "#/definitions/SignConfig"
           }
+        },
+        "skip": {
+          "description": "Pipeline stages to skip when releasing this workspace. Stage names match the CLI `--skip` flag (e.g., `announce`, `publish`).",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         }
-      }
+      },
+      "additionalProperties": false
     },
     "WrapInDirectory": {
       "anyOf": [

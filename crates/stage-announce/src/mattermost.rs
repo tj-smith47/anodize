@@ -21,7 +21,7 @@ pub struct MattermostOptions<'a> {
 // Payload builder
 // ---------------------------------------------------------------------------
 
-/// GoReleaser parity (mattermost.go:78-85): always emit an attachment with
+/// always emit an attachment with
 /// defaults — title template `{{ .ProjectName }} {{ .Tag }} is out!`, color
 /// `#2D313E`, text = message — and leave the top-level `text` as an empty
 /// string. Callers should pre-render the title template; this module only

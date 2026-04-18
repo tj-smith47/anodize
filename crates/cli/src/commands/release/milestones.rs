@@ -265,21 +265,7 @@ fn close_milestone_github(
     })
 }
 
-/// Simple percent-encoding for URL path segments.
-fn url_encode(s: &str) -> String {
-    let mut result = String::with_capacity(s.len() * 3);
-    for byte in s.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                result.push(byte as char);
-            }
-            _ => {
-                result.push_str(&format!("%{:02X}", byte));
-            }
-        }
-    }
-    result
-}
+use anodize_core::url::percent_encode_unreserved as url_encode;
 
 /// Resolve the API base URL for milestone operations on GitLab/Gitea.
 fn resolve_milestone_api_url(
@@ -466,7 +452,7 @@ fn close_milestone_gitea(
             .context("milestone: Gitea close milestone failed")?;
 
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            // GoReleaser parity: 404 means milestone not found
+            // 404 means milestone not found
             return Ok(());
         }
         if !resp.status().is_success() {

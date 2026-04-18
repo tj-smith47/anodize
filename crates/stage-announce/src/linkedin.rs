@@ -1,3 +1,4 @@
+use anodize_core::log::StageLogger;
 use anyhow::Result;
 use serde_json::json;
 
@@ -9,7 +10,7 @@ const API_BASE: &str = "https://api.linkedin.com";
 /// 1. Resolve the profile URN via `/v2/userinfo` (newer, uses `sub` field).
 ///    Falls back to `/v2/me` (legacy, uses `id` field) only on 403 Forbidden.
 /// 2. POST the share to `/v2/shares`.
-pub fn send_linkedin(access_token: &str, message: &str) -> Result<()> {
+pub fn send_linkedin(access_token: &str, message: &str, log: &StageLogger) -> Result<()> {
     let client = reqwest::blocking::Client::new();
     let profile_urn = get_profile_urn(&client, access_token)?;
 
@@ -41,7 +42,9 @@ pub fn send_linkedin(access_token: &str, message: &str) -> Result<()> {
         .get("activity")
         .and_then(|a| a.as_str())
         .ok_or_else(|| anyhow::anyhow!("linkedin: could not find 'activity' in share response"))?;
-    eprintln!("linkedin: post available at https://www.linkedin.com/feed/update/{activity}");
+    log.status(&format!(
+        "linkedin: post available at https://www.linkedin.com/feed/update/{activity}"
+    ));
 
     Ok(())
 }

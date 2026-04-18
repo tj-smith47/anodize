@@ -494,7 +494,7 @@ fn render_commit_line(
         }
     };
     let mut vars = TemplateVars::new();
-    // GoReleaser parity (changelog.go:262): SHA respects the `abbrev` config.
+    // SHA respects the `abbrev` config.
     // `short_sha` is already computed with abbrev applied above; use it here
     // so templates referencing {{ .SHA }} honor the user's abbreviation.
     vars.set("SHA", &short_sha);
@@ -512,6 +512,317 @@ fn render_commit_line(
         }
     });
     out.push_str(&format!("* {}{}", rendered, newline));
+}
+
+// ---------------------------------------------------------------------------
+// Public render API — used by `anodize bump --commit` to bundle a changelog
+// edit alongside the version bump in a single commit.
+// ---------------------------------------------------------------------------
+
+/// Strategy describing how `ChangelogUpdate.rendered_text` relates to the
+/// existing contents of `ChangelogUpdate.file_path`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InsertionMode {
+    /// `rendered_text` is the complete final file content; the caller should
+    /// overwrite `file_path` with it (creating the file if missing).
+    Replace,
+}
+
+/// A pending edit to a single changelog file.
+#[derive(Debug, Clone)]
+pub struct ChangelogUpdate {
+    /// Absolute path of the changelog file the caller should write.
+    pub file_path: std::path::PathBuf,
+    /// Content the caller should write to `file_path`.
+    pub rendered_text: String,
+    /// How `rendered_text` should be applied at `file_path`.
+    pub insertion_mode: InsertionMode,
+}
+
+/// Render a `## [<to_version>]` section for the given crate's changelog and
+/// merge it into the crate's `CHANGELOG.md`.
+///
+/// Used by `anodize bump --commit` to produce a single staged file edit that
+/// can be bundled into the bump commit.
+///
+/// Returns `Ok(None)` when:
+///   - `<workspace_root>/.anodize.yaml` is absent, unreadable, or has no
+///     `changelog:` section
+///   - there are no qualifying commits since `from_tag` (or `HEAD` history,
+///     when `from_tag` is `None`) touching `crate_path`
+///
+/// On success, the returned [`ChangelogUpdate`] always carries the FULL final
+/// file content with [`InsertionMode::Replace`]: the function reads any
+/// existing `CHANGELOG.md`, prepends the new section after the leading H1
+/// header (creating one when missing), and returns the merged text.
+pub fn render_crate_section(
+    workspace_root: &std::path::Path,
+    crate_name: &str,
+    crate_path: &std::path::Path,
+    from_tag: Option<&str>,
+    to_version: &str,
+) -> Result<Option<ChangelogUpdate>> {
+    use anodize_core::log::{StageLogger, Verbosity};
+
+    // Load just the changelog section from .anodize.yaml. We deliberately
+    // skip the include/deprecation machinery in `cli::pipeline::load_config`
+    // so this stays usable from non-CLI contexts (it lives in core's dep graph
+    // already; pulling cli in would create a cycle).
+    let cfg_path = workspace_root.join(".anodize.yaml");
+    if !cfg_path.is_file() {
+        return Ok(None);
+    }
+    let cfg_text = std::fs::read_to_string(&cfg_path)
+        .with_context(|| format!("failed to read {}", cfg_path.display()))?;
+    let raw: serde_yaml_ng::Value = serde_yaml_ng::from_str(&cfg_text)
+        .with_context(|| format!("failed to parse YAML at {}", cfg_path.display()))?;
+    let changelog_yaml = match raw.get("changelog") {
+        Some(v) => v.clone(),
+        None => return Ok(None),
+    };
+    let cfg: anodize_core::config::ChangelogConfig = serde_yaml_ng::from_value(changelog_yaml)
+        .with_context(|| {
+            format!(
+                "failed to deserialize changelog config from {}",
+                cfg_path.display()
+            )
+        })?;
+
+    let log = StageLogger::new("bump-changelog", Verbosity::default());
+
+    let path_filter = relative_filter(workspace_root, crate_path);
+    let raw_commits = fetch_git_commits_in(workspace_root, from_tag, path_filter.as_deref())?;
+    if raw_commits.is_empty() {
+        return Ok(None);
+    }
+
+    let mut infos: Vec<CommitInfo> = raw_commits
+        .iter()
+        .map(|c| {
+            let mut info = parse_commit_message(&c.message);
+            info.hash = c.short_hash.clone();
+            info.full_hash = c.hash.clone();
+            info.author_name = c.author_name.clone();
+            info.author_email = c.author_email.clone();
+            info.co_authors = extract_co_authors(&c.body);
+            info
+        })
+        .collect();
+
+    let exclude: Vec<String> = cfg
+        .filters
+        .as_ref()
+        .and_then(|f| f.exclude.clone())
+        .unwrap_or_default();
+    let include: Vec<String> = cfg
+        .filters
+        .as_ref()
+        .and_then(|f| f.include.clone())
+        .unwrap_or_default();
+    infos = if !include.is_empty() {
+        apply_include_filters(&infos, &include, &log)?
+    } else {
+        apply_filters(&infos, &exclude, &log)?
+    };
+
+    sort_commits(&mut infos, cfg.sort.as_deref().unwrap_or(""))?;
+
+    let groups: Vec<ChangelogGroup> = cfg.groups.clone().unwrap_or_default();
+    let grouped = if groups.is_empty() {
+        if infos.is_empty() {
+            Vec::new()
+        } else {
+            vec![GroupedCommits {
+                title: String::new(),
+                commits: infos,
+                subgroups: Vec::new(),
+            }]
+        }
+    } else {
+        group_commits(&infos, &groups, &log)?
+    };
+
+    if grouped.is_empty() {
+        return Ok(None);
+    }
+
+    let abbrev = cfg.abbrev.unwrap_or(0);
+    let body = render_changelog_with_provider(
+        &grouped,
+        abbrev,
+        cfg.format.as_deref(),
+        "",
+        cfg.use_source.as_deref().unwrap_or("git"),
+        Some(""),
+        cfg.divider.as_deref(),
+        None,
+    );
+    // `render_changelog_with_provider` always emits a `## <title>` line; we
+    // suppressed it by passing `Some("")`, which produces `## \n\n`. Drop
+    // any empty heading at the start so our `## [<version>]` heading stands
+    // alone.
+    let body = body.trim_start_matches("## \n\n").trim_start().to_string();
+
+    let section_heading = format!(
+        "## [{ver}] - {date}",
+        ver = to_version,
+        date = today_yyyy_mm_dd()
+    );
+    let new_section = format!("{}\n\n{}\n", section_heading, body.trim_end());
+
+    let file_path = crate_path.join("CHANGELOG.md");
+    let merged = merge_into_changelog(&file_path, crate_name, &new_section)?;
+
+    Ok(Some(ChangelogUpdate {
+        file_path,
+        rendered_text: merged,
+        insertion_mode: InsertionMode::Replace,
+    }))
+}
+
+fn relative_filter(
+    workspace_root: &std::path::Path,
+    crate_path: &std::path::Path,
+) -> Option<String> {
+    let rel = crate_path
+        .strip_prefix(workspace_root)
+        .unwrap_or(crate_path);
+    let s = rel.to_string_lossy().to_string();
+    if s.is_empty() || s == "." {
+        None
+    } else {
+        Some(s)
+    }
+}
+
+fn today_yyyy_mm_dd() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    // Days since the Unix epoch, then convert to a (y,m,d) triple via the
+    // Howard Hinnant date algorithm (`days_from_civil` inverse). Avoids a
+    // chrono dep purely for date formatting in changelog headings.
+    let days = secs.div_euclid(86_400);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{:04}-{:02}-{:02}", y, m, d)
+}
+
+fn fetch_git_commits_in(
+    workspace_root: &std::path::Path,
+    from: Option<&str>,
+    path_filter: Option<&str>,
+) -> Result<Vec<anodize_core::git::Commit>> {
+    use std::process::Command;
+    let range = match from {
+        Some(t) => format!("{}..HEAD", t),
+        None => "HEAD".to_string(),
+    };
+    let mut args: Vec<String> = vec![
+        "-C".into(),
+        workspace_root.to_string_lossy().into_owned(),
+        "-c".into(),
+        "log.showSignature=false".into(),
+        "log".into(),
+        "--pretty=format:%H%x1f%h%x1f%s%x1f%an%x1f%ae%x1f%b%x1e".into(),
+        range,
+    ];
+    if let Some(p) = path_filter {
+        args.push("--".into());
+        args.push(p.to_string());
+    }
+    let out = Command::new("git")
+        .args(args.iter().map(|s| s.as_str()))
+        .output()
+        .with_context(|| "failed to invoke git log".to_string())?;
+    if !out.status.success() {
+        // A missing tag or empty range yields a non-zero exit on some git
+        // versions. Treat as "no commits" rather than propagating an error.
+        return Ok(Vec::new());
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    Ok(parse_git_log_records(&text))
+}
+
+fn parse_git_log_records(text: &str) -> Vec<anodize_core::git::Commit> {
+    use anodize_core::git::Commit;
+    text.split('\x1e')
+        .map(|s| s.trim_matches(['\n', '\r']))
+        .filter(|s| !s.is_empty())
+        .filter_map(|record| {
+            let mut fields = record.split('\x1f');
+            let hash = fields.next()?.to_string();
+            let short_hash = fields.next()?.to_string();
+            let message = fields.next()?.to_string();
+            let author_name = fields.next()?.to_string();
+            let author_email = fields.next()?.to_string();
+            let body = fields.next().unwrap_or("").to_string();
+            Some(Commit {
+                hash,
+                short_hash,
+                message,
+                author_name,
+                author_email,
+                body,
+            })
+        })
+        .collect()
+}
+
+fn merge_into_changelog(
+    file_path: &std::path::Path,
+    crate_name: &str,
+    new_section: &str,
+) -> Result<String> {
+    let header = format!("# Changelog — {}\n\n", crate_name);
+    if !file_path.is_file() {
+        return Ok(format!("{}{}", header, new_section));
+    }
+    let existing = std::fs::read_to_string(file_path)
+        .with_context(|| format!("failed to read {}", file_path.display()))?;
+    // Find the H1 line so we can preserve any prelude (license badge, etc.)
+    // and append our section right after the leading header block.
+    let mut head = String::new();
+    let mut tail = String::new();
+    let mut consumed_h1 = false;
+    let mut blank_after_h1_seen = false;
+    for line in existing.lines() {
+        if !consumed_h1 {
+            head.push_str(line);
+            head.push('\n');
+            if line.starts_with("# ") {
+                consumed_h1 = true;
+            }
+            continue;
+        }
+        if !blank_after_h1_seen {
+            // Consume one blank line right after the H1 to keep formatting.
+            if line.trim().is_empty() {
+                head.push('\n');
+                blank_after_h1_seen = true;
+                continue;
+            }
+            blank_after_h1_seen = true;
+        }
+        tail.push_str(line);
+        tail.push('\n');
+    }
+    if !consumed_h1 {
+        // No H1 found — synthesize one and place existing content after our
+        // new section.
+        return Ok(format!("{}{}\n{}", header, new_section, existing));
+    }
+    Ok(format!("{}{}\n{}", head, new_section, tail))
 }
 
 // ---------------------------------------------------------------------------
@@ -1756,7 +2067,7 @@ mod tests {
             )],
             subgroups: Vec::new(),
         }];
-        // GoReleaser parity: `{{ .SHA }}` respects abbrev. abbrev=5 → "abc12".
+        // `{{ .SHA }}` respects abbrev. abbrev=5 → "abc12".
         let md = render_changelog(&grouped, 5, None, "", "git", None, None);
         assert!(
             md.contains("abc12 test abbrev"),
@@ -1789,7 +2100,7 @@ mod tests {
             )],
             subgroups: Vec::new(),
         }];
-        // GoReleaser parity: `{{ .SHA }}` respects abbrev (7) → short hash.
+        // `{{ .SHA }}` respects abbrev (7) → short hash.
         let md = render_changelog(&grouped, 7, None, "", "git", None, None);
         assert!(
             md.contains("abc1234 default abbrev"),
@@ -2070,7 +2381,7 @@ abbrev: 10
             "ci commit should be filtered out"
         );
 
-        // GoReleaser parity: default format "{{ SHA }} {{ Message }}" uses the
+        // default format "{{ SHA }} {{ Message }}" uses the
         // abbreviated SHA (abbrev=7 → 7-char prefixes).
         assert!(
             md.contains("a1b2c3d "),
@@ -2467,7 +2778,7 @@ abbrev: 10
             subgroups: Vec::new(),
         }];
 
-        // GoReleaser parity (changelog.go:262): `{{ .SHA }}` respects the
+        // `{{ .SHA }}` respects the
         // `abbrev` setting — short SHA when abbrev > 0, full when abbrev == 0.
         let md = render_changelog(&grouped, 3, None, "", "git", None, None);
         assert!(
@@ -2958,7 +3269,7 @@ abbrev: 10
             }],
             subgroups: Vec::new(),
         }];
-        // GoReleaser parity: default format "{{ SHA }} {{ Message }}" uses the
+        // default format "{{ SHA }} {{ Message }}" uses the
         // abbreviated SHA. With abbrev=7 and hash="def5678", SHA == "def5678".
         let md = render_changelog(&grouped, 7, None, "", "git", None, None);
         assert!(

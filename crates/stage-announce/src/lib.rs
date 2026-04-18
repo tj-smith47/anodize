@@ -28,7 +28,7 @@ pub mod webhook;
 const DEFAULT_MESSAGE_TEMPLATE: &str =
     "{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}";
 
-/// GoReleaser parity (webhook.go:21): the webhook default payload wraps the
+/// the webhook default payload wraps the
 /// message in a JSON envelope so the receiver always gets a valid JSON body.
 const WEBHOOK_DEFAULT_MESSAGE_TEMPLATE: &str =
     r#"{"message":"{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}"}"#;
@@ -52,14 +52,6 @@ fn require_rendered(
 ) -> Result<String> {
     let value = raw.ok_or_else(|| anyhow::anyhow!("announce.{provider}: missing {field}"))?;
     ctx.render_template(value)
-}
-
-/// Render an optional config field through the template engine.
-fn render_optional(ctx: &mut Context, raw: Option<&str>) -> Result<Option<String>> {
-    match raw {
-        Some(v) => Ok(Some(ctx.render_template(v)?)),
-        None => Ok(None),
-    }
 }
 
 /// Render a message template, falling back to the standard default.
@@ -171,7 +163,7 @@ impl Stage for AnnounceStage {
                 };
                 let message = render_message(ctx, cfg.message_template.as_deref())?;
                 // Default author to "anodize" (GoReleaser defaults to "GoReleaser").
-                let author = render_optional(ctx, cfg.author.as_deref().or(Some("anodize")))?;
+                let author = ctx.render_template_opt(cfg.author.as_deref().or(Some("anodize")))?;
                 // Color is a string that may contain template expressions; render
                 // and parse to u32 at runtime.
                 let color: Option<u32> = match cfg.color.as_deref() {
@@ -192,7 +184,7 @@ impl Stage for AnnounceStage {
                     }
                     None => None,
                 };
-                let icon_url = render_optional(ctx, cfg.icon_url.as_deref())?;
+                let icon_url = ctx.render_template_opt(cfg.icon_url.as_deref())?;
                 let opts = discord::DiscordOptions {
                     author: author.as_deref(),
                     color,
@@ -267,9 +259,10 @@ impl Stage for AnnounceStage {
                         .ok_or_else(|| anyhow::anyhow!("announce.slack: missing webhook_url (set config or SLACK_WEBHOOK env var)"))?,
                 };
                 let message = render_message(ctx, cfg.message_template.as_deref())?;
-                let channel = render_optional(ctx, cfg.channel.as_deref())?;
+                let channel = ctx.render_template_opt(cfg.channel.as_deref())?;
                 // Default username to "anodize" (GoReleaser defaults to "GoReleaser").
-                let username = render_optional(ctx, cfg.username.as_deref().or(Some("anodize")))?;
+                let username =
+                    ctx.render_template_opt(cfg.username.as_deref().or(Some("anodize")))?;
                 let icon_emoji = cfg.icon_emoji.clone();
                 let icon_url = cfg.icon_url.clone();
                 // Convert typed blocks/attachments to serde_json::Value for template rendering
@@ -312,7 +305,7 @@ impl Stage for AnnounceStage {
                         url
                     );
                 }
-                // GoReleaser parity (webhook.go:21): webhook uses a JSON-envelope
+                // webhook uses a JSON-envelope
                 // default distinct from the plain-text default used by other
                 // providers; receivers expect a parseable JSON body.
                 let message = ctx.render_template(
@@ -327,23 +320,25 @@ impl Stage for AnnounceStage {
                     headers.insert(k.clone(), ctx.render_template(v)?);
                 }
 
-                // GoReleaser reads BASIC_AUTH_HEADER_VALUE and BEARER_TOKEN_HEADER_VALUE
-                // from env vars and uses them as the raw Authorization header value.
-                // Basic auth takes priority over bearer token.
-                if let Ok(basic) = std::env::var("BASIC_AUTH_HEADER_VALUE") {
-                    if !basic.is_empty() {
-                        headers.insert("Authorization".to_string(), basic);
+                // `BASIC_AUTH_HEADER_VALUE` / `BEARER_TOKEN_HEADER_VALUE` populate
+                // `Authorization` only when the config didn't already set one —
+                // user-supplied `headers.Authorization` wins. Basic auth takes
+                // priority over bearer token.
+                if !headers.contains_key("Authorization") {
+                    if let Ok(basic) = std::env::var("BASIC_AUTH_HEADER_VALUE") {
+                        if !basic.is_empty() {
+                            headers.insert("Authorization".to_string(), basic);
+                        }
+                    } else if let Ok(bearer) = std::env::var("BEARER_TOKEN_HEADER_VALUE")
+                        && !bearer.is_empty()
+                    {
+                        headers.insert("Authorization".to_string(), bearer);
                     }
-                } else if let Ok(bearer) = std::env::var("BEARER_TOKEN_HEADER_VALUE")
-                    && !bearer.is_empty()
-                {
-                    headers.insert("Authorization".to_string(), bearer);
                 }
 
-                // Identify ourselves to webhook receivers.
                 headers
                     .entry("User-Agent".to_string())
-                    .or_insert_with(|| "anodize/1.0".to_string());
+                    .or_insert_with(|| concat!("anodize/", env!("CARGO_PKG_VERSION")).to_string());
 
                 // GoReleaser defaults to "application/json; charset=utf-8".
                 let content_type = cfg
@@ -408,7 +403,7 @@ impl Stage for AnnounceStage {
                         "MarkdownV2"
                     }
                 };
-                let parse_mode = render_optional(ctx, Some(parse_mode_validated))?;
+                let parse_mode = ctx.render_template_opt(Some(parse_mode_validated))?;
                 // message_thread_id is now a String supporting template expressions;
                 // render and parse to i64 at runtime.
                 let message_thread_id: Option<i64> = match cfg.message_thread_id.as_deref() {
@@ -469,7 +464,7 @@ impl Stage for AnnounceStage {
                 // We omit icon_url until anodize has its own hosted avatar — a 404 URL would
                 // be worse than no icon.  Teams Adaptive Cards work fine without an icon.
                 let color_val = cfg.color.clone().unwrap_or_else(|| "#2D313E".to_string());
-                let icon_url = render_optional(ctx, cfg.icon_url.as_deref())?;
+                let icon_url = ctx.render_template_opt(cfg.icon_url.as_deref())?;
                 let opts = teams::TeamsOptions {
                     title: title.as_deref(),
                     color: Some(color_val.as_str()),
@@ -497,11 +492,12 @@ impl Stage for AnnounceStage {
                         .ok_or_else(|| anyhow::anyhow!("announce.mattermost: missing webhook_url (set config or MATTERMOST_WEBHOOK env var)"))?,
                 };
                 let message = render_message(ctx, cfg.message_template.as_deref())?;
-                let channel = render_optional(ctx, cfg.channel.as_deref())?;
+                let channel = ctx.render_template_opt(cfg.channel.as_deref())?;
                 // Default username to "anodize" (GoReleaser defaults to "GoReleaser").
-                let username = render_optional(ctx, cfg.username.as_deref().or(Some("anodize")))?;
-                let icon_url = render_optional(ctx, cfg.icon_url.as_deref())?;
-                let icon_emoji = render_optional(ctx, cfg.icon_emoji.as_deref())?;
+                let username =
+                    ctx.render_template_opt(cfg.username.as_deref().or(Some("anodize")))?;
+                let icon_url = ctx.render_template_opt(cfg.icon_url.as_deref())?;
+                let icon_emoji = ctx.render_template_opt(cfg.icon_emoji.as_deref())?;
                 // Default color to "#2D313E" (GoReleaser default).
                 let color_val = cfg.color.clone().unwrap_or_else(|| "#2D313E".to_string());
                 // Default title to "{{ ProjectName }} {{ Tag }} is out!" (GoReleaser default).
@@ -620,32 +616,13 @@ impl Stage for AnnounceStage {
                     log.status("mastodon: server is empty — skipping");
                 } else {
                     let message = render_message(ctx, cfg.message_template.as_deref())?;
-                    // GoReleaser's go-mastodon client accepts client_id, client_secret, and
-                    // access_token (mastodon.go lines 47-52).  The Mastodon API only requires
-                    // the access_token (Bearer auth) for posting statuses, but we validate all
-                    // three env vars for GoReleaser parity and forward-compatibility with a
-                    // full OAuth flow.
-                    let client_id = std::env::var("MASTODON_CLIENT_ID").map_err(|_| {
-                        anyhow::anyhow!("announce.mastodon: MASTODON_CLIENT_ID env var is required")
-                    })?;
-                    let client_secret = std::env::var("MASTODON_CLIENT_SECRET").map_err(|_| {
-                        anyhow::anyhow!(
-                            "announce.mastodon: MASTODON_CLIENT_SECRET env var is required"
-                        )
-                    })?;
                     let access_token = std::env::var("MASTODON_ACCESS_TOKEN").map_err(|_| {
                         anyhow::anyhow!(
                             "announce.mastodon: MASTODON_ACCESS_TOKEN env var is required"
                         )
                     })?;
                     dispatch(ctx, "mastodon", &message, || {
-                        mastodon::send_mastodon(
-                            &server,
-                            &access_token,
-                            &client_id,
-                            &client_secret,
-                            &message,
-                        )
+                        mastodon::send_mastodon(&server, &access_token, &message)
                     })?;
                 }
                 Ok(())
@@ -709,8 +686,9 @@ impl Stage for AnnounceStage {
                         "announce.linkedin: LINKEDIN_ACCESS_TOKEN env var must not be empty"
                     );
                 }
+                let log = ctx.logger("announce");
                 dispatch(ctx, "linkedin", &message, || {
-                    linkedin::send_linkedin(&access_token, &message)
+                    linkedin::send_linkedin(&access_token, &message, &log)
                 })
             })()
         {
@@ -822,7 +800,11 @@ impl Stage for AnnounceStage {
                             "announce.email: SMTP_PASSWORD env var is required for SMTP transport"
                         )
                     })?;
-                    let port = smtp_port.unwrap_or(587);
+                    let port = smtp_port.ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "announce.email: SMTP port is required — set `announce.email.port` or the `SMTP_PORT` env var (465 for SMTPS, 587 for STARTTLS, 25 for plaintext)"
+                        )
+                    })?;
                     let insecure = cfg.insecure_skip_verify.unwrap_or(false);
 
                     let smtp_params = email::SmtpParams {
@@ -1766,8 +1748,6 @@ blocks:
     #[test]
     #[serial]
     fn test_dry_run_mastodon() {
-        unsafe { std::env::set_var("MASTODON_CLIENT_ID", "test_id") };
-        unsafe { std::env::set_var("MASTODON_CLIENT_SECRET", "test_secret") };
         unsafe { std::env::set_var("MASTODON_ACCESS_TOKEN", "test-token") };
         let announce = AnnounceConfig {
             mastodon: Some(MastodonAnnounce {
@@ -1794,8 +1774,6 @@ blocks:
             "https://github.com/org/myapp/releases/tag/v1.0.0",
         );
         assert!(AnnounceStage.run(&mut ctx).is_ok());
-        unsafe { std::env::remove_var("MASTODON_CLIENT_ID") };
-        unsafe { std::env::remove_var("MASTODON_CLIENT_SECRET") };
         unsafe { std::env::remove_var("MASTODON_ACCESS_TOKEN") };
     }
 
@@ -1827,8 +1805,6 @@ blocks:
     #[test]
     #[serial]
     fn test_mastodon_missing_env_var_returns_error() {
-        unsafe { std::env::remove_var("MASTODON_CLIENT_ID") };
-        unsafe { std::env::remove_var("MASTODON_CLIENT_SECRET") };
         unsafe { std::env::remove_var("MASTODON_ACCESS_TOKEN") };
         let announce = AnnounceConfig {
             mastodon: Some(MastodonAnnounce {
@@ -1848,10 +1824,9 @@ blocks:
             "https://github.com/org/myapp/releases/tag/v1.0.0",
         );
         let err = AnnounceStage.run(&mut ctx).unwrap_err();
-        // First missing env var is now MASTODON_CLIENT_ID
         assert!(
-            err.to_string().contains("MASTODON_CLIENT_ID"),
-            "expected MASTODON_CLIENT_ID error, got: {err}"
+            err.to_string().contains("MASTODON_ACCESS_TOKEN"),
+            "expected MASTODON_ACCESS_TOKEN error, got: {err}"
         );
     }
 

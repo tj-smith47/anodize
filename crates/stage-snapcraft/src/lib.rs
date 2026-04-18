@@ -155,7 +155,7 @@ fn triple_to_snap_arch(triple: &str) -> &'static str {
     }
 }
 
-/// GoReleaser parity (snapcraft.go:isValidArch): check whether an architecture
+/// check whether an architecture
 /// is supported by the snap store.  riscv64 is not in the list.
 fn is_valid_snap_arch(arch: &str) -> bool {
     matches!(
@@ -170,7 +170,7 @@ fn is_valid_snap_arch(arch: &str) -> bool {
 
 /// Generate a snap.yaml metadata string from the anodize snapcraft config.
 ///
-/// GoReleaser parity: this generates the `snap.yaml` file that goes into
+/// this generates the `snap.yaml` file that goes into
 /// `prime/meta/snap.yaml` — it is *not* a `snapcraft.yaml` build recipe.
 /// Binaries and extra files are staged into the `prime/` directory by the
 /// caller; this function only produces the metadata.
@@ -191,7 +191,7 @@ pub fn generate_snap_yaml(
         .name
         .clone()
         .unwrap_or_else(|| project_name.unwrap_or(primary_binary).to_string());
-    // GoReleaser parity (snapcraft.go:115-155): summary and description are
+    // summary and description are
     // required fields; error instead of silently defaulting.
     let summary = config
         .summary
@@ -256,7 +256,7 @@ pub fn generate_snap_yaml(
             })
             .collect()
     } else {
-        // GoReleaser parity (snapcraft.go:315-323): when no apps are configured,
+        // when no apps are configured,
         // use snap.Name as the app name key (falling back to the binary filename).
         // The command is always the binary basename — binaries sit at the prime root.
         let default_app_name = config
@@ -303,7 +303,7 @@ pub fn generate_snap_yaml(
         Vec::new()
     };
 
-    // GoReleaser parity (snapcraft.go:338-402): assumes, hooks, and plugs are
+    // assumes, hooks, and plugs are
     // populated inside the `for name, config := range snap.Apps` loop. When the
     // apps map is empty, those fields remain zero-valued and `omitempty` drops
     // them from the emitted YAML. Mirror that here.
@@ -351,7 +351,7 @@ pub fn generate_snap_yaml(
 
 /// Construct the snapcraft pack CLI command arguments.
 ///
-/// GoReleaser parity (snapcraft.go:417): `snapcraft pack <prime_dir> --output <snap_file>`.
+/// `snapcraft pack <prime_dir> --output <snap_file>`.
 /// The prime directory is a pre-staged directory containing binaries, extra files,
 /// and `meta/snap.yaml`. No `--destructive-mode` is needed because there is no
 /// build step — the directory is already assembled.
@@ -578,7 +578,7 @@ impl Stage for SnapcraftStage {
                         Some(target_key.clone())
                     };
 
-                    // GoReleaser parity (snapcraft.go:204-218): skip unsupported
+                    // skip unsupported
                     // architectures (e.g. riscv64 is not in the snap store).
                     if let Some(ref t) = target {
                         let snap_arch = triple_to_snap_arch(t);
@@ -666,7 +666,7 @@ impl Stage for SnapcraftStage {
                         continue;
                     }
 
-                    // GoReleaser parity (snapcraft.go:244-420): pre-stage binaries
+                    // pre-stage binaries
                     // and extra files into a prime directory, write snap.yaml to
                     // prime/meta/snap.yaml, then run `snapcraft pack prime_dir`.
                     let tmp_dir =
@@ -693,7 +693,13 @@ impl Stage for SnapcraftStage {
 
                     // GoReleaser renders summary, description, and grade
                     // through its template engine before generating the YAML.
+                    // GoReleaser Pro parity: fall back to project `metadata.description`
+                    // when snapcraft config's `description` is unset.
                     let mut rendered_cfg = snap_cfg.clone();
+                    if rendered_cfg.description.is_none() {
+                        rendered_cfg.description =
+                            ctx.config.meta_description().map(str::to_string);
+                    }
                     if let Some(ref s) = rendered_cfg.summary {
                         rendered_cfg.summary = Some(ctx.render_template(s).with_context(|| {
                             format!("snapcraft: render summary for crate {}", krate.name)
@@ -724,7 +730,7 @@ impl Stage for SnapcraftStage {
                     fs::write(&yaml_path, &yaml_content)
                         .with_context(|| format!("write snap.yaml to {}", yaml_path.display()))?;
 
-                    // GoReleaser parity (snapcraft.go:325-335): copy binaries
+                    // copy binaries
                     // directly into the prime directory root with mode 0555.
                     for bin_artifact in target_binaries {
                         let bin_name = bin_artifact
@@ -747,7 +753,7 @@ impl Stage for SnapcraftStage {
                         }
                     }
 
-                    // GoReleaser parity (snapcraft.go:253-267): copy extra files
+                    // copy extra files
                     // into the prime directory at their destination paths.
                     if let Some(extra_files) = &snap_cfg.extra_files {
                         for extra in extra_files {
@@ -784,7 +790,7 @@ impl Stage for SnapcraftStage {
                         }
                     }
 
-                    // GoReleaser parity (snapcraft.go:382-396): copy completer files
+                    // copy completer files
                     // referenced by app configs into the prime directory.
                     if let Some(ref apps_map) = snap_cfg.apps {
                         for app_cfg in apps_map.values() {
@@ -1172,7 +1178,7 @@ mod tests {
             serde_json::json!({ "interface": "personal-files", "read": ["/etc/myapp"] }),
         );
 
-        // GoReleaser parity (snapcraft.go:338-402): plugs/hooks/assumes are only
+        // plugs/hooks/assumes are only
         // emitted when `apps` is non-empty (the Go loop runs per-app). Supply a
         // minimal app so the plugs section appears.
         let mut apps_map = HashMap::new();
@@ -1293,7 +1299,7 @@ mod tests {
 
     #[test]
     fn test_generate_snapcraft_yaml_minimal() {
-        // GoReleaser parity: summary and description are required
+        // summary and description are required
         let cfg = SnapcraftConfig::default();
         let err = generate_snap_yaml(&cfg, "0.1.0", &["mytool"], None, None);
         assert!(err.is_err(), "should error when summary is missing");
@@ -2706,7 +2712,7 @@ crates:
             serde_json::json!({"plugs": ["home", "network"]}),
         );
 
-        // GoReleaser parity (snapcraft.go:338-402): hooks are emitted only when
+        // hooks are emitted only when
         // `apps` is non-empty (the loop runs per-app). Supply a minimal app.
         let mut apps_map = HashMap::new();
         apps_map.insert(

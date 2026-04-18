@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::process::Command;
 
 use anodize_core::artifact::{Artifact, ArtifactKind};
@@ -91,50 +90,41 @@ pub fn run_publishers(
         // Resolve extra_files globs into additional artifacts
         let mut extra_artifacts: Vec<Artifact> = Vec::new();
         if let Some(ref extra_files) = publisher.extra_files {
-            for ef in extra_files {
-                let rendered_glob =
-                    template::render(&ef.glob, base_vars).unwrap_or_else(|_| ef.glob.clone());
-                let paths: Vec<PathBuf> = glob::glob(&rendered_glob)
-                    .into_iter()
-                    .flat_map(|entries| entries.filter_map(|e| e.ok()))
-                    .collect();
-
-                if paths.is_empty() {
-                    log.verbose(&format!(
-                        "[publisher] {} -- extra_files glob '{}' matched no files",
-                        label, rendered_glob
-                    ));
-                    continue;
-                }
-
-                // If name_template is set and glob matches multiple files, error
-                if ef.name.is_some() && paths.len() > 1 {
-                    anyhow::bail!(
-                        "publisher {}: extra_files glob '{}' matched {} files but name_template is set (requires exactly 1 match)",
-                        label,
-                        rendered_glob,
-                        paths.len()
-                    );
-                }
-
-                for path in paths {
-                    let name = if let Some(ref name_tmpl) = ef.name {
-                        template::render(name_tmpl, base_vars).unwrap_or_else(|_| name_tmpl.clone())
-                    } else {
-                        path.file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_default()
-                    };
-                    extra_artifacts.push(Artifact {
-                        kind: ArtifactKind::Archive,
-                        name,
-                        path,
-                        target: None,
-                        crate_name: String::new(),
-                        metadata: std::collections::HashMap::new(),
-                        size: None,
-                    });
-                }
+            // Pre-render the glob templates, then delegate to the canonical resolver.
+            let rendered_specs: Vec<anodize_core::config::ExtraFileSpec> = extra_files
+                .iter()
+                .map(|ef| {
+                    let raw_glob = ef.glob();
+                    let glob = template::render(raw_glob, base_vars)
+                        .unwrap_or_else(|_| raw_glob.to_string());
+                    match ef.name_template() {
+                        Some(nt) => anodize_core::config::ExtraFileSpec::Detailed {
+                            glob,
+                            name_template: Some(nt.to_string()),
+                        },
+                        None => anodize_core::config::ExtraFileSpec::Glob(glob),
+                    }
+                })
+                .collect();
+            let resolved = anodize_core::extrafiles::resolve(&rendered_specs, log)?;
+            for r in resolved {
+                let name = if let Some(name_tmpl) = r.name_template.as_deref() {
+                    template::render(name_tmpl, base_vars).unwrap_or_else(|_| name_tmpl.to_string())
+                } else {
+                    r.path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default()
+                };
+                extra_artifacts.push(Artifact {
+                    kind: ArtifactKind::Archive,
+                    name,
+                    path: r.path,
+                    target: None,
+                    crate_name: String::new(),
+                    metadata: std::collections::HashMap::new(),
+                    size: None,
+                });
             }
         }
 
@@ -205,7 +195,7 @@ pub fn run_publishers(
                     label,
                     artifact.path.display()
                 ));
-                // GoReleaser parity (exec.go): parse command with shellwords
+                // parse command with shellwords
                 // and exec directly instead of wrapping with `sh -c`.
                 let full_cmd = format_command_line(&rendered_cmd, &rendered_args);
                 let shell_args = split_shellwords(&full_cmd);
@@ -221,7 +211,7 @@ pub fn run_publishers(
                     cmd.current_dir(rendered_dir);
                 }
 
-                // GoReleaser parity (exec.go): restrict environment to a small
+                // restrict environment to a small
                 // whitelist to prevent accidental leakage of tokens/credentials.
                 cmd.env_clear();
                 for key in &[
@@ -1152,10 +1142,10 @@ crates:
 
         let extra = p.extra_files.as_ref().unwrap();
         assert_eq!(extra.len(), 2);
-        assert_eq!(extra[0].glob, "docs/*.md");
-        assert!(extra[0].name.is_none());
-        assert_eq!(extra[1].glob, "LICENSE");
-        assert_eq!(extra[1].name.as_deref(), Some("LICENSE.txt"));
+        assert_eq!(extra[0].glob(), "docs/*.md");
+        assert!(extra[0].name_template().is_none());
+        assert_eq!(extra[1].glob(), "LICENSE");
+        assert_eq!(extra[1].name_template(), Some("LICENSE.txt"));
     }
 
     // --- Parallel execution test ---

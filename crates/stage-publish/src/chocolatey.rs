@@ -295,14 +295,24 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
     }
 
     let version = ctx.version();
-    let description_raw = choco_cfg.description.as_deref().unwrap_or(crate_name);
+    // GoReleaser Pro parity: fall back to project `metadata.*` when choco config unset.
+    let description_raw = choco_cfg
+        .description
+        .as_deref()
+        .or_else(|| ctx.config.meta_description())
+        .unwrap_or(crate_name);
     let description = ctx
         .render_template(description_raw)
         .unwrap_or_else(|_| description_raw.to_string());
-    let license = choco_cfg.license.clone().unwrap_or_default();
+    let license = choco_cfg
+        .license
+        .clone()
+        .or_else(|| ctx.config.meta_license().map(str::to_string))
+        .unwrap_or_default();
     let authors = choco_cfg
         .authors
         .clone()
+        .or_else(|| ctx.config.meta_first_maintainer().map(str::to_string))
         .unwrap_or_else(|| crate_name.to_string());
     let project_url = choco_cfg.project_url.clone().unwrap_or_else(|| {
         format!(

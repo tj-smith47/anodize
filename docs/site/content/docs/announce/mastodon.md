@@ -25,14 +25,12 @@ announce:
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `MASTODON_CLIENT_ID` | Yes | OAuth application client ID |
-| `MASTODON_CLIENT_SECRET` | Yes | OAuth application client secret |
 | `MASTODON_ACCESS_TOKEN` | Yes | User access token for the posting account |
 
-All three variables must be present and non-empty. Only `MASTODON_ACCESS_TOKEN`
-is used for the actual API request (Bearer auth to `POST /api/v1/statuses`).
-The client ID and secret are validated for GoReleaser compatibility and
-forward-compatibility with future OAuth flows.
+`MASTODON_ACCESS_TOKEN` is sent as a Bearer credential on
+`POST /api/v1/statuses`. No client ID or secret is required or accepted —
+those belong to OAuth authorization flows, not to posting an authenticated
+status.
 
 ## Empty server handling
 
@@ -44,9 +42,7 @@ Mastodon announcement without failing the pipeline.
 1. Log in to your Mastodon instance.
 2. Go to **Preferences → Development → New Application**.
 3. Grant the `write:statuses` scope.
-4. Copy the **Client key** → `MASTODON_CLIENT_ID`.
-5. Copy the **Client secret** → `MASTODON_CLIENT_SECRET`.
-6. Copy the **Your access token** → `MASTODON_ACCESS_TOKEN`.
+4. Copy the **Your access token** → `MASTODON_ACCESS_TOKEN`.
 
 ## Example
 
@@ -59,7 +55,5 @@ announce:
 ```
 
 ```
-MASTODON_CLIENT_ID=abc123
-MASTODON_CLIENT_SECRET=def456
 MASTODON_ACCESS_TOKEN=xyz789
 ```

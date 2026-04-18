@@ -15,9 +15,6 @@ use anodize_core::stage::Stage;
 /// files may have been modified by signing. Updates the `sha256` metadata
 /// field in-place (GoReleaser parity: macos.go:144 calls `binaries.Refresh()`).
 fn refresh_artifact_checksums(ctx: &mut Context, log: &anodize_core::log::StageLogger) {
-    use sha2::{Digest, Sha256};
-    use std::io::Read as _;
-
     for artifact in ctx.artifacts.all_mut() {
         if !matches!(
             artifact.kind,
@@ -37,30 +34,13 @@ fn refresh_artifact_checksums(ctx: &mut Context, log: &anodize_core::log::StageL
         if !artifact.metadata.contains_key("sha256") {
             continue;
         }
-        match std::fs::File::open(&artifact.path) {
-            Ok(mut f) => {
-                let mut hasher = Sha256::new();
-                let mut buf = [0u8; 8192];
-                loop {
-                    match f.read(&mut buf) {
-                        Ok(0) => break,
-                        Ok(n) => hasher.update(&buf[..n]),
-                        Err(e) => {
-                            log.warn(&format!(
-                                "notarize: failed to read {} for checksum refresh: {}",
-                                artifact.path.display(),
-                                e
-                            ));
-                            break;
-                        }
-                    }
-                }
-                let new_sha = format!("{:x}", hasher.finalize());
+        match anodize_core::hashing::sha256_file(&artifact.path) {
+            Ok(new_sha) => {
                 artifact.metadata.insert("sha256".to_string(), new_sha);
             }
             Err(e) => {
                 log.warn(&format!(
-                    "notarize: failed to open {} for checksum refresh: {}",
+                    "notarize: failed to refresh sha256 for {}: {}",
                     artifact.path.display(),
                     e
                 ));
@@ -103,35 +83,16 @@ fn is_enabled(enabled: &Option<StringOrBool>, ctx: &Context) -> bool {
 // Helper: render an optional template field
 // ---------------------------------------------------------------------------
 
-/// Render a template string through the context's template engine.
-/// Returns `Ok(None)` when the input is `None`.
-fn render_opt(ctx: &Context, val: &Option<String>) -> Result<Option<String>> {
-    match val {
-        Some(tmpl) => Ok(Some(ctx.render_template(tmpl)?)),
-        None => Ok(None),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Helper: filter artifacts by ids list
 // ---------------------------------------------------------------------------
 
-/// Check whether an artifact matches the given ids filter.
-///
-/// When `ids` is `None` or empty, all artifacts match. Otherwise the
-/// artifact's `id` metadata or `crate_name` must appear in the list.
+use anodize_core::artifact::matches_id_filter;
+
+/// Check whether an artifact matches the given ids filter — delegates to the
+/// canonical `anodize_core::artifact::matches_id_filter` (GoReleaser `ByID`).
 fn matches_ids(artifact: &Artifact, ids: &Option<Vec<String>>) -> bool {
-    match ids {
-        None => true,
-        Some(id_list) if id_list.is_empty() => true,
-        Some(id_list) => {
-            if let Some(art_id) = artifact.metadata.get("id") {
-                id_list.iter().any(|i| i == art_id)
-            } else {
-                id_list.iter().any(|i| i == &artifact.crate_name)
-            }
-        }
-    }
+    matches_id_filter(artifact, ids.as_deref())
 }
 
 // ---------------------------------------------------------------------------
@@ -295,32 +256,36 @@ fn run_cross_platform(
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("notarize: macos[{idx}] requires a 'sign' configuration"))?;
 
-    let certificate = render_opt(ctx, &sign.certificate)
+    let certificate = ctx
+        .render_template_opt(sign.certificate.as_deref())
         .with_context(|| format!("notarize: macos[{idx}] render sign.certificate"))?
         .ok_or_else(|| anyhow::anyhow!("notarize: macos[{idx}] sign.certificate is required"))?;
 
-    let password = render_opt(ctx, &sign.password)
+    let password = ctx
+        .render_template_opt(sign.password.as_deref())
         .with_context(|| format!("notarize: macos[{idx}] render sign.password"))?
         .ok_or_else(|| anyhow::anyhow!("notarize: macos[{idx}] sign.password is required"))?;
 
-    let entitlements = render_opt(ctx, &sign.entitlements)
+    let entitlements = ctx
+        .render_template_opt(sign.entitlements.as_deref())
         .with_context(|| format!("notarize: macos[{idx}] render sign.entitlements"))?;
 
     // Render and validate notarize config fields (if present)
     let notarize_api = if let Some(ref ncfg) = cfg.notarize {
-        let issuer_id = render_opt(ctx, &ncfg.issuer_id)
+        let issuer_id = ctx.render_template_opt(ncfg.issuer_id.as_deref())
             .with_context(|| format!("notarize: macos[{idx}] render notarize.issuer_id"))?
             .ok_or_else(|| {
                 anyhow::anyhow!("notarize: macos[{idx}] notarize.issuer_id is required when notarize block is present")
             })?;
-        let key = render_opt(ctx, &ncfg.key)
+        let key = ctx
+            .render_template_opt(ncfg.key.as_deref())
             .with_context(|| format!("notarize: macos[{idx}] render notarize.key"))?
             .ok_or_else(|| {
                 anyhow::anyhow!(
                     "notarize: macos[{idx}] notarize.key is required when notarize block is present"
                 )
             })?;
-        let key_id = render_opt(ctx, &ncfg.key_id)
+        let key_id = ctx.render_template_opt(ncfg.key_id.as_deref())
             .with_context(|| format!("notarize: macos[{idx}] render notarize.key_id"))?
             .ok_or_else(|| {
                 anyhow::anyhow!("notarize: macos[{idx}] notarize.key_id is required when notarize block is present")
@@ -507,16 +472,19 @@ fn run_native(
         anyhow::anyhow!("notarize: macos_native[{idx}] requires a 'sign' configuration")
     })?;
 
-    let identity = render_opt(ctx, &sign.identity)
+    let identity = ctx
+        .render_template_opt(sign.identity.as_deref())
         .with_context(|| format!("notarize: macos_native[{idx}] render sign.identity"))?
         .ok_or_else(|| {
             anyhow::anyhow!("notarize: macos_native[{idx}] sign.identity is required")
         })?;
 
-    let keychain = render_opt(ctx, &sign.keychain)
+    let keychain = ctx
+        .render_template_opt(sign.keychain.as_deref())
         .with_context(|| format!("notarize: macos_native[{idx}] render sign.keychain"))?;
 
-    let entitlements = render_opt(ctx, &sign.entitlements)
+    let entitlements = ctx
+        .render_template_opt(sign.entitlements.as_deref())
         .with_context(|| format!("notarize: macos_native[{idx}] render sign.entitlements"))?;
 
     // Validate notarize config
@@ -524,7 +492,8 @@ fn run_native(
         anyhow::anyhow!("notarize: macos_native[{idx}] requires a 'notarize' configuration")
     })?;
 
-    let profile_name = render_opt(ctx, &notarize.profile_name)
+    let profile_name = ctx
+        .render_template_opt(notarize.profile_name.as_deref())
         .with_context(|| format!("notarize: macos_native[{idx}] render notarize.profile_name"))?
         .ok_or_else(|| {
             anyhow::anyhow!("notarize: macos_native[{idx}] notarize.profile_name is required")
@@ -533,7 +502,8 @@ fn run_native(
     let wait = notarize.wait.unwrap_or(false);
 
     // Default timeout to 10 minutes (GoReleaser parity: macos.go:33)
-    let timeout = render_opt(ctx, &notarize.timeout)
+    let timeout = ctx
+        .render_template_opt(notarize.timeout.as_deref())
         .with_context(|| format!("notarize: macos_native[{idx}] render notarize.timeout"))?
         .or_else(|| Some("10m".to_string()));
 
@@ -1836,7 +1806,7 @@ notarize: {}
     }
 
     #[test]
-    fn test_matches_ids_helper_by_crate_name() {
+    fn test_matches_ids_helper_no_id_metadata_does_not_match() {
         let artifact = Artifact {
             kind: ArtifactKind::Binary,
             name: "test".to_string(),
@@ -1847,7 +1817,7 @@ notarize: {}
             size: None,
         };
 
-        assert!(matches_ids(&artifact, &Some(vec!["myapp".to_string()])));
+        assert!(!matches_ids(&artifact, &Some(vec!["myapp".to_string()])));
         assert!(!matches_ids(&artifact, &Some(vec!["other".to_string()])));
     }
 

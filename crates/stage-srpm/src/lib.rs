@@ -36,7 +36,7 @@ impl Stage for SrpmStage {
             return Ok(());
         }
 
-        // GoReleaser parity: when global skip_sign is active, clear signature config
+        // when global skip_sign is active, clear signature config
         let skip_sign = ctx.should_skip("sign");
 
         let dist = ctx.config.dist.clone();
@@ -197,7 +197,7 @@ impl Stage for SrpmStage {
                 .arg(format!("_gpg_name {}", key_file));
             rpmbuild_cmd.arg("--sign");
 
-            // GoReleaser parity: read SRPM_PASSPHRASE env var when no
+            // read SRPM_PASSPHRASE env var when no
             // passphrase is configured inline.
             if let Some(ref passphrase) = sig.passphrase {
                 rpmbuild_cmd.env("GPG_PASSPHRASE", passphrase);

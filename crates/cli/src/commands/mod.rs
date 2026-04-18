@@ -1,5 +1,6 @@
 pub mod announce_cmd;
 pub mod build;
+pub mod bump;
 pub mod changelog;
 pub mod check;
 pub mod completion;

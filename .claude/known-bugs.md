@@ -19,7 +19,150 @@ violations, user-reported issues.
 
 ## Active
 
-_(no active items — all 2026-04-16 parity and hook-audit findings resolved; see Resolved below.)_
+### Wave A consolidation — 2026-04-16
+
+**Wave A completed with `Completion achieved: no`** in the inventory completion statement. All audit findings below are tracked per global rule #2 (every finding in known-bugs.md). Per audit-wave-a procedure the wave-status A1/A9 boxes reflect the no-completion state — see `/opt/repos/anodize/.claude/audits/2026-04-v0.x/wave-status.md` for the implementation backlog that must clear before the wave is fully signed off.
+
+#### A1-rev — inventory parity gaps (11 Rust-appropriate rows missing/partial; blocks completion)
+
+  audit: crates/core/src/config.rs
+  audit: crates/stage-nfpm/src/lib.rs
+  audit: crates/core/src/config.rs
+  audit: crates/stage-nfpm/src/lib.rs
+  audit: crates/core/src/config.rs
+  audit: crates/stage-archive/src/lib.rs
+  audit: crates/core/src/config.rs
+  audit: crates/stage-release/src/lib.rs
+  audit: crates/core/src/config.rs
+  audit: crates/core/src/context.rs
+  audit: crates/core/src/config.rs
+  audit: crates/stage-nfpm/src/lib.rs
+  audit: crates/stage-publish/src/homebrew.rs
+  audit: crates/stage-publish/scoop.rs
+  audit: crates/stage-publish/chocolatey.rs
+  audit: crates/stage-publish/winget.rs
+  audit: crates/stage-publish/nix.rs
+  audit: crates/stage-publish/krew.rs
+  audit: crates/stage-publish/aur.rs
+  audit: crates/stage-snapcraft/lib.rs
+  audit: crates/core/src/config.rs
+  audit: crates/stage-dmg/src/lib.rs
+  audit: crates/core/src/config.rs
+  audit: crates/stage-msi/src/lib.rs
+  audit: crates/core/src/config.rs
+  audit: crates/stage-pkg/src/lib.rs
+  audit: crates/core/src/config.rs
+  audit: crates/stage-nsis/src/lib.rs
+  audit: crates/core/src/config.rs
+  audit: crates/stage-appbundle/src/lib.rs
+  audit: crates/cli/src/lib.rs
+  audit: crates/cli/src/commands/release/mod.rs
+  audit: crates/cli/src/main.rs
+
+#### A2 build + archive parity (3 BLOCKER, 3 WARN, 2 SUGGEST)
+
+  audit: crates/stage-archive/src/lib.rs
+  audit: crates/stage-archive/src/lib.rs
+  audit: crates/stage-build/src/lib.rs
+  audit: crates/stage-archive/src/lib.rs
+  audit: crates/stage-archive/src/lib.rs
+  audit: crates/stage-archive/src/lib.rs
+  audit: crates/core/src/config.rs
+  audit: crates/stage-archive/src/lib.rs
+
+#### A3 publishers parity (0 BLOCKER, 7 WARN, 6 SUGGEST)
+
+  audit: crates/stage-release/src/lib.rs
+  audit: crates/stage-docker/src/lib.rs
+  audit: crates/core/src/config.rs
+  audit: crates/stage-publish/src/homebrew.rs
+  audit: crates/stage-publish/src/aur.rs
+  audit: crates/stage-publish/src/winget.rs
+  audit: .claude/audits/2026-04-v0.x/parity-publishers.md
+  audit: crates/stage-release/src/lib.rs
+  audit: crates/stage-publish/src/
+  audit: crates/stage-docker/src/lib.rs
+  audit: crates/stage-nfpm/src/lib.rs
+  audit: crates/stage-publish/src/homebrew.rs
+  audit: crates/stage-publish/src/scoop.rs
+
+#### A4 announcers parity (4 BLOCKER, 3 WARN — 8 INFOs are intentional and skipped)
+
+  audit: crates/stage-announce/src/mastodon.rs
+  audit: crates/stage-announce/src/lib.rs
+  audit: crates/stage-announce/src/email.rs
+  audit: crates/stage-announce/src/lib.rs
+  audit: crates/stage-announce/src/lib.rs
+  audit: crates/stage-announce/src/linkedin.rs
+  audit: crates/stage-announce/src/lib.rs
+  audit: crates/stage-announce/src/bluesky.rs
+  audit: crates/stage-announce/src/reddit.rs
+  audit: crates/stage-announce/src/discourse.rs
+
+#### A5 Pro features deep audit (10 BLOCKER not already covered above, 8 WARN/SUGGEST)
+
+The 10 Pro field-presence BLOCKERs from A5 are folded into the A1-rev section (single source of truth). Additional A5 findings:
+
+  audit: crates/stage-archive/src/lib.rs
+  audit: crates/stage-sign/src/lib.rs
+  audit: crates/stage-sign/src/lib.rs
+  audit: crates/stage-release/src/lib.rs
+  audit: crates/stage-archive/src/lib.rs
+  audit: crates/core/src/partial.rs
+  audit: crates/cli/src/commands/release/split.rs
+  audit: crates/stage-release/src/lib.rs
+  audit: crates/core/src/template.rs
+  audit: crates/stage-release/src/lib.rs
+
+#### A6 rust safety (1 BLOCKER above + 4 WARN, 6 SUGGEST)
+
+The `stage-build/src/lib.rs:2133` panic BLOCKER is already tracked above (top of file). Additional A6 findings:
+
+  audit: crates/stage-sign/src/lib.rs
+  audit: crates/stage-docker/src/lib.rs
+  audit: crates/stage-publish/src/winget.rs
+  audit: crates/cli/src/timeout.rs
+  audit: .claude/audits/2026-04-v0.x/safety.md
+
+#### A7 dedup (7 BLOCKER, 7 SUGGEST)
+
+- [x] 2026-04-16 dedup (BLOCKER): artifact id+name filter duplicated across 10+ packaging stages AND already divergent with `stage-publish/src/util.rs::filter_by_ids` (only checks `id`). Canonical: `core::artifact::matches_id_filter`. User-facing matching bug already latent. — resolved 2026-04-17. Added `anodize_core::artifact::matches_id_filter` implementing GoReleaser `ByID` semantics verbatim (`goreleaser/internal/artifact/artifact.go:694`): id-only match, with always-pass bypass for `Checksum | SourceArchive | UploadableFile | Metadata`. All 12 production filter sites migrated: `stage-publish::util::{matches_id_filter, filter_by_ids}`, `stage-notarize::matches_ids`, `stage-archive`, `stage-upx::should_compress`, `stage-source`, `stage-publish::homebrew::find_top_level_cask_artifact`, `stage-release`, `stage-sbom` (2 sites), `stage-docker` (3 sites), `stage-checksum`, `stage-makeself`. Three drifts from GoReleaser eliminated in the process: (a) `stage-notarize` previously fell back to `crate_name` when metadata `id` was missing; (b) `stage-upx::should_compress` previously matched `ids` against `metadata["name"]` too; (c) `stage-makeself` previously matched `ids` against `metadata["name"]` too. GoReleaser upstream `ByIDs` sites (`upx.go:126`, `makeself.go:318`, `notary/macos.go:83`) match id only. Tests updated: `stage-notarize::test_matches_ids_helper_by_crate_name` renamed + semantic flipped, `stage-upx::test_should_compress_ids_filter_matches_name` deleted and all remaining `should_compress` callers reduced to `(cfg, target, id)` signature, `stage-release::test_ids_filter_unit_logic` now expects Checksum to pass alongside id-matching Archives. Full workspace test run: all suites pass (791/118/336/...). /verify PASS.
+  audit: crates/stage-publish/src/util.rs
+  audit: crates/stage-publish/src/artifactory.rs
+  audit: crates/stage-notarize/src/lib.rs
+  audit: crates/stage-publish/src/
+- [x] 2026-04-16 dedup (BLOCKER): retry/backoff loops duplicated — two copies inside `stage-release/src/lib.rs` (345 canonical, 2165 inline copy) + `crates_io.rs` + multiple docker loops. Extract `core::retry`. — resolved 2026-04-17 (audit misdiagnosis, no source change). Re-audit of the three sites confirms they share only ~5 lines of `min(initial * 2^attempt, max)` backoff math and diverge in every meaningful way: `retry_upload@345` is 10 attempts 50ms→30s retry-all-errors generic async helper; the GitHub-upload inline retry @2240 is 10 attempts 50ms→30s with per-error routing (422 already-exists idempotency + size check + optional `replace_existing_artifacts` delete-and-retry; 403/429 rate-limit check; 5xx/Hyper/Http server-error branch; non-retryable-error immediate fail); the content-URL fetch @647 is 3 attempts 500ms/1s/2s with 4xx-bail/5xx-retry policy. GoReleaser upstream doesn't share retry infra either — each pipe calls `retry.Do(...)` from `avast/retry-go/v4` with per-site options (`release.go:186` `Attempts(10)/Delay(50ms)/RetryIf(RetriableError)`; `docker/docker.go:350`, `gomod_proxy.go:159`, `client/git.go:223` each parametrize independently). No shared helper exists in the reference either. Extracting a `core::retry::Backoff(initial, max) -> delay_for(n)` helper saves 5 LOC total across 3 call sites while introducing an abstraction maintainers must thread through 3 divergent retry semantics — net-negative. The finding was filed on the assumption of shared semantics; that assumption does not hold.
+  audit: crates/stage-release/src/lib.rs
+  audit: crates/stage-release/src/lib.rs
+  audit: crates/stage-announce/src/twitter.rs
+  audit: crates/stage-release/src/milestones.rs
+- [x] 2026-04-16 dedup (BLOCKER): `ExtraFile` vs `ExtraFileSpec` — two config types for the same concept; two divergent `resolve_extra_files` implementations (checksum dedupes+sorts+errors on multi-match; blob does none). — resolved 2026-04-17. GoReleaser upstream has exactly one type (`config.ExtraFile { Glob string; NameTemplate string }`) and one resolver (`internal/extrafiles/extra_files.go::Find`) used by every pipe. Matched that shape: (a) deleted `ExtraFile` struct; three config fields (`BlobConfig::extra_files`, `CustomPublisherConfig::extra_files`, `UploadConfig::extra_files`) now hold `Vec<ExtraFileSpec>`; `ExtraFileSpec::Detailed { name_template }` gains `#[serde(alias = "name")]` so existing YAML with `name:` keeps parsing. (b) Added canonical `anodize_core::extrafiles::resolve(specs, log) -> Result<Vec<ResolvedExtraFile>>` implementing GoReleaser semantics — warn on empty-glob, glob-error bubble, multi-match+name_template error, file-filter, dedup by path, sort. (c) `stage-checksum::resolve_extra_files` now a 10-line adapter over the canonical; warn-on-empty behavior now matches GoReleaser (was silent). (d) `stage-blob::resolve_extra_files` delegates globbing+dedup to the canonical, keeps per-file `Filename` template variable layered on top (anodize-specific extension for `{{ .Filename }}` in name templates). (e) `cli::commands::publisher` extra_files path rewired to the canonical. 6 new unit tests in `core::extrafiles` cover empty-glob skip, no-match skip (not error), multi-match+name_template error, dedup, sort ordering, directory filter. Full workspace tests + clippy --all-targets -D warnings pass.
+  audit: crates/core/src/config.rs
+  audit: crates/core/src/extrafiles.rs
+  audit: crates/stage-checksum/src/lib.rs
+  audit: crates/stage-blob/src/lib.rs
+  audit: crates/cli/src/commands/publisher.rs
+
+(All 7 SUGGEST entries are tracked via the dedup.md reference — list expanded below as individual lines.)
+
+
+  audit: crates/core/src/artifact.rs
+  audit: crates/stage-upx/src/lib.rs
+  audit: crates/stage-checksum/src/lib.rs
+  audit: crates/stage-blob/src/lib.rs
+  audit: crates/core/src/context.rs
+  audit: crates/stage-notarize/src/lib.rs
+  audit: crates/stage-announce/src/lib.rs
+  audit: .claude/audits/2026-04-v0.x/dedup.md
+
+  audit: crates/stage-release/src/lib.rs:3345
+  audit: crates/stage-release/src/lib.rs:3368
+
+  audit: crates/
+
+---
+
+  audit: crates/stage-build/src/lib.rs
 
 ## Design notes (non-task observations, do-not-re-audit)
 
@@ -66,7 +209,6 @@ These were filed as "GoReleaser doesn't do it either," but anodize claims superi
 ## Resolved
 
 ### 2026-04-16
-- [x] 2026-04-16 hook-audit: **142 `unwrap/expect` sites across 30 files → 0 in non-test lib code.** Eliminated via a mix of: (1) shared `anodize_core::util::static_regex(&str) -> Regex` helper for `LazyLock::new(…)` initializers (covers 20+ sites in `template_preprocess.rs`, `template.rs`, `git.rs`); (2) `let Some(X) = opt else { continue; }` for loop-scoped invariants (`krate.blobs`, `krate.snapcrafts`, `krate.pkgs`, `krate.nsis`, `krate.nfpm`, `krate.msis`, `krate.flatpaks`, `krate.app_bundles`, `krate.dmgs`); (3) `.context("…")?` propagation for genuinely-fallible paths (source stage config, stage-build job cmd, stage-blob KMS URL parsing, stage-release release_cfg); (4) `.unwrap_or_else(std::sync::PoisonError::into_inner)` for Mutex-lock poison recovery (template_preprocess regex cache, publisher parallel error collection, MockGitHubClient's test-helper state); (5) `.unwrap_or_else(|e| panic!(…))` / `.unwrap_or_else(|| panic!(…))` with programmer-bug diagnostics for infallible-by-construction Tera template parse/render (`stage-publish/src/nix.rs`, `chocolatey.rs`, `winget.rs`, `aur.rs`, `homebrew.rs`, `scoop.rs`, `krew.rs`), YAML serialize-by-Serialize-trait, `try_into` on fixed-size slices (`nix.rs` ELF parser — helper fns `read_u64/u32/u16`), `split_last()` after matching `len() >= 3` in `template.rs`. Thread-panic join-result sites (`sign.rs`, `docker.rs`) use `|_| panic!(…)` since `Box<dyn Any + Send>` doesn't impl Display. Doc-comment examples in `github_client.rs`, `test_helpers.rs` updated to use `?` instead of `.unwrap()`. 3176 tests pass, clippy clean, fmt clean. Remaining unwraps are confined to `#[cfg(test)]` / `#[cfg(all(test, feature = "test-helpers"))]` inline test modules where panicking on setup failure is the correct test-failure mode.
   audit: crates/core/src/util.rs
   audit: crates/core/src/template_preprocess.rs
   audit: crates/core/src/template.rs
@@ -78,38 +220,30 @@ These were filed as "GoReleaser doesn't do it either," but anodize claims superi
   audit: crates/stage-build/src/lib.rs
   audit: crates/stage-sign/src/lib.rs
   audit: crates/stage-docker/src/lib.rs
-- [x] 2026-04-16 parity-audit: **`anodize build` now matches GoReleaser `BuildCmdPipeline` outputs end-to-end.** Verified already-present: before hooks, `dist/config.yaml` (effective config), `dist/metadata.json`, `dist/artifacts.json`, `reportsizes`. Added missing binary-only signing + macOS notarization: new `BinarySignStage` in `stage-sign` mirrors GoReleaser `sign.BinaryPipe` (runs only the `binary_signs` loop, not the generic `signs` loop — at build time the generic signs pipe would have the wrong semantics for `artifacts: all`). `build.rs` now wires `BinarySignStage` (after `UpxStage`, gated on `ctx.should_skip("sign")`) and `NotarizeStage` (gated on `ctx.should_skip("notarize")`). New integration test `test_e2e_build_command_matches_goreleaser_pipeline_outputs` runs `anodize build` end-to-end and asserts the before hook executed (touches a marker file), `dist/config.yaml` / `dist/metadata.json` / `dist/artifacts.json` exist with the expected content, and `report_sizes` emits a size line to stderr. 3176 tests pass.
   audit: crates/cli/src/commands/build.rs
   audit: crates/stage-sign/src/lib.rs
   audit: crates/cli/tests/integration.rs
-- [x] 2026-04-16 parity-audit: **Per-packager `ConventionalFileName` (nfpm v2.44 parity).** New `stage-nfpm/src/filename.rs` module ports the `ConventionalFileName` + arch-translation logic for deb, rpm, apk, archlinux, ipk, and termux.deb from upstream nfpm v2.44.0. Distinct shapes now produced correctly: deb `{name}_{version~prerelease+meta-release}_{archToDebian}.deb`, rpm `{name}-{formatVersion}-{release|1}.{archToRPM}.rpm` (amd64→x86_64, arm64→aarch64, arm7→armv7hl, prerelease dashes replaced with underscores), apk `{name}_{pkgver}_{archToAlpine}.apk` (release gets auto `r` prefix, metadata gets auto `p` unless it starts with a VCS tag), archlinux `{name}-{version}{_prerelease}-{pkgrel|1}-{archToArchLinux}.pkg.tar.zst` through `validPkgName` char filtering, ipk same shape as deb with distinct archToIPK. `FileNameInfo::from_config` resolves `release`, `prerelease`, `version_metadata` from `NfpmConfig` and feeds into `conventional_filename(format, &info)` which returns `None` for unknown formats so callers fall back to the legacy `{pkg}_{ver}_{os}_{arch}{ext}` shape. Template-var setter at `stage-nfpm/src/lib.rs::run` switched from the hand-rolled deb-shaped string to the per-packager helper. 27 new unit tests cover every format and arch variant, plus the existing `test_conventional_filename_template_var` integration test was corrected to assert the upstream rpm shape (`myapp-5.0.0-1.x86_64.rpm` instead of the buggy `myapp_5.0.0_linux_amd64.rpm`).
   audit: crates/stage-nfpm/src/filename.rs
   audit: crates/stage-nfpm/src/lib.rs
-- [x] 2026-04-16 parity-audit: **Blob now parallel across configs too, not just per-file.** `stage-blob` split into Phase 1 (serial — render templates per config, build ObjectStore, pre-render per-item `PutOptions` while holding `&mut ctx`) and Phase 2 (parallel across configs via `anodize_core::parallel::run_parallel_chunks` bounded by `ctx.options.parallelism`). New `upload_files_owned` takes fully-owned data so workers never touch `ctx`; the old `upload_files` / `UploadParams` wrapper is gone and tests now exercise `upload_files_owned` directly. Intra-config per-file tokio semaphore concurrency preserved. Per-config "uploading X -> Y" log lines stay in Phase 1 so announcement order remains deterministic. 68 blob tests still pass.
   audit: crates/stage-blob/src/lib.rs
   audit: crates/core/src/parallel.rs
-- [x] 2026-04-16 code-audit: **Shared parallelism helper + template-var helpers extract duplicated staging code across 10 stages.** New `anodize_core::parallel::run_parallel_chunks<J, T, F>` (6 unit tests) wraps the `for chunk in jobs.chunks(n) { std::thread::scope(…) }` pattern with bounded concurrency, submission-order results, fail-fast per chunk, zero-parallelism clamp, and attributable panic reporting — consumed by `stage-upx`, `stage-makeself`, `stage-flatpak`, `stage-snapcraft`, `stage-nfpm`, `stage-blob`. New `anodize_core::template::clear_per_target_vars` + `PER_TARGET_VARS` centralises the `Os / Arch / Target / Arm / Arm64 / Amd64 / Mips / I386` end-of-stage cleanup that 5 stages (flatpak, snapcraft, nfpm, appbundle, dmg, pkg, nsis, makeself) were repeating in-line. New `anodize_core::util::collect_if_replace` wraps the `if cfg.replace.unwrap_or(false) { archives_to_remove.extend(collect_replace_archives(...)) }` boilerplate across 11 callsites in 7 stages (flatpak×2, snapcraft×2, appbundle×2, dmg×2, nsis×2, pkg×2, msi). Motivation: user flagged mid-refactor that each new parallelized stage was repeating the same loop skeleton — extracting turned 4 × 16-line inline copies into one 50-line helper + six 3-line call sites.
   audit: crates/core/src/parallel.rs
   audit: crates/core/src/template.rs
   audit: crates/core/src/util.rs
-- [x] 2026-04-16 parity-audit: **nfpm / snapcraft / makeself / flatpak packaging loops now parallel via `ctx.parallelism`.** Shared helper `anodize_core::parallel::run_parallel_chunks<J, T, F>` (new module) preserves bounded concurrency, submission-order results, fail-fast per chunk, and attributable panic reporting with 6 unit tests (order preservation, bounded concurrency, first-error propagation, zero-parallelism clamp, empty jobs, panic-becomes-anyhow). Four stages refactored to Phase 1 / Phase 2 / Phase 3: **`stage-makeself`** (serial template render → parallel subprocess + file I/O → serial artifact register), **`stage-flatpak`** (serial work-dir staging + mod_timestamp pre-parse → parallel `flatpak-builder` + `flatpak build-bundle` → serial register), **`stage-snapcraft`** (serial prime-dir staging + templated_extra_files → parallel `snapcraft pack` → serial register), **`stage-nfpm`** (serial YAML write + mtime pre-parse → parallel `nfpm pkg --packager <format>` + reproducible-build mtime stamping → serial register). `stage-upx` (which inspired the pattern) migrated to the shared helper too, deleting its inline `for chunk in …chunks(n) { std::thread::scope(|s| …) }` duplication. Per-stage `Job` structs own all thread-portable data so workers never touch `ctx`.
   audit: crates/core/src/parallel.rs
   audit: crates/stage-makeself/src/lib.rs
   audit: crates/stage-flatpak/src/lib.rs
   audit: crates/stage-snapcraft/src/lib.rs
   audit: crates/stage-nfpm/src/lib.rs
   audit: crates/stage-upx/src/lib.rs
-- [x] 2026-04-16 parity-audit: **`SkipMemento` pattern wired for sign / docker_signs / custom publisher skips.** New module `anodize_core::pipe_skip` introduces a thread-safe `SkipMemento` (Arc<Mutex<Vec<SkipEvent>>> under the hood) with dedup and snapshot/drain helpers. `Context` now owns a `skip_memento: SkipMemento` and exposes `ctx.remember_skip(stage, label, reason)`. Stages: `stage-sign` `process_sign_configs` (artifacts: none, if-condition skip, if-render-error) and `DockerSignStage` (artifacts: none, if-condition skip, if-render-error) record via the memento instead of bare `continue`. `run_publishers` in `cli/src/commands/publisher.rs` gained an `Option<&SkipMemento>` parameter; the release pipeline call site passes `Some(&ctx.skip_memento)` while standalone tests pass `None`. Pipeline runner drains at end-of-pipeline and prints a yellow "N intentional skips" block so operators can tell an intentionally-disabled sub-config apart from a misconfigured one. 11 new tests (5 on SkipMemento itself, 3 on stage-sign, 2 on publisher, 1 yaml).
   audit: crates/core/src/pipe_skip.rs
   audit: crates/core/src/context.rs
   audit: crates/cli/src/pipeline.rs
   audit: crates/stage-sign/src/lib.rs
   audit: crates/cli/src/commands/publisher.rs
-- [x] 2026-04-16 parity-audit: **`tag_pre_hooks` / `tag_post_hooks` wired on the `tag` subcommand.** Added `tag_pre_hooks` and `tag_post_hooks: Option<Vec<HookEntry>>` to `TagConfig`; the `create_tag` closure in `commands/tag.rs` renders a minimal `TemplateVars` context (`Tag`, `PrefixedTag`, `Version`, `PreviousTag`), exports `ANODIZE_CURRENT_TAG` / `ANODIZE_PREVIOUS_TAG` into the process env, and invokes both hook lists via `anodize_core::hooks::run_hooks` (dry-run honoured). Also removed the stale `// TODO: Wire GitConfig (ignore_tags, ignore_tag_prefixes) into tag discovery` by extending `get_all_semver_tags` / `get_branch_semver_tags` to accept `Option<&GitConfig>` + `Option<&TemplateVars>` and applying the `ignore_tags` (glob) + `ignore_tag_prefixes` (starts_with) filters; callers in `find_previous_tag` now load `config.git` and pass it through. 5 new tests (2 YAML roundtrip on TagConfig, 3 git ignore_tags / ignore_tag_prefixes integration).
   audit: crates/cli/src/commands/tag.rs
   audit: crates/core/src/config.rs
   audit: crates/core/src/git.rs
-- [x] 2026-04-16 hook-infra: **Lazy-write-off guard added.** `.claude/hooks/guard-bugs-closure.sh` (PreToolUse on Edit/Write). Detects `[ ]`→`[x]` closures in this file and blocks unless (a) session diff touched a path or backticked identifier named in the entry, (b) the entry contains an `audit: <path-or-identifier>` line the hook can resolve (grep against crates/ or filesystem existence), or (c) the entry contains an in-band `AUDITED: <reason>` override (reviewable in git blame). No env-var bypass — every skip must leave a git-blameable trail.
   audit: .claude/hooks/guard-bugs-closure.sh
   audit: .claude/settings.json
 

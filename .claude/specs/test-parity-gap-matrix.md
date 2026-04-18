@@ -1,10 +1,72 @@
 # Test Parity Gap Matrix: Anodize vs GoReleaser
 
-**Date:** 2026-03-26
-**Anodize baseline:** 441 tests across 13 crates (~17.8k LOC)
-**GoReleaser baseline:** ~164 test files, ~44k lines of test code, est. 3000+ test cases
+**Refresh date:** 2026-04-16 (A1 inventory mapper run; baseline was 2026-03-26)
+**Anodize baseline:** ~3176 tests across 26 crates (~179k LOC per `wc -l crates/*/src/**`, grown from 441 tests / 17.8k LOC since March baseline)
+**GoReleaser baseline:** ~164 test files, ~44k lines of test code, est. 3000+ test cases (unchanged — pinned to GoReleaser HEAD `f7e73e3`)
+
+> **How to read this file.** Upper section is the refreshed parity-status summary (partial + missing features with verification commands). The legacy Gap Matrix below (Section 4) enumerates test-case-level gaps; kept for reference but not required reading for audit waves.
 
 ---
+
+## 1. Features with `parity_status` ∈ {partial, missing}
+
+Source: Section 2 of `goreleaser-complete-feature-inventory.md`. Only rows with `ecosystem_relevance` in {required, strongly-suggested} are audit-driving; niche rows are informational.
+
+| name | parity_status | ecosystem_relevance | verification command / test name | notes |
+|------|---------------|---------------------|----------------------------------|-------|
+| `goreleaser man` (man page generation) | missing | niche | `cargo run --bin anodize -- man --help` (currently errors — subcommand absent) | Nice-to-have; `clap_mangen` would be the implementation path. Not required. |
+| `--soft` flag on `anodize check` | missing | niche | `cargo run --bin anodize -- check --soft` (currently errors — flag absent) | Pro feature; anodize check is strict by default. |
+| `continue_on_error` per-stage | missing | niche | no stage currently surfaces `continue_on_error` as a config key | Anodize is fail-fast; would need per-stage opt-in. |
+
+**No required or strongly-suggested CLI features are in the partial/missing set.** This matches the completion statement in the CLI inventory.
+
+---
+
+## 2. Behavioral verification commands (audit-wave reference)
+
+For auditors A2/A3/A4 who need to spot-check behavioral parity rather than take the inventory's `implemented` at face value:
+
+| area | anodize test entry point | goreleaser reference test |
+|------|--------------------------|----------------------------|
+| build | `cargo test -p anodize-stage-build` + `crates/cli/tests/integration.rs::test_e2e_build_command_matches_goreleaser_pipeline_outputs` | `internal/pipe/build/build_test.go`, `internal/builders/rust/build_test.go` |
+| archive | `cargo test -p anodize-stage-archive` | `internal/pipe/archive/archive_test.go` |
+| checksum | `cargo test -p anodize-stage-checksum` | `internal/pipe/checksums/checksums_test.go` |
+| nfpm | `cargo test -p anodize-stage-nfpm` (incl. `filename.rs` per-packager tests) | `internal/pipe/nfpm/nfpm_test.go` |
+| homebrew | `cargo test -p anodize-stage-publish --test homebrew_integration` | `internal/pipe/brew/brew_test.go`, `internal/pipe/cask/cask_test.go` |
+| docker | `cargo test -p anodize-stage-docker` | `internal/pipe/docker/docker_test.go`, `internal/pipe/docker/v2/*_test.go`, `internal/pipe/docker/manifest_test.go`, `internal/pipe/dockerdigest/digest_test.go` |
+| sign | `cargo test -p anodize-stage-sign` | `internal/pipe/sign/sign_test.go`, `sign_binary_test.go`, `sign_docker_test.go` |
+| sbom | `cargo test -p anodize-stage-sbom` | `internal/pipe/sbom/sbom_test.go` |
+| changelog | `cargo test -p anodize-stage-changelog` | `internal/pipe/changelog/changelog_test.go` |
+| release | `cargo test -p anodize-stage-release` (with MockGitHubClient) | `internal/pipe/release/release_test.go` |
+| announce | `cargo test -p anodize-stage-announce` (14 providers) | `internal/pipe/{discord,slack,telegram,teams,mattermost,smtp,reddit,twitter,mastodon,bluesky,linkedin,opencollective,discourse,webhook}/*_test.go` |
+| publish | `cargo test -p anodize-stage-publish` (homebrew/scoop/chocolatey/winget/aur/krew/nix/artifactory/cloudsmith/dockerhub/crates_io) | `internal/pipe/{brew,cask,scoop,chocolatey,winget,aur,krew,nix,artifactory,cloudsmith,custompublishers}/*_test.go` |
+| blob | `cargo test -p anodize-stage-blob` | `internal/pipe/blob/*_test.go` |
+| notarize | `cargo test -p anodize-stage-notarize` | `internal/pipe/notary/*_test.go` |
+| snapcraft / flatpak / makeself / srpm / upx / dmg / msi / pkg / nsis / appbundle / source / templatefiles | `cargo test -p anodize-stage-<name>` | `internal/pipe/<name>/*_test.go` |
+| partial | `cargo test -p anodize --test partial` + `commands/continue_cmd.rs` tests | `internal/pipe/partial/partial_test.go` |
+| templates | `cargo test -p anodize-core --test template` | `internal/tmpl/tmpl_test.go` |
+| CLI E2E | `cargo test -p anodize --test integration` | `cmd/*_test.go` |
+
+---
+
+## 3. Structural test gaps (unchanged from March baseline — still open)
+
+The following structural gaps from the March 2026 baseline remain — test infrastructure items, not feature parity gaps:
+
+1. **No mock HTTP client trait for non-GitHub providers** — `MockGitHubClient` exists, but scoop/homebrew/winget/chocolatey repository push paths still shell out to real `git`.
+2. **No real-subprocess `fakeBuilder`** — build tests verify command construction, not actual compile.
+3. **No golden file testing** — formulae / manifests / PKGBUILD / nix derivations are structure-verified but not diffed against a golden reference.
+4. **No dedicated defaults-propagation tests** — defaults are tested per-stage but no `defaults_test.rs` enumerates every field.
+5. **No fuzz testing** — template engine and artifact registry lack fuzz harnesses.
+6. **Only changelog uses real git repo** — other stages use in-memory context.
+
+These are test-infrastructure investments, not parity gaps per the parity definition. Track under repo-health, not parity-wave.
+
+---
+
+## 4. Legacy detailed gap matrix (reference — unchanged since 2026-03-26)
+
+_Preserved verbatim below for reference. New audit waves should use Section 1 + Section 2 above; this section is kept as an auditor reference for test-case-level gaps within implemented features._
 
 ## Methodology
 

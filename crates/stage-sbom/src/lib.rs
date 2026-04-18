@@ -12,7 +12,7 @@ use std::process::Command;
 
 use anyhow::{Context as _, Result, bail};
 
-use anodize_core::artifact::{Artifact, ArtifactKind};
+use anodize_core::artifact::{Artifact, ArtifactKind, matches_id_filter};
 use anodize_core::config::SbomConfig;
 use anodize_core::context::Context;
 use anodize_core::stage::Stage;
@@ -354,7 +354,7 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
             _ => vec!["{{ .ArtifactName }}.sbom.json".to_string()],
         });
 
-    // GoReleaser parity (sbom.go:91-93): when artifacts != "any", multiple
+    // when artifacts != "any", multiple
     // SBOM output documents are unsupported because each document name is
     // rendered per-artifact and would clobber on collision.
     if artifacts_type != "any" && documents.len() > 1 {
@@ -432,17 +432,7 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
                         }
                         !uploadable_paths.contains(&a.path)
                     })
-                    .filter(|a| {
-                        if let Some(ref ids) = sbom_cfg.ids {
-                            if let Some(art_id) = a.metadata.get("id") {
-                                ids.contains(art_id)
-                            } else {
-                                false
-                            }
-                        } else {
-                            true
-                        }
-                    })
+                    .filter(|a| matches_id_filter(a, sbom_cfg.ids.as_deref()))
                     .map(|a| (a.path.clone(), a.metadata.clone(), a.target.clone()))
                     .collect()
             }
@@ -470,17 +460,7 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
                     .all()
                     .iter()
                     .filter(|a| a.kind == kind)
-                    .filter(|a| {
-                        if let Some(ref ids) = sbom_cfg.ids {
-                            if let Some(art_id) = a.metadata.get("id") {
-                                ids.contains(art_id)
-                            } else {
-                                false
-                            }
-                        } else {
-                            true
-                        }
-                    })
+                    .filter(|a| matches_id_filter(a, sbom_cfg.ids.as_deref()))
                     .map(|a| (a.path.clone(), a.metadata.clone(), a.target.clone()))
                     .collect();
 

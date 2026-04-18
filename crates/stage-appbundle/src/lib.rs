@@ -256,6 +256,27 @@ impl Stage for AppBundleStage {
                 .collect();
 
             for bundle_cfg in bundle_configs {
+                let bundle_id_for_log = bundle_cfg.id.as_deref().unwrap_or("default").to_string();
+
+                // GoReleaser Pro `app_bundle.if`: template-conditional skip (opt-in).
+                // Rendered "false"/empty => skip; render error => hard bail (W1 avoidance).
+                if let Some(ref condition) = bundle_cfg.if_condition {
+                    let rendered = ctx.render_template(condition).with_context(|| {
+                        format!(
+                            "appbundle config '{}' for crate '{}': `if` template render failed (expression: {})",
+                            bundle_id_for_log, krate.name, condition
+                        )
+                    })?;
+                    let trimmed = rendered.trim();
+                    if trimmed.is_empty() || trimmed == "false" {
+                        log.status(&format!(
+                            "skipping appbundle config '{}' for crate {}: if condition evaluated to '{}'",
+                            bundle_id_for_log, krate.name, trimmed
+                        ));
+                        continue;
+                    }
+                }
+
                 // Skip disabled configs (supports bool or template string)
                 if let Some(ref d) = bundle_cfg.disable
                     && d.is_disabled(|s| ctx.render_template(s))
@@ -1650,6 +1671,75 @@ crates:
         assert_eq!(
             plist_mtime, expected_mtime,
             "Info.plist mtime should match mod_timestamp"
+        );
+    }
+
+    // --- `app_bundle.if` template-conditional (GoReleaser Pro) ---
+
+    fn appbundle_if_test_ctx(if_expr: Option<&str>) -> anodize_core::context::Context {
+        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use anodize_core::config::{AppBundleConfig, Config, CrateConfig};
+        use anodize_core::context::{Context, ContextOptions};
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&config.dist).unwrap();
+        let bundle_cfg = AppBundleConfig {
+            bundle: Some("com.example.myapp".to_string()),
+            if_condition: if_expr.map(str::to_string),
+            ..Default::default()
+        };
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            app_bundles: Some(vec![bundle_cfg]),
+            ..Default::default()
+        }];
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Os", "darwin");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: std::path::PathBuf::from("dist/myapp"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+        ctx
+    }
+
+    #[test]
+    fn test_appbundle_if_false_skips_config() {
+        use anodize_core::artifact::ArtifactKind;
+        let mut ctx = appbundle_if_test_ctx(Some("false"));
+        AppBundleStage.run(&mut ctx).unwrap();
+        assert_eq!(
+            ctx.artifacts.by_kind(ArtifactKind::Installer).len(),
+            0,
+            "appbundle if=false should skip"
+        );
+    }
+
+    #[test]
+    fn test_appbundle_if_render_failure_is_hard_error() {
+        let mut ctx = appbundle_if_test_ctx(Some("{{ undefined_function 42 }}"));
+        let err = AppBundleStage
+            .run(&mut ctx)
+            .expect_err("unrenderable `if` should hard-error");
+        let msg = format!("{:#}", err);
+        assert!(
+            msg.contains("`if` template render failed"),
+            "error should name `if` render failure, got: {msg}"
         );
     }
 }

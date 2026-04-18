@@ -197,8 +197,18 @@ pub(super) fn run_split(
 
     let ctx_path = split_dist.join("context.json");
     let json = serde_json::to_string_pretty(&split_ctx).context("serialize split context")?;
-    std::fs::write(&ctx_path, &json)
-        .with_context(|| format!("write split context to {}", ctx_path.display()))?;
+    // Atomic write: stage to `.tmp` then rename so a mid-write runner death
+    // never leaves a truncated/partial context.json for the merge step.
+    let tmp_path = ctx_path.with_extension("json.tmp");
+    std::fs::write(&tmp_path, &json)
+        .with_context(|| format!("write split context tmp to {}", tmp_path.display()))?;
+    std::fs::rename(&tmp_path, &ctx_path).with_context(|| {
+        format!(
+            "rename split context {} -> {}",
+            tmp_path.display(),
+            ctx_path.display()
+        )
+    })?;
 
     log.status(&format!(
         "split: wrote {} artifact(s) + context to {}",

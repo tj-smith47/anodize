@@ -206,7 +206,7 @@ impl Artifact {
     }
 
     /// Check if this artifact replaces single-arch variants (universal binary dedup).
-    /// GoReleaser parity: `OnlyReplacingUnibins` — when a universal binary has
+    /// `OnlyReplacingUnibins` — when a universal binary has
     /// `replaces=true`, it supersedes the per-arch binaries for publisher consumption.
     /// Artifacts without the `replaces` metadata key default to `true` (included).
     pub fn only_replacing_unibins(&self) -> bool {
@@ -420,6 +420,39 @@ pub fn release_uploadable_kinds() -> &'static [ArtifactKind] {
 /// Check if an artifact kind is uploadable.
 fn is_uploadable(kind: ArtifactKind) -> bool {
     uploadable_kinds().contains(&kind)
+}
+
+/// Filter an artifact by the `id` metadata field.
+///
+/// Matches GoReleaser's `artifact.ByID` semantic:
+/// - When `ids` is `None` or empty, every artifact passes.
+/// - Artifact kinds `Checksum`, `SourceArchive`, `UploadableFile`, `Metadata`
+///   always pass regardless of filter (these are emitted for every release).
+/// - For all other kinds, the artifact's `metadata["id"]` must match one of
+///   the supplied ids. An artifact missing an `id` metadata value does not
+///   match a non-empty filter.
+///
+/// Upstream reference: `goreleaser/internal/artifact/artifact.go::ByID`.
+pub fn matches_id_filter(artifact: &Artifact, ids: Option<&[String]>) -> bool {
+    let Some(id_list) = ids else { return true };
+    if id_list.is_empty() {
+        return true;
+    }
+    if matches!(
+        artifact.kind,
+        ArtifactKind::Checksum
+            | ArtifactKind::SourceArchive
+            | ArtifactKind::UploadableFile
+            | ArtifactKind::Metadata
+    ) {
+        return true;
+    }
+    let artifact_id = artifact
+        .metadata
+        .get("id")
+        .map(|s| s.as_str())
+        .unwrap_or("");
+    id_list.iter().any(|id| id == artifact_id)
 }
 
 /// Format a byte count into a human-readable string (e.g. "4.2 MB").

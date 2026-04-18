@@ -30,12 +30,18 @@ pub fn parse_duration(s: &str) -> Result<Duration> {
                 .map_err(|_| anyhow::anyhow!("invalid number in duration: {}", current_num))?;
             current_num.clear();
 
-            match ch {
-                'h' => total_secs += n * 3600,
-                'm' => total_secs += n * 60,
-                's' => total_secs += n,
+            let secs_for_unit = match ch {
+                'h' => n.checked_mul(3600),
+                'm' => n.checked_mul(60),
+                's' => Some(n),
                 _ => bail!("invalid duration unit '{}' (expected h, m, or s)", ch),
-            }
+            };
+            let secs = secs_for_unit.ok_or_else(|| {
+                anyhow::anyhow!("duration overflow: {}{} exceeds u64 seconds", n, ch)
+            })?;
+            total_secs = total_secs
+                .checked_add(secs)
+                .ok_or_else(|| anyhow::anyhow!("duration overflow: sum exceeds u64 seconds"))?;
             found_any = true;
         }
     }

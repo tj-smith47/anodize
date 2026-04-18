@@ -86,7 +86,7 @@ impl Stage for PublishStage {
             };
         }
 
-        // GoReleaser parity (publish.go:46-74): infra-level publishers (blob,
+        // infra-level publishers (blob,
         // upload, artifactory, docker-signs, snapcraft/dockerhub) run BEFORE
         // package managers (homebrew/cask/scoop/chocolatey/winget/aur/krew/nix).
         // Package managers often reference release artifacts by URL+digest, so

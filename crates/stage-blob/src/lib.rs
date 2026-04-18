@@ -6,8 +6,9 @@ use anyhow::{Context as _, Result, bail};
 use base64::Engine as _;
 
 use anodize_core::artifact::{Artifact, ArtifactKind, release_uploadable_kinds};
-use anodize_core::config::{BlobConfig, ExtraFile, StringOrBool};
+use anodize_core::config::{BlobConfig, ExtraFileSpec};
 use anodize_core::context::Context;
+use anodize_core::extrafiles;
 use anodize_core::stage::Stage;
 use anodize_core::template;
 
@@ -431,59 +432,39 @@ fn build_put_options(config: &BlobConfig, filename: &str, ctx: &Context) -> Resu
 // Disable evaluation — supports bool and template strings
 // ---------------------------------------------------------------------------
 
-fn is_disabled(disable: &Option<StringOrBool>, ctx: &Context) -> Result<bool> {
-    match disable {
-        None => Ok(false),
-        Some(d) => Ok(d.is_disabled(|s| ctx.render_template(s))),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Extra files resolution — with template-rendered names
 // ---------------------------------------------------------------------------
 
 fn resolve_extra_files(
-    extra_files: &[ExtraFile],
+    extra_files: &[ExtraFileSpec],
     ctx: &Context,
     log: &anodize_core::log::StageLogger,
 ) -> Result<Vec<(PathBuf, String)>> {
-    let mut resolved = Vec::new();
-
-    for ef in extra_files {
-        let matches: Vec<PathBuf> = glob::glob(&ef.glob)
-            .with_context(|| format!("blobs: invalid glob pattern: {}", ef.glob))?
-            .filter_map(|r| r.ok())
-            .collect();
-
-        if matches.is_empty() {
-            // Warn and continue, matching GoReleaser behavior. Users with
-            // platform-conditional extra_files (e.g., *.exe on Windows) should
-            // not get failures on other platforms.
-            log.warn(&format!(
-                "blobs: extra_files glob '{}' matched no files, skipping",
-                ef.glob
-            ));
-            continue;
-        }
-
-        for path in matches {
-            let upload_name = if let Some(ref name_tmpl) = ef.name {
-                // Template-render the name with standard vars + Filename
-                let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("file");
-                let mut vars = ctx.template_vars().clone();
-                vars.set("Filename", filename);
-                template::render(name_tmpl, &vars)
-                    .with_context(|| format!("blobs: render extra_files name: {name_tmpl}"))?
-            } else {
-                path.file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("file")
-                    .to_string()
-            };
-            resolved.push((path, upload_name));
-        }
+    let resolved = extrafiles::resolve(extra_files, log)?;
+    let mut out = Vec::with_capacity(resolved.len());
+    for entry in resolved {
+        let upload_name = if let Some(ref name_tmpl) = entry.name_template {
+            let filename = entry
+                .path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("file");
+            let mut vars = ctx.template_vars().clone();
+            vars.set("Filename", filename);
+            template::render(name_tmpl, &vars)
+                .with_context(|| format!("blobs: render extra_files name: {name_tmpl}"))?
+        } else {
+            entry
+                .path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("file")
+                .to_string()
+        };
+        out.push((entry.path, upload_name));
     }
-    Ok(resolved)
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -500,7 +481,7 @@ fn collect_artifacts<'a>(
         return vec![];
     }
 
-    // GoReleaser parity (blob.go): blob upload uses the canonical
+    // blob upload uses the canonical
     // release-uploadable artifact list (ArtifactByType(Archive, UploadableBinary,
     // UploadableFile, SourceArchive, Makeself, LinuxPackage, Flatpak, SourceRpm,
     // Sbom, Checksum, Signature, Certificate)). When
@@ -725,11 +706,11 @@ impl Stage for BlobStage {
 
             for blob_cfg in blob_configs {
                 // Evaluate disable (supports both bool and template string)
-                if is_disabled(&blob_cfg.disable, ctx)? {
-                    log.status(&format!(
-                        "skipping disabled blob config for crate {}",
-                        krate.name
-                    ));
+                if ctx.is_disabled_with_log(
+                    &blob_cfg.disable,
+                    &log,
+                    &format!("blob config for crate {}", krate.name),
+                ) {
                     continue;
                 }
 
@@ -935,7 +916,7 @@ impl Stage for BlobStage {
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
-    use anodize_core::config::BlobConfig;
+    use anodize_core::config::{BlobConfig, StringOrBool};
     use anodize_core::context::{Context, ContextOptions};
 
     // -----------------------------------------------------------------------
@@ -1097,33 +1078,39 @@ mod tests {
 
     #[test]
     fn test_is_disabled_none() {
-        assert!(!is_disabled(&None, &make_ctx()).unwrap());
+        assert!(!make_ctx().is_disabled_with_log(&None, &test_log(), "t"));
     }
 
     #[test]
     fn test_is_disabled_bool_true() {
-        assert!(is_disabled(&Some(StringOrBool::Bool(true)), &make_ctx()).unwrap());
+        assert!(make_ctx().is_disabled_with_log(&Some(StringOrBool::Bool(true)), &test_log(), "t"));
     }
 
     #[test]
     fn test_is_disabled_bool_false() {
-        assert!(!is_disabled(&Some(StringOrBool::Bool(false)), &make_ctx()).unwrap());
+        assert!(!make_ctx().is_disabled_with_log(
+            &Some(StringOrBool::Bool(false)),
+            &test_log(),
+            "t"
+        ));
     }
 
     #[test]
     fn test_is_disabled_string_true() {
-        assert!(is_disabled(&Some(StringOrBool::String("true".to_string())), &make_ctx()).unwrap());
+        assert!(make_ctx().is_disabled_with_log(
+            &Some(StringOrBool::String("true".to_string())),
+            &test_log(),
+            "t"
+        ));
     }
 
     #[test]
     fn test_is_disabled_string_false() {
-        assert!(
-            !is_disabled(
-                &Some(StringOrBool::String("false".to_string())),
-                &make_ctx()
-            )
-            .unwrap()
-        );
+        assert!(!make_ctx().is_disabled_with_log(
+            &Some(StringOrBool::String("false".to_string())),
+            &test_log(),
+            "t"
+        ));
     }
 
     #[test]
@@ -1132,7 +1119,7 @@ mod tests {
         let disable = Some(StringOrBool::String(
             "{% if IsSnapshot %}true{% endif %}".to_string(),
         ));
-        assert!(is_disabled(&disable, &ctx).unwrap());
+        assert!(ctx.is_disabled_with_log(&disable, &test_log(), "t"));
     }
 
     #[test]
@@ -1141,7 +1128,7 @@ mod tests {
         let disable = Some(StringOrBool::String(
             "{% if IsSnapshot == \"true\" %}true{% endif %}".to_string(),
         ));
-        assert!(!is_disabled(&disable, &ctx).unwrap());
+        assert!(!ctx.is_disabled_with_log(&disable, &test_log(), "t"));
     }
 
     // -----------------------------------------------------------------------
@@ -1503,10 +1490,10 @@ blobs:
         let blobs = crate_cfg.blobs.unwrap();
         let extras = blobs[0].extra_files.as_ref().unwrap();
         assert_eq!(extras.len(), 2);
-        assert_eq!(extras[0].glob, "./LICENSE");
-        assert_eq!(extras[0].name.as_deref(), Some("LICENSE.txt"));
-        assert_eq!(extras[1].glob, "./README.md");
-        assert!(extras[1].name.is_none());
+        assert_eq!(extras[0].glob(), "./LICENSE");
+        assert_eq!(extras[0].name_template(), Some("LICENSE.txt"));
+        assert_eq!(extras[1].glob(), "./README.md");
+        assert!(extras[1].name_template().is_none());
     }
 
     #[test]
@@ -1522,7 +1509,7 @@ blobs:
         let crate_cfg: anodize_core::config::CrateConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let blobs = crate_cfg.blobs.unwrap();
         let extras = blobs[0].extra_files.as_ref().unwrap();
-        assert_eq!(extras[0].name.as_deref(), Some("LICENSE-{{ Tag }}"));
+        assert_eq!(extras[0].name_template(), Some("LICENSE-{{ Tag }}"));
     }
 
     #[test]
@@ -1562,10 +1549,7 @@ partial:
         let file_path = tmp.path().join("LICENSE");
         std::fs::write(&file_path, "MIT").unwrap();
 
-        let extras = vec![ExtraFile {
-            glob: file_path.to_string_lossy().to_string(),
-            name: None,
-        }];
+        let extras = vec![ExtraFileSpec::Glob(file_path.to_string_lossy().to_string())];
         let resolved = resolve_extra_files(&extras, &make_ctx(), &test_log()).unwrap();
         assert_eq!(resolved.len(), 1);
         assert_eq!(resolved[0].1, "LICENSE");
@@ -1577,9 +1561,9 @@ partial:
         let file_path = tmp.path().join("LICENSE");
         std::fs::write(&file_path, "MIT").unwrap();
 
-        let extras = vec![ExtraFile {
+        let extras = vec![ExtraFileSpec::Detailed {
             glob: file_path.to_string_lossy().to_string(),
-            name: Some("LICENSE-{{ Tag }}".to_string()),
+            name_template: Some("LICENSE-{{ Tag }}".to_string()),
         }];
 
         let mut ctx = make_ctx();
@@ -1595,20 +1579,16 @@ partial:
         std::fs::write(tmp.path().join("LICENSE.md"), "MIT").unwrap();
 
         let glob_pattern = format!("{}/*", tmp.path().display());
-        let extras = vec![ExtraFile {
-            glob: glob_pattern,
-            name: None,
-        }];
+        let extras = vec![ExtraFileSpec::Glob(glob_pattern)];
         let resolved = resolve_extra_files(&extras, &make_ctx(), &test_log()).unwrap();
         assert_eq!(resolved.len(), 2);
     }
 
     #[test]
     fn test_resolve_extra_files_no_match_warns_and_continues() {
-        let extras = vec![ExtraFile {
-            glob: "/nonexistent/path/to/files/*.xyz".to_string(),
-            name: None,
-        }];
+        let extras = vec![ExtraFileSpec::Glob(
+            "/nonexistent/path/to/files/*.xyz".to_string(),
+        )];
         // Should succeed with empty results (warning logged), not error
         let result = resolve_extra_files(&extras, &make_ctx(), &test_log()).unwrap();
         assert!(result.is_empty());

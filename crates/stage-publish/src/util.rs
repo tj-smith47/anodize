@@ -2,6 +2,7 @@ use anodize_core::artifact::{Artifact, ArtifactKind};
 use anodize_core::config::RepositoryConfig;
 use anodize_core::context::Context;
 use anodize_core::log::StageLogger;
+use anodize_core::template::{self, TemplateVars};
 use anyhow::{Context as _, Result};
 use std::path::Path;
 use std::process::Command;
@@ -22,20 +23,7 @@ pub(crate) fn format_matches(filename: &str, formats: &[impl AsRef<str>]) -> boo
         .any(|fmt| filename.ends_with(&format!(".{}", fmt.as_ref())))
 }
 
-/// Check if an artifact matches an optional ID filter.
-pub(crate) fn matches_id_filter(artifact: &Artifact, ids: Option<&[String]>) -> bool {
-    match ids {
-        Some(id_list) if !id_list.is_empty() => {
-            let artifact_id = artifact
-                .metadata
-                .get("id")
-                .map(|s| s.as_str())
-                .unwrap_or("");
-            id_list.iter().any(|id| id == artifact_id)
-        }
-        _ => true, // no filter = matches all
-    }
-}
+pub(crate) use anodize_core::artifact::matches_id_filter;
 
 /// Resolve a secret/token env var name from config with template rendering.
 pub(crate) fn resolve_secret_name(
@@ -1155,49 +1143,32 @@ pub(crate) fn filter_os_artifacts_by_ids(
     }
 }
 
-/// Filter artifacts by IDs: when `ids` is `Some`, keep only artifacts whose
-/// metadata `"id"` key matches one of the given IDs.  When `ids` is `None`,
-/// all artifacts pass through.
+/// Filter artifacts by IDs using the canonical `matches_id_filter` semantics.
 pub(crate) fn filter_by_ids<'a>(
     artifacts: Vec<&'a Artifact>,
     ids: Option<&[String]>,
 ) -> Vec<&'a Artifact> {
-    if let Some(ids) = ids {
-        artifacts
-            .into_iter()
-            .filter(|a| {
-                a.metadata
-                    .get("id")
-                    .map(|id| ids.iter().any(|i| i == id))
-                    .unwrap_or(false)
-            })
-            .collect()
-    } else {
-        artifacts
-    }
+    artifacts
+        .into_iter()
+        .filter(|a| matches_id_filter(a, ids))
+        .collect()
 }
 
 /// Render a `url_template` string with Tera, providing `name`, `version`,
 /// `arch`, and `os` variables.  Returns the rendered URL.
 pub(crate) fn render_url_template(
-    template: &str,
+    url_template: &str,
     name: &str,
     version: &str,
     arch: &str,
     os: &str,
 ) -> String {
-    let mut tera = tera::Tera::default();
-    tera.autoescape_on(vec![]);
-    if tera.add_raw_template("url", template).is_err() {
-        return template.to_string();
-    }
-    let mut ctx = tera::Context::new();
-    ctx.insert("name", name);
-    ctx.insert("version", version);
-    ctx.insert("arch", arch);
-    ctx.insert("os", os);
-    tera.render("url", &ctx)
-        .unwrap_or_else(|_| template.to_string())
+    let mut vars = TemplateVars::new();
+    vars.set("name", name);
+    vars.set("version", version);
+    vars.set("arch", arch);
+    vars.set("os", os);
+    template::render(url_template, &vars).unwrap_or_else(|_| url_template.to_string())
 }
 
 /// Find all Archive artifacts for the given crate whose target or path
