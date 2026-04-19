@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Mutex;
 
 use anyhow::{Context as _, Result};
 use serde::Serialize;
@@ -10,6 +11,21 @@ use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::config::SnapcraftConfig;
 use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
+
+// Workaround for snapcraft 8.14.5: `snapcraft_legacy.internal.repo._deb` runs
+// `BaseDirectory.save_cache_path("snapcraft", "download")` at import time, which
+// calls `os.makedirs(path)` without `exist_ok=True`. Once the first invocation
+// creates that directory, every subsequent snapcraft process crashes at import
+// before it can pack. We wipe the cache dir and serialize invocations so the
+// wipe-then-pack sequence is atomic across parallel workers.
+static SNAPCRAFT_CACHE_LOCK: Mutex<()> = Mutex::new(());
+
+fn clear_snapcraft_cache() {
+    if let Ok(home) = std::env::var("HOME") {
+        let cache = PathBuf::from(home).join(".cache/snapcraft/download");
+        let _ = std::fs::remove_dir_all(&cache);
+    }
+}
 
 // GoReleaser's defaultNameTemplate (internal/pipe/snapcraft/snapcraft.go:103)
 // — preserves Os, Arm/Mips/Amd64 variant suffixes so multi-arch builds don't
@@ -902,6 +918,14 @@ impl Stage for SnapcraftStage {
         if !jobs.is_empty() {
             let run_job = |job: &SnapcraftJob| -> Result<Artifact> {
                 let thread_log = anodizer_core::log::StageLogger::new("snapcraft", log.verbosity());
+
+                // Serialize wipe-then-pack across parallel workers so each
+                // snapcraft invocation sees a non-existent cache dir at import
+                // time. See SNAPCRAFT_CACHE_LOCK comment at the top of the file.
+                let _cache_guard = SNAPCRAFT_CACHE_LOCK
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("snapcraft cache lock poisoned"))?;
+                clear_snapcraft_cache();
 
                 thread_log.status(&format!("running: {}", job.cmd_args.join(" ")));
 

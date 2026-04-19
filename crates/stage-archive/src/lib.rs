@@ -1331,22 +1331,41 @@ impl Stage for ArchiveStage {
                     let path_refs: Vec<&Path> =
                         all_src_paths.iter().map(PathBuf::as_path).collect();
 
-                    // Determine reproducible mtime: prefer CommitTimestamp from context
-                    // when any crate has reproducible: true, fall back to SOURCE_DATE_EPOCH.
+                    // Determine reproducible mtime. Priority:
+                    //   1. `reproducible: true` on any crate build → CommitTimestamp
+                    //      (explicit opt-in for full Rust reproducibility).
+                    //   2. SOURCE_DATE_EPOCH env var → use that (standard external override).
+                    //   3. CommitTimestamp fallback → deterministic by default.
+                    //
+                    // The fallback is load-bearing for release-asset idempotency:
+                    // anodizer-action's outer retry wrapper re-runs the pipeline on
+                    // transient downstream failures (e.g. snapcraft cache race,
+                    // crates.io 429). Without a stable mtime, each re-run embeds the
+                    // download-artifact extraction time into each archive entry,
+                    // producing byte-divergent archives. GitHub's ReleaseAsset API then
+                    // rejects the re-upload with `already_exists` (size mismatch),
+                    // defeating stage-release's size-based idempotency path.
+                    //
+                    // If neither CommitTimestamp nor SOURCE_DATE_EPOCH is available
+                    // (e.g. non-git snapshot outside a workflow), `None` falls back to
+                    // filesystem mtime — preserves prior behavior for that edge case.
                     let source_date_epoch: Option<u64> = {
                         let any_reproducible = ctx.config.crates.iter().any(|c| {
                             c.builds.as_ref().is_some_and(|builds| {
                                 builds.iter().any(|b| b.reproducible.unwrap_or(false))
                             })
                         });
+                        let commit_ts = ctx
+                            .template_vars()
+                            .get("CommitTimestamp")
+                            .and_then(|ts| ts.parse::<u64>().ok());
                         if any_reproducible {
-                            ctx.template_vars()
-                                .get("CommitTimestamp")
-                                .and_then(|ts| ts.parse::<u64>().ok())
+                            commit_ts
                         } else {
                             std::env::var("SOURCE_DATE_EPOCH")
                                 .ok()
                                 .and_then(|s| s.parse::<u64>().ok())
+                                .or(commit_ts)
                         }
                     };
 
