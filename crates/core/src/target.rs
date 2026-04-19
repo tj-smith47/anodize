@@ -34,7 +34,15 @@ pub fn map_target(triple: &str) -> (String, String) {
     // ---- Architecture ----
     // First check contains-based patterns (matches util.rs infer_arch behaviour),
     // then fall back to exact first-component matching for Rust-specific arch names.
-    let arch = if triple.contains("x86_64") || triple.contains("amd64") {
+    //
+    // Special case: synthetic "darwin-universal" triple registered for lipo'd
+    // macOS universal binaries. There's no real CPU here — emit "all" so
+    // publishers (krew especially) can fan it out to amd64+arm64 entries via
+    // their `arch == "all"` handling, and so archive naming produces
+    // `<name>-darwin-all.<ext>` instead of `<name>-darwin-darwin.<ext>`.
+    let arch = if triple == "darwin-universal" {
+        "all"
+    } else if triple.contains("x86_64") || triple.contains("amd64") {
         "amd64"
     } else if triple.contains("aarch64") || triple.contains("arm64") {
         "arm64"

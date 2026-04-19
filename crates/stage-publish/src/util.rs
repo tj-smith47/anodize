@@ -646,10 +646,12 @@ pub(crate) fn maybe_submit_pr(
 /// Optional overrides for the git commit step.
 #[derive(Default)]
 pub(crate) struct CommitOptions<'a> {
-    /// Git commit author name (passed via `-c user.name=X`).
-    pub author_name: Option<&'a str>,
+    /// Git commit author name (passed via `-c user.name=X`). Owned because
+    /// `resolve_commit_opts` may shell out to `git config user.name`, whose
+    /// result is a fresh String.
+    pub author_name: Option<String>,
     /// Git commit author email (passed via `-c user.email=X`).
-    pub author_email: Option<&'a str>,
+    pub author_email: Option<String>,
     /// Enable GPG/SSH signing for the commit.
     pub signing: Option<&'a anodize_core::config::CommitSigningConfig>,
 }
@@ -681,13 +683,24 @@ const DEFAULT_COMMIT_AUTHOR_NAME: &str = "anodize";
 const DEFAULT_COMMIT_AUTHOR_EMAIL: &str = "bot@anodize.dev";
 
 /// Resolve commit author name/email from a CommitAuthorConfig, falling back
-/// to legacy per-publisher fields, then to built-in defaults.
+/// to legacy per-publisher fields, then to the local `git config user.{name,
+/// email}`, then to built-in defaults.
+///
+/// The `git config` step exists so that publisher PRs (Homebrew tap, AUR,
+/// krew-index, winget-pkgs, ...) carry the release engineer's identity
+/// instead of `anodize <bot@anodize.dev>`. The bot identity does not match
+/// any GitHub-registered email, so it cannot pass CNCF EasyCLA on
+/// kubernetes-sigs/krew-index PRs and similar workflows.
+///
+/// Returns CommitOptions whose `author_name` / `author_email` are owned strings
+/// so that values read from git config (which need allocation) can be returned
+/// alongside borrowed config values.
 pub(crate) fn resolve_commit_opts<'a>(
     commit_author: Option<&'a anodize_core::config::CommitAuthorConfig>,
     legacy_name: Option<&'a str>,
     legacy_email: Option<&'a str>,
 ) -> CommitOptions<'a> {
-    let (name, email, signing) = if let Some(ca) = commit_author {
+    let (cfg_name, cfg_email, signing) = if let Some(ca) = commit_author {
         (
             ca.name.as_deref().or(legacy_name),
             ca.email.as_deref().or(legacy_email),
@@ -696,9 +709,19 @@ pub(crate) fn resolve_commit_opts<'a>(
     } else {
         (legacy_name, legacy_email, None)
     };
+
+    let name = cfg_name
+        .map(|s| s.to_string())
+        .or_else(anodize_core::git::local_git_user_name)
+        .unwrap_or_else(|| DEFAULT_COMMIT_AUTHOR_NAME.to_string());
+    let email = cfg_email
+        .map(|s| s.to_string())
+        .or_else(anodize_core::git::local_git_user_email)
+        .unwrap_or_else(|| DEFAULT_COMMIT_AUTHOR_EMAIL.to_string());
+
     CommitOptions {
-        author_name: Some(name.unwrap_or(DEFAULT_COMMIT_AUTHOR_NAME)),
-        author_email: Some(email.unwrap_or(DEFAULT_COMMIT_AUTHOR_EMAIL)),
+        author_name: Some(name),
+        author_email: Some(email),
         signing,
     }
 }
@@ -861,11 +884,11 @@ pub(crate) fn commit_and_push_with_opts(
     let sign_key_cfg;
     let sign_program_cfg;
     let sign_format_cfg;
-    if let Some(name) = opts.author_name {
+    if let Some(ref name) = opts.author_name {
         name_cfg = format!("user.name={}", name);
         commit_args.extend_from_slice(&["-c", &name_cfg]);
     }
-    if let Some(email) = opts.author_email {
+    if let Some(ref email) = opts.author_email {
         email_cfg = format!("user.email={}", email);
         commit_args.extend_from_slice(&["-c", &email_cfg]);
     }

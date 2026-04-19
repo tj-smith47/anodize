@@ -223,6 +223,20 @@ pub fn is_git_dirty() -> bool {
         .unwrap_or(false)
 }
 
+/// Read `git config user.name`, or `None` if unset / git is unavailable.
+pub fn local_git_user_name() -> Option<String> {
+    git_output(&["config", "user.name"])
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
+/// Read `git config user.email`, or `None` if unset / git is unavailable.
+pub fn local_git_user_email() -> Option<String> {
+    git_output(&["config", "user.email"])
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
 /// Strip userinfo (credentials) from an HTTPS URL.
 ///
 /// If the URL starts with `https://` and contains `@`, everything between

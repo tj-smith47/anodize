@@ -339,7 +339,11 @@ impl Stage for ChecksumStage {
             // Collect (artifact_path, "algorithm:hash") pairs so we can store
             // the checksum back into each artifact's metadata after the loop.
             // GoReleaser stores this as Extra["Checksum"] = "algorithm:hash".
-            let mut artifact_checksums: Vec<(PathBuf, String)> = Vec::new();
+            // (artifact_path, algorithm, hex-hash) — algorithm + bare hash kept
+            // separate so we can write both "Checksum" = "algo:hash" (legacy)
+            // and "<algo>" = hash (publisher-friendly, matches GoReleaser's
+            // per-artifact metadata convention).
+            let mut artifact_checksums: Vec<(PathBuf, String, String)> = Vec::new();
 
             for artifact in &source_artifacts {
                 // In dry-run mode, files may not exist on disk; skip with placeholder
@@ -361,7 +365,7 @@ impl Stage for ChecksumStage {
                 };
 
                 // Store the checksum for later propagation to artifact metadata.
-                artifact_checksums.push((artifact.path.clone(), format!("{}:{}", algorithm, hash)));
+                artifact_checksums.push((artifact.path.clone(), algorithm.clone(), hash.clone()));
 
                 let filename = artifact
                     .path
@@ -536,17 +540,27 @@ impl Stage for ChecksumStage {
                 ));
             }
 
-            // store the computed checksum back into each
-            // source artifact's metadata as "Checksum" = "algorithm:hash".
-            // Publishers (Homebrew, Krew, etc.) read this to get per-artifact
-            // checksums without re-hashing.
-            let checksum_map: std::collections::HashMap<&PathBuf, &String> =
-                artifact_checksums.iter().map(|(p, v)| (p, v)).collect();
+            // Propagate the computed checksum back into each source
+            // artifact's metadata under TWO keys:
+            //   "Checksum" = "<algo>:<hash>"  (legacy, kept for back-compat)
+            //   "<algo>"   = "<hash>"          (lowercase, e.g. "sha256" =
+            //                                  "<hex>") — what every publisher
+            //                                  (winget, krew, homebrew, scoop,
+            //                                  chocolatey) actually reads when
+            //                                  building manifests.
+            let checksum_map: std::collections::HashMap<&PathBuf, (&String, &String)> =
+                artifact_checksums
+                    .iter()
+                    .map(|(p, a, h)| (p, (a, h)))
+                    .collect();
             for art in ctx.artifacts.all_mut() {
-                if let Some(val) = checksum_map.get(&art.path) {
+                if let Some((algo, hash)) = checksum_map.get(&art.path) {
                     art.metadata
                         .entry("Checksum".to_string())
-                        .or_insert_with(|| (*val).clone());
+                        .or_insert_with(|| format!("{}:{}", algo, hash));
+                    art.metadata
+                        .entry((*algo).clone())
+                        .or_insert_with(|| (*hash).clone());
                 }
             }
         }
