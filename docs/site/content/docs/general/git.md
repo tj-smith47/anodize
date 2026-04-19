@@ -5,7 +5,7 @@ weight = 7
 template = "docs.html"
 +++
 
-Anodize detects the current version from git tags. The `git` section lets you control how tags are sorted and which tags are considered.
+Anodizer detects the current version from git tags. The `git` section lets you control how tags are sorted and which tags are considered.
 
 ## Minimal config
 
@@ -62,7 +62,7 @@ Setting `prerelease_suffix` also forces git-delegated sorting (via `git -c versi
 
 ## Detected git info
 
-Anodize detects the following information from git, all available as template variables:
+Anodizer detects the following information from git, all available as template variables:
 
 | Variable | Description |
 |----------|-------------|

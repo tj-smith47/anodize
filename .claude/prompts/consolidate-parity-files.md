@@ -21,7 +21,7 @@ There are also 2 files that are NOT part of this consolidation (leave them alone
 
 ## GoReleaser Source
 
-GoReleaser is cloned at `/opt/repos/goreleaser`. Use it to verify claims. When a file says "Missing" or "Implemented", check the actual anodize code AND the GoReleaser source to confirm.
+GoReleaser is cloned at `/opt/repos/goreleaser`. Use it to verify claims. When a file says "Missing" or "Implemented", check the actual anodizer code AND the GoReleaser source to confirm.
 
 ## Definition of Parity
 

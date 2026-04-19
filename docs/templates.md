@@ -1,6 +1,6 @@
 # Template Reference
 
-Anodize uses the [Tera](https://keats.github.io/tera/) template engine (Jinja2/Django-like syntax). Templates can be used in most string fields throughout the configuration: name templates, tag templates, message templates, signing arguments, and more.
+Anodizer uses the [Tera](https://keats.github.io/tera/) template engine (Jinja2/Django-like syntax). Templates can be used in most string fields throughout the configuration: name templates, tag templates, message templates, signing arguments, and more.
 
 ## Syntax
 
@@ -12,7 +12,7 @@ name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
 
 ### GoReleaser Compatibility
 
-For easier migration from GoReleaser, Anodize also accepts Go-style templates with a leading dot. These are automatically preprocessed before rendering:
+For easier migration from GoReleaser, Anodizer also accepts Go-style templates with a leading dot. These are automatically preprocessed before rendering:
 
 ```yaml
 # Both forms are equivalent:
@@ -142,7 +142,7 @@ See the [Tera documentation](https://keats.github.io/tera/docs/#built-in-filters
 
 ### Custom Filters (GoReleaser-compatible)
 
-Anodize registers the following custom filters for compatibility with GoReleaser templates:
+Anodizer registers the following custom filters for compatibility with GoReleaser templates:
 
 | Filter | Usage | Description |
 |--------|-------|-------------|
@@ -277,7 +277,7 @@ announce:
 
 ## Error Handling
 
-If a template contains a syntax error or references an undefined variable, anodize will report the error with the original template string for easier debugging. Common errors include:
+If a template contains a syntax error or references an undefined variable, anodizer will report the error with the original template string for easier debugging. Common errors include:
 
 - **Undefined variable**: `{{ Nonexistent }}` will fail with an error naming the variable.
 - **Missing filter argument**: `{{ Tag | trimprefix }}` fails because `trimprefix` requires a `prefix` argument.

@@ -1,4 +1,4 @@
-use anodize_core::log::StageLogger;
+use anodizer_core::log::StageLogger;
 use anyhow::Result;
 use serde_json::json;
 

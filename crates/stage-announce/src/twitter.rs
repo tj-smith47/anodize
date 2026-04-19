@@ -100,7 +100,7 @@ fn hmac_sha1_base64(key: &[u8], data: &[u8]) -> Result<String> {
     Ok(base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes()))
 }
 
-use anodize_core::url::percent_encode_unreserved as percent_encode;
+use anodizer_core::url::percent_encode_unreserved as percent_encode;
 
 fn generate_nonce() -> String {
     use std::hash::{Hash, Hasher};

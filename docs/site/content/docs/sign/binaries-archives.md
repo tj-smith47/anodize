@@ -5,7 +5,7 @@ weight = 1
 template = "docs.html"
 +++
 
-Anodize can sign your release artifacts using GPG or cosign.
+Anodizer can sign your release artifacts using GPG or cosign.
 
 ## Minimal config
 

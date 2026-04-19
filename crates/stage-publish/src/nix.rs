@@ -1,5 +1,5 @@
-use anodize_core::context::Context;
-use anodize_core::log::StageLogger;
+use anodizer_core::context::Context;
+use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result};
 
 use crate::util;
@@ -299,8 +299,8 @@ pub struct NixParams<'a> {
 
 /// Generate a Nix derivation expression string.
 pub fn generate_nix_expression(params: &NixParams<'_>) -> Result<String> {
-    let tera =
-        anodize_core::template::parse_static("nix", NIX_TEMPLATE).context("nix: parse template")?;
+    let tera = anodizer_core::template::parse_static("nix", NIX_TEMPLATE)
+        .context("nix: parse template")?;
 
     let mut ctx = tera::Context::new();
     ctx.insert("name", params.name);
@@ -348,7 +348,7 @@ pub fn generate_nix_expression(params: &NixParams<'_>) -> Result<String> {
     ctx.insert("has_post_install", &!params.post_install_lines.is_empty());
     ctx.insert("post_install_lines", &params.post_install_lines);
 
-    anodize_core::template::render_static(&tera, "nix", &ctx, "nix")
+    anodizer_core::template::render_static(&tera, "nix", &ctx, "nix")
 }
 
 // ---------------------------------------------------------------------------
@@ -938,8 +938,8 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     let (source_root, source_root_map) = {
         let default_stem = format!("{}-{}", name, version);
         let archive_cfgs = match &_crate_cfg.archives {
-            anodize_core::config::ArchivesConfig::Configs(cfgs) => cfgs.clone(),
-            anodize_core::config::ArchivesConfig::Disabled => vec![],
+            anodizer_core::config::ArchivesConfig::Configs(cfgs) => cfgs.clone(),
+            anodizer_core::config::ArchivesConfig::Disabled => vec![],
         };
 
         // Build a map: nix_system -> sourceRoot by matching artifact IDs to
@@ -1001,7 +1001,7 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     let dynamically_linked = {
         let binary_artifacts = ctx
             .artifacts
-            .by_kind_and_crate(anodize_core::artifact::ArtifactKind::Binary, crate_name);
+            .by_kind_and_crate(anodizer_core::artifact::ArtifactKind::Binary, crate_name);
         binary_artifacts.iter().any(|a| {
             // Check metadata first (set by build stage, avoids redundant disk I/O)
             if let Some(v) = a.metadata.get("DynamicallyLinked") {
@@ -1125,7 +1125,7 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         branch.unwrap_or("main"),
         &format!("Update {} to {}", name, version),
         &format!(
-            "## Package\n- **Name**: {}\n- **Version**: {}\n\nAutomatically submitted by anodize.",
+            "## Package\n- **Name**: {}\n- **Version**: {}\n\nAutomatically submitted by anodizer.",
             name, version
         ),
         "nix",
@@ -1509,11 +1509,11 @@ mod tests {
 
     #[test]
     fn test_publish_to_nix_dry_run() {
-        use anodize_core::config::{
+        use anodizer_core::config::{
             Config, CrateConfig, NixConfig, PublishConfig, RepositoryConfig,
         };
-        use anodize_core::context::{Context, ContextOptions};
-        use anodize_core::log::{StageLogger, Verbosity};
+        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::log::{StageLogger, Verbosity};
 
         let config = Config {
             crates: vec![CrateConfig {

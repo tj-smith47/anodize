@@ -1,7 +1,7 @@
-//! Thin structured logging helper for anodize stages.
+//! Thin structured logging helper for anodizer stages.
 //!
 //! Provides level-gated output to stderr, with consistent `[stage] message`
-//! formatting. Keeps stdout clean for machine-parseable output (e.g. `anodize tag`).
+//! formatting. Keeps stdout clean for machine-parseable output (e.g. `anodizer tag`).
 //!
 //! # Verbosity levels
 //!

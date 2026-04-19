@@ -5,7 +5,7 @@ weight = 3
 template = "docs.html"
 +++
 
-Anodize generates Ruby Homebrew formulae with multi-platform support and pushes them to your tap repository.
+Anodizer generates Ruby Homebrew formulae with multi-platform support and pushes them to your tap repository.
 
 ## Minimal config
 
@@ -33,7 +33,7 @@ crates:
 
 ## Generated formula
 
-Anodize generates a formula with:
+Anodizer generates a formula with:
 - Multi-platform download URLs (`on_macos`, `on_linux`, `on_intel`, `on_arm`)
 - SHA-256 checksums for each archive
 - Automatic binary installation

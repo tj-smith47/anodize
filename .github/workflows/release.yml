@@ -43,14 +43,14 @@ jobs:
         with:
           key: release-${{ matrix.os }}
 
-      # Linux reuses the CI-built anodize binary; macOS/Windows must build
-      # anodize from source (no per-platform CI artifact). Both paths flow
+      # Linux reuses the CI-built anodizer binary; macOS/Windows must build
+      # anodizer from source (no per-platform CI artifact). Both paths flow
       # through the action so the release workflow has a single entry point.
-      - name: Install anodize + build dependencies (Linux)
+      - name: Install anodizer + build dependencies (Linux)
         if: runner.os == 'Linux'
-        uses: tj-smith47/anodize-action@master
+        uses: tj-smith47/anodizer-action@master
         with:
-          from-artifact: anodize-linux
+          from-artifact: anodizer-linux
           artifact-run-id: auto
           artifact-workflow: ci.yml
           install: zig,cargo-zigbuild,upx
@@ -58,9 +58,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
-      - name: Install anodize + build dependencies (macOS/Windows)
+      - name: Install anodizer + build dependencies (macOS/Windows)
         if: runner.os != 'Linux'
-        uses: tj-smith47/anodize-action@master
+        uses: tj-smith47/anodizer-action@master
         with:
           from-source: true
           install-rust: false  # already installed above via rust-toolchain
@@ -104,10 +104,10 @@ jobs:
           fi
           echo "Found $COUNT split context(s)"
 
-      - name: Run anodize release --merge
-        uses: tj-smith47/anodize-action@master
+      - name: Run anodizer release --merge
+        uses: tj-smith47/anodizer-action@master
         with:
-          from-artifact: anodize-linux
+          from-artifact: anodizer-linux
           artifact-run-id: auto
           artifact-workflow: ci.yml
           install: nfpm,makeself,snapcraft,rpmbuild,cosign

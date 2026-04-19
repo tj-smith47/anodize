@@ -32,7 +32,7 @@ All four OAuth 1.0a tokens are required.
 
 ## Authentication
 
-Anodize uses OAuth 1.0a with HMAC-SHA1 signing to authenticate with the
+Anodizer uses OAuth 1.0a with HMAC-SHA1 signing to authenticate with the
 Twitter API v2 (`POST https://api.x.com/2/tweets`). Each request gets a fresh
 nonce and timestamp, so tokens can be long-lived without rotation.
 

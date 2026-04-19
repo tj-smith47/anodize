@@ -20,7 +20,7 @@ These items were verified against GoReleaser source and are already correctly im
 - Archive default files (LICENSE*, README*, CHANGELOG*) — `stage-archive/lib.rs`
 - Token file paths (`~/.config/goreleaser/{github,gitlab,gitea}_token`) — `config.rs:437+`
 - Discord color default `3_888_754` — `discord.rs:18`
-- Mattermost username default `"anodize"` — `lib.rs:430`
+- Mattermost username default `"anodizer"` — `lib.rs:430`
 - Mattermost attachments: top-level `text` omitted when attachments present — matches GoReleaser
 
 ## Task 1: Release name_template default
@@ -31,12 +31,12 @@ These items were verified against GoReleaser source and are already correctly im
 - [ ] Change fallback from `tag.clone()` to rendering `"{{ Tag }}"` template default
 - [ ] Add test for default name_template rendering
 
-## Task 2: ANODIZE_FORCE_TOKEN env var
+## Task 2: ANODIZER_FORCE_TOKEN env var
 
 **Files:**
 - Modify: `crates/cli/src/commands/helpers.rs:345-355`
 
-- [ ] Read `ANODIZE_FORCE_TOKEN` env var when `config.force_token` is None
+- [ ] Read `ANODIZER_FORCE_TOKEN` env var when `config.force_token` is None
 - [ ] Parse lowercase values "github"/"gitlab"/"gitea" into ForceTokenKind
 - [ ] Add tests for env var fallback
 
@@ -45,21 +45,21 @@ These items were verified against GoReleaser source and are already correctly im
 **Files:**
 - Modify: `crates/stage-announce/src/lib.rs:230`
 
-- [ ] Add `.or(Some("anodize"))` fallback for username
+- [ ] Add `.or(Some("anodizer"))` fallback for username
 
 ## Task 4: Discord author default
 
 **Files:**
 - Modify: `crates/stage-announce/src/lib.rs:152`
 
-- [ ] Add `.or(Some("anodize"))` fallback for author
+- [ ] Add `.or(Some("anodizer"))` fallback for author
 
 ## Task 5: Teams icon_url
 
 **Files:**
 - Modify: `crates/stage-announce/src/lib.rs:398-400`
 
-- [ ] No anodize avatar URL exists — document in code comment
+- [ ] No anodizer avatar URL exists — document in code comment
 
 ## Task 6: Webhook Content-Type
 

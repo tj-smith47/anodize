@@ -11,9 +11,9 @@ This avoids slow cross-compilation and lets each job run on hardware that matche
 
 ## How it works
 
-1. **Matrix jobs** — each job runs `anodize release --split` on its native runner. This builds only the binaries for that job's platform and writes a `context.json` (artifacts list + git state) to a `dist/<platform>/` subdirectory.
+1. **Matrix jobs** — each job runs `anodizer release --split` on its native runner. This builds only the binaries for that job's platform and writes a `context.json` (artifacts list + git state) to a `dist/<platform>/` subdirectory.
 2. **Artifact handoff** — each job uploads its `dist/<platform>/` directory as a CI artifact.
-3. **Merge job** — a final job downloads all platform artifacts, restores them into `dist/`, then runs `anodize continue --merge` (or `anodize release --merge`). This loads the per-platform contexts, merges all artifacts, and runs all post-build stages: archives, checksums, signing, release upload, publishing, announcements.
+3. **Merge job** — a final job downloads all platform artifacts, restores them into `dist/`, then runs `anodizer continue --merge` (or `anodizer release --merge`). This loads the per-platform contexts, merges all artifacts, and runs all post-build stages: archives, checksums, signing, release upload, publishing, announcements.
 
 ## Config
 
@@ -39,33 +39,33 @@ Each unique target triple gets its own job. Use this when you need each architec
 Each split job determines which targets to build using this priority chain:
 
 1. `TARGET` environment variable — exact target triple (e.g. `x86_64-unknown-linux-gnu`).
-2. `ANODIZE_OS` + optional `ANODIZE_ARCH` environment variables — filter by OS/arch.
+2. `ANODIZER_OS` + optional `ANODIZER_ARCH` environment variables — filter by OS/arch.
 3. Host auto-detection via `rustc -vV`, interpreted according to `partial.by`.
 
 ## CLI commands
 
-### `anodize release --split`
+### `anodizer release --split`
 
 Builds only the binaries for the current platform and writes output to `dist/<platform>/context.json`. No release is created; no signing or publishing happens.
 
 ```
-anodize release --split
+anodizer release --split
 ```
 
-### `anodize release --merge`
+### `anodizer release --merge`
 
 Loads all `context.json` files from `dist/*/` subdirectories, merges the artifact lists, and runs the full post-build pipeline (archives, checksums, signing, release, publish, blob storage, announce).
 
 ```
-anodize release --merge
+anodizer release --merge
 ```
 
-### `anodize continue --merge`
+### `anodizer continue --merge`
 
-Equivalent to `anodize release --merge`. Preferred for the merge job to make the intent explicit.
+Equivalent to `anodizer release --merge`. Preferred for the merge job to make the intent explicit.
 
 ```
-anodize continue --merge
+anodizer continue --merge
 ```
 
 ### Dry run
@@ -73,8 +73,8 @@ anodize continue --merge
 Both `--split` and `--merge` respect `--dry-run`:
 
 ```
-anodize release --split --dry-run
-anodize continue --merge --dry-run
+anodizer release --split --dry-run
+anodizer continue --merge --dry-run
 ```
 
 ## Artifact handoff
@@ -95,7 +95,7 @@ A `dist/matrix.json` file is also written (on the first `--split` run) listing t
 
 ## GitHub Actions example
 
-Uses [`tj-smith47/anodize-action`](@/docs/ci/anodize-action.md) with built-in
+Uses [`tj-smith47/anodizer-action`](@/docs/ci/anodizer-action.md) with built-in
 `upload-dist` / `download-dist` to handle artifact handoff:
 
 ```yaml
@@ -124,14 +124,14 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: tj-smith47/anodize-action@v1
+      - uses: tj-smith47/anodizer-action@v1
         with:
           install-rust: true
           install: zig,cargo-zigbuild
           upload-dist: true           # uploads dist/ as dist-$RUNNER_OS
           args: release --split --clean
         env:
-          ANODIZE_OS: ${{ matrix.target }}
+          ANODIZER_OS: ${{ matrix.target }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   release:
@@ -143,7 +143,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: tj-smith47/anodize-action@v1
+      - uses: tj-smith47/anodizer-action@v1
         with:
           auto-install: true
           download-dist: true         # downloads + merges dist-* artifacts
@@ -186,5 +186,5 @@ When `--merge` runs, it executes all post-build stages in order:
 Use `--skip` to skip individual stages during merge:
 
 ```
-anodize continue --merge --skip docker,announce
+anodizer continue --merge --skip docker,announce
 ```

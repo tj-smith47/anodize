@@ -5,7 +5,7 @@ weight = 6
 template = "docs.html"
 +++
 
-The `dist` directory is where Anodize places all build outputs, packages, and metadata files during a release.
+The `dist` directory is where Anodizer places all build outputs, packages, and metadata files during a release.
 
 ## Config
 
@@ -50,5 +50,5 @@ crates:
 When using split/merge CI (building on multiple machines), each split job writes to its own dist directory. The merge job reads `context.json` files from all dist subdirectories. If you override `dist`, pass the same value via `--dist` to the merge command:
 
 ```bash
-anodize release --merge --dist ./my-custom-dist
+anodizer release --merge --dist ./my-custom-dist
 ```

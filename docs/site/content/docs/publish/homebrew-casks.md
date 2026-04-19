@@ -5,7 +5,7 @@ weight = 85
 template = "docs.html"
 +++
 
-Anodize can generate Homebrew Cask `.rb` files for macOS applications and push them to your tap repository. This is separate from [Homebrew formulas](/docs/publish/homebrew/) which are for CLI tools.
+Anodizer can generate Homebrew Cask `.rb` files for macOS applications and push them to your tap repository. This is separate from [Homebrew formulas](/docs/publish/homebrew/) which are for CLI tools.
 
 ## Minimal config
 

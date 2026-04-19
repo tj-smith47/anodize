@@ -5,7 +5,7 @@ weight = 5
 template = "docs.html"
 +++
 
-Anodize tracks every file produced during a release as an **artifact**. At the end of the pipeline, all artifacts are written to `artifacts.json` in the dist directory.
+Anodizer tracks every file produced during a release as an **artifact**. At the end of the pipeline, all artifacts are written to `artifacts.json` in the dist directory.
 
 ## Artifact types
 

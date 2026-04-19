@@ -1,8 +1,8 @@
-# Anodize Documentation Site — Phase B: Parity, Polish & Content Completion
+# Anodizer Documentation Site — Phase B: Parity, Polish & Content Completion
 
 > **For agentic workers:** This is an independent follow-up to the Phase A docsite implementation. Start by doing your own analysis of what's missing — compare the live site against GoReleaser's site structure, check for Coming Soon pages that should now have real content, and identify polish gaps. The known issues below are a starting point, not an exhaustive list.
 
-**Goal:** Bring the anodize documentation site to GoReleaser-level quality — complete content for all implemented features, matching navigation structure, and production polish.
+**Goal:** Bring the anodizer documentation site to GoReleaser-level quality — complete content for all implemented features, matching navigation structure, and production polish.
 
 **Depends on:** Phase A complete (docs/site/ with Zola, templates, ~45 content pages, xtask). Also depends on Session 5 extended features being merged to master (most features that were "Coming Soon" are now implemented).
 
@@ -74,7 +74,7 @@ Session 5 may have added features that have no documentation page at all:
 - **Mobile experience** — Hamburger menu exists but test it thoroughly. The sidebar toggle uses inline JS — consider if this is sufficient.
 - **Internal link audit** — Some content pages have `@/docs/...` links that may reference moved paths (the Phase A implementation reorganized some directories).
 - **xtask gen-docs** — The config reference is manually maintained. Verify all fields in `Config` struct are listed. Run `--check` to verify freshness.
-- **GoReleaser migration guide** — Now that we know GoReleaser has experimental Rust support, the migration guide should address "why switch from GoReleaser's Rust builder to anodize" with honest comparison of what each provides.
+- **GoReleaser migration guide** — Now that we know GoReleaser has experimental Rust support, the migration guide should address "why switch from GoReleaser's Rust builder to anodizer" with honest comparison of what each provides.
 
 ### Content Accuracy
 

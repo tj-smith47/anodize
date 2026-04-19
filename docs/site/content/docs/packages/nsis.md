@@ -5,7 +5,7 @@ weight = 67
 template = "docs.html"
 +++
 
-Anodize can create Windows `.exe` installers using [NSIS (Nullsoft Scriptable Install System)](https://nsis.sourceforge.io/).
+Anodizer can create Windows `.exe` installers using [NSIS (Nullsoft Scriptable Install System)](https://nsis.sourceforge.io/).
 
 ## Minimal config
 
@@ -36,7 +36,7 @@ The `makensis` command must be installed and available on PATH.
 
 ## Default script
 
-When no custom `script` is provided, Anodize uses a built-in NSIS script with:
+When no custom `script` is provided, Anodizer uses a built-in NSIS script with:
 
 - Modern UI 2 (MUI2) interface
 - Install and uninstall sections

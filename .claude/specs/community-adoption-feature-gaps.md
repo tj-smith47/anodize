@@ -2,7 +2,7 @@
 
 > **Surveyed:** 2026-03-27 — 21 popular Rust CLI projects, analyzing their actual GitHub Actions release workflows.
 >
-> **Purpose:** Identify features anodize must add before submitting community adoption PRs, and unique features that could differentiate anodize.
+> **Purpose:** Identify features anodizer must add before submitting community adoption PRs, and unique features that could differentiate anodizer.
 >
 > **Usage:** The community adoption session should review this spec, do a fresh search to verify currency, determine which features are in scope, and finalize a prioritized implementation list before starting any PR work.
 
@@ -10,7 +10,7 @@
 
 ## Methodology
 
-Fetched and analyzed the actual `.github/workflows/release.yml` (and related files) from 21 projects totaling ~400k GitHub stars. Every release-relevant step was cataloged and cross-referenced against anodize's current feature set.
+Fetched and analyzed the actual `.github/workflows/release.yml` (and related files) from 21 projects totaling ~400k GitHub stars. Every release-relevant step was cataloged and cross-referenced against anodizer's current feature set.
 
 ### Projects Analyzed
 
@@ -40,9 +40,9 @@ Fetched and analyzed the actual `.github/workflows/release.yml` (and related fil
 
 ---
 
-## A. Features Shared Across Many Projects — anodize Doesn't Offer
+## A. Features Shared Across Many Projects — anodizer Doesn't Offer
 
-These are features that 3+ projects implement in their release workflows. Without them, those projects cannot switch to anodize.
+These are features that 3+ projects implement in their release workflows. Without them, those projects cannot switch to anodizer.
 
 ### 1. Shell Completion Generation
 
@@ -50,7 +50,7 @@ These are features that 3+ projects implement in their release workflows. Withou
 
 Every serious CLI tool generates shell completions (bash, fish, zsh, PowerShell) at build time and bundles them in release archives and deb/rpm packages. Most use clap's built-in `clap_complete` or a `--generate` flag. The completions are placed in a known directory structure and included in archives alongside the binary.
 
-**anodize gap:** No concept of "generate files at build time and include in archives." The build stage compiles binaries; the archive stage packages them. There's no hook between them for generated artifacts.
+**anodizer gap:** No concept of "generate files at build time and include in archives." The build stage compiles binaries; the archive stage packages them. There's no hook between them for generated artifacts.
 
 **Possible implementation:** Add `generate` hooks to build config — commands that run after compilation and produce files that are automatically included in archives. Or a dedicated `completions` config field that generates them via a configurable command.
 
@@ -60,7 +60,7 @@ Every serious CLI tool generates shell completions (bash, fish, zsh, PowerShell)
 
 Same pattern as completions — man pages are generated from `--help` output, a dedicated `--man` flag, or pre-built `.1` files. They're bundled in archives and installed by deb/rpm packages.
 
-**anodize gap:** Same as completions — no post-build artifact generation.
+**anodizer gap:** Same as completions — no post-build artifact generation.
 
 **Possible implementation:** Same mechanism as completions. A `generate` block or `manpages` config field.
 
@@ -70,7 +70,7 @@ Same pattern as completions — man pages are generated from `--help` output, a 
 
 Most projects strip debug symbols from release binaries to reduce size (often 50-80% reduction). This is done via `strip` command, `RUSTFLAGS='-C strip=symbols'`, or architecture-specific strip tools for cross-compiled targets.
 
-**anodize gap:** No stripping support. Binaries are shipped with debug symbols.
+**anodizer gap:** No stripping support. Binaries are shipped with debug symbols.
 
 **Possible implementation:** Add `strip: true` to build config (default false). When enabled, either pass `-C strip=symbols` to rustc via RUSTFLAGS, or run the platform-appropriate `strip` command post-build. Per-target strip configuration may be needed for cross-compilation.
 
@@ -78,7 +78,7 @@ Most projects strip debug symbols from release binaries to reduce size (often 50
 
 **Used by:** gitui, git-cliff, just, starship (4 projects)
 
-**anodize status:** Already implemented. `prerelease: auto` in release config triggers `should_mark_prerelease()` in `crates/stage-release/src/lib.rs` which parses the tag for semver prerelease segments (rc, alpha, beta, dev). Case-insensitive. Tests confirm `v1.0.0-rc.1`, `v1.0.0-alpha.1`, `v2.0.0-beta`, `v1.0.0-dev.5` all auto-detect. **No gap here.**
+**anodizer status:** Already implemented. `prerelease: auto` in release config triggers `should_mark_prerelease()` in `crates/stage-release/src/lib.rs` which parses the tag for semver prerelease segments (rc, alpha, beta, dev). Case-insensitive. Tests confirm `v1.0.0-rc.1`, `v1.0.0-alpha.1`, `v2.0.0-beta`, `v1.0.0-dev.5` all auto-detect. **No gap here.**
 
 ### 5. Changelog Extraction from Existing CHANGELOG.md
 
@@ -86,7 +86,7 @@ Most projects strip debug symbols from release binaries to reduce size (often 50
 
 Several projects maintain a hand-written or tool-generated `CHANGELOG.md` and extract the section for the current version as release notes, rather than generating notes from git history.
 
-**anodize gap:** Changelog stage generates from git commits only. No option to extract from an existing file.
+**anodizer gap:** Changelog stage generates from git commits only. No option to extract from an existing file.
 
 **Possible implementation:** Add `changelog.use: file` mode with `changelog.file: CHANGELOG.md` — extracts the section matching the current version/tag.
 
@@ -96,7 +96,7 @@ Several projects maintain a hand-written or tool-generated `CHANGELOG.md` and ex
 
 GitHub's `actions/attest-build-provenance` generates signed SLSA provenance statements for artifacts, enabling supply-chain verification. This is becoming a requirement for security-conscious organizations.
 
-**anodize gap:** No attestation support.
+**anodizer gap:** No attestation support.
 
 **Possible implementation:** Add `attestation: true` to build or release config. In the GitHub Action, call the attestation action after build. For CLI-only usage, generate an in-toto statement.
 
@@ -106,7 +106,7 @@ GitHub's `actions/attest-build-provenance` generates signed SLSA provenance stat
 
 Docker multi-platform builds using `docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7` with QEMU emulation. Produces a multi-arch manifest so users get the right image automatically.
 
-**anodize gap:** Docker stage builds single-platform images. No BuildX multi-platform support.
+**anodizer gap:** Docker stage builds single-platform images. No BuildX multi-platform support.
 
 **Possible implementation:** Add `platforms: [linux/amd64, linux/arm64]` to docker config. When set, use BuildX with QEMU for multi-platform manifest builds.
 
@@ -114,7 +114,7 @@ Docker multi-platform builds using `docker buildx build --platform linux/amd64,l
 
 ## B. Unique Features Per Project — Development Candidates
 
-Each of these is a feature seen in one specific project that anodize doesn't offer but could develop, potentially benefiting multiple adopters.
+Each of these is a feature seen in one specific project that anodizer doesn't offer but could develop, potentially benefiting multiple adopters.
 
 ### From ripgrep: Cross-Architecture Test Execution via QEMU
 
@@ -128,7 +128,7 @@ Generates separate musl and glibc deb packages with `Conflicts:` declarations so
 
 **Candidate feature:** Enhance nfpm config to support `conflicts`, `provides`, and variant-aware packaging.
 
-**Note:** anodize's nfpm stage already has `conflicts`, `provides`, `replaces`, `recommends`, and `suggests` fully wired through — config, YAML generation, and tests. **No gap here** for the nfpm side. The bat-specific concern is about generating *separate* musl/glibc deb variants with cross-variant conflicts, which is a packaging strategy issue rather than a missing field.
+**Note:** anodizer's nfpm stage already has `conflicts`, `provides`, `replaces`, `recommends`, and `suggests` fully wired through — config, YAML generation, and tests. **No gap here** for the nfpm side. The bat-specific concern is about generating *separate* musl/glibc deb variants with cross-variant conflicts, which is a packaging strategy issue rather than a missing field.
 
 ### From starship: macOS Code Signing + Notarization
 
@@ -156,7 +156,7 @@ Creates Linux AppImage bundles using `linuxdeploy` with zsync metadata for delta
 
 Builds documentation with mdbook and deploys to GitHub Pages as part of the release workflow. Ensures docs are always in sync with releases.
 
-**Candidate feature:** anodize already has mdBook in Session 5O. Could add a `deploy.github_pages` config to automate deployment during release.
+**Candidate feature:** anodizer already has mdBook in Session 5O. Could add a `deploy.github_pages` config to automate deployment during release.
 
 ### From git-cliff: NPM + PyPI Publishing
 
@@ -164,7 +164,7 @@ Wraps native Rust binaries as npm packages (platform-specific) and Python wheels
 
 **Candidate feature:** Add `publish.npm` and `publish.pypi` config sections. NPM requires generating per-platform packages with optionalDependencies. PyPI requires maturin for wheel building.
 
-**Impact:** Opens anodize to the massive npm/PyPI user bases. git-cliff and biome both do this.
+**Impact:** Opens anodizer to the massive npm/PyPI user bases. git-cliff and biome both do this.
 
 ### From biome: WASM Compilation
 
@@ -206,7 +206,7 @@ Uses `actions/attest-build-provenance` for supply-chain security. Covered in Sec
 
 ### Must-Have Before Community PRs
 
-Without these, the target projects cannot realistically switch to anodize:
+Without these, the target projects cannot realistically switch to anodizer:
 
 1. **Shell completion generation** — 7/21 projects need this
 2. **Man page generation** — 7/21 projects need this
@@ -215,11 +215,11 @@ Without these, the target projects cannot realistically switch to anodize:
 
 ### High Value for Differentiation
 
-These would make anodize's value proposition compelling beyond "replaces your YAML":
+These would make anodizer's value proposition compelling beyond "replaces your YAML":
 
 5. **macOS code signing + notarization** — starship's #1 pain point
 6. **AppImage generation** — helix needs this, broad Linux value
-7. **NPM/PyPI publishing** — opens anodize to non-Rust consumers (git-cliff, biome)
+7. **NPM/PyPI publishing** — opens anodizer to non-Rust consumers (git-cliff, biome)
 8. **Multi-arch Docker (BuildX)** — modern container standard
 9. **Build provenance attestation** — growing security requirement
 

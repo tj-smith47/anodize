@@ -31,7 +31,7 @@ announce:
 
 ## How it works
 
-Anodize uses the OpenCollective GraphQL v2 API at
+Anodizer uses the OpenCollective GraphQL v2 API at
 `https://api.opencollective.com/graphql/v2` with your personal token in the
 `Personal-Token` header. Each run performs a two-step flow:
 
@@ -44,7 +44,7 @@ Anodize uses the OpenCollective GraphQL v2 API at
 
 ## Empty slug handling
 
-If `slug` renders to an empty string, anodize logs a warning and skips the
+If `slug` renders to an empty string, anodizer logs a warning and skips the
 OpenCollective announcement without failing the pipeline.
 
 ## HTML in message body

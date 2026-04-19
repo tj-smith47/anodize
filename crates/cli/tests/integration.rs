@@ -4,7 +4,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
-use anodize_core::test_helpers::{create_config, create_test_project, init_git_repo};
+use anodizer_core::test_helpers::{create_config, create_test_project, init_git_repo};
 
 #[test]
 fn test_check_valid_config() {
@@ -21,7 +21,7 @@ crates:
 "#,
     );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .arg("check")
         .current_dir(tmp.path())
         .output()
@@ -37,8 +37,8 @@ crates:
 #[test]
 fn test_check_invalid_config() {
     let tmp = TempDir::new().unwrap();
-    // No anodize.yaml at all
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    // No anodizer.yaml at all
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .arg("check")
         .current_dir(tmp.path())
         .output()
@@ -46,7 +46,7 @@ fn test_check_invalid_config() {
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("no anodize config file found"));
+    assert!(stderr.contains("no anodizer config file found"));
 }
 
 #[test]
@@ -55,7 +55,7 @@ fn test_init_generates_config() {
     create_test_project(tmp.path());
     init_git_repo(tmp.path());
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .arg("init")
         .current_dir(tmp.path())
         .output()
@@ -67,11 +67,11 @@ fn test_init_generates_config() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Created .anodize.yaml"));
+    assert!(stdout.contains("Created .anodizer.yaml"));
 
     // Read the generated config file
     let config_content =
-        fs::read_to_string(tmp.path().join(".anodize.yaml")).expect(".anodize.yaml should exist");
+        fs::read_to_string(tmp.path().join(".anodizer.yaml")).expect(".anodizer.yaml should exist");
     assert!(config_content.contains("project_name:"));
     assert!(config_content.contains("test-project"));
     assert!(config_content.contains("tag_template:"));
@@ -87,7 +87,7 @@ fn test_init_generates_config() {
 
 #[test]
 fn test_help_output() {
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .arg("--help")
         .output()
         .unwrap();
@@ -111,14 +111,14 @@ fn test_help_output() {
 
 #[test]
 fn test_version_output() {
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .arg("--version")
         .output()
         .unwrap();
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("anodize"));
+    assert!(stdout.contains("anodizer"));
 }
 
 #[test]
@@ -143,7 +143,7 @@ crates:
     .unwrap();
 
     // Use -f to point to the custom config
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args(["-f", config_path.to_str().unwrap(), "check"])
         .current_dir(tmp.path())
         .output()
@@ -161,7 +161,7 @@ fn test_check_with_config_flag_long() {
     let tmp = TempDir::new().unwrap();
     create_test_project(tmp.path());
 
-    let config_path = tmp.path().join("my-anodize.yaml");
+    let config_path = tmp.path().join("my-anodizer.yaml");
     fs::write(
         &config_path,
         r#"
@@ -175,7 +175,7 @@ crates:
     .unwrap();
 
     // Use --config (long form) to point to the custom config
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args(["--config", config_path.to_str().unwrap(), "check"])
         .current_dir(tmp.path())
         .output()
@@ -190,8 +190,8 @@ crates:
 
 #[test]
 fn test_check_with_config_flag_nonexistent() {
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
-        .args(["-f", "/tmp/does-not-exist-anodize.yaml", "check"])
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args(["-f", "/tmp/does-not-exist-anodizer.yaml", "check"])
         .output()
         .unwrap();
 
@@ -206,7 +206,7 @@ fn test_check_with_config_flag_nonexistent() {
 
 #[test]
 fn test_release_help_shows_timeout_flag() {
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args(["release", "--help"])
         .output()
         .unwrap();
@@ -222,7 +222,7 @@ fn test_release_help_shows_timeout_flag() {
 
 #[test]
 fn test_build_help_shows_timeout_flag() {
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args(["build", "--help"])
         .output()
         .unwrap();
@@ -284,7 +284,7 @@ crates:
     // hold inherited pipe fds open, causing output() to block until that
     // process also exits. By discarding stdout/stderr with Stdio::null()
     // and polling try_wait(), we detect the exit immediately.
-    let mut child = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args(["release", "--timeout", "1s"])
         .current_dir(tmp.path())
         .stdout(std::process::Stdio::null())
@@ -300,7 +300,7 @@ crates:
             None => {
                 if Instant::now() > poll_deadline {
                     child.kill().ok();
-                    panic!("anodize process did not exit within 10s (timeout was 1s)");
+                    panic!("anodizer process did not exit within 10s (timeout was 1s)");
                 }
                 std::thread::sleep(Duration::from_millis(100));
             }
@@ -332,7 +332,7 @@ crates:
 
 #[test]
 fn test_completion_bash_produces_output() {
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args(["completion", "bash"])
         .output()
         .unwrap();
@@ -345,14 +345,14 @@ fn test_completion_bash_produces_output() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!stdout.is_empty(), "bash completions should not be empty");
     assert!(
-        stdout.contains("anodize"),
-        "bash completions should reference 'anodize'"
+        stdout.contains("anodizer"),
+        "bash completions should reference 'anodizer'"
     );
 }
 
 #[test]
 fn test_completion_zsh_produces_output() {
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args(["completion", "zsh"])
         .output()
         .unwrap();
@@ -364,7 +364,7 @@ fn test_completion_zsh_produces_output() {
 
 #[test]
 fn test_healthcheck_succeeds() {
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .arg("healthcheck")
         .output()
         .unwrap();
@@ -384,7 +384,7 @@ fn test_healthcheck_succeeds() {
 
 #[test]
 fn test_release_help_shows_new_flags() {
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args(["release", "--help"])
         .output()
         .unwrap();
@@ -415,7 +415,7 @@ fn test_release_help_shows_new_flags() {
 
 #[test]
 fn test_build_help_shows_new_flags() {
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args(["build", "--help"])
         .output()
         .unwrap();
@@ -449,7 +449,7 @@ crates:
 "#,
     );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args(["release", "--timeout", "notavalidtimeout"])
         .current_dir(tmp.path())
         .output()
@@ -470,7 +470,7 @@ crates:
 
 /// Detect the host target triple (e.g., "x86_64-unknown-linux-gnu").
 fn detect_host_target() -> String {
-    anodize_cli::detect_host_target().expect("failed to detect host target triple")
+    anodizer_cli::detect_host_target().expect("failed to detect host target triple")
 }
 
 /// Create a workspace Cargo project with multiple crates.
@@ -625,7 +625,7 @@ crates:
 // E2E Tests
 // ============================================================================
 
-/// E2E: `anodize release --snapshot` produces correct artifacts in dist/.
+/// E2E: `anodizer release --snapshot` produces correct artifacts in dist/.
 ///
 /// This test actually compiles a Rust project, so it may take a while.
 #[test]
@@ -641,7 +641,7 @@ fn test_e2e_snapshot_release_produces_artifacts() {
     let config = create_single_crate_snapshot_config(&host);
     create_config(tmp.path(), &config);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args([
             "release",
             "--snapshot",
@@ -711,7 +711,7 @@ fn test_e2e_snapshot_release_produces_artifacts() {
     );
 }
 
-/// E2E: `anodize release --dry-run` runs full pipeline with no side effects.
+/// E2E: `anodizer release --dry-run` runs full pipeline with no side effects.
 #[test]
 fn test_e2e_dry_run_no_side_effects() {
     let tmp = TempDir::new().unwrap();
@@ -723,7 +723,7 @@ fn test_e2e_dry_run_no_side_effects() {
     let config = create_single_crate_snapshot_config(&host);
     create_config(tmp.path(), &config);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args([
             "release",
             "--dry-run",
@@ -771,7 +771,7 @@ fn test_e2e_dry_run_no_side_effects() {
             entries
         );
         // GoReleaser writes metadata.json and artifacts.json even in dry-run mode.
-        // Anodize matches this behavior: metadata is always written for debugging.
+        // Anodizer matches this behavior: metadata is always written for debugging.
     }
     // If dist/ doesn't exist at all, that's the expected case for dry-run.
 
@@ -783,7 +783,7 @@ fn test_e2e_dry_run_no_side_effects() {
     );
 }
 
-/// E2E: `anodize check` validates a comprehensive config that exercises many fields.
+/// E2E: `anodizer check` validates a comprehensive config that exercises many fields.
 #[test]
 fn test_e2e_check_comprehensive_config() {
     let tmp = TempDir::new().unwrap();
@@ -863,7 +863,7 @@ changelog:
 "#,
     );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .arg("check")
         .current_dir(tmp.path())
         .output()
@@ -882,14 +882,14 @@ changelog:
     );
 }
 
-/// E2E: `anodize init` generates valid YAML that can be parsed back.
+/// E2E: `anodizer init` generates valid YAML that can be parsed back.
 #[test]
 fn test_e2e_init_generates_parseable_yaml() {
     let tmp = TempDir::new().unwrap();
     create_test_project(tmp.path());
     init_git_repo(tmp.path());
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .arg("init")
         .current_dir(tmp.path())
         .output()
@@ -902,8 +902,8 @@ fn test_e2e_init_generates_parseable_yaml() {
     );
 
     // Read the generated config file
-    let config_content = fs::read_to_string(tmp.path().join(".anodize.yaml"))
-        .expect(".anodize.yaml should exist after init");
+    let config_content = fs::read_to_string(tmp.path().join(".anodizer.yaml"))
+        .expect(".anodizer.yaml should exist after init");
 
     // Verify the output is valid YAML by parsing it
     let parsed: serde_yaml_ng::Value =
@@ -948,13 +948,13 @@ fn test_e2e_init_generates_parseable_yaml() {
         .expect("crates should be an array");
     assert!(!crates.is_empty(), "crates array should not be empty");
 
-    // Verify the generated YAML can be written and validated with `anodize check`
+    // Verify the generated YAML can be written and validated with `anodizer check`
     let tmp2 = TempDir::new().unwrap();
     create_test_project(tmp2.path());
     init_git_repo(tmp2.path());
     create_config(tmp2.path(), &config_content);
 
-    let check_output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let check_output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .arg("check")
         .current_dir(tmp2.path())
         .output()
@@ -971,8 +971,8 @@ fn test_e2e_init_generates_parseable_yaml() {
 ///
 /// Creates a workspace with 3 crates: core-lib, helper-lib (depends on core-lib),
 /// and myapp (depends on both). Verifies that:
-/// 1. `anodize check` passes on the workspace config
-/// 2. `anodize release --dry-run --all --force` includes all crates
+/// 1. `anodizer check` passes on the workspace config
+/// 2. `anodizer release --dry-run --all --force` includes all crates
 /// 3. Dependency ordering is respected (core-lib before helper-lib before myapp)
 #[test]
 fn test_e2e_workspace_all_force_detects_crates() {
@@ -982,12 +982,12 @@ fn test_e2e_workspace_all_force_detects_crates() {
     create_workspace_project(tmp.path());
     init_git_repo(tmp.path());
 
-    // Create anodize config for the workspace with depends_on
+    // Create anodizer config for the workspace with depends_on
     let config = create_workspace_snapshot_config(&host);
     create_config(tmp.path(), &config);
 
     // 1. Verify config is valid
-    let check_output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let check_output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .arg("check")
         .current_dir(tmp.path())
         .output()
@@ -1000,7 +1000,7 @@ fn test_e2e_workspace_all_force_detects_crates() {
     );
 
     // 2. Run dry-run release with --all --force
-    let release_output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let release_output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args([
             "release",
             "--dry-run",
@@ -1053,7 +1053,7 @@ fn test_e2e_workspace_snapshot_produces_artifacts() {
     let config = create_workspace_snapshot_config(&host);
     create_config(tmp.path(), &config);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args([
             "release",
             "--snapshot",
@@ -1114,14 +1114,14 @@ fn test_e2e_workspace_snapshot_produces_artifacts() {
     );
 }
 
-/// E2E: `anodize init` on a workspace project generates config with depends_on.
+/// E2E: `anodizer init` on a workspace project generates config with depends_on.
 #[test]
 fn test_e2e_init_workspace_generates_depends_on() {
     let tmp = TempDir::new().unwrap();
     create_workspace_project(tmp.path());
     init_git_repo(tmp.path());
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .arg("init")
         .current_dir(tmp.path())
         .output()
@@ -1134,8 +1134,8 @@ fn test_e2e_init_workspace_generates_depends_on() {
     );
 
     // Read the generated config file
-    let config_content = fs::read_to_string(tmp.path().join(".anodize.yaml"))
-        .expect(".anodize.yaml should exist after init");
+    let config_content = fs::read_to_string(tmp.path().join(".anodizer.yaml"))
+        .expect(".anodizer.yaml should exist after init");
 
     // Verify the config mentions all three crates
     assert!(
@@ -1179,7 +1179,7 @@ fn test_e2e_init_workspace_generates_depends_on() {
         });
 }
 
-/// E2E: `anodize check` detects invalid depends_on references in workspace config.
+/// E2E: `anodizer check` detects invalid depends_on references in workspace config.
 #[test]
 fn test_e2e_check_workspace_invalid_depends_on() {
     let tmp = TempDir::new().unwrap();
@@ -1201,7 +1201,7 @@ crates:
 "#,
     );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .arg("check")
         .current_dir(tmp.path())
         .output()
@@ -1225,7 +1225,7 @@ crates:
 /// 1. Creates the workspace fixture and initializes git
 /// 2. Tags all crates (core-lib-v0.1.0, helper-lib-v0.1.0, myapp-v0.1.0)
 /// 3. Modifies only core-lib's source file and commits
-/// 4. Runs `anodize release --all --dry-run` (no --force)
+/// 4. Runs `anodizer release --all --dry-run` (no --force)
 /// 5. Verifies that only core-lib (the changed crate) is detected
 ///
 /// Note: depends_on propagation (helper-lib and myapp depend on core-lib) is not
@@ -1257,7 +1257,7 @@ fn test_e2e_workspace_change_detection_without_force() {
     git(&["config", "user.email", "test@test.com"]);
     git(&["config", "user.name", "Test"]);
 
-    // Create anodize config before the initial commit so it's tracked
+    // Create anodizer config before the initial commit so it's tracked
     create_config(
         tmp.path(),
         r#"project_name: my-workspace
@@ -1299,7 +1299,7 @@ crates:
     git(&["commit", "-m", "modify core-lib only"]);
 
     // Run release with --all but WITHOUT --force, so change detection kicks in
-    let release_output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let release_output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args([
             "release",
             "--dry-run",
@@ -1346,7 +1346,7 @@ crates:
 // Error Path Tests (Task 3B)
 // ============================================================================
 
-/// Error path: `anodize check` with malformed YAML should fail with a clear error.
+/// Error path: `anodizer check` with malformed YAML should fail with a clear error.
 #[test]
 fn test_check_malformed_yaml_reports_parse_error() {
     let tmp = TempDir::new().unwrap();
@@ -1362,7 +1362,7 @@ crates:
 "#,
     );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .arg("check")
         .current_dir(tmp.path())
         .output()
@@ -1384,7 +1384,7 @@ crates:
     );
 }
 
-/// Error path: `anodize check` with type mismatch should fail with a clear error.
+/// Error path: `anodizer check` with type mismatch should fail with a clear error.
 #[test]
 fn test_check_type_mismatch_crates_not_array() {
     let tmp = TempDir::new().unwrap();
@@ -1396,7 +1396,7 @@ crates: "this should be an array not a string"
 "#,
     );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .arg("check")
         .current_dir(tmp.path())
         .output()
@@ -1436,7 +1436,7 @@ crates:
     );
     create_config(tmp.path(), &config);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args([
             "release",
             "--dry-run",
@@ -1482,7 +1482,7 @@ crates:
 "#,
     );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .arg("check")
         .current_dir(tmp.path())
         .output()
@@ -1516,7 +1516,7 @@ crates:
 "#,
     );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .arg("check")
         .current_dir(tmp.path())
         .output()
@@ -1580,7 +1580,7 @@ crates:
     );
     create_config(tmp.path(), &config);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args([
             "release",
             "--snapshot",
@@ -1617,7 +1617,7 @@ crates:
 "#,
     );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .arg("check")
         .current_dir(tmp.path())
         .output()
@@ -1654,7 +1654,7 @@ crates:
 "#,
     );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .arg("check")
         .current_dir(tmp.path())
         .output()
@@ -1684,7 +1684,7 @@ crates:
 "#,
     );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .arg("check")
         .current_dir(tmp.path())
         .output()
@@ -1716,7 +1716,7 @@ crates:
 "#,
     );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .arg("check")
         .current_dir(tmp.path())
         .output()
@@ -1747,7 +1747,7 @@ crates:
 "#,
     );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .arg("check")
         .current_dir(tmp.path())
         .output()
@@ -1801,7 +1801,7 @@ crates:
     );
     create_config(tmp.path(), &config);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args([
             "release",
             "--snapshot",
@@ -1938,7 +1938,7 @@ crates:
     );
     create_config(tmp.path(), &config);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args([
             "release",
             "--dry-run",
@@ -2064,7 +2064,7 @@ crates:
     git(&["commit", "-m", "feat: implement second feature"]);
 
     // Run a snapshot release that includes the changelog stage
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args([
             "release",
             "--snapshot",
@@ -2144,7 +2144,7 @@ fn test_e2e_config_validation_round_trip() {
     init_git_repo(tmp.path());
 
     // Step 1: Generate config with `init`
-    let init_output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let init_output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .arg("init")
         .current_dir(tmp.path())
         .output()
@@ -2156,9 +2156,9 @@ fn test_e2e_config_validation_round_trip() {
         String::from_utf8_lossy(&init_output.stderr)
     );
 
-    // init now writes to .anodize.yaml instead of stdout
-    let generated_config = std::fs::read_to_string(tmp.path().join(".anodize.yaml"))
-        .expect("init should create .anodize.yaml");
+    // init now writes to .anodizer.yaml instead of stdout
+    let generated_config = std::fs::read_to_string(tmp.path().join(".anodizer.yaml"))
+        .expect("init should create .anodizer.yaml");
 
     // Step 2: Parse the generated config, replace targets with only the host
     // target to avoid cross-compilation failures, then write back.
@@ -2204,7 +2204,7 @@ fn test_e2e_config_validation_round_trip() {
     create_config(tmp.path(), &modified_config);
 
     // Step 3: Validate with `check`
-    let check_output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let check_output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .arg("check")
         .current_dir(tmp.path())
         .output()
@@ -2217,7 +2217,7 @@ fn test_e2e_config_validation_round_trip() {
     );
 
     // Step 4: Run `release --snapshot` with the modified config.
-    let build_output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let build_output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args([
             "release",
             "--snapshot",
@@ -2265,7 +2265,7 @@ fn test_e2e_workspace_dependency_ordering() {
     let config = create_workspace_snapshot_config(&host);
     create_config(tmp.path(), &config);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args([
             "release",
             "--dry-run",
@@ -2325,7 +2325,7 @@ fn test_e2e_skip_archive_and_checksum() {
     let config = create_single_crate_snapshot_config(&host);
     create_config(tmp.path(), &config);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args([
             "release",
             "--snapshot",
@@ -2438,7 +2438,7 @@ crates:
     );
     create_config(tmp.path(), &config);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args([
             "release",
             "--dry-run",
@@ -2508,7 +2508,7 @@ crates:
     );
     create_config(tmp.path(), &config);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args([
             "release",
             "--dry-run",
@@ -2575,7 +2575,7 @@ crates:
     );
 
     // Verify config with format_overrides passes validation
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .arg("check")
         .current_dir(tmp.path())
         .output()
@@ -2620,7 +2620,7 @@ crates:
     );
     create_config(tmp.path(), &config);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args([
             "release",
             "--snapshot",
@@ -2742,7 +2742,7 @@ crates:
     git(&["add", "-A"]);
     git(&["commit", "-m", "feat: dry-run test commit"]);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args([
             "release",
             "--dry-run",
@@ -2784,7 +2784,7 @@ crates:
     );
 
     // GoReleaser writes CHANGELOG.md even in dry-run mode.
-    // Anodize matches this behavior for debugging and downstream stage consumption.
+    // Anodizer matches this behavior for debugging and downstream stage consumption.
 }
 
 /// E2E #12: Check command with nested custom config path validates correctly.
@@ -2818,7 +2818,7 @@ crates:
     )
     .unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args(["-f", config_path.to_str().unwrap(), "check"])
         .current_dir(tmp.path())
         .output()
@@ -2845,7 +2845,7 @@ fn test_e2e_init_yaml_structural_round_trip() {
     create_test_project(tmp.path());
     init_git_repo(tmp.path());
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .arg("init")
         .current_dir(tmp.path())
         .output()
@@ -2858,8 +2858,8 @@ fn test_e2e_init_yaml_structural_round_trip() {
     );
 
     // Read the generated config file
-    let yaml_str = fs::read_to_string(tmp.path().join(".anodize.yaml"))
-        .expect(".anodize.yaml should exist after init");
+    let yaml_str = fs::read_to_string(tmp.path().join(".anodizer.yaml"))
+        .expect(".anodizer.yaml should exist after init");
 
     // Parse as generic YAML
     let value: serde_yaml_ng::Value = serde_yaml_ng::from_str(&yaml_str).unwrap_or_else(|e| {
@@ -2994,7 +2994,7 @@ crates:
     );
     create_config(tmp.path(), &config);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args([
             "release",
             "--snapshot",
@@ -3059,7 +3059,7 @@ crates:
 /// E2E #15: Healthcheck detects available tools and reports their versions.
 #[test]
 fn test_e2e_healthcheck_detects_tools() {
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .arg("healthcheck")
         .output()
         .unwrap();
@@ -3121,7 +3121,7 @@ fn test_e2e_changelog_header_footer() {
 changelog:
   sort: asc
   header: "# Release Notes"
-  footer: "Generated by anodize"
+  footer: "Generated by anodizer"
 crates:
   - name: test-project
     path: "."
@@ -3155,7 +3155,7 @@ crates:
     git(&["add", "-A"]);
     git(&["commit", "-m", "feat: add header/footer test feature"]);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args([
             "release",
             "--snapshot",
@@ -3184,7 +3184,7 @@ crates:
         notes
     );
     assert!(
-        notes.contains("Generated by anodize"),
+        notes.contains("Generated by anodizer"),
         "changelog should contain footer, got:\n{}",
         notes
     );
@@ -3279,7 +3279,7 @@ crates:
     git(&["add", "-A"]);
     git(&["commit", "-m", "fix: visible bugfix"]);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args([
             "release",
             "--snapshot",
@@ -3344,7 +3344,7 @@ fn test_e2e_auto_snapshot_dirty_repo() {
     )
     .unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args([
             "release",
             "--auto-snapshot",
@@ -3407,7 +3407,7 @@ crates:
     );
     create_config(tmp.path(), &config);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args([
             "release",
             "--snapshot",
@@ -3476,7 +3476,7 @@ crates:
     );
     create_config(tmp.path(), &config);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args([
             "release",
             "--dry-run",
@@ -3509,13 +3509,13 @@ crates:
     );
 }
 
-/// E2E #21: TOML config format — verify that anodize can read .toml configs.
+/// E2E #21: TOML config format — verify that anodizer can read .toml configs.
 #[test]
 fn test_e2e_toml_config_check() {
     let tmp = TempDir::new().unwrap();
     create_test_project(tmp.path());
 
-    let config_path = tmp.path().join("anodize.toml");
+    let config_path = tmp.path().join("anodizer.toml");
     fs::write(
         &config_path,
         r#"
@@ -3529,7 +3529,7 @@ tag_template = "v{{ .Version }}"
     )
     .unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args(["-f", config_path.to_str().unwrap(), "check"])
         .current_dir(tmp.path())
         .output()
@@ -3580,7 +3580,7 @@ crates:
     );
     create_config(tmp.path(), &config);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args([
             "release",
             "--snapshot",
@@ -3614,7 +3614,7 @@ crates:
     );
 }
 
-/// `anodize build` must produce the same per-stage outputs as
+/// `anodizer build` must produce the same per-stage outputs as
 /// GoReleaser's `BuildCmdPipeline`: before-hook marker file,
 /// effective `dist/config.yaml`, `dist/metadata.json`,
 /// `dist/artifacts.json`, and a size-report line when
@@ -3629,7 +3629,7 @@ fn test_e2e_build_command_matches_goreleaser_pipeline_outputs() {
     create_test_project(tmp.path());
     init_git_repo(tmp.path());
 
-    // Use a before-hook that creates a sentinel file; `anodize build`
+    // Use a before-hook that creates a sentinel file; `anodizer build`
     // must execute the hook (GoReleaser BuildCmdPipeline includes
     // before.Pipe). Cross-platform marker write uses sh-style on unix
     // and powershell on Windows so the test runs on every CI runner.
@@ -3665,7 +3665,7 @@ crates:
     );
     create_config(tmp.path(), &config);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args(["build", "--timeout", "5m"])
         .current_dir(tmp.path())
         .output()
@@ -3674,7 +3674,7 @@ crates:
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "anodize build should succeed.\nstderr:\n{}",
+        "anodizer build should succeed.\nstderr:\n{}",
         stderr
     );
 
@@ -3687,7 +3687,7 @@ crates:
 
     let dist = tmp.path().join("dist");
 
-    // 2. effectiveconfig.yaml (anodize writes it as config.yaml)
+    // 2. effectiveconfig.yaml (anodizer writes it as config.yaml)
     assert!(
         dist.join("config.yaml").exists(),
         "dist/config.yaml should exist after build (effective config dump)"
@@ -3715,7 +3715,7 @@ crates:
     );
     let artifacts_text = fs::read_to_string(&artifacts).unwrap();
     // Must list at least one binary artifact for the built crate.
-    // anodize serializes ArtifactKind as lowercase snake_case.
+    // anodizer serializes ArtifactKind as lowercase snake_case.
     assert!(
         artifacts_text.contains("\"binary\""),
         "artifacts.json should contain the built binary, got: {}",

@@ -5,7 +5,7 @@ weight = 11
 template = "docs.html"
 +++
 
-Custom publishers let you run any command on your release artifacts, enabling integration with tools and registries that anodize doesn't natively support.
+Custom publishers let you run any command on your release artifacts, enabling integration with tools and registries that anodizer doesn't natively support.
 
 ## Minimal config
 

@@ -14,12 +14,12 @@ A clear description of the bug.
 
 1. Config file (redact sensitive values):
 ```yaml
-# paste relevant parts of .anodize.yaml
+# paste relevant parts of .anodizer.yaml
 ```
 
 2. Command run:
 ```bash
-anodize release --snapshot
+anodizer release --snapshot
 ```
 
 3. What happened vs. what you expected.
@@ -32,7 +32,7 @@ Paste the full error output here.
 
 ## Environment
 
-- **Anodize version:** (`anodize --version`)
+- **Anodizer version:** (`anodizer --version`)
 - **OS:** (e.g., Ubuntu 22.04, macOS 14, Windows 11)
 - **Architecture:** (e.g., x86_64, aarch64)
 - **Rust toolchain:** (`rustc --version`)

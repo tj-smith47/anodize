@@ -5,9 +5,9 @@ weight = 1
 template = "docs.html"
 +++
 
-The [`tj-smith47/anodize-action`](https://github.com/tj-smith47/anodize-action) composite action is the recommended way to run anodize in GitHub Actions. It installs anodize (cached per version), parses `.anodize.yaml` to auto-install pipeline dependencies (nfpm, cosign, zig, cargo-zigbuild, upx, snapcraft, rpmbuild, ...), imports signing keys, logs in to container registries, and handles split/merge artifact plumbing — all in one step.
+The [`tj-smith47/anodizer-action`](https://github.com/tj-smith47/anodizer-action) composite action is the recommended way to run anodizer in GitHub Actions. It installs anodizer (cached per version), parses `.anodizer.yaml` to auto-install pipeline dependencies (nfpm, cosign, zig, cargo-zigbuild, upx, snapcraft, rpmbuild, ...), imports signing keys, logs in to container registries, and handles split/merge artifact plumbing — all in one step.
 
-For the complete list of inputs and outputs, see [anodize-action reference](@/docs/ci/anodize-action.md).
+For the complete list of inputs and outputs, see [anodizer-action reference](@/docs/ci/anodizer-action.md).
 
 ## Basic release
 
@@ -29,7 +29,7 @@ jobs:
         with:
           fetch-depth: 0    # full history for changelog generation
 
-      - uses: tj-smith47/anodize-action@v1
+      - uses: tj-smith47/anodizer-action@v1
         with:
           auto-install: true
           args: release --clean
@@ -37,12 +37,12 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-`auto-install: true` reads `.anodize.yaml` and installs whatever the configured stages need. To pin dependencies explicitly, replace it with `install: nfpm,cosign,zig,...`.
+`auto-install: true` reads `.anodizer.yaml` and installs whatever the configured stages need. To pin dependencies explicitly, replace it with `install: nfpm,cosign,zig,...`.
 
 ## With signing keys
 
 ```yaml
-- uses: tj-smith47/anodize-action@v1
+- uses: tj-smith47/anodizer-action@v1
   with:
     auto-install: true
     gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
@@ -56,7 +56,7 @@ jobs:
 
 ## Auto-tag on push to main
 
-Run `anodize tag` on every push to the default branch. Use a PAT (not `GITHUB_TOKEN`) so the pushed tag triggers downstream tag-scoped workflows like `release.yml`:
+Run `anodizer tag` on every push to the default branch. Use a PAT (not `GITHUB_TOKEN`) so the pushed tag triggers downstream tag-scoped workflows like `release.yml`:
 
 ```yaml
 name: CI
@@ -84,7 +84,7 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - uses: tj-smith47/anodize-action@v1
+      - uses: tj-smith47/anodizer-action@v1
         with:
           args: tag
         env:
@@ -95,10 +95,10 @@ The tag command reads commit messages for `#major` / `#minor` / `#patch` / `#non
 
 ## Workspace-aware auto-tag (monorepo)
 
-For multi-crate workspaces, tag each crate independently so each gets its own `release.yml` run. `install-only: true` installs the binary to `PATH` without running anodize — you drive the loop yourself:
+For multi-crate workspaces, tag each crate independently so each gets its own `release.yml` run. `install-only: true` installs the binary to `PATH` without running anodizer — you drive the loop yourself:
 
 ```yaml
-      - uses: tj-smith47/anodize-action@v1
+      - uses: tj-smith47/anodizer-action@v1
         with:
           install-only: true
 
@@ -108,7 +108,7 @@ For multi-crate workspaces, tag each crate independently so each gets its own `r
         run: |
           for crate in my-core my-cli my-operator; do
             echo "--- tagging $crate ---"
-            if anodize tag --crate "$crate"; then
+            if anodizer tag --crate "$crate"; then
               echo "::notice::$crate: tagged"
             else
               echo "::warning::$crate: skipped or failed"
@@ -147,7 +147,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: tj-smith47/anodize-action@v1
+      - uses: tj-smith47/anodizer-action@v1
         id: a
         with:
           resolve-workspace: true
@@ -160,7 +160,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: tj-smith47/anodize-action@v1
+      - uses: tj-smith47/anodizer-action@v1
         with:
           auto-install: true
           docker-registry: ghcr.io
@@ -172,21 +172,21 @@ jobs:
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
 ```
 
-## Reuse a CI-built anodize binary across workflows
+## Reuse a CI-built anodizer binary across workflows
 
-When you have a separate `ci.yml` that builds and uploads an anodize binary per commit, downstream release jobs can reuse it instead of reinstalling. Set `artifact-run-id: auto` to resolve the run from the current commit SHA:
+When you have a separate `ci.yml` that builds and uploads an anodizer binary per commit, downstream release jobs can reuse it instead of reinstalling. Set `artifact-run-id: auto` to resolve the run from the current commit SHA:
 
 ```yaml
-# ci.yml — builds and uploads anodize once per commit
+# ci.yml — builds and uploads anodizer once per commit
 - uses: actions/upload-artifact@v4
   with:
-    name: anodize-linux
-    path: target/release/anodize
+    name: anodizer-linux
+    path: target/release/anodizer
 
 # release.yml — reuses the ci.yml artifact
-- uses: tj-smith47/anodize-action@v1
+- uses: tj-smith47/anodizer-action@v1
   with:
-    from-artifact: anodize-linux
+    from-artifact: anodizer-linux
     artifact-run-id: auto
     artifact-workflow: ci.yml
     auto-install: true
@@ -199,20 +199,20 @@ This avoids a cold `cargo install` on every release run.
 
 ## Manual install (no action)
 
-If you can't use the action (e.g., a self-hosted environment that can't pull from the Marketplace), install anodize directly. You'll need to handle dependencies and key imports yourself.
+If you can't use the action (e.g., a self-hosted environment that can't pull from the Marketplace), install anodizer directly. You'll need to handle dependencies and key imports yourself.
 
 ```yaml
 - uses: dtolnay/rust-toolchain@stable
 - uses: Swatinem/rust-cache@v2
-- run: cargo install anodize
-- run: anodize release --clean
+- run: cargo install anodizer
+- run: anodizer release --clean
   env:
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
 ## See also
 
-- [anodize-action reference](@/docs/ci/anodize-action.md) — every input and output
+- [anodizer-action reference](@/docs/ci/anodizer-action.md) — every input and output
 - [Split/Merge](@/docs/advanced/split-merge.md) — fan-out cross-platform builds
 - [Auto-Tagging](@/docs/advanced/auto-tagging.md) — commit-message-driven version bumps
-- [Standalone pipeline commands](@/docs/ci/split-merge-ci.md) — separate `anodize publish` and `anodize announce` jobs
+- [Standalone pipeline commands](@/docs/ci/split-merge-ci.md) — separate `anodizer publish` and `anodizer announce` jobs

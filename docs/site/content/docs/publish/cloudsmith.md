@@ -5,7 +5,7 @@ weight = 82
 template = "docs.html"
 +++
 
-Anodize can upload deb, rpm, and apk packages to [Cloudsmith](https://cloudsmith.io/) repositories.
+Anodizer can upload deb, rpm, and apk packages to [Cloudsmith](https://cloudsmith.io/) repositories.
 
 ## Minimal config
 

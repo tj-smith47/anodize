@@ -5,7 +5,7 @@ weight = 68
 template = "docs.html"
 +++
 
-Anodize can build source RPM packages (`.src.rpm`) using `rpmbuild`.
+Anodizer can build source RPM packages (`.src.rpm`) using `rpmbuild`.
 
 ## Minimal config
 
@@ -53,7 +53,7 @@ srpm:
 
 ## Auto-generated spec
 
-When no `spec_file` is provided, Anodize generates a minimal RPM spec with `%autosetup`, `%build`, `%install`, `%files`, and `%changelog` sections.
+When no `spec_file` is provided, Anodizer generates a minimal RPM spec with `%autosetup`, `%build`, `%install`, `%files`, and `%changelog` sections.
 
 ## Custom spec file
 

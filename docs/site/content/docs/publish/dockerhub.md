@@ -5,7 +5,7 @@ weight = 83
 template = "docs.html"
 +++
 
-Anodize can sync short and full descriptions to your Docker Hub repositories. This does not build or push images — it updates the repository metadata that appears on the Docker Hub page.
+Anodizer can sync short and full descriptions to your Docker Hub repositories. This does not build or push images — it updates the repository metadata that appears on the Docker Hub page.
 
 ## Minimal config
 

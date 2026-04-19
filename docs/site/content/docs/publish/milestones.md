@@ -5,7 +5,7 @@ weight = 88
 template = "docs.html"
 +++
 
-Anodize can automatically close milestones on GitHub, GitLab, or Gitea after a release completes.
+Anodizer can automatically close milestones on GitHub, GitLab, or Gitea after a release completes.
 
 ## Minimal config
 

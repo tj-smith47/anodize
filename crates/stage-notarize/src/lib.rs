@@ -2,10 +2,10 @@ use std::process::Command;
 
 use anyhow::{Context as _, Result, bail};
 
-use anodize_core::artifact::{Artifact, ArtifactKind};
-use anodize_core::config::{MacOSNativeSignNotarizeConfig, MacOSSignNotarizeConfig, StringOrBool};
-use anodize_core::context::Context;
-use anodize_core::stage::Stage;
+use anodizer_core::artifact::{Artifact, ArtifactKind};
+use anodizer_core::config::{MacOSNativeSignNotarizeConfig, MacOSSignNotarizeConfig, StringOrBool};
+use anodizer_core::context::Context;
+use anodizer_core::stage::Stage;
 
 // ---------------------------------------------------------------------------
 // Helper: refresh artifact checksums after signing
@@ -14,7 +14,7 @@ use anodize_core::stage::Stage;
 /// Re-compute SHA256 for all darwin Binary/UniversalBinary artifacts whose
 /// files may have been modified by signing. Updates the `sha256` metadata
 /// field in-place (GoReleaser parity: macos.go:144 calls `binaries.Refresh()`).
-fn refresh_artifact_checksums(ctx: &mut Context, log: &anodize_core::log::StageLogger) {
+fn refresh_artifact_checksums(ctx: &mut Context, log: &anodizer_core::log::StageLogger) {
     for artifact in ctx.artifacts.all_mut() {
         if !matches!(
             artifact.kind,
@@ -25,7 +25,7 @@ fn refresh_artifact_checksums(ctx: &mut Context, log: &anodize_core::log::StageL
         let is_darwin = artifact
             .target
             .as_deref()
-            .map(anodize_core::target::is_darwin)
+            .map(anodizer_core::target::is_darwin)
             .unwrap_or(false);
         if !is_darwin {
             continue;
@@ -34,7 +34,7 @@ fn refresh_artifact_checksums(ctx: &mut Context, log: &anodize_core::log::StageL
         if !artifact.metadata.contains_key("sha256") {
             continue;
         }
-        match anodize_core::hashing::sha256_file(&artifact.path) {
+        match anodizer_core::hashing::sha256_file(&artifact.path) {
             Ok(new_sha) => {
                 artifact.metadata.insert("sha256".to_string(), new_sha);
             }
@@ -87,10 +87,10 @@ fn is_enabled(enabled: &Option<StringOrBool>, ctx: &Context) -> bool {
 // Helper: filter artifacts by ids list
 // ---------------------------------------------------------------------------
 
-use anodize_core::artifact::matches_id_filter;
+use anodizer_core::artifact::matches_id_filter;
 
 /// Check whether an artifact matches the given ids filter — delegates to the
-/// canonical `anodize_core::artifact::matches_id_filter` (GoReleaser `ByID`).
+/// canonical `anodizer_core::artifact::matches_id_filter` (GoReleaser `ByID`).
 fn matches_ids(artifact: &Artifact, ids: &Option<Vec<String>>) -> bool {
     matches_id_filter(artifact, ids.as_deref())
 }
@@ -128,7 +128,7 @@ fn redact_args(args: &[String]) -> Vec<String> {
 fn check_notarize_output(
     output: &std::process::Output,
     label: &str,
-    log: &anodize_core::log::StageLogger,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<()> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -243,7 +243,7 @@ fn run_cross_platform(
     cfg: &MacOSSignNotarizeConfig,
     idx: usize,
     dry_run: bool,
-    log: &anodize_core::log::StageLogger,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<()> {
     if !is_enabled(&cfg.enabled, ctx) {
         log.status(&format!("notarize: macos[{idx}] skipped (not enabled)"));
@@ -315,7 +315,7 @@ fn run_cross_platform(
             matches!(a.kind, ArtifactKind::Binary | ArtifactKind::UniversalBinary)
                 && a.target
                     .as_deref()
-                    .map(anodize_core::target::is_darwin)
+                    .map(anodizer_core::target::is_darwin)
                     .unwrap_or(false)
                 && matches_ids(a, &ids)
         })
@@ -463,7 +463,7 @@ fn run_native(
     cfg: &MacOSNativeSignNotarizeConfig,
     idx: usize,
     dry_run: bool,
-    log: &anodize_core::log::StageLogger,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<()> {
     if !is_enabled(&cfg.enabled, ctx) {
         log.status(&format!(
@@ -557,7 +557,7 @@ fn run_native_dmg(
     ctx: &Context,
     params: &NativeSignParams,
     dry_run: bool,
-    log: &anodize_core::log::StageLogger,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<()> {
     let idx = params.idx;
 
@@ -571,7 +571,7 @@ fn run_native_dmg(
                 && a.metadata.get("format").map(|f| f.as_str()) == Some("appbundle")
                 && a.target
                     .as_deref()
-                    .map(anodize_core::target::is_darwin)
+                    .map(anodizer_core::target::is_darwin)
                     .unwrap_or(false)
                 && matches_ids(a, params.ids)
         })
@@ -640,7 +640,7 @@ fn run_native_dmg(
             a.kind == ArtifactKind::DiskImage
                 && a.target
                     .as_deref()
-                    .map(anodize_core::target::is_darwin)
+                    .map(anodizer_core::target::is_darwin)
                     .unwrap_or(false)
                 && matches_ids(a, params.ids)
         })
@@ -754,7 +754,7 @@ fn run_native_pkg(
     ctx: &Context,
     params: &NativeSignParams,
     dry_run: bool,
-    log: &anodize_core::log::StageLogger,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<()> {
     let idx = params.idx;
 
@@ -768,7 +768,7 @@ fn run_native_pkg(
                 && a.metadata.get("format").map(|f| f.as_str()) != Some("appbundle")
                 && a.target
                     .as_deref()
-                    .map(anodize_core::target::is_darwin)
+                    .map(anodizer_core::target::is_darwin)
                     .unwrap_or(false)
                 && matches_ids(a, params.ids)
         })
@@ -921,13 +921,13 @@ mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
 
-    use anodize_core::artifact::{Artifact, ArtifactKind};
-    use anodize_core::config::{
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::config::{
         Config, MacOSNativeNotarizeConfig, MacOSNativeSignConfig, MacOSNativeSignNotarizeConfig,
         MacOSNotarizeApiConfig, MacOSSignConfig, MacOSSignNotarizeConfig, NotarizeConfig,
         StringOrBool,
     };
-    use anodize_core::context::{Context, ContextOptions};
+    use anodizer_core::context::{Context, ContextOptions};
 
     // -----------------------------------------------------------------------
     // Config deserialization tests

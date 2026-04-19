@@ -1,11 +1,11 @@
-//! `anodize publish` command.
+//! `anodizer publish` command.
 //! Runs only the publish stages (release, publish, blob) from a completed dist/.
 //! Equivalent to GoReleaser Pro's `goreleaser publish`.
 
 use super::helpers;
 use crate::pipeline;
-use anodize_core::context::{Context, ContextOptions};
-use anodize_core::log::{StageLogger, Verbosity};
+use anodizer_core::context::{Context, ContextOptions};
+use anodizer_core::log::{StageLogger, Verbosity};
 use anyhow::Result;
 use std::path::PathBuf;
 

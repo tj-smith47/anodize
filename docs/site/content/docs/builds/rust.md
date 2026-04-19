@@ -1,6 +1,6 @@
 +++
 title = "Rust Builds"
-description = "Configure how anodize compiles your Rust binaries"
+description = "Configure how anodizer compiles your Rust binaries"
 weight = 1
 template = "docs.html"
 +++

@@ -1,4 +1,4 @@
-//! `anodize bump` — bump crate versions with Conventional-Commit inference.
+//! `anodizer bump` — bump crate versions with Conventional-Commit inference.
 //!
 //! Scope (v1): see `.claude/plans/2026-04-18-bump-command.md`.
 
@@ -6,7 +6,7 @@ mod cargo_edit;
 mod inference;
 mod plan;
 
-use anodize_core::log::{StageLogger, Verbosity};
+use anodizer_core::log::{StageLogger, Verbosity};
 use anyhow::{Context as _, Result, bail};
 use std::path::PathBuf;
 
@@ -31,7 +31,7 @@ pub struct BumpOpts {
     pub debug: bool,
     pub quiet: bool,
     /// When true, refuse to bump any crate whose `crates[*].version` pin in
-    /// `.anodize.yaml` differs from the proposed next version. When false,
+    /// `.anodizer.yaml` differs from the proposed next version. When false,
     /// the same condition only logs a warning.
     pub strict: bool,
 }
@@ -50,7 +50,7 @@ pub fn run(opts: BumpOpts) -> Result<()> {
     }
 
     // Dirty-tree guard (Phase 7 will flesh out the prompt; guard is cheap here).
-    if !opts.allow_dirty && !opts.dry_run && anodize_core::git::is_git_dirty() {
+    if !opts.allow_dirty && !opts.dry_run && anodizer_core::git::is_git_dirty() {
         bail!("working tree has uncommitted changes — commit them or pass --allow-dirty");
     }
 
@@ -64,7 +64,7 @@ pub fn run(opts: BumpOpts) -> Result<()> {
         return Ok(());
     }
 
-    // Enforce `.anodize.yaml`'s `crates[*].version` pins. In strict mode this
+    // Enforce `.anodizer.yaml`'s `crates[*].version` pins. In strict mode this
     // is fatal; otherwise a warning. Runs BEFORE any output or prompt so the
     // user never confirms an invalid plan.
     enforce_version_pins(&workspace_root, &rows, &opts, &log)?;
@@ -107,7 +107,7 @@ pub fn run(opts: BumpOpts) -> Result<()> {
 
 fn discover_workspace_root(config_override: Option<&std::path::Path>) -> Result<PathBuf> {
     if let Some(p) = config_override {
-        // Config override points at .anodize.yaml; walk up until we find Cargo.toml.
+        // Config override points at .anodizer.yaml; walk up until we find Cargo.toml.
         if let Some(dir) = p.parent() {
             for ancestor in dir.ancestors() {
                 if ancestor.join("Cargo.toml").is_file() {
@@ -161,7 +161,7 @@ fn commit_plan(
         };
         let tag_prefix = format!("{}-v", row.crate_name);
         let from_tag = inference::find_last_tag_for_prefix(workspace_root, &tag_prefix)?;
-        let update = anodize_stage_changelog::render_crate_section(
+        let update = anodizer_stage_changelog::render_crate_section(
             workspace_root,
             &row.crate_name,
             &crate_dir,
@@ -171,7 +171,7 @@ fn commit_plan(
         .with_context(|| format!("failed to render changelog for {}", row.crate_name))?;
         let Some(update) = update else { continue };
         match update.insertion_mode {
-            anodize_stage_changelog::InsertionMode::Replace => {
+            anodizer_stage_changelog::InsertionMode::Replace => {
                 if let Some(parent) = update.file_path.parent() {
                     std::fs::create_dir_all(parent)
                         .with_context(|| format!("failed to create {}", parent.display()))?;
@@ -253,7 +253,7 @@ fn default_commit_message(rows: &[PlanRow]) -> String {
     }
 }
 
-/// Validate the plan against `crates[*].version` pins in `.anodize.yaml`.
+/// Validate the plan against `crates[*].version` pins in `.anodizer.yaml`.
 /// In strict mode any pin mismatch is fatal; otherwise a warning is logged
 /// and the bump proceeds.
 fn enforce_version_pins(
@@ -265,7 +265,7 @@ fn enforce_version_pins(
     let cfg_path = match opts.config_override.as_deref() {
         Some(p) => p.to_path_buf(),
         None => {
-            let candidate = workspace_root.join(".anodize.yaml");
+            let candidate = workspace_root.join(".anodizer.yaml");
             if !candidate.is_file() {
                 return Ok(());
             }

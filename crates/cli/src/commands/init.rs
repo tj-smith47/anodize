@@ -46,7 +46,7 @@ struct CrateInfo {
 // ---------------------------------------------------------------------------
 
 pub fn run() -> Result<()> {
-    let config_path = ".anodize.yaml";
+    let config_path = ".anodizer.yaml";
     if std::path::Path::new(config_path).exists() {
         anyhow::bail!("config file '{}' already exists", config_path);
     }
@@ -76,7 +76,7 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-/// Generate anodize.yaml content from a directory root.
+/// Generate anodizer.yaml content from a directory root.
 /// Exposed for testing.
 pub fn generate_config(root: &str) -> Result<String> {
     let root_path = Path::new(root);
@@ -249,7 +249,7 @@ fn topological_sort(crates: &[CrateInfo]) -> Vec<&CrateInfo> {
         .iter()
         .map(|c| (c.name.clone(), c.depends_on.clone()))
         .collect();
-    let sorted_names = anodize_core::util::topological_sort(&items);
+    let sorted_names = anodizer_core::util::topological_sort(&items);
 
     let name_to_crate: HashMap<&str, &CrateInfo> =
         crates.iter().map(|c| (c.name.as_str(), c)).collect();

@@ -5,10 +5,10 @@ use std::process::Command;
 
 use anyhow::{Context as _, Result};
 
-use anodize_core::artifact::{Artifact, ArtifactKind};
-use anodize_core::config::SrpmConfig;
-use anodize_core::context::Context;
-use anodize_core::stage::Stage;
+use anodizer_core::artifact::{Artifact, ArtifactKind};
+use anodizer_core::config::SrpmConfig;
+use anodizer_core::context::Context;
+use anodizer_core::stage::Stage;
 
 // ---------------------------------------------------------------------------
 // SrpmStage
@@ -309,8 +309,8 @@ mod tests {
     #[test]
     fn test_srpm_stage_skips_when_not_enabled() {
         let mut ctx = Context::new(
-            anodize_core::config::Config::default(),
-            anodize_core::context::ContextOptions::default(),
+            anodizer_core::config::Config::default(),
+            anodizer_core::context::ContextOptions::default(),
         );
         let stage = SrpmStage;
         // No srpm config → no-op
@@ -320,8 +320,8 @@ mod tests {
     #[test]
     fn test_srpm_stage_skips_when_disabled() {
         let mut ctx = Context::new(
-            anodize_core::config::Config::default(),
-            anodize_core::context::ContextOptions::default(),
+            anodizer_core::config::Config::default(),
+            anodizer_core::context::ContextOptions::default(),
         );
         ctx.config.srpm = Some(SrpmConfig {
             enabled: Some(false),
@@ -334,8 +334,8 @@ mod tests {
     #[test]
     fn test_srpm_requires_source_archive() {
         let mut ctx = Context::new(
-            anodize_core::config::Config::default(),
-            anodize_core::context::ContextOptions::default(),
+            anodizer_core::config::Config::default(),
+            anodizer_core::context::ContextOptions::default(),
         );
         ctx.config.srpm = Some(SrpmConfig {
             enabled: Some(true),
@@ -372,7 +372,7 @@ mod tests {
 
     #[test]
     fn test_srpm_config_parsing() {
-        use anodize_core::config::Config;
+        use anodizer_core::config::Config;
 
         let yaml = r#"
 project_name: test

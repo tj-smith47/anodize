@@ -23,13 +23,13 @@
 //!
 //! Arch translation tables match upstream byte-for-byte.
 
-use anodize_core::config::NfpmConfig;
+use anodizer_core::config::NfpmConfig;
 
 /// Input to the per-packager filename builders. Carries the full set of
 /// fields the upstream `ConventionalFileName` methods read from
-/// `nfpm.Info`, already resolved from the anodize `NfpmConfig`.
+/// `nfpm.Info`, already resolved from the anodizer `NfpmConfig`.
 ///
-/// `arch` uses anodize's Go-style naming (`amd64`, `arm64`, `armv7`,
+/// `arch` uses anodizer's Go-style naming (`amd64`, `arm64`, `armv7`,
 /// `armv6`, `386`, `mipsle`, `mips64le`, `ppc64le`, `s390`, `all`, ...)
 /// because the upstream translation tables are keyed by those strings.
 /// The per-format helpers translate to the packager-native arch inline.
@@ -354,7 +354,7 @@ mod tests {
 
     #[test]
     fn deb_armv7_is_armhf() {
-        // anodize "armv7" and upstream "arm7" both map to "armhf".
+        // anodizer "armv7" and upstream "arm7" both map to "armhf".
         assert_eq!(deb_filename(&base("armv7")), "myapp_1.2.3_armhf.deb");
         assert_eq!(deb_filename(&base("arm7")), "myapp_1.2.3_armhf.deb");
     }

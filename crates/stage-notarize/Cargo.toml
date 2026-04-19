@@ -1,14 +1,14 @@
 [package]
-name = "anodize-stage-notarize"
+name = "anodizer-stage-notarize"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "macOS code signing and notarization stage for anodize release automation"
+description = "macOS code signing and notarization stage for anodizer release automation"
 
 [dependencies]
-anodize-core.workspace = true
+anodizer-core.workspace = true
 anyhow.workspace = true
 sha2.workspace = true
 

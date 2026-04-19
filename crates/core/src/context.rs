@@ -188,7 +188,7 @@ impl Context {
         self.notified_deprecations.insert(property.to_string());
         self.deprecated = true;
         eprintln!(
-            "DEPRECATED: {} — see https://anodize.dev/deprecations#{}",
+            "DEPRECATED: {} — see https://anodizer.dev/deprecations#{}",
             message,
             property.replace('.', "-").to_lowercase()
         );

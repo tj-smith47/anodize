@@ -5,7 +5,7 @@ weight = 4
 template = "docs.html"
 +++
 
-Anodize generates Scoop JSON manifests and pushes them to your bucket repository.
+Anodizer generates Scoop JSON manifests and pushes them to your bucket repository.
 
 ## Minimal config
 

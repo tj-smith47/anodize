@@ -27,7 +27,7 @@ announce:
 
 ## How it works
 
-Anodize posts to LinkedIn via the v2 Share API. Each run:
+Anodizer posts to LinkedIn via the v2 Share API. Each run:
 
 1. Resolves the profile URN by calling `GET /v2/userinfo` (newer endpoint,
    reads the `sub` field). If that endpoint returns 403 Forbidden, it falls

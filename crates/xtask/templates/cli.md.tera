@@ -20,7 +20,7 @@ template = "docs.html"
 ## Commands
 {% for cmd in commands %}
 
-### `anodize {{ cmd.name }}`
+### `anodizer {{ cmd.name }}`
 
 {{ cmd.about }}
 {% if cmd.args | length > 0 %}

@@ -391,7 +391,7 @@ const KNOWN_GOOS: &[&str] = &[
 
 /// Validate that each crate's `release:` block configures at most one SCM
 /// backend. Matches GoReleaser release.go:41-53 `ErrMultipleReleases`, which
-/// errors at `Default()` time. Anodize dispatches on `ctx.token_type` at
+/// errors at `Default()` time. Anodizer dispatches on `ctx.token_type` at
 /// runtime so a silently-ignored extra backend is easy to miss.
 pub fn validate_release_backends(config: &Config) -> Result<(), String> {
     let check = |crate_name: &str, release: &ReleaseConfig| -> Result<(), String> {
@@ -482,7 +482,7 @@ pub fn validate_format_overrides(config: &Config) -> Result<(), String> {
 /// Environment file configuration.
 ///
 /// Accepts two forms:
-/// - **List form** (anodize extension): array of `.env` file paths loaded as KEY=VALUE.
+/// - **List form** (anodizer extension): array of `.env` file paths loaded as KEY=VALUE.
 ///   ```yaml
 ///   env_files:
 ///     - .env
@@ -607,26 +607,26 @@ pub fn load_token_files(
     let mut vars = std::collections::HashMap::new();
 
     // Per-token candidate paths. The user's explicit `github_token` / etc.
-    // config value wins if present; otherwise we try anodize-native first,
+    // config value wins if present; otherwise we try anodizer-native first,
     // then the goreleaser-compat path for users migrating in.
     let github_candidates: Vec<&str> = match config.github_token.as_deref() {
         Some(p) => vec![p],
         None => vec![
-            "~/.config/anodize/github_token",
+            "~/.config/anodizer/github_token",
             "~/.config/goreleaser/github_token",
         ],
     };
     let gitlab_candidates: Vec<&str> = match config.gitlab_token.as_deref() {
         Some(p) => vec![p],
         None => vec![
-            "~/.config/anodize/gitlab_token",
+            "~/.config/anodizer/gitlab_token",
             "~/.config/goreleaser/gitlab_token",
         ],
     };
     let gitea_candidates: Vec<&str> = match config.gitea_token.as_deref() {
         Some(p) => vec![p],
         None => vec![
-            "~/.config/anodize/gitea_token",
+            "~/.config/anodizer/gitea_token",
             "~/.config/goreleaser/gitea_token",
         ],
     };
@@ -902,7 +902,7 @@ pub struct CrateConfig {
     pub path: String,
     /// Git tag template used to tag and identify releases (supports templates).
     pub tag_template: String,
-    /// Pinned semver version. When set, `anodize bump --strict` refuses to
+    /// Pinned semver version. When set, `anodizer bump --strict` refuses to
     /// edit this crate's `Cargo.toml` to anything other than this value;
     /// without `--strict`, the bump proceeds with a warning. Lets a release
     /// captain freeze a crate's version while still running broad
@@ -1087,7 +1087,7 @@ pub struct BuildConfig {
 /// flat `hooks: Vec<String>` list for `before`/`after` lifecycle hooks).
 ///
 /// archive hooks in GoReleaser use `before`/`after`
-/// (not `pre`/`post`). Anodize accepts both spellings via serde aliases so
+/// (not `pre`/`post`). Anodizer accepts both spellings via serde aliases so
 /// configs copied from GoReleaser docs don't silently drop their hooks.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
@@ -1598,7 +1598,7 @@ pub struct ReleaseConfig {
     /// as the `tag_name` in the GitHub release API instead of the crate's
     /// `tag_template`. Useful in monorepo setups to strip a tag prefix
     /// (e.g. `"{{ .Tag }}"` to publish `v1.0.0` instead of `myapp/v1.0.0`).
-    /// This is a GoReleaser Pro feature provided for free by anodize.
+    /// This is a GoReleaser Pro feature provided for free by anodizer.
     pub tag: Option<String>,
 }
 
@@ -2000,16 +2000,16 @@ pub struct CommitAuthorConfig {
 }
 
 impl CommitAuthorConfig {
-    /// Fill in the anodize default name/email when either field is empty.
+    /// Fill in the anodizer default name/email when either field is empty.
     /// Matches GoReleaser's `commitauthor.Default(brew.CommitAuthor)` which
     /// runs during the Default pass — so validation messages that reference
     /// commit-author identity see non-empty strings rather than blanks.
     pub fn normalize_defaults(&mut self) {
         if self.name.as_deref().is_none_or(str::is_empty) {
-            self.name = Some("anodize".to_string());
+            self.name = Some("anodizer".to_string());
         }
         if self.email.as_deref().is_none_or(str::is_empty) {
-            self.email = Some("bot@anodize.dev".to_string());
+            self.email = Some("bot@anodizer.dev".to_string());
         }
     }
 }
@@ -4826,8 +4826,8 @@ pub struct WebhookConfig {
     pub endpoint_url: Option<String>,
     /// Custom HTTP headers to include in the request.
     ///
-    /// Precedence — **anodize diverges from GoReleaser here**:
-    /// - anodize: a config-supplied `Authorization` header wins over the
+    /// Precedence — **anodizer diverges from GoReleaser here**:
+    /// - anodizer: a config-supplied `Authorization` header wins over the
     ///   `BASIC_AUTH_HEADER_VALUE` / `BEARER_TOKEN_HEADER_VALUE` env var.
     /// - GoReleaser (webhook.go:104-115): env-supplied `Authorization` is
     ///   appended FIRST; most servers honour the first occurrence, so the
@@ -5229,7 +5229,7 @@ pub struct HooksConfig {
     /// Commands to run before the pipeline or stage starts. Matches GoReleaser
     /// `before.hooks` canonically.
     pub hooks: Option<Vec<HookEntry>>,
-    /// Commands to run after the pipeline or stage completes. Anodize extension
+    /// Commands to run after the pipeline or stage completes. Anodizer extension
     /// (GoReleaser has no top-level `after:` block).
     pub post: Option<Vec<HookEntry>>,
 }
@@ -5290,7 +5290,7 @@ impl<'de> Deserialize<'de> for HookEntry {
 
 /// Git-level tag discovery and sorting settings.
 ///
-/// Controls how anodize discovers and orders tags when determining the current
+/// Controls how anodizer discovers and orders tags when determining the current
 /// and previous versions. This is separate from `TagConfig`, which controls
 /// version *bumping* logic.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -5391,13 +5391,13 @@ pub struct TagConfig {
     pub git_api_tagging: Option<bool>,
     /// When true, print verbose tag calculation output.
     pub verbose: Option<bool>,
-    /// Commands to run before `anodize tag` creates the tag. Useful for updating
+    /// Commands to run before `anodizer tag` creates the tag. Useful for updating
     /// lockfiles or committing sibling changes that must be part of the tagged
-    /// commit. Env: `ANODIZE_CURRENT_TAG`, `ANODIZE_PREVIOUS_TAG` are set;
+    /// commit. Env: `ANODIZER_CURRENT_TAG`, `ANODIZER_PREVIOUS_TAG` are set;
     /// template vars `{{ .Tag }}`, `{{ .PreviousTag }}`, `{{ .Version }}`,
     /// `{{ .PrefixedTag }}` are available.
     pub tag_pre_hooks: Option<Vec<HookEntry>>,
-    /// Commands to run after `anodize tag` successfully creates and pushes the
+    /// Commands to run after `anodizer tag` successfully creates and pushes the
     /// tag. Env and template vars same as `tag_pre_hooks`.
     pub tag_post_hooks: Option<Vec<HookEntry>>,
 }
@@ -6257,7 +6257,7 @@ crates:
 project_name: test
 changelog:
   header: "# My Release Notes"
-  footer: "---\nGenerated by anodize"
+  footer: "---\nGenerated by anodizer"
 crates:
   - name: a
     path: "."
@@ -6266,7 +6266,7 @@ crates:
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let cl = config.changelog.as_ref().unwrap();
         assert_eq!(cl.header, Some("# My Release Notes".to_string()));
-        assert_eq!(cl.footer, Some("---\nGenerated by anodize".to_string()));
+        assert_eq!(cl.footer, Some("---\nGenerated by anodizer".to_string()));
     }
 
     #[test]
@@ -6431,7 +6431,7 @@ crates:
     tag_template: "v{{ .Version }}"
     release:
       header: "## Custom Header"
-      footer: "---\nPowered by anodize"
+      footer: "---\nPowered by anodizer"
 "###;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let release = config.crates[0].release.as_ref().unwrap();
@@ -6441,7 +6441,9 @@ crates:
         );
         assert_eq!(
             release.footer,
-            Some(ContentSource::Inline("---\nPowered by anodize".to_string()))
+            Some(ContentSource::Inline(
+                "---\nPowered by anodizer".to_string()
+            ))
         );
     }
 
@@ -8743,23 +8745,23 @@ crates: []
         let mut f = std::fs::File::create(&env_path).unwrap();
         writeln!(f, "# comment line").unwrap();
         writeln!(f).unwrap();
-        writeln!(f, "TEST_ANODIZE_KEY=hello_world").unwrap();
-        writeln!(f, "TEST_ANODIZE_QUOTED=\"with quotes\"").unwrap();
-        writeln!(f, "TEST_ANODIZE_SINGLE='single_quoted'").unwrap();
-        writeln!(f, "export TEST_ANODIZE_EXPORT=exported_val").unwrap();
+        writeln!(f, "TEST_ANODIZER_KEY=hello_world").unwrap();
+        writeln!(f, "TEST_ANODIZER_QUOTED=\"with quotes\"").unwrap();
+        writeln!(f, "TEST_ANODIZER_SINGLE='single_quoted'").unwrap();
+        writeln!(f, "export TEST_ANODIZER_EXPORT=exported_val").unwrap();
         drop(f);
 
         let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Normal);
         let vars = load_env_files(&[env_path.to_string_lossy().to_string()], &log, false).unwrap();
-        assert_eq!(vars.get("TEST_ANODIZE_KEY").unwrap(), "hello_world");
-        assert_eq!(vars.get("TEST_ANODIZE_QUOTED").unwrap(), "with quotes");
+        assert_eq!(vars.get("TEST_ANODIZER_KEY").unwrap(), "hello_world");
+        assert_eq!(vars.get("TEST_ANODIZER_QUOTED").unwrap(), "with quotes");
         assert_eq!(
-            vars.get("TEST_ANODIZE_SINGLE").unwrap(),
+            vars.get("TEST_ANODIZER_SINGLE").unwrap(),
             "single_quoted",
             "single-quoted values should have quotes stripped"
         );
         assert_eq!(
-            vars.get("TEST_ANODIZE_EXPORT").unwrap(),
+            vars.get("TEST_ANODIZER_EXPORT").unwrap(),
             "exported_val",
             "export prefix should be stripped"
         );
@@ -8772,7 +8774,7 @@ crates: []
         let env_path = dir.path().join(".env-edge");
         let mut f = std::fs::File::create(&env_path).unwrap();
         // Single quote char as value should not panic
-        writeln!(f, "TEST_ANODIZE_SINGLEQ=\"").unwrap();
+        writeln!(f, "TEST_ANODIZER_SINGLEQ=\"").unwrap();
         // Empty key line (=value) should be skipped
         writeln!(f, "=orphan_value").unwrap();
         // Line without = should be skipped with warning
@@ -8783,7 +8785,7 @@ crates: []
         let vars = load_env_files(&[env_path.to_string_lossy().to_string()], &log, false).unwrap();
         // The single-quote value should be kept as-is (not stripped, length < 2 for
         // matching quotes)
-        assert_eq!(vars.get("TEST_ANODIZE_SINGLEQ").unwrap(), "\"");
+        assert_eq!(vars.get("TEST_ANODIZER_SINGLEQ").unwrap(), "\"");
         // Empty key and no-equals lines should have been skipped
         assert!(!vars.contains_key(""), "empty key should be skipped");
     }
@@ -8792,7 +8794,7 @@ crates: []
     fn test_load_env_files_nonexistent_skips_with_warning() {
         let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Normal);
         let result = load_env_files(
-            &["/tmp/nonexistent_anodize_env_file_12345".to_string()],
+            &["/tmp/nonexistent_anodizer_env_file_12345".to_string()],
             &log,
             false,
         );
@@ -8805,7 +8807,7 @@ crates: []
     fn test_load_env_files_nonexistent_strict_mode_errors() {
         let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Normal);
         let result = load_env_files(
-            &["/tmp/nonexistent_anodize_env_file_12345".to_string()],
+            &["/tmp/nonexistent_anodizer_env_file_12345".to_string()],
             &log,
             true,
         );

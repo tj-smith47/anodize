@@ -1,4 +1,4 @@
-//! Conventional-Commit → semver-level inference for `anodize bump`.
+//! Conventional-Commit → semver-level inference for `anodizer bump`.
 //!
 //! Rules (matches the spec in `.claude/plans/2026-04-18-bump-command.md`):
 //!   - `BREAKING CHANGE:` / `BREAKING-CHANGE:` footer, or `!` after the type → major
@@ -23,9 +23,9 @@ pub struct InferenceResult {
 /// Infer the per-crate bump level from commits since the crate's last tag.
 ///
 /// `tag_prefix_override` is the prefix to scan for tags (typically derived
-/// from the crate's `.anodize.yaml` `tag_template`). When `None`, the
+/// from the crate's `.anodizer.yaml` `tag_template`). When `None`, the
 /// fallback `<crate-name>-v` convention is used — handy for workspaces
-/// that have no `.anodize.yaml` at all.
+/// that have no `.anodizer.yaml` at all.
 pub fn infer_for_crate(
     workspace_root: &std::path::Path,
     m: &MemberInfo,

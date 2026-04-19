@@ -1,5 +1,5 @@
 [package]
-name = "anodize"
+name = "anodizer"
 description = "A Rust-native release automation tool inspired by GoReleaser"
 version.workspace = true
 edition.workspace = true
@@ -10,40 +10,40 @@ keywords.workspace = true
 categories.workspace = true
 
 [lib]
-name = "anodize_cli"
+name = "anodizer_cli"
 path = "src/lib.rs"
 
 [[bin]]
-name = "anodize"
+name = "anodizer"
 path = "src/main.rs"
 
 [dependencies]
-anodize-core.workspace = true
-anodize-stage-build.workspace = true
-anodize-stage-archive.workspace = true
-anodize-stage-nfpm.workspace = true
-anodize-stage-checksum.workspace = true
-anodize-stage-changelog.workspace = true
-anodize-stage-release.workspace = true
-anodize-stage-publish.workspace = true
-anodize-stage-docker.workspace = true
-anodize-stage-sign.workspace = true
-anodize-stage-announce.workspace = true
-anodize-stage-source.workspace = true
-anodize-stage-upx.workspace = true
-anodize-stage-snapcraft.workspace = true
-anodize-stage-dmg.workspace = true
-anodize-stage-msi.workspace = true
-anodize-stage-pkg.workspace = true
-anodize-stage-blob.workspace = true
-anodize-stage-nsis.workspace = true
-anodize-stage-appbundle.workspace = true
-anodize-stage-flatpak.workspace = true
-anodize-stage-notarize.workspace = true
-anodize-stage-templatefiles.workspace = true
-anodize-stage-makeself.workspace = true
-anodize-stage-srpm.workspace = true
-anodize-stage-sbom.workspace = true
+anodizer-core.workspace = true
+anodizer-stage-build.workspace = true
+anodizer-stage-archive.workspace = true
+anodizer-stage-nfpm.workspace = true
+anodizer-stage-checksum.workspace = true
+anodizer-stage-changelog.workspace = true
+anodizer-stage-release.workspace = true
+anodizer-stage-publish.workspace = true
+anodizer-stage-docker.workspace = true
+anodizer-stage-sign.workspace = true
+anodizer-stage-announce.workspace = true
+anodizer-stage-source.workspace = true
+anodizer-stage-upx.workspace = true
+anodizer-stage-snapcraft.workspace = true
+anodizer-stage-dmg.workspace = true
+anodizer-stage-msi.workspace = true
+anodizer-stage-pkg.workspace = true
+anodizer-stage-blob.workspace = true
+anodizer-stage-nsis.workspace = true
+anodizer-stage-appbundle.workspace = true
+anodizer-stage-flatpak.workspace = true
+anodizer-stage-notarize.workspace = true
+anodizer-stage-templatefiles.workspace = true
+anodizer-stage-makeself.workspace = true
+anodizer-stage-srpm.workspace = true
+anodizer-stage-sbom.workspace = true
 anyhow.workspace = true
 toml_edit.workspace = true
 chrono.workspace = true
@@ -64,6 +64,6 @@ tempfile.workspace = true
 toml.workspace = true
 
 [dev-dependencies]
-anodize-core = { workspace = true, features = ["test-helpers"] }
+anodizer-core = { workspace = true, features = ["test-helpers"] }
 serial_test.workspace = true
 serde_yaml_ng.workspace = true

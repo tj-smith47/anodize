@@ -34,7 +34,7 @@ status.
 
 ## Empty server handling
 
-If `server` renders to an empty string, anodize logs a warning and skips the
+If `server` renders to an empty string, anodizer logs a warning and skips the
 Mastodon announcement without failing the pipeline.
 
 ## Obtaining credentials

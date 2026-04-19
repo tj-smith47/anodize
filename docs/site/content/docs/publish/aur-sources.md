@@ -5,7 +5,7 @@ weight = 81
 template = "docs.html"
 +++
 
-Anodize can generate and publish source-based AUR packages that build your project from source using `cargo build`. This is separate from the [AUR binary packages](/docs/publish/aur/) which distribute pre-built binaries.
+Anodizer can generate and publish source-based AUR packages that build your project from source using `cargo build`. This is separate from the [AUR binary packages](/docs/publish/aur/) which distribute pre-built binaries.
 
 ## Minimal config
 

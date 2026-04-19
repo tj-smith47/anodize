@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
-use anodize_core::config::StringOrBool;
-use anodize_core::context::Context;
-use anodize_core::stage::Stage;
+use anodizer_core::config::StringOrBool;
+use anodizer_core::context::Context;
+use anodizer_core::stage::Stage;
 use anyhow::Result;
 
 pub mod bluesky;
@@ -162,8 +162,8 @@ impl Stage for AnnounceStage {
                     }
                 };
                 let message = render_message(ctx, cfg.message_template.as_deref())?;
-                // Default author to "anodize" (GoReleaser defaults to "GoReleaser").
-                let author = ctx.render_template_opt(cfg.author.as_deref().or(Some("anodize")))?;
+                // Default author to "anodizer" (GoReleaser defaults to "GoReleaser").
+                let author = ctx.render_template_opt(cfg.author.as_deref().or(Some("anodizer")))?;
                 // Color is a string that may contain template expressions; render
                 // and parse to u32 at runtime.
                 let color: Option<u32> = match cfg.color.as_deref() {
@@ -260,9 +260,9 @@ impl Stage for AnnounceStage {
                 };
                 let message = render_message(ctx, cfg.message_template.as_deref())?;
                 let channel = ctx.render_template_opt(cfg.channel.as_deref())?;
-                // Default username to "anodize" (GoReleaser defaults to "GoReleaser").
+                // Default username to "anodizer" (GoReleaser defaults to "GoReleaser").
                 let username =
-                    ctx.render_template_opt(cfg.username.as_deref().or(Some("anodize")))?;
+                    ctx.render_template_opt(cfg.username.as_deref().or(Some("anodizer")))?;
                 let icon_emoji = cfg.icon_emoji.clone();
                 let icon_url = cfg.icon_url.clone();
                 // Convert typed blocks/attachments to serde_json::Value for template rendering
@@ -338,7 +338,7 @@ impl Stage for AnnounceStage {
 
                 headers
                     .entry("User-Agent".to_string())
-                    .or_insert_with(|| anodize_core::http::USER_AGENT.to_string());
+                    .or_insert_with(|| anodizer_core::http::USER_AGENT.to_string());
 
                 // GoReleaser defaults to "application/json; charset=utf-8".
                 let content_type = cfg
@@ -461,7 +461,7 @@ impl Stage for AnnounceStage {
                 let title = Some(ctx.render_template(title_template)?);
                 // Default color to "#2D313E" (GoReleaser default).
                 // GoReleaser defaults icon_url to "https://goreleaser.com/static/avatar.png".
-                // We omit icon_url until anodize has its own hosted avatar — a 404 URL would
+                // We omit icon_url until anodizer has its own hosted avatar — a 404 URL would
                 // be worse than no icon.  Teams Adaptive Cards work fine without an icon.
                 let color_val = cfg.color.clone().unwrap_or_else(|| "#2D313E".to_string());
                 let icon_url = ctx.render_template_opt(cfg.icon_url.as_deref())?;
@@ -493,9 +493,9 @@ impl Stage for AnnounceStage {
                 };
                 let message = render_message(ctx, cfg.message_template.as_deref())?;
                 let channel = ctx.render_template_opt(cfg.channel.as_deref())?;
-                // Default username to "anodize" (GoReleaser defaults to "GoReleaser").
+                // Default username to "anodizer" (GoReleaser defaults to "GoReleaser").
                 let username =
-                    ctx.render_template_opt(cfg.username.as_deref().or(Some("anodize")))?;
+                    ctx.render_template_opt(cfg.username.as_deref().or(Some("anodizer")))?;
                 let icon_url = ctx.render_template_opt(cfg.icon_url.as_deref())?;
                 let icon_emoji = ctx.render_template_opt(cfg.icon_emoji.as_deref())?;
                 // Default color to "#2D313E" (GoReleaser default).
@@ -503,7 +503,7 @@ impl Stage for AnnounceStage {
                 // `MattermostAnnounce` config. GoReleaser's
                 // mattermost.go:48-49,82 mistakenly reads `TeamsAnnounce.Color`
                 // — a cross-pipe read that ignores user-supplied
-                // `mattermost.color`. This is intentional in anodize; do NOT
+                // `mattermost.color`. This is intentional in anodizer; do NOT
                 // "correct" it to read from a Teams config during a future
                 // parity audit.
                 let color_val = cfg.color.clone().unwrap_or_else(|| "#2D313E".to_string());
@@ -853,13 +853,13 @@ impl Stage for AnnounceStage {
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
-    use anodize_core::config::{
+    use anodizer_core::config::{
         AnnounceConfig, BlueskyAnnounce, Config, DiscordAnnounce, DiscourseAnnounce, EmailAnnounce,
         LinkedInAnnounce, MastodonAnnounce, MattermostAnnounce, OpenCollectiveAnnounce,
         RedditAnnounce, SlackAnnounce, SlackBlock, SlackTextObject, StringOrBool, TeamsAnnounce,
         TelegramAnnounce, TwitterAnnounce, WebhookConfig,
     };
-    use anodize_core::context::{Context, ContextOptions};
+    use anodizer_core::context::{Context, ContextOptions};
     use serial_test::serial;
 
     fn make_ctx(announce: Option<AnnounceConfig>) -> Context {

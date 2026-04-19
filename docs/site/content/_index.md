@@ -1,4 +1,4 @@
 +++
-title = "Anodize"
+title = "Anodizer"
 template = "index.html"
 +++

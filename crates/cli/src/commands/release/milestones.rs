@@ -1,7 +1,7 @@
-use anodize_core::config::Config;
-use anodize_core::context::Context;
-use anodize_core::log::StageLogger;
-use anodize_core::scm::ScmTokenType;
+use anodizer_core::config::Config;
+use anodizer_core::context::Context;
+use anodizer_core::log::StageLogger;
+use anodizer_core::scm::ScmTokenType;
 use anyhow::{Context as _, Result};
 
 /// Close milestones on the VCS provider after a release.
@@ -10,7 +10,7 @@ use anyhow::{Context as _, Result};
 /// resolves the repo owner/name, and calls the GitHub/GitLab/Gitea API to
 /// close the milestone. Errors are logged as warnings unless `fail_on_error` is set.
 pub(super) fn close_milestones(
-    milestones: &[anodize_core::config::MilestoneConfig],
+    milestones: &[anodizer_core::config::MilestoneConfig],
     ctx: &mut Context,
     dry_run: bool,
     log: &StageLogger,
@@ -106,7 +106,7 @@ pub(super) fn close_milestones(
 }
 
 fn resolve_milestone_repo(
-    milestone_cfg: &anodize_core::config::MilestoneConfig,
+    milestone_cfg: &anodizer_core::config::MilestoneConfig,
     config: &Config,
     token_type: ScmTokenType,
 ) -> (String, String) {
@@ -164,7 +164,7 @@ fn resolve_milestone_repo(
     // milestone.go:30-41 `ExtractRepoFromConfig`). Lets top-level `milestones:`
     // blocks work without any per-crate release config when the `origin`
     // remote already points at the right owner/name.
-    if let Ok(pair) = anodize_core::git::detect_owner_repo() {
+    if let Ok(pair) = anodizer_core::git::detect_owner_repo() {
         return pair;
     }
 
@@ -200,7 +200,7 @@ fn close_milestone_github(
                 .get(&url)
                 .header("Authorization", format!("Bearer {}", token))
                 .header("Accept", "application/vnd.github+json")
-                .header("User-Agent", anodize_core::http::USER_AGENT)
+                .header("User-Agent", anodizer_core::http::USER_AGENT)
                 .send()
                 .await
                 .context("milestone: list milestones request failed")?;
@@ -257,7 +257,7 @@ fn close_milestone_github(
             .patch(&close_url)
             .header("Authorization", format!("Bearer {}", token))
             .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", anodize_core::http::USER_AGENT)
+            .header("User-Agent", anodizer_core::http::USER_AGENT)
             .json(&serde_json::json!({ "state": "closed" }))
             .send()
             .await
@@ -273,11 +273,11 @@ fn close_milestone_github(
     })
 }
 
-use anodize_core::url::percent_encode_unreserved as url_encode;
+use anodizer_core::url::percent_encode_unreserved as url_encode;
 
 /// Resolve the API base URL for milestone operations on GitLab/Gitea.
 fn resolve_milestone_api_url(
-    _milestone_cfg: &anodize_core::config::MilestoneConfig,
+    _milestone_cfg: &anodizer_core::config::MilestoneConfig,
     config: &Config,
 ) -> Option<String> {
     // Check top-level gitlab_urls / gitea_urls config
@@ -326,7 +326,7 @@ fn close_milestone_gitlab(
         let resp = client
             .get(&url)
             .header("PRIVATE-TOKEN", token)
-            .header("User-Agent", anodize_core::http::USER_AGENT)
+            .header("User-Agent", anodizer_core::http::USER_AGENT)
             .send()
             .await
             .context("milestone: GitLab list milestones failed")?;
@@ -368,7 +368,7 @@ fn close_milestone_gitlab(
         let resp = client
             .put(&close_url)
             .header("PRIVATE-TOKEN", token)
-            .header("User-Agent", anodize_core::http::USER_AGENT)
+            .header("User-Agent", anodizer_core::http::USER_AGENT)
             .json(&serde_json::json!({ "state_event": "close" }))
             .send()
             .await
@@ -411,7 +411,7 @@ fn close_milestone_gitea(
         let resp = client
             .get(&url)
             .header("Authorization", format!("token {}", token))
-            .header("User-Agent", anodize_core::http::USER_AGENT)
+            .header("User-Agent", anodizer_core::http::USER_AGENT)
             .send()
             .await
             .context("milestone: Gitea list milestones failed")?;
@@ -453,7 +453,7 @@ fn close_milestone_gitea(
         let resp = client
             .patch(&close_url)
             .header("Authorization", format!("token {}", token))
-            .header("User-Agent", anodize_core::http::USER_AGENT)
+            .header("User-Agent", anodizer_core::http::USER_AGENT)
             .json(&serde_json::json!({ "state": "closed", "title": milestone_name }))
             .send()
             .await

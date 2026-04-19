@@ -5,7 +5,7 @@ weight = 7
 template = "docs.html"
 +++
 
-Anodize generates Arch Linux `PKGBUILD` and `.SRCINFO` files and pushes them to the [Arch User Repository](https://aur.archlinux.org/) via SSH. Two package types are supported:
+Anodizer generates Arch Linux `PKGBUILD` and `.SRCINFO` files and pushes them to the [Arch User Repository](https://aur.archlinux.org/) via SSH. Two package types are supported:
 
 - **Binary packages** (`-bin`) install prebuilt binaries from your release archives. Configured via `publish.aur`.
 - **Source packages** build from source using `cargo build`. Configured via `publish.aur_source` (per-crate) or the top-level `aur_sources` array (project-wide).
@@ -80,7 +80,7 @@ crates:
 
 ### Generated PKGBUILD
 
-Anodize generates a PKGBUILD with:
+Anodizer generates a PKGBUILD with:
 - Per-architecture source arrays (`source_x86_64`, `source_aarch64`, etc.) with SHA-256 checksums
 - Automatic architecture detection from your Linux build artifacts (`x86_64`, `aarch64`, `i686`, `armv7h`)
 - Version strings with hyphens replaced by underscores (AUR `pkgver` requirement)
@@ -246,11 +246,11 @@ publish:
     git_ssh_command: "ssh -i /path/to/key -o StrictHostKeyChecking=no"
 ```
 
-If neither `private_key` nor `git_ssh_command` is set, Anodize uses the system default SSH configuration (e.g. `~/.ssh/config`, ssh-agent).
+If neither `private_key` nor `git_ssh_command` is set, Anodizer uses the system default SSH configuration (e.g. `~/.ssh/config`, ssh-agent).
 
 ## `skip_upload` behavior
 
-The `skip_upload` field controls whether Anodize pushes to the AUR git repo:
+The `skip_upload` field controls whether Anodizer pushes to the AUR git repo:
 
 | Value | Behavior |
 |-------|----------|

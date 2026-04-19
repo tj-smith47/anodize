@@ -21,9 +21,9 @@ announce:
 
 ### SMTP delivery
 
-Email is sent by piping an RFC 2822 message to a local mail transfer agent. Anodize tries `sendmail -t` first and falls back to `msmtp -t` if sendmail is not found. Both read recipients from the message headers.
+Email is sent by piping an RFC 2822 message to a local mail transfer agent. Anodizer tries `sendmail -t` first and falls back to `msmtp -t` if sendmail is not found. Both read recipients from the message headers.
 
-Make sure one of these programs is installed and configured on the machine that runs anodize (your CI runner, for example). For lightweight setups, [msmtp](https://marlam.de/msmtp/) works well with a simple `~/.msmtprc` pointing at your SMTP relay.
+Make sure one of these programs is installed and configured on the machine that runs anodizer (your CI runner, for example). For lightweight setups, [msmtp](https://marlam.de/msmtp/) works well with a simple `~/.msmtprc` pointing at your SMTP relay.
 
 ### Templates
 

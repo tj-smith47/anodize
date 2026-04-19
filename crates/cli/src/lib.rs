@@ -3,7 +3,7 @@ use clap_complete::Shell;
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "anodize", version, about = "Release Rust projects with ease")]
+#[command(name = "anodizer", version, about = "Release Rust projects with ease")]
 pub struct Cli {
     #[arg(
         long,
@@ -54,7 +54,7 @@ pub enum Commands {
         skip: Vec<String>,
         #[arg(
             long,
-            help = "GitHub token (overrides ANODIZE_GITHUB_TOKEN / GITHUB_TOKEN env vars)"
+            help = "GitHub token (overrides ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN env vars)"
         )]
         token: Option<String>,
         #[arg(
@@ -183,7 +183,7 @@ pub enum Commands {
     Healthcheck,
     /// Generate man pages to stdout
     Man,
-    /// Output JSON Schema for .anodize.yaml
+    /// Output JSON Schema for .anodizer.yaml
     Jsonschema,
     /// Resolve a git tag to its matching crate in the config
     ResolveTag {
@@ -194,8 +194,8 @@ pub enum Commands {
     },
     /// Emit the configured build targets as a GitHub Actions matrix.
     ///
-    /// Derives `{os, target, artifact}` entries from `.anodize.yaml`. Used by
-    /// `tj-smith47/anodize-action`'s `split-matrix` output to feed a
+    /// Derives `{os, target, artifact}` entries from `.anodizer.yaml`. Used by
+    /// `tj-smith47/anodizer-action`'s `split-matrix` output to feed a
     /// `strategy.matrix` dynamically (via `fromJson`).
     Targets {
         #[arg(long, help = "Output as JSON (include-form matrix)")]
@@ -233,7 +233,7 @@ pub enum Commands {
         skip: Vec<String>,
         #[arg(
             long,
-            help = "GitHub token (overrides ANODIZE_GITHUB_TOKEN / GITHUB_TOKEN env vars)"
+            help = "GitHub token (overrides ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN env vars)"
         )]
         token: Option<String>,
     },
@@ -243,7 +243,7 @@ pub enum Commands {
         dry_run: bool,
         #[arg(
             long,
-            help = "GitHub token (overrides ANODIZE_GITHUB_TOKEN / GITHUB_TOKEN env vars)"
+            help = "GitHub token (overrides ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN env vars)"
         )]
         token: Option<String>,
         #[arg(long, help = "Custom dist directory (overrides config)")]
@@ -316,7 +316,7 @@ pub enum Commands {
         dist: Option<PathBuf>,
         #[arg(
             long,
-            help = "GitHub token (overrides ANODIZE_GITHUB_TOKEN / GITHUB_TOKEN env vars)"
+            help = "GitHub token (overrides ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN env vars)"
         )]
         token: Option<String>,
         #[arg(long, value_delimiter = ',', help = "Skip stages (comma-separated)")]
@@ -325,9 +325,9 @@ pub enum Commands {
 }
 
 /// Detect the host target triple by parsing `rustc -vV` output.
-/// Delegates to `anodize_core::partial::detect_host_target()`.
+/// Delegates to `anodizer_core::partial::detect_host_target()`.
 pub fn detect_host_target() -> anyhow::Result<String> {
-    anodize_core::partial::detect_host_target()
+    anodizer_core::partial::detect_host_target()
 }
 
 /// Return a sensible default parallelism value (number of logical CPUs, minimum 1).

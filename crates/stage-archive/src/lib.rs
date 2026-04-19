@@ -8,15 +8,15 @@ use chrono::DateTime;
 use flate2::Compression;
 use flate2::write::GzEncoder;
 
-use anodize_core::artifact::{Artifact, ArtifactKind, matches_id_filter};
-use anodize_core::config::{
+use anodizer_core::artifact::{Artifact, ArtifactKind, matches_id_filter};
+use anodizer_core::config::{
     ArchiveConfig, ArchiveFileSpec, ArchivesConfig, FormatOverride, VALID_ARCHIVE_FORMATS,
     parse_octal_mode,
 };
-use anodize_core::context::Context;
-use anodize_core::hooks::run_hooks;
-use anodize_core::stage::Stage;
-use anodize_core::target::map_target;
+use anodizer_core::context::Context;
+use anodizer_core::hooks::run_hooks;
+use anodizer_core::stage::Stage;
+use anodizer_core::target::map_target;
 
 // ---------------------------------------------------------------------------
 // parse_mtime  (helper)
@@ -40,7 +40,7 @@ fn parse_mtime(s: &str) -> Option<u64> {
 /// Apply `ArchiveFileInfo` overrides (mode, owner, group) to a tar header.
 fn apply_file_info_to_header(
     header: &mut tar::Header,
-    info: &anodize_core::config::ArchiveFileInfo,
+    info: &anodizer_core::config::ArchiveFileInfo,
 ) {
     if let Some(mode_str) = &info.mode
         && let Some(mode) = parse_octal_mode(mode_str)
@@ -74,7 +74,7 @@ fn append_tar_entry<W: std::io::Write>(
     src: &Path,
     archive_name: &Path,
     mtime: Option<u64>,
-    file_info: Option<&anodize_core::config::ArchiveFileInfo>,
+    file_info: Option<&anodizer_core::config::ArchiveFileInfo>,
 ) -> Result<()> {
     if mtime.is_some() || file_info.is_some() {
         let metadata =
@@ -121,7 +121,7 @@ fn write_tar_entries<W: std::io::Write>(
     base_dir: Option<&Path>,
     wrap_dir: Option<&str>,
     mtime: Option<u64>,
-    file_info: Option<&anodize_core::config::ArchiveFileInfo>,
+    file_info: Option<&anodizer_core::config::ArchiveFileInfo>,
     label: &str,
 ) -> Result<()> {
     for &src in files {
@@ -151,7 +151,7 @@ pub fn create_tar_gz(
     base_dir: Option<&Path>,
     wrap_dir: Option<&str>,
     mtime: Option<u64>,
-    file_info: Option<&anodize_core::config::ArchiveFileInfo>,
+    file_info: Option<&anodizer_core::config::ArchiveFileInfo>,
 ) -> Result<()> {
     let out_file =
         File::create(output).with_context(|| format!("create tar.gz: {}", output.display()))?;
@@ -170,7 +170,7 @@ pub fn create_tar_xz(
     base_dir: Option<&Path>,
     wrap_dir: Option<&str>,
     mtime: Option<u64>,
-    file_info: Option<&anodize_core::config::ArchiveFileInfo>,
+    file_info: Option<&anodizer_core::config::ArchiveFileInfo>,
 ) -> Result<()> {
     let out_file =
         File::create(output).with_context(|| format!("create tar.xz: {}", output.display()))?;
@@ -189,7 +189,7 @@ pub fn create_tar_zst(
     base_dir: Option<&Path>,
     wrap_dir: Option<&str>,
     mtime: Option<u64>,
-    file_info: Option<&anodize_core::config::ArchiveFileInfo>,
+    file_info: Option<&anodizer_core::config::ArchiveFileInfo>,
 ) -> Result<()> {
     let out_file =
         File::create(output).with_context(|| format!("create tar.zst: {}", output.display()))?;
@@ -213,7 +213,7 @@ pub fn create_tar(
     base_dir: Option<&Path>,
     wrap_dir: Option<&str>,
     mtime: Option<u64>,
-    file_info: Option<&anodize_core::config::ArchiveFileInfo>,
+    file_info: Option<&anodizer_core::config::ArchiveFileInfo>,
 ) -> Result<()> {
     let out_file =
         File::create(output).with_context(|| format!("create tar: {}", output.display()))?;
@@ -254,7 +254,7 @@ pub fn create_zip(
     files: &[&Path],
     output: &Path,
     wrap_dir: Option<&str>,
-    file_info: Option<&anodize_core::config::ArchiveFileInfo>,
+    file_info: Option<&anodizer_core::config::ArchiveFileInfo>,
 ) -> Result<()> {
     let out_file =
         File::create(output).with_context(|| format!("create zip: {}", output.display()))?;
@@ -383,10 +383,10 @@ fn longest_common_prefix(strs: &[String]) -> String {
 /// engine (archivefiles.go `tmplInfo()`). `mode` is an octal literal and is
 /// passed through unchanged.
 fn render_file_info(
-    info: &anodize_core::config::ArchiveFileInfo,
+    info: &anodizer_core::config::ArchiveFileInfo,
     ctx: &Context,
-) -> Result<anodize_core::config::ArchiveFileInfo> {
-    Ok(anodize_core::config::ArchiveFileInfo {
+) -> Result<anodizer_core::config::ArchiveFileInfo> {
+    Ok(anodizer_core::config::ArchiveFileInfo {
         owner: info
             .owner
             .as_deref()
@@ -417,7 +417,7 @@ pub struct ResolvedExtraFile {
     /// When Some, use this path inside the archive instead of the filename.
     pub dst: Option<String>,
     /// File metadata to apply to the archive entry.
-    pub info: Option<anodize_core::config::ArchiveFileInfo>,
+    pub info: Option<anodizer_core::config::ArchiveFileInfo>,
     /// When true, strip the parent directory from the source path so the file
     /// is placed at the archive root (or directly under wrap_in_directory).
     pub strip_parent: bool,
@@ -631,7 +631,7 @@ struct ArchiveEntry {
     /// Name inside the archive (may differ from src filename due to dst override).
     archive_name: PathBuf,
     /// Per-file info overrides (mode/owner/group/mtime).
-    info: Option<anodize_core::config::ArchiveFileInfo>,
+    info: Option<anodizer_core::config::ArchiveFileInfo>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1145,11 +1145,11 @@ impl Stage for ArchiveStage {
                     // WrapInDirectory::Name(s)     -> treat as a template string to render
                     let wrap_dir_rendered = if let Some(ref wid) = archive_cfg.wrap_in_directory {
                         match wid {
-                            anodize_core::config::WrapInDirectory::Bool(true) => {
+                            anodizer_core::config::WrapInDirectory::Bool(true) => {
                                 Some(archive_stem.clone())
                             }
-                            anodize_core::config::WrapInDirectory::Bool(false) => None,
-                            anodize_core::config::WrapInDirectory::Name(tmpl) => {
+                            anodizer_core::config::WrapInDirectory::Bool(false) => None,
+                            anodizer_core::config::WrapInDirectory::Name(tmpl) => {
                                 if tmpl.is_empty() {
                                     None
                                 } else {
@@ -1373,7 +1373,8 @@ impl Stage for ArchiveStage {
                                 ctx.render_template(default_binary_name_template())
                                     .unwrap_or_else(|_| archive_stem.clone())
                             };
-                            if anodize_core::target::is_windows(target) && !stem.ends_with(".exe") {
+                            if anodizer_core::target::is_windows(target) && !stem.ends_with(".exe")
+                            {
                                 format!("{stem}.exe")
                             } else {
                                 stem
@@ -1533,7 +1534,7 @@ impl Stage for ArchiveStage {
                         tvars.set("ArtifactPath", &archive_path.to_string_lossy());
                         tvars.set(
                             "ArtifactExt",
-                            anodize_core::template::extract_artifact_ext(&archive_filename),
+                            anodizer_core::template::extract_artifact_ext(&archive_filename),
                         );
                         // GoReleaser archive Default() sets ID="default" when empty.
                         // Downstream `ids:` filters rely on this to match unlabeled archives.
@@ -1680,7 +1681,7 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::TempDir;
 
-    use anodize_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
 
     #[test]
     fn test_create_tar_gz() {
@@ -2019,7 +2020,7 @@ mod tests {
 
     #[test]
     fn test_archive_config_parses_wrap_in_directory() {
-        use anodize_core::config::Config;
+        use anodizer_core::config::Config;
 
         let yaml = r#"
 project_name: test
@@ -2039,7 +2040,7 @@ crates:
                 assert_eq!(cfgs.len(), 1);
                 assert_eq!(
                     cfgs[0].wrap_in_directory,
-                    Some(anodize_core::config::WrapInDirectory::Name(
+                    Some(anodizer_core::config::WrapInDirectory::Name(
                         "myapp-{{ .Version }}".to_string()
                     ))
                 );
@@ -2055,8 +2056,8 @@ crates:
 
     #[test]
     fn test_archive_stage_run() {
-        use anodize_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
-        use anodize_core::test_helpers::TestContextBuilder;
+        use anodizer_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
+        use anodizer_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -2115,8 +2116,8 @@ crates:
 
     #[test]
     fn test_archive_stage_disabled() {
-        use anodize_core::config::{ArchivesConfig, CrateConfig};
-        use anodize_core::test_helpers::TestContextBuilder;
+        use anodizer_core::config::{ArchivesConfig, CrateConfig};
+        use anodizer_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -2155,10 +2156,10 @@ crates:
 
     #[test]
     fn test_archive_stage_zip_for_windows() {
-        use anodize_core::config::{
+        use anodizer_core::config::{
             ArchiveConfig, ArchivesConfig, Config, CrateConfig, FormatOverride,
         };
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -2226,8 +2227,8 @@ crates:
 
     #[test]
     fn test_archive_stage_tar_xz_format() {
-        use anodize_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -2292,8 +2293,8 @@ crates:
 
     #[test]
     fn test_archive_stage_binary_format() {
-        use anodize_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -2648,7 +2649,7 @@ crates:
 
     #[test]
     fn test_archive_stage_scoped_vars_not_preset() {
-        use anodize_core::test_helpers::TestContextBuilder;
+        use anodizer_core::test_helpers::TestContextBuilder;
 
         let ctx = TestContextBuilder::new()
             .project_name("archive-test")
@@ -2709,8 +2710,8 @@ crates:
 
     #[test]
     fn test_archive_stage_multiple_binaries_per_archive() {
-        use anodize_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -2795,11 +2796,11 @@ crates:
 
     #[test]
     fn test_archive_stage_default_config_inheritance() {
-        use anodize_core::config::{
+        use anodizer_core::config::{
             ArchiveConfig, ArchivesConfig, Config, CrateConfig, DefaultArchiveConfig, Defaults,
             FormatOverride,
         };
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -2866,8 +2867,8 @@ crates:
 
     #[test]
     fn test_archive_stage_name_template_renders_all_variables() {
-        use anodize_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -2928,10 +2929,10 @@ crates:
 
     #[test]
     fn test_archive_stage_files_included_alongside_binaries() {
-        use anodize_core::config::{
+        use anodizer_core::config::{
             ArchiveConfig, ArchiveFileSpec, ArchivesConfig, Config, CrateConfig,
         };
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -3010,8 +3011,8 @@ crates:
 
     #[test]
     fn test_archive_registers_correct_metadata() {
-        use anodize_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -3072,8 +3073,8 @@ crates:
 
     #[test]
     fn test_archive_stage_wrap_in_directory_renders_template() {
-        use anodize_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -3088,7 +3089,7 @@ crates:
             archives: ArchivesConfig::Configs(vec![ArchiveConfig {
                 name_template: Some("myapp-linux-amd64".to_string()),
                 format: Some("tar.gz".to_string()),
-                wrap_in_directory: Some(anodize_core::config::WrapInDirectory::Name(
+                wrap_in_directory: Some(anodizer_core::config::WrapInDirectory::Name(
                     "{{ .ProjectName }}-{{ .Version }}".to_string(),
                 )),
                 files: None,
@@ -3142,8 +3143,8 @@ crates:
 
     #[test]
     fn test_missing_binary_artifact_errors_with_path() {
-        use anodize_core::config::{ArchiveConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ArchiveConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -3155,7 +3156,9 @@ crates:
             name: "myapp".to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
-            archives: anodize_core::config::ArchivesConfig::Configs(vec![ArchiveConfig::default()]),
+            archives: anodizer_core::config::ArchivesConfig::Configs(
+                vec![ArchiveConfig::default()],
+            ),
             ..Default::default()
         }];
 
@@ -3241,8 +3244,8 @@ crates:
     #[test]
     fn test_archive_unsupported_format_returns_error() {
         // Unknown archive formats should produce a clear error.
-        use anodize_core::config::{ArchiveConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ArchiveConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -3258,7 +3261,7 @@ crates:
             name: "myapp".to_string(),
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
-            archives: anodize_core::config::ArchivesConfig::Configs(vec![ArchiveConfig {
+            archives: anodizer_core::config::ArchivesConfig::Configs(vec![ArchiveConfig {
                 format: Some("unsupported_format".to_string()),
                 ..Default::default()
             }]),
@@ -3425,8 +3428,8 @@ crates:
 
     #[test]
     fn test_archive_ids_filter_only_matching_builds() {
-        use anodize_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
-        use anodize_core::test_helpers::TestContextBuilder;
+        use anodizer_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
+        use anodizer_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -3497,8 +3500,8 @@ crates:
 
     #[test]
     fn test_archive_ids_filter_excludes_all_when_no_match() {
-        use anodize_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
-        use anodize_core::test_helpers::TestContextBuilder;
+        use anodizer_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
+        use anodizer_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -3549,8 +3552,8 @@ crates:
     #[test]
     fn test_archive_ids_filter_none_includes_all() {
         // When ids is None, all binaries should be included (backward compat)
-        use anodize_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
-        use anodize_core::test_helpers::TestContextBuilder;
+        use anodizer_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
+        use anodizer_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -3619,8 +3622,8 @@ crates:
 
     #[test]
     fn test_archive_id_metadata_propagated() {
-        use anodize_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
-        use anodize_core::test_helpers::TestContextBuilder;
+        use anodizer_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
+        use anodizer_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -3669,8 +3672,8 @@ crates:
 
     #[test]
     fn test_archive_id_metadata_absent_when_not_set() {
-        use anodize_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
-        use anodize_core::test_helpers::TestContextBuilder;
+        use anodizer_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
+        use anodizer_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -3726,8 +3729,8 @@ crates:
 
     #[test]
     fn test_archive_formats_plural_produces_multiple_archives() {
-        use anodize_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
-        use anodize_core::test_helpers::TestContextBuilder;
+        use anodizer_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
+        use anodizer_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -3805,8 +3808,8 @@ crates:
     #[test]
     fn test_archive_formats_plural_ignores_singular_format() {
         // When formats (plural) is set, singular format should be ignored
-        use anodize_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
-        use anodize_core::test_helpers::TestContextBuilder;
+        use anodizer_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
+        use anodizer_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -3862,8 +3865,8 @@ crates:
     #[test]
     fn test_archive_formats_empty_falls_back_to_singular() {
         // When formats is Some but empty, fall back to singular format
-        use anodize_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
-        use anodize_core::test_helpers::TestContextBuilder;
+        use anodizer_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
+        use anodizer_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -3913,8 +3916,8 @@ crates:
     #[test]
     fn test_archive_singular_format_still_works_when_formats_absent() {
         // Backward compat: when formats is None, singular format works as before
-        use anodize_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
-        use anodize_core::test_helpers::TestContextBuilder;
+        use anodizer_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
+        use anodizer_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -3995,8 +3998,8 @@ crates:
 
     #[test]
     fn test_archive_stage_tgz_alias() {
-        use anodize_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -4044,8 +4047,8 @@ crates:
 
     #[test]
     fn test_archive_stage_txz_alias() {
-        use anodize_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -4093,8 +4096,8 @@ crates:
 
     #[test]
     fn test_archive_stage_tzst_alias() {
-        use anodize_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -4145,8 +4148,8 @@ crates:
 
     #[test]
     fn test_archive_stage_uncompressed_tar() {
-        use anodize_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -4194,8 +4197,8 @@ crates:
 
     #[test]
     fn test_archive_stage_unknown_format_errors() {
-        use anodize_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -4248,7 +4251,7 @@ crates:
 
     #[test]
     fn test_config_parse_archive_file_spec_glob() {
-        use anodize_core::config::{ArchiveFileSpec, Config};
+        use anodizer_core::config::{ArchiveFileSpec, Config};
         let yaml = r#"
 project_name: test
 crates:
@@ -4275,7 +4278,7 @@ crates:
 
     #[test]
     fn test_config_parse_archive_file_spec_detailed() {
-        use anodize_core::config::{ArchiveFileSpec, Config};
+        use anodizer_core::config::{ArchiveFileSpec, Config};
         let yaml = r#"
 project_name: test
 crates:
@@ -4322,7 +4325,7 @@ crates:
 
     #[test]
     fn test_config_parse_format_override_formats_plural() {
-        use anodize_core::config::Config;
+        use anodizer_core::config::Config;
         let yaml = r#"
 project_name: test
 crates:
@@ -4358,7 +4361,7 @@ crates:
 
     #[test]
     fn test_config_parse_meta_builds_info_strip_allow() {
-        use anodize_core::config::Config;
+        use anodizer_core::config::Config;
         let yaml = r#"
 project_name: test
 crates:
@@ -4390,7 +4393,7 @@ crates:
 
     #[test]
     fn test_config_parse_archive_hooks() {
-        use anodize_core::config::Config;
+        use anodizer_core::config::Config;
         let yaml = r#"
 project_name: test
 crates:
@@ -4424,7 +4427,7 @@ crates:
         // Serde aliases on BuildHooksConfig mean both spellings land on the
         // same fields. Regression guard: before 2026-04-16, configs copied
         // from GoReleaser docs silently parsed but hooks never ran.
-        use anodize_core::config::Config;
+        use anodizer_core::config::Config;
         let yaml = r#"
 project_name: test
 crates:
@@ -4494,8 +4497,8 @@ crates:
 
     #[test]
     fn test_archive_stage_gz_format() {
-        use anodize_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -4551,10 +4554,10 @@ crates:
 
     #[test]
     fn test_archive_stage_meta_no_binaries() {
-        use anodize_core::config::{
+        use anodizer_core::config::{
             ArchiveConfig, ArchiveFileSpec, ArchivesConfig, Config, CrateConfig,
         };
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -4659,8 +4662,8 @@ crates:
     fn test_allow_different_binary_count_default_errors_on_mismatch() {
         // GoReleaser errors (not warns) when binary counts differ and
         // allow_different_binary_count is false (default).
-        use anodize_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
-        use anodize_core::test_helpers::TestContextBuilder;
+        use anodizer_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
+        use anodizer_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -4740,8 +4743,8 @@ crates:
     /// the same way singular `format: "binary"` does.
     #[test]
     fn test_binary_format_plural_exempts_different_binary_count_check() {
-        use anodize_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
-        use anodize_core::test_helpers::TestContextBuilder;
+        use anodizer_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
+        use anodizer_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -4814,8 +4817,8 @@ crates:
 
     #[test]
     fn test_strip_binary_directory_metadata() {
-        use anodize_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
-        use anodize_core::test_helpers::TestContextBuilder;
+        use anodizer_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
+        use anodizer_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -4865,7 +4868,7 @@ crates:
 
     #[test]
     fn test_resolve_file_specs_glob() {
-        use anodize_core::config::ArchiveFileSpec;
+        use anodizer_core::config::ArchiveFileSpec;
 
         let tmp = TempDir::new().unwrap();
         let license = tmp.path().join("LICENSE");
@@ -4881,7 +4884,7 @@ crates:
 
     #[test]
     fn test_resolve_file_specs_detailed() {
-        use anodize_core::config::{ArchiveFileInfo, ArchiveFileSpec};
+        use anodizer_core::config::{ArchiveFileInfo, ArchiveFileSpec};
 
         let tmp = TempDir::new().unwrap();
         let license = tmp.path().join("LICENSE");
@@ -4958,7 +4961,7 @@ crates:
 
     #[test]
     fn test_resolve_file_specs_dst_preserves_directory_structure() {
-        use anodize_core::config::ArchiveFileSpec;
+        use anodizer_core::config::ArchiveFileSpec;
 
         let tmp = TempDir::new().unwrap();
         let docs_dir = tmp.path().join("docs");
@@ -4991,7 +4994,7 @@ crates:
 
     #[test]
     fn test_resolve_file_specs_dst_with_strip_parent_ignores_lcp() {
-        use anodize_core::config::ArchiveFileSpec;
+        use anodizer_core::config::ArchiveFileSpec;
 
         let tmp = TempDir::new().unwrap();
         let docs_dir = tmp.path().join("docs");
@@ -5027,7 +5030,7 @@ crates:
 
     #[test]
     fn test_resolve_file_specs_literal_src_with_dst_preserves_filename() {
-        use anodize_core::config::ArchiveFileSpec;
+        use anodizer_core::config::ArchiveFileSpec;
 
         let tmp = TempDir::new().unwrap();
         let license = tmp.path().join("LICENSE");
@@ -5052,7 +5055,7 @@ crates:
 
     #[test]
     fn test_resolve_file_specs_dst_partial_filename_lcp_fallback() {
-        use anodize_core::config::ArchiveFileSpec;
+        use anodizer_core::config::ArchiveFileSpec;
 
         let tmp = TempDir::new().unwrap();
         // Two files whose names share a prefix — the LCP of their full paths
@@ -5091,7 +5094,7 @@ crates:
 
     #[test]
     fn test_append_tar_entry_with_file_info_mode() {
-        use anodize_core::config::ArchiveFileInfo;
+        use anodizer_core::config::ArchiveFileInfo;
 
         let tmp = TempDir::new().unwrap();
         let bin_path = tmp.path().join("mybin");
@@ -5134,7 +5137,7 @@ crates:
 
     #[test]
     fn test_write_tar_entries_with_file_info() {
-        use anodize_core::config::ArchiveFileInfo;
+        use anodizer_core::config::ArchiveFileInfo;
 
         let tmp = TempDir::new().unwrap();
         let bin_path = tmp.path().join("mybin");
@@ -5244,9 +5247,9 @@ crates:
 
     #[test]
     fn test_render_file_info_templates() {
-        use anodize_core::config::ArchiveFileInfo;
-        use anodize_core::config::Config;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::ArchiveFileInfo;
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
 
         let config = Config::default();
         let mut ctx = Context::new(config, ContextOptions::default());
@@ -5269,8 +5272,8 @@ crates:
 
     #[test]
     fn test_archive_stage_binaries_filter() {
-        use anodize_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -5356,8 +5359,8 @@ crates:
 
     #[test]
     fn test_default_template_renders_amd64_v2_suffix() {
-        use anodize_core::config::Config;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
 
         let config = Config::default();
         let mut ctx = Context::new(config, ContextOptions::default());
@@ -5373,8 +5376,8 @@ crates:
 
     #[test]
     fn test_default_template_omits_amd64_v1_suffix() {
-        use anodize_core::config::Config;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
 
         let config = Config::default();
         let mut ctx = Context::new(config, ContextOptions::default());
@@ -5394,8 +5397,8 @@ crates:
     fn test_archive_binary_format_windows_appends_exe() {
         // Windows binaries keep their
         // executable suffix even when packaged as `format: binary`.
-        use anodize_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -5456,8 +5459,8 @@ crates:
         // meta archive with zero files must
         // hard-error rather than silently emit an empty archive. Previously was
         // a silent failure mode that masked a real config bug.
-        use anodize_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let crate_cfg = CrateConfig {
@@ -5495,8 +5498,8 @@ crates:
     #[test]
     fn test_archive_binary_format_linux_keeps_no_extension() {
         // Regression guard: Linux/macOS binary-format archives should NOT get .exe.
-        use anodize_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");

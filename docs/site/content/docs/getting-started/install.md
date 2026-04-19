@@ -1,6 +1,6 @@
 +++
 title = "Install"
-description = "How to install anodize"
+description = "How to install anodizer"
 weight = 2
 template = "docs.html"
 +++
@@ -8,23 +8,23 @@ template = "docs.html"
 ## From crates.io
 
 ```bash
-cargo install anodize
+cargo install anodizer
 ```
 
 ## From source
 
 ```bash
-git clone https://github.com/tj-smith47/anodize.git
-cd anodize
+git clone https://github.com/tj-smith47/anodizer.git
+cd anodizer
 cargo install --path crates/cli
 ```
 
 ## In GitHub Actions
 
-Use [`tj-smith47/anodize-action`](https://github.com/tj-smith47/anodize-action) instead of `cargo install` — it caches the binary, auto-installs pipeline dependencies (nfpm, cosign, zig, snapcraft, ...), and imports signing keys in a single step:
+Use [`tj-smith47/anodizer-action`](https://github.com/tj-smith47/anodizer-action) instead of `cargo install` — it caches the binary, auto-installs pipeline dependencies (nfpm, cosign, zig, snapcraft, ...), and imports signing keys in a single step:
 
 ```yaml
-- uses: tj-smith47/anodize-action@v1
+- uses: tj-smith47/anodizer-action@v1
   with:
     auto-install: true
     args: release --clean
@@ -37,15 +37,15 @@ See [GitHub Actions](@/docs/ci/github-actions.md) for full examples.
 ## Verify installation
 
 ```bash
-anodize --version
+anodizer --version
 ```
 
 ## Required tools
 
-Anodize shells out to external tools for certain stages. Run `anodize healthcheck` to see which are available:
+Anodizer shells out to external tools for certain stages. Run `anodizer healthcheck` to see which are available:
 
 ```bash
-anodize healthcheck
+anodizer healthcheck
 ```
 
 | Tool | Required for | Install |

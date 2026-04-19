@@ -10,7 +10,7 @@ Nightly mode creates date-based versions and replaces a rolling `nightly` releas
 ## Usage
 
 ```bash
-anodize release --nightly
+anodizer release --nightly
 ```
 
 ## Behavior

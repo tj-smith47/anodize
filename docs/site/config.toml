@@ -1,6 +1,6 @@
-title = "Anodize"
+title = "Anodizer"
 description = "Release engineering for Rust, simplified."
-base_url = "https://tj-smith47.github.io/anodize"
+base_url = "https://tj-smith47.github.io/anodizer"
 compile_sass = true
 minify_html = false
 generate_feeds = false
@@ -13,14 +13,14 @@ theme = "dracula"
 # in-repo paths that resolve on GitHub once the evidence files are pushed. All
 # prefixes here have been manually verified to exist; they are not dismissals.
 skip_prefixes = [
-    "https://github.com/tj-smith47/anodize/blob/master/.claude/",
-    "https://github.com/tj-smith47/anodize/tree/master/.claude/",
-    "https://github.com/tj-smith47/anodize/blob/master/.anodize.yaml",
-    "https://github.com/tj-smith47/cfgd/blob/master/.anodize.yaml",
+    "https://github.com/tj-smith47/anodizer/blob/master/.claude/",
+    "https://github.com/tj-smith47/anodizer/tree/master/.claude/",
+    "https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml",
+    "https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml",
     "https://aur.archlinux.org/",
     "https://www.reddit.com/",
     "https://opensource.axo.dev/",
 ]
 
 [extra]
-github_url = "https://github.com/tj-smith47/anodize"
+github_url = "https://github.com/tj-smith47/anodizer"

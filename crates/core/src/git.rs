@@ -258,13 +258,13 @@ fn strip_url_credentials(url: &str) -> String {
 ///
 /// When `snapshot` is true and the working directory is not inside a git
 /// repository, a synthetic `GitInfo` is returned (commit/branch/etc. left
-/// empty) so users can run `anodize release --snapshot` from a fresh tarball
+/// empty) so users can run `anodizer release --snapshot` from a fresh tarball
 /// or scratch directory without git ever having been initialized. Outside
 /// snapshot mode, the missing repo bubbles as an error.
 pub fn detect_git_info(tag: &str, skip_validate: bool) -> Result<GitInfo> {
     if !is_git_repo() {
         // Synthetic GitInfo for non-repo snapshot/scratch builds. Lets users
-        // run `anodize release --snapshot` from a fresh tarball or scratch
+        // run `anodizer release --snapshot` from a fresh tarball or scratch
         // directory without `git init` first. Caller is responsible for only
         // accepting this in snapshot/dry-run mode.
         return Ok(GitInfo {
@@ -408,7 +408,7 @@ pub fn extract_tag_prefix(template: &str) -> Option<String> {
 ///
 /// # Examples
 /// ```
-/// # use anodize_core::git::strip_monorepo_prefix;
+/// # use anodizer_core::git::strip_monorepo_prefix;
 /// assert_eq!(strip_monorepo_prefix("subproject1/v1.2.3", "subproject1/"), "v1.2.3");
 /// assert_eq!(strip_monorepo_prefix("v1.2.3", "subproject1/"), "v1.2.3");
 /// ```
@@ -912,8 +912,8 @@ pub fn create_tag_via_github_api(
         "object": sha,
         "type": "commit",
         "tagger": {
-            "name": git_output(&["config", "user.name"]).unwrap_or_else(|_| "anodize".to_string()),
-            "email": git_output(&["config", "user.email"]).unwrap_or_else(|_| "anodize@users.noreply.github.com".to_string()),
+            "name": git_output(&["config", "user.name"]).unwrap_or_else(|_| "anodizer".to_string()),
+            "email": git_output(&["config", "user.email"]).unwrap_or_else(|_| "anodizer@users.noreply.github.com".to_string()),
             "date": chrono::Utc::now().to_rfc3339(),
         }
     });
@@ -1349,10 +1349,10 @@ mod tests {
 
     #[test]
     fn test_parse_github_remote_https() {
-        let result = parse_github_remote("https://github.com/tj-smith47/anodize.git");
+        let result = parse_github_remote("https://github.com/tj-smith47/anodizer.git");
         assert_eq!(
             result,
-            Some(("tj-smith47".to_string(), "anodize".to_string()))
+            Some(("tj-smith47".to_string(), "anodizer".to_string()))
         );
     }
 

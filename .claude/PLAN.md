@@ -1,4 +1,4 @@
-# Anodize — Unified Plan
+# Anodizer — Unified Plan
 
 > **For agentic workers:** Use superpowers:subagent-driven-development to implement each session's tasks. Each session is designed for one conversation. Sessions are sequential — complete Session N before starting Session N+1.
 >
@@ -7,7 +7,7 @@
 **Status:** Core implementation complete (138 tests, 0 clippy warnings, ~8k LOC). Gap analysis done. Ready for parity push.
 
 **Reference docs:**
-- Architecture & design: `.claude/specs/2026-03-25-anodize-design.md`
+- Architecture & design: `.claude/specs/2026-03-25-anodizer-design.md`
 - Full gap analysis: `.claude/specs/parity-gap-analysis.md`
 
 ---
@@ -45,9 +45,9 @@
 ### Task 1D: `--config` / `-f` flag
 - Add `--config` / `-f` global flag to CLI (all commands: release, build, check, init, changelog)
 - Update `pipeline::find_config()` to accept an optional path override
-- Default behavior unchanged (search CWD for `.anodize.yaml` etc.)
+- Default behavior unchanged (search CWD for `.anodizer.yaml` etc.)
 
-**Done when:** `anodize check -f path/to/config.yaml` works. Test exercises non-default config path.
+**Done when:** `anodizer check -f path/to/config.yaml` works. Test exercises non-default config path.
 
 ### Task 1E: `--timeout` flag
 - Add `--timeout` flag to `release` and `build` commands (default: 30m)
@@ -70,7 +70,7 @@
 **Done when:** `release` config without explicit `github.owner`/`github.name` infers them from git remote. Test covers both URL formats and error case (no remote).
 
 ### Task 1H: Update dogfood config and docs
-- Update `.anodize.yaml` and `docs/configuration.md` to reflect new template syntax and fields
+- Update `.anodizer.yaml` and `docs/configuration.md` to reflect new template syntax and fields
 - Update design spec's Template Engine section to reflect Tera decision (currently says "intentionally minimal custom engine" and mentions `minijinja`)
 - Verify `cargo test && cargo clippy -- -D warnings` passes
 
@@ -177,10 +177,10 @@
 ### Task 3A: E2E test infrastructure
 - Create a test fixture: a minimal Cargo project with `Cargo.toml` and `src/main.rs`
 - Create a workspace test fixture: multi-crate project exercising `depends_on`, per-crate tags, workspace-aware change detection
-- E2E test: `anodize release --snapshot` produces correct artifacts in `dist/`
-- E2E test: `anodize release --dry-run` runs full pipeline with no side effects
-- E2E test: `anodize check` validates the fixture's config
-- E2E test: `anodize init` generates valid config from the fixture
+- E2E test: `anodizer release --snapshot` produces correct artifacts in `dist/`
+- E2E test: `anodizer release --dry-run` runs full pipeline with no side effects
+- E2E test: `anodizer check` validates the fixture's config
+- E2E test: `anodizer init` generates valid config from the fixture
 - E2E test: multi-crate workspace with `--all` flag detects correct changed crates
 
 **Done when:** E2E tests run against real Cargo projects in temp dirs. Snapshot produces archives and checksums. Workspace test exercises dependency ordering.
@@ -218,7 +218,7 @@
 - Set up CI pipeline (GitHub Actions workflow for test + clippy + fmt)
 - Cross-platform CI matrix (Linux + macOS at minimum; Windows if feasible)
 - Address any `serde_yaml` deprecation warnings if present
-- Verify the dogfood `.anodize.yaml` config works end-to-end with `--snapshot`
+- Verify the dogfood `.anodizer.yaml` config works end-to-end with `--snapshot`
 
 **Done when:** `cargo publish --dry-run` succeeds for all crates. CI workflow runs and passes. Dogfood snapshot release produces expected output.
 
@@ -230,18 +230,18 @@
 
 **Depends on:** Session 3 complete (all tests passing, docs written, CI green).
 
-> **Before starting this session:** Do a fresh evaluation of GoReleaser's current feature set and test coverage. Clone/browse https://github.com/goreleaser/goreleaser and compare against anodize's current state. Any newly identified feature gaps or missing test categories should be added to this session's tasks before implementation begins. The tasks below are a starting point, not a closed list.
+> **Before starting this session:** Do a fresh evaluation of GoReleaser's current feature set and test coverage. Clone/browse https://github.com/goreleaser/goreleaser and compare against anodizer's current state. Any newly identified feature gaps or missing test categories should be added to this session's tasks before implementation begins. The tasks below are a starting point, not a closed list.
 
-**Why before audit/publish:** GoReleaser has thousands of tests covering every config field, stage, edge case, and error path. Anodize has ~441. Publishing with shallow test coverage means bugs ship to users. This session systematically identifies and closes the gap by category.
+**Why before audit/publish:** GoReleaser has thousands of tests covering every config field, stage, edge case, and error path. Anodizer has ~441. Publishing with shallow test coverage means bugs ship to users. This session systematically identifies and closes the gap by category.
 
 ### Task 4A: Audit test parity gap
 - Clone or browse GoReleaser's test suite (https://github.com/goreleaser/goreleaser) to understand their coverage strategy per stage
-- For each anodize stage/module, compare:
-  - **Config parsing tests:** How many config field variations does GoReleaser test per stage vs anodize? (GoReleaser typically tests: valid value, invalid value, zero value, default value, interaction with other fields — ~5-10 cases per field)
-  - **Stage behavior tests:** Does anodize test each config field's effect on stage output, or just that the field parses?
+- For each anodizer stage/module, compare:
+  - **Config parsing tests:** How many config field variations does GoReleaser test per stage vs anodizer? (GoReleaser typically tests: valid value, invalid value, zero value, default value, interaction with other fields — ~5-10 cases per field)
+  - **Stage behavior tests:** Does anodizer test each config field's effect on stage output, or just that the field parses?
   - **Error path tests:** Does each stage have tests for every error condition (missing tools, invalid input, API failures, permission errors)?
-  - **E2E tests:** Does anodize have snapshot/dry-run E2E tests that exercise real builds end-to-end?
-- Produce a gap matrix: `| Stage | Config parsing | Behavior | Error paths | E2E | GoReleaser approx | Anodize current | Delta |`
+  - **E2E tests:** Does anodizer have snapshot/dry-run E2E tests that exercise real builds end-to-end?
+- Produce a gap matrix: `| Stage | Config parsing | Behavior | Error paths | E2E | GoReleaser approx | Anodizer current | Delta |`
 
 **Done when:** Gap matrix produced with specific counts per stage. Every "delta" cell has a concrete list of missing test cases.
 
@@ -323,19 +323,19 @@ Expand E2E coverage beyond the current 6 tests:
 
 **Depends on:** Session 4 complete (test parity gap closed, 800+ tests passing).
 
-**Why before audit:** These are features that round out anodize as a complete release tool. Implementing them before the audit means the audit catches quality issues across the full feature set, not just a subset.
+**Why before audit:** These are features that round out anodizer as a complete release tool. Implementing them before the audit means the audit catches quality issues across the full feature set, not just a subset.
 
 ### Task 5A: Rust-Specific First-Class Features
-Features that make anodize feel native to the Rust ecosystem, not a GoReleaser port:
+Features that make anodizer feel native to the Rust ecosystem, not a GoReleaser port:
 - **cargo-binstall metadata:** Generate `[package.metadata.binstall]` config and/or standalone binstall manifests so users can `cargo binstall <crate>` to get pre-built binaries
 - **Workspace version sync (`version_from: tag`):** Auto-update `version` in Cargo.toml files to match the release tag before build. Essential for workspace releases where crate versions must match the tag.
 - **cdylib / staticlib / wasm32 target support:** Recognize non-binary crate types in build config. `cargo build --lib` for cdylib/staticlib targets, `wasm32-unknown-unknown` / `wasm32-wasi` as valid cross-compilation targets with appropriate artifact handling.
 
-### Task 5B: Built-in Auto-Tagging (`anodize tag` command)
+### Task 5B: Built-in Auto-Tagging (`anodizer tag` command)
 Replicate the full `anothrNick/github-tag-action@1.71.0` feature set as a native command, eliminating the need for a separate GitHub Action.
 
 **Core behavior:**
-- `anodize tag` reads commit messages for bump directives, finds the latest semver tag, bumps accordingly, creates and pushes the new tag
+- `anodizer tag` reads commit messages for bump directives, finds the latest semver tag, bumps accordingly, creates and pushes the new tag
 - Commit message scanning respects `branch_history` mode to determine which commits to inspect
 
 **Config fields (mirroring every GHA env var):**
@@ -358,13 +358,13 @@ Replicate the full `anothrNick/github-tag-action@1.71.0` feature set as a native
 - `verbose`: bool (default: true) — print git log during tagging
 
 **CLI flags:**
-- `anodize tag --dry-run` — show what tag would be created without pushing
-- `anodize tag --custom-tag <tag>` — override from CLI (same as `custom_tag` config)
-- `anodize tag --default-bump <type>` — override from CLI
+- `anodizer tag --dry-run` — show what tag would be created without pushing
+- `anodizer tag --custom-tag <tag>` — override from CLI (same as `custom_tag` config)
+- `anodizer tag --default-bump <type>` — override from CLI
 
 **Workspace-aware:**
 - In multi-crate repos, tag per crate using `tag_template` (e.g., `crate-v{{ Version }}`)
-- `anodize tag --crate <name>` to tag a specific crate
+- `anodizer tag --crate <name>` to tag a specific crate
 
 **Outputs (for CI integration):**
 - Print `new_tag`, `old_tag`, and `part` (major/minor/patch/none) to stdout in a machine-parseable format
@@ -398,7 +398,7 @@ Replicate the full `anothrNick/github-tag-action@1.71.0` feature set as a native
 ### Task 5G: Monorepo Support
 - Add `workspaces` top-level config for multiple independent project roots (distinct from Cargo workspace `crates`)
 - Each workspace has its own `crates`, `changelog`, `release` config
-- `anodize release --workspace <name>` to release a specific workspace
+- `anodizer release --workspace <name>` to release a specific workspace
 - Use case: repos with multiple independently-versioned components that aren't Cargo workspace members
 
 ### Task 5H: New Publishers — Chocolatey + Winget
@@ -438,7 +438,7 @@ Replicate the full `anothrNick/github-tag-action@1.71.0` feature set as a native
 ### Task 5N: Maintenance
 - Migrate from `serde_yaml` (deprecated) to `serde_yml` or alternative
 - Update dependencies to latest compatible versions
-- Dogfood: ensure `.anodize.yaml` exercises new features where applicable
+- Dogfood: ensure `.anodizer.yaml` exercises new features where applicable
 
 ### Task 5O: Documentation Site
 - ~~Set up docs site with mdBook~~ → **Done (Phase A): Zola site with custom theme, 45 content pages, xtask gen-docs, GitHub Actions deployment**
@@ -446,7 +446,7 @@ Replicate the full `anothrNick/github-tag-action@1.71.0` feature set as a native
 - Phase A plan: `docs/superpowers/plans/2026-03-27-docsite.md` (completed)
 - **Phase B remaining:** `docs/superpowers/plans/2026-03-27-docsite-phase-b.md` — GoReleaser nav parity, Coming Soon pages need real content (now that Session 5 features are implemented), search, polish, content accuracy audit
 
-**Session 5 exit criteria:** All listed features implemented with tests. `anodize tag` command functional. cargo-binstall metadata generated. New publishers (Chocolatey, Winget, AUR, Krew) generate correct manifests. Nightly builds work. Config includes merge correctly. Docs site builds locally. `cargo test --workspace` and `cargo clippy` pass.
+**Session 5 exit criteria:** All listed features implemented with tests. `anodizer tag` command functional. cargo-binstall metadata generated. New publishers (Chocolatey, Winget, AUR, Krew) generate correct manifests. Nightly builds work. Config includes merge correctly. Docs site builds locally. `cargo test --workspace` and `cargo clippy` pass.
 
 ---
 
@@ -458,7 +458,7 @@ Replicate the full `anothrNick/github-tag-action@1.71.0` feature set as a native
 
 ### Task 6A: Feature-by-feature comparison
 - Clone GoReleaser (https://github.com/goreleaser/goreleaser) and systematically walk through every config section, CLI flag, and stage
-- For each GoReleaser feature, document: does anodize support it? If yes, is the behavior equivalent? If no, is it in scope or intentionally omitted?
+- For each GoReleaser feature, document: does anodizer support it? If yes, is the behavior equivalent? If no, is it in scope or intentionally omitted?
 - Produce a parity matrix covering: builds, archives, checksums, changelog, release, docker, nfpm, sign, announce, publish (homebrew, scoop, crates.io), snapshot, hooks, environment, templates, CLI flags
 
 **Done when:** Parity matrix produced. Every GoReleaser feature is categorized as: implemented, partially implemented, intentionally omitted (with reason), or missing (needs work).
@@ -550,7 +550,7 @@ Research the actual GoReleaser source code and documentation to understand exact
 - **Fetch and read GoReleaser's blob tests**: Understand what they test — do they use mocked HTTP servers? LocalStack? MinIO containers? What's the test strategy?
 - **Document the authentication model**: How does GoReleaser handle credentials for each provider? Environment variables only? Credential files? IAM roles? What's the default credential chain?
 - **Document S3-compatible backends**: How does GoReleaser handle MinIO, DigitalOcean Spaces, Backblaze B2, Cloudflare R2? What config fields enable this (endpoint, force_path_style, disable_ssl)?
-- **Compare field-by-field**: Produce a table: GoReleaser field → anodize field → status (identical, different, missing). Every field must be accounted for.
+- **Compare field-by-field**: Produce a table: GoReleaser field → anodizer field → status (identical, different, missing). Every field must be accounted for.
 
 ### Task B: Deep-dive GoReleaser's split/merge implementation
 
@@ -558,11 +558,11 @@ Research the actual GoReleaser source code and documentation to understand exact
 - **Fetch the split/merge example repo**: `goreleaser/example-split-merge-real` — understand the real-world CI workflow pattern.
 - **Document the split strategy**: What does `partial.by: goos` vs `partial.by: target` actually do? How does filtering work at the build level vs the pipeline level?
 - **Document the merge protocol**: What files are read? What stages are re-run? How are Docker images handled (they mention "pulling previously built images")?
-- **Compare with anodize's current implementation**: What's correct, what's wrong, what's missing?
+- **Compare with anodizer's current implementation**: What's correct, what's wrong, what's missing?
 
 ### Task C: Evaluate implementation approaches for blob upload
 
-Based on the research, evaluate and recommend the best approach for anodize:
+Based on the research, evaluate and recommend the best approach for anodizer:
 
 **Option 1: Direct HTTP via reqwest (already a workspace dep)**
 - Pros: No new deps, full control over headers/auth/path-style, testable with wiremock/mockito
@@ -586,8 +586,8 @@ For each option, document: dependency cost, auth complexity, testability, featur
 
 ### Task D: Evaluate split/merge design decisions
 
-- Should anodize use `GGOOS`/`GGOARCH` env var filtering like GoReleaser, or is the `--single-target` approach better?
-- Should `--merge` be a separate command (`anodize continue --merge`) or a flag on `release`?
+- Should anodizer use `GGOOS`/`GGOARCH` env var filtering like GoReleaser, or is the `--single-target` approach better?
+- Should `--merge` be a separate command (`anodizer continue --merge`) or a flag on `release`?
 - How should the artifact handoff work between split and merge jobs? Filesystem convention? Explicit `--artifacts-dir` flag?
 - What's the right serialization format and what metadata must it contain?
 
@@ -610,7 +610,7 @@ Based on Tasks A-D, produce a detailed implementation spec at `.claude/specs/clo
 
 **Blob upload:** Replaced CLI-shelling (aws/gsutil/az) with `object_store` SDK (Apache Arrow, v0.13.2) — the Rust equivalent of Go CDK that GoReleaser uses. S3/GCS/Azure uploads via unified ObjectStore trait with from_env() auth chains. S3: smart force_path_style default (true when endpoint set), KMS SSE via with_sse_kms_encryption(). BlobConfig: cache_control now Vec<String> (joined with ", "), disable now StringOrBool (supports template strings like GoReleaser), content_disposition default "attachment;filename={{Filename}}" with "-" to disable, extra_files.name template-rendered. Parallel uploads via tokio multi-thread runtime with semaphore, file reads in spawned tasks (tokio::fs::read). Typed error handling (no string matching). InMemory backend integration tests. ACL warning when configured.
 
-**Split/merge — GoReleaser Pro parity:** New partial.rs module with env var target resolution (TARGET > ANODIZE_OS/ANODIZE_ARCH > host rustc). partial.by: "goos" (default, groups by OS) or "target" (full triple). Dist subdirectory routing (dist/linux/, dist/target/). Full SplitContext serialization (template vars + env vars + git info + artifacts). Rich artifact format (name, goos, goarch, target, type). Matrix generation with runner suggestions. Build stage integrates partial_target filtering. New CLI commands: `anodize continue --merge`, `anodize publish`, `anodize announce`. Legacy artifacts.json backward compat. Config hash validation planned. 2 code reviews, 20 total findings fixed.
+**Split/merge — GoReleaser Pro parity:** New partial.rs module with env var target resolution (TARGET > ANODIZER_OS/ANODIZER_ARCH > host rustc). partial.by: "goos" (default, groups by OS) or "target" (full triple). Dist subdirectory routing (dist/linux/, dist/target/). Full SplitContext serialization (template vars + env vars + git info + artifacts). Rich artifact format (name, goos, goarch, target, type). Matrix generation with runner suggestions. Build stage integrates partial_target filtering. New CLI commands: `anodizer continue --merge`, `anodizer publish`, `anodizer announce`. Legacy artifacts.json backward compat. Config hash validation planned. 2 code reviews, 20 total findings fixed.
 
 Spec at `.claude/specs/2026-03-29-cloud-storage-split-merge-v2.md`.
 
@@ -638,11 +638,11 @@ Spec at `.claude/specs/2026-03-29-cloud-storage-split-merge-v2.md`.
 >
 > 6. **Default parity**: Every default value must match or be explicitly better. Silent default differences cause user confusion.
 >
-> **Audit method**: For each feature, do not just check "does anodize have this?" Instead:
+> **Audit method**: For each feature, do not just check "does anodizer have this?" Instead:
 > - Read GoReleaser's source code for that feature
 > - Trace every config field from parse → default → usage → output
 > - Compare the actual behavior, not the config schema
-> - Test with equivalent config: does anodize produce the same result?
+> - Test with equivalent config: does anodizer produce the same result?
 
 ### ~~Close remaining Session 6 gaps~~ — COMPLETED
 All 11 deferred items were verified as implemented in prior sessions (2026-03-30 audit):
@@ -691,14 +691,14 @@ Record all findings in `parity-session-index.md` — the single source of truth 
 
 **Reference:** `.claude/specs/test-coverage-comparison.md` — the per-stage, per-category comparison with concrete numbers.
 
-> **Before starting this session:** Re-run the GoReleaser comparison against anodize's current state. The comparison spec is stale. Update the numbers, then use the updated spec as the task list.
+> **Before starting this session:** Re-run the GoReleaser comparison against anodizer's current state. The comparison spec is stale. Update the numbers, then use the updated spec as the task list.
 
 ### Update the comparison spec
 - Re-run `cargo tarpaulin --workspace` for current coverage numbers
 - Re-count tests per stage/module
 - Browse GoReleaser's current test suite for any new tests since the last audit
 - Update `.claude/specs/test-coverage-comparison.md` with current numbers
-- Identify every row where anodize is behind and compute the exact delta
+- Identify every row where anodizer is behind and compute the exact delta
 
 **Done when:** Updated comparison spec with current numbers. Every deficit has a concrete test count target.
 
@@ -773,10 +773,10 @@ All items verified correct against GoReleaser source. No fixes needed.
 
 Changes were made hastily and must be verified against GoReleaser:
 
-- `.anodize.yaml`: removed `env_files: [".env"]`, replaced with top-level `env` — read GoReleaser `internal/pipe/env/env.go` to verify whether GR silently skips missing `.env` files or errors
-- `.anodize.yaml`: changed `after.hooks` → `after.post` — verify GoReleaser `Before`/`After` struct field mapping matches
-- `.anodize.yaml`: added `binstall.pkg_url` with `{ target }` (single braces, binstall syntax not Tera) — verify passthrough
-- `.anodize.yaml`: added `report_sizes`, `env`, `variables`, `git`, `tag`, `metadata`, `nightly`, `partial`, `release.footer`, `release.include_meta` — verify each field's default matches GoReleaser where applicable
+- `.anodizer.yaml`: removed `env_files: [".env"]`, replaced with top-level `env` — read GoReleaser `internal/pipe/env/env.go` to verify whether GR silently skips missing `.env` files or errors
+- `.anodizer.yaml`: changed `after.hooks` → `after.post` — verify GoReleaser `Before`/`After` struct field mapping matches
+- `.anodizer.yaml`: added `binstall.pkg_url` with `{ target }` (single braces, binstall syntax not Tera) — verify passthrough
+- `.anodizer.yaml`: added `report_sizes`, `env`, `variables`, `git`, `tag`, `metadata`, `nightly`, `partial`, `release.footer`, `release.include_meta` — verify each field's default matches GoReleaser where applicable
 - `crates/core/src/config.rs`: `load_env_files` now warns+skips missing files — verify against GoReleaser `loadEnv()` exact behavior
 - `crates/core/src/config.rs`: test renamed from `test_load_env_files_nonexistent_returns_error` → `test_load_env_files_nonexistent_skips_with_warning` — verify correctness
 - `.github/workflows/release.yml` (new): verify `gcc-aarch64-linux-gnu` is correct package, verify `aarch64-pc-windows-msvc` cross-compiles from x86_64 Windows with this dep tree, verify `softprops/action-gh-release@v2` is current
@@ -794,9 +794,9 @@ Added `publish_top_level_aur_sources()` with shared `publish_aur_source_entry()`
 
 ### ~~Task PRE-3: crates.io publishing~~ — DONE (2026-04-08)
 
-All 27 crates published in dependency order: core → 25 stages → CLI. Release workflow has tiered publish script with 30s index propagation delays. `cargo install anodize` works.
+All 27 crates published in dependency order: core → 25 stages → CLI. Release workflow has tiered publish script with 30s index propagation delays. `cargo install anodizer` works.
 
-Release workflow has crates.io publishing commented out. `anodize` depends on 25+ `anodize-stage-*` crates not published to crates.io.
+Release workflow has crates.io publishing commented out. `anodizer` depends on 25+ `anodizer-stage-*` crates not published to crates.io.
 
 1. Decide: publish all crates in dep order, or set `publish = false` on stage crates
 2. If publishing all: create ordered publish script (core → stages → cli, 30s delays)
@@ -805,20 +805,20 @@ Release workflow has crates.io publishing commented out. `anodize` depends on 25
 
 ### ~~Task PRE-4: GPG signing setup~~ — DONE (2026-04-08)
 
-Generated RSA 4096 key `1C7027C247A25CD1CBD680D72FFC4EEBA92C75B4` (TJ Smith, anodize release signing). Exported private key → `GPG_PRIVATE_KEY` secret. Fingerprint → `GPG_FINGERPRINT` secret. Added GPG import + checksum signing steps to release.yml.
+Generated RSA 4096 key `1C7027C247A25CD1CBD680D72FFC4EEBA92C75B4` (TJ Smith, anodizer release signing). Exported private key → `GPG_PRIVATE_KEY` secret. Fingerprint → `GPG_FINGERPRINT` secret. Added GPG import + checksum signing steps to release.yml.
 
 ### ~~Task PRE-5: Publisher repo setup~~ — DONE (2026-04-08)
 
 - **Homebrew**: `tj-smith47/homebrew-tap` already existed with `Formula/` dir
 - **Scoop**: created `tj-smith47/scoop-bucket` with README
-- **WinGet**: created `tj-smith47/winget-pkgs` with `manifests/t/TJSmith/Anodize/` structure
+- **WinGet**: created `tj-smith47/winget-pkgs` with `manifests/t/TJSmith/Anodizer/` structure
 - **Krew**: created `tj-smith47/krew-index` with `plugins/` dir
 - **Chocolatey**: requires external account at community.chocolatey.org (add `CHOCOLATEY_API_KEY` secret when ready)
-- **AUR**: deferred to post-release (register `anodize-bin`, add SSH key as `AUR_SSH_KEY` secret)
+- **AUR**: deferred to post-release (register `anodizer-bin`, add SSH key as `AUR_SSH_KEY` secret)
 
 ### ~~Task PRE-6: GitHub repo secrets & environment variables~~ — DONE (2026-04-08)
 
-Secrets set on `tj-smith47/anodize`:
+Secrets set on `tj-smith47/anodizer`:
 
 | Secret | Status |
 |--------|--------|
@@ -839,10 +839,10 @@ Deferred (post-release):
 
 ### ~~Task PRE-7: CI tool installation~~ — DONE (2026-04-08)
 
-Added nFPM (goreleaser repo) and UPX (apt/brew/choco) install steps to release.yml. Enabled UPX in .anodize.yaml with target filtering (x86_64 linux/mac/win + aarch64 linux only).
+Added nFPM (goreleaser repo) and UPX (apt/brew/choco) install steps to release.yml. Enabled UPX in .anodizer.yaml with target filtering (x86_64 linux/mac/win + aarch64 linux only).
 
 - **nFPM**: add to release workflow Linux jobs (`apt install nfpm` from goreleaser repo)
-- **UPX**: install in CI (`apt install upx` on Linux, `brew install upx` on macOS), change `enabled: false` → `enabled: true` in `.anodize.yaml`, add target filtering (UPX doesn't support macOS ARM or Windows ARM)
+- **UPX**: install in CI (`apt install upx` on Linux, `brew install upx` on macOS), change `enabled: false` → `enabled: true` in `.anodizer.yaml`, add target filtering (UPX doesn't support macOS ARM or Windows ARM)
 
 ### ~~Task PRE-8: Docsite — replace all "coming soon" stubs~~ — DONE (2026-04-08)
 
@@ -874,23 +874,23 @@ Root cause: `set_current_dir()` race in parallel tests. Fix: added `project_root
 
 ### Task POST-0: Register with SchemaStore.org
 
-Requires docs site live at `https://tj-smith47.github.io/anodize/schema.json` first.
+Requires docs site live at `https://tj-smith47.github.io/anodizer/schema.json` first.
 
 1. Fork `SchemaStore/schemastore`
 2. Add entry to `src/api/json/catalog.json`:
-   - `fileMatch`: `[".anodize.yaml", ".anodize.yml"]`
-   - `url`: `https://tj-smith47.github.io/anodize/schema.json`
-   - `name`: `Anodize`
-   - `description`: `Configuration file for Anodize release automation`
+   - `fileMatch`: `[".anodizer.yaml", ".anodizer.yml"]`
+   - `url`: `https://tj-smith47.github.io/anodizer/schema.json`
+   - `name`: `Anodizer`
+   - `description`: `Configuration file for Anodizer release automation`
 3. Submit PR
 
-### ~~Task POST-1: Release workflow should dogfood anodize~~ — DONE (2026-04-08)
+### ~~Task POST-1: Release workflow should dogfood anodizer~~ — DONE (2026-04-08)
 
-Release workflow bootstraps anodize from source, uses split/merge: 3 matrix build jobs run `anodize release --split`, merge job runs `anodize release --merge`. All 27 workspace crates configured for crates.io publishing with dependency ordering.
+Release workflow bootstraps anodizer from source, uses split/merge: 3 matrix build jobs run `anodizer release --split`, merge job runs `anodizer release --merge`. All 27 workspace crates configured for crates.io publishing with dependency ordering.
 
 ### Task POST-2: cfgd migration
 
-Create `.anodize.yaml` for `/opt/repos/cfgd`:
+Create `.anodizer.yaml` for `/opt/repos/cfgd`:
 - 3 binaries, 4 crates, shared version tag
 - Docker multi-arch (ghcr.io) for 3 containers
 - Helm chart packaging via `after` hooks or custom publisher
@@ -901,20 +901,20 @@ Create `.anodize.yaml` for `/opt/repos/cfgd`:
 
 ### Task POST-3: MCP server config
 
-GoReleaser v2.15 added `MCP` (MCP server registry) — publishes server metadata to registries. Language-agnostic concept, only missing OSS feature not in anodize's config struct (the other two — `Kos`, `GoMod` — are Go-specific).
+GoReleaser v2.15 added `MCP` (MCP server registry) — publishes server metadata to registries. Language-agnostic concept, only missing OSS feature not in anodizer's config struct (the other two — `Kos`, `GoMod` — are Go-specific).
 
 1. Read GoReleaser's MCP pipe implementation
 2. Add `mcp` field to Config
 3. Implement the stage
-4. Add to `.anodize.yaml` if applicable
+4. Add to `.anodizer.yaml` if applicable
 
 ---
 
-## Post-Publish (requires anodize on crates.io)
+## Post-Publish (requires anodizer on crates.io)
 
-These cannot start until anodize is published and installable:
+These cannot start until anodizer is published and installable:
 
-### Full-featured GitHub Action (separate repo: `tj-smith47/anodize-action`)
+### Full-featured GitHub Action (separate repo: `tj-smith47/anodizer-action`)
 - TypeScript action with `@actions/tool-cache` for binary caching
 - Structured outputs (artifacts, metadata JSON)
 - Grouped log output via `@actions/core`
@@ -922,10 +922,10 @@ These cannot start until anodize is published and installable:
 - Cross-platform runner support
 
 ### cfgd Migration — First Real-World Adoption
-- Write `.anodize.yaml` for cfgd (multi-crate, multi-docker, homebrew, krew, crates.io with ordering)
-- Identify cfgd features needing new anodize capabilities (Helm, Krew, Crossplane, OLM → `after` hooks or new stages)
+- Write `.anodizer.yaml` for cfgd (multi-crate, multi-docker, homebrew, krew, crates.io with ordering)
+- Identify cfgd features needing new anodizer capabilities (Helm, Krew, Crossplane, OLM → `after` hooks or new stages)
 - Evaluate Cargo.toml version sync as first-class feature (`version_from: tag`)
-- Replace cfgd's 633-line release workflow with `uses: tj-smith47/anodize@v1`
+- Replace cfgd's 633-line release workflow with `uses: tj-smith47/anodizer@v1`
 - Add cfgd as showcase in README
 
 ### Community Adoption — Popular Repo PRs
@@ -944,13 +944,13 @@ These cannot start until anodize is published and installable:
 | **sharkdp/fd** | 42.2k | 10.5KB monolithic CICD.yml | None | Same author as bat — converting one proves concept for both. |
 | **nushell/nushell** | 38.9k | 12 files, ~1,050 lines total | None | Most complex Rust release pipeline. MSI, Winget, nightly, beta builds. |
 | **sxyazi/yazi** | 35.4k | 8 files | None | Fast-growing terminal file manager. |
-| **ajeetdsouza/zoxide** | 35.0k | 4 files + winget.yml | None | Separate winget workflow — anodize handles natively. |
+| **ajeetdsouza/zoxide** | 35.0k | 4 files + winget.yml | None | Separate winget workflow — anodizer handles natively. |
 | **casey/just** | 32.4k | Hand-rolled | None | Command runner. Cross-platform binary releases. |
 | **dandavison/delta** | 29.7k | cd.yml + ci.yml | None | Git pager. Cross-platform. |
 | **sharkdp/hyperfine** | 27.8k | 14.8KB monolithic CICD.yml (~493 lines) | None | Same author as bat/fd — three conversions from one relationship. |
 | **Wilfred/difftastic** | 24.8k | Hand-rolled | None | Structural diff tool. Cross-platform binary releases. |
 | **biomejs/biome** | 24.2k | 10.8KB release_cli.yml | None | JS/TS toolchain in Rust. Multi-platform binary releases. |
-| **extrawurst/gitui** | 21.6k | brew.yml + cd.yml + nightly.yml | None | Separate Homebrew + nightly workflows — both native anodize features. |
+| **extrawurst/gitui** | 21.6k | brew.yml + cd.yml + nightly.yml | None | Separate Homebrew + nightly workflows — both native anodizer features. |
 | **eza-community/eza** | 20.8k | apt.yml + winget.yml | None | Modern ls. Separate apt and winget workflows. |
 | **Orange-OpenSource/hurl** | 18.7k | 11 files, ~3,400 lines total | None | HTTP testing tool. Largest raw workflow complexity after ruff. |
 | **XAMPPRocky/tokei** | 14.1k | 5.6KB CI workflow | None | Code statistics. Simple release flow. |
@@ -959,22 +959,22 @@ These cannot start until anodize is published and installable:
 | **prefix-dev/pixi** | 6.7k | Uses dist-workspace.toml | **cargo-dist** | Already using cargo-dist — skip. |
 
 **Ruled out from original plan:**
-- **tokio**, **serde**, **clap** — these are libraries, not CLI tools. They publish to crates.io only (no binary releases, no archives, no Homebrew). anodize adds nothing over `cargo publish`.
+- **tokio**, **serde**, **clap** — these are libraries, not CLI tools. They publish to crates.io only (no binary releases, no archives, no Homebrew). anodizer adds nothing over `cargo publish`.
 
-**Feature gap analysis:** `.claude/specs/community-adoption-feature-gaps.md` — comprehensive analysis of what these 21 projects do in their release workflows that anodize doesn't yet support. Must be reviewed and actioned before starting PR work.
+**Feature gap analysis:** `.claude/specs/community-adoption-feature-gaps.md` — comprehensive analysis of what these 21 projects do in their release workflows that anodizer doesn't yet support. Must be reviewed and actioned before starting PR work.
 
 **Before submitting any community PRs, this session must:**
 1. Re-read `.claude/specs/community-adoption-feature-gaps.md` and do a fresh web search to verify currency
 2. Determine which gap features are in scope vs out of scope, producing a final prioritized list
 3. Implement the must-have features (shell completions, man pages, binary stripping, prerelease auto-detection — see spec Section C)
 4. Evaluate the "high value" features (macOS notarization, AppImage, NPM/PyPI, multi-arch Docker, attestation) and implement any that are feasible
-5. Only then begin writing `.anodize.yaml` configs and PRs for target repos
+5. Only then begin writing `.anodizer.yaml` configs and PRs for target repos
 
 **Recommended PR approach:**
 1. Start with **sharkdp trio** (bat, fd, hyperfine) — same author, same monolithic CICD.yml pattern, converting one proves concept for all three. Combined 128k stars.
 2. Then **ripgrep** — maximum visibility, known workflow pain (issue #2285).
-3. Then **nushell** — showcases anodize's full feature set (MSI, Winget, nightly, beta).
+3. Then **nushell** — showcases anodizer's full feature set (MSI, Winget, nightly, beta).
 4. Then **starship**, **zoxide**, **delta** for breadth.
 
 - Survey release workflows, identify pain points
-- Submit PRs converting workflows to `.anodize.yaml`
+- Submit PRs converting workflows to `.anodizer.yaml`

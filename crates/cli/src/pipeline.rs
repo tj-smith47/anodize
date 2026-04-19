@@ -1,9 +1,9 @@
-use anodize_core::config::{Config, IncludeSpec};
-use anodize_core::context::Context;
-use anodize_core::env_expand::expand_env as expand_env_vars;
-pub use anodize_core::hooks::run_hooks;
-use anodize_core::log::StageLogger;
-use anodize_core::stage::Stage;
+use anodizer_core::config::{Config, IncludeSpec};
+use anodizer_core::context::Context;
+use anodizer_core::env_expand::expand_env as expand_env_vars;
+pub use anodizer_core::hooks::run_hooks;
+use anodizer_core::log::StageLogger;
+use anodizer_core::stage::Stage;
 use anyhow::{Context as _, Result, bail};
 use colored::Colorize;
 use std::path::{Path, PathBuf};
@@ -19,12 +19,12 @@ pub fn find_config(config_override: Option<&Path>) -> Result<PathBuf> {
         bail!("config file not found: {}", path.display());
     }
     let candidates = [
-        ".anodize.yaml",
-        ".anodize.yml",
-        ".anodize.toml",
-        "anodize.yaml",
-        "anodize.yml",
-        "anodize.toml",
+        ".anodizer.yaml",
+        ".anodizer.yml",
+        ".anodizer.toml",
+        "anodizer.yaml",
+        "anodizer.yml",
+        "anodizer.toml",
     ];
     for name in &candidates {
         let path = PathBuf::from(name);
@@ -34,11 +34,11 @@ pub fn find_config(config_override: Option<&Path>) -> Result<PathBuf> {
     }
     // Fallback: if Cargo.toml exists, use a default config instead of erroring.
     if Path::new("Cargo.toml").exists() {
-        eprintln!("WARNING: no anodize config found; using defaults from Cargo.toml");
+        eprintln!("WARNING: no anodizer config found; using defaults from Cargo.toml");
         return Ok(PathBuf::from("Cargo.toml"));
     }
     bail!(
-        "no anodize config file found (tried: {}). Run `anodize init` to generate one.",
+        "no anodizer config file found (tried: {}). Run `anodizer init` to generate one.",
         candidates.join(", ")
     )
 }
@@ -73,7 +73,7 @@ fn merge_yaml(base: &mut serde_yaml_ng::Value, overlay: &serde_yaml_ng::Value) {
 /// form actually exists in the current `Config` schema.
 ///
 /// Parity with GoReleaser `internal/deprecate/deprecate.go` notices plus
-/// anodize-specific renames (e.g. `goamd64`→`amd64_variant`).
+/// anodizer-specific renames (e.g. `goamd64`→`amd64_variant`).
 pub fn detect_deprecated_aliases(raw: &serde_yaml_ng::Value) -> Vec<(String, String)> {
     let mut found: Vec<(String, String)> = Vec::new();
 
@@ -106,7 +106,7 @@ pub fn detect_deprecated_aliases(raw: &serde_yaml_ng::Value) -> Vec<(String, Str
         ),
         (
             "dockers",
-            "top-level `dockers:` (GoReleaser v1 pipeline) is being phased out. Move Docker image configs under each crate's `docker_v2:` array (anodize v2 pipeline) — v1 docker is deprecated upstream.",
+            "top-level `dockers:` (GoReleaser v1 pipeline) is being phased out. Move Docker image configs under each crate's `docker_v2:` array (anodizer v2 pipeline) — v1 docker is deprecated upstream.",
         ),
         (
             "brews",
@@ -339,7 +339,7 @@ pub fn load_config_with_deprecations(path: &Path) -> Result<(Config, Vec<(String
 /// not overrides.
 pub fn load_config(path: &Path) -> Result<Config> {
     // Special case: Cargo.toml fallback returns a default Config. The
-    // find_config function returns "Cargo.toml" when no anodize config file
+    // find_config function returns "Cargo.toml" when no anodizer config file
     // exists but a Cargo.toml is present in the working directory.
     if path.file_name().and_then(|n| n.to_str()) == Some("Cargo.toml") {
         return Ok(Config::default());
@@ -355,14 +355,14 @@ pub fn load_config(path: &Path) -> Result<Config> {
     };
 
     // Validate config schema version
-    anodize_core::config::validate_version(&config).map_err(|e| anyhow::anyhow!("{}", e))?;
+    anodizer_core::config::validate_version(&config).map_err(|e| anyhow::anyhow!("{}", e))?;
     // Validate git.tag_sort if present
-    anodize_core::config::validate_tag_sort(&config).map_err(|e| anyhow::anyhow!("{}", e))?;
+    anodizer_core::config::validate_tag_sort(&config).map_err(|e| anyhow::anyhow!("{}", e))?;
     // Validate archives[].format_overrides[].goos
-    anodize_core::config::validate_format_overrides(&config)
+    anodizer_core::config::validate_format_overrides(&config)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
     // Validate release block does not configure multiple SCM backends.
-    anodize_core::config::validate_release_backends(&config)
+    anodizer_core::config::validate_release_backends(&config)
         .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     // Apply monorepo defaults: when monorepo.dir is set and a crate's path
@@ -370,7 +370,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
     apply_monorepo_defaults(&mut config);
 
     // Normalize commit_author defaults on every publisher config that carries
-    // one (matches GoReleaser's `Default()` pipe). Fills in anodize defaults
+    // one (matches GoReleaser's `Default()` pipe). Fills in anodizer defaults
     // for empty name/email so error messages referencing author identity at
     // config-validation time see non-empty strings.
     normalize_commit_author_defaults(&mut config);
@@ -381,8 +381,8 @@ pub fn load_config(path: &Path) -> Result<Config> {
 /// Walk the loaded config and fill in commit_author defaults on every
 /// publisher that has one (homebrew formula + cask, scoop, chocolatey, winget,
 /// nix, aur, krew). GoReleaser does this in its per-publisher `Default()`
-/// pass; anodize centralises here so the normalization runs once at load.
-fn normalize_commit_author_defaults(config: &mut anodize_core::config::Config) {
+/// pass; anodizer centralises here so the normalization runs once at load.
+fn normalize_commit_author_defaults(config: &mut anodizer_core::config::Config) {
     for crate_cfg in &mut config.crates {
         normalize_crate_commit_author(crate_cfg);
     }
@@ -395,7 +395,7 @@ fn normalize_commit_author_defaults(config: &mut anodize_core::config::Config) {
     }
 }
 
-fn normalize_crate_commit_author(crate_cfg: &mut anodize_core::config::CrateConfig) {
+fn normalize_crate_commit_author(crate_cfg: &mut anodizer_core::config::CrateConfig) {
     let Some(ref mut pub_cfg) = crate_cfg.publish else {
         return;
     };
@@ -564,7 +564,7 @@ fn fetch_url_as_yaml(
     headers: Option<&std::collections::HashMap<String, String>>,
     config_path: &Path,
 ) -> Result<serde_yaml_ng::Value> {
-    let client = anodize_core::http::blocking_client(Duration::from_secs(30))
+    let client = anodizer_core::http::blocking_client(Duration::from_secs(30))
         .with_context(|| "failed to build HTTP client for include URL fetch")?;
 
     let mut request = client.get(url);
@@ -753,7 +753,7 @@ fn load_include_as_yaml(
     }
 }
 
-// run_hooks is re-exported from anodize_core::hooks
+// run_hooks is re-exported from anodizer_core::hooks
 
 pub struct Pipeline {
     stages: Vec<Box<dyn Stage>>,
@@ -797,9 +797,9 @@ impl Pipeline {
         let mut has_binaries = ctx.artifacts.all().iter().any(|a| {
             matches!(
                 a.kind,
-                anodize_core::artifact::ArtifactKind::Binary
-                    | anodize_core::artifact::ArtifactKind::UploadableBinary
-                    | anodize_core::artifact::ArtifactKind::UniversalBinary
+                anodizer_core::artifact::ArtifactKind::Binary
+                    | anodizer_core::artifact::ArtifactKind::UploadableBinary
+                    | anodizer_core::artifact::ArtifactKind::UniversalBinary
             )
         });
 
@@ -845,9 +845,9 @@ impl Pipeline {
                         has_binaries = ctx.artifacts.all().iter().any(|a| {
                             matches!(
                                 a.kind,
-                                anodize_core::artifact::ArtifactKind::Binary
-                                    | anodize_core::artifact::ArtifactKind::UploadableBinary
-                                    | anodize_core::artifact::ArtifactKind::UniversalBinary
+                                anodizer_core::artifact::ArtifactKind::Binary
+                                    | anodizer_core::artifact::ArtifactKind::UploadableBinary
+                                    | anodizer_core::artifact::ArtifactKind::UniversalBinary
                             )
                         });
                     }
@@ -898,7 +898,7 @@ impl Pipeline {
 /// Write preliminary metadata.json and artifacts.json before the release
 /// stage so that `include_meta: true` can attach them to the GitHub release.
 /// `run_post_pipeline` overwrites these with the final version afterward.
-fn write_pre_release_metadata(ctx: &mut anodize_core::context::Context) -> anyhow::Result<()> {
+fn write_pre_release_metadata(ctx: &mut anodizer_core::context::Context) -> anyhow::Result<()> {
     let dist = &ctx.config.dist;
     std::fs::create_dir_all(dist)?;
 
@@ -932,34 +932,34 @@ fn write_pre_release_metadata(ctx: &mut anodize_core::context::Context) -> anyho
 
 /// Build the full release pipeline with all stages in order
 pub fn build_release_pipeline() -> Pipeline {
-    use anodize_stage_announce::AnnounceStage;
-    use anodize_stage_appbundle::AppBundleStage;
-    use anodize_stage_archive::ArchiveStage;
-    use anodize_stage_blob::BlobStage;
-    use anodize_stage_build::BuildStage;
-    use anodize_stage_changelog::ChangelogStage;
-    use anodize_stage_checksum::ChecksumStage;
-    use anodize_stage_dmg::DmgStage;
-    use anodize_stage_docker::DockerStage;
-    use anodize_stage_flatpak::FlatpakStage;
-    use anodize_stage_makeself::MakeselfStage;
-    use anodize_stage_msi::MsiStage;
-    use anodize_stage_nfpm::NfpmStage;
-    use anodize_stage_notarize::NotarizeStage;
-    use anodize_stage_nsis::NsisStage;
-    use anodize_stage_pkg::PkgStage;
-    use anodize_stage_publish::PublishStage;
-    use anodize_stage_release::ReleaseStage;
-    use anodize_stage_sbom::SbomStage;
-    use anodize_stage_sign::{DockerSignStage, SignStage};
-    use anodize_stage_snapcraft::{SnapcraftPublishStage, SnapcraftStage};
-    use anodize_stage_source::SourceStage;
-    use anodize_stage_srpm::SrpmStage;
-    use anodize_stage_templatefiles::TemplateFilesStage;
-    use anodize_stage_upx::UpxStage;
+    use anodizer_stage_announce::AnnounceStage;
+    use anodizer_stage_appbundle::AppBundleStage;
+    use anodizer_stage_archive::ArchiveStage;
+    use anodizer_stage_blob::BlobStage;
+    use anodizer_stage_build::BuildStage;
+    use anodizer_stage_changelog::ChangelogStage;
+    use anodizer_stage_checksum::ChecksumStage;
+    use anodizer_stage_dmg::DmgStage;
+    use anodizer_stage_docker::DockerStage;
+    use anodizer_stage_flatpak::FlatpakStage;
+    use anodizer_stage_makeself::MakeselfStage;
+    use anodizer_stage_msi::MsiStage;
+    use anodizer_stage_nfpm::NfpmStage;
+    use anodizer_stage_notarize::NotarizeStage;
+    use anodizer_stage_nsis::NsisStage;
+    use anodizer_stage_pkg::PkgStage;
+    use anodizer_stage_publish::PublishStage;
+    use anodizer_stage_release::ReleaseStage;
+    use anodizer_stage_sbom::SbomStage;
+    use anodizer_stage_sign::{DockerSignStage, SignStage};
+    use anodizer_stage_snapcraft::{SnapcraftPublishStage, SnapcraftStage};
+    use anodizer_stage_source::SourceStage;
+    use anodizer_stage_srpm::SrpmStage;
+    use anodizer_stage_templatefiles::TemplateFilesStage;
+    use anodizer_stage_upx::UpxStage;
 
     // Stage order matches GoReleaser pipeline.go for parity.
-    // Anodize-specific stages (appbundle, dmg, msi, pkg, nsis, templatefiles,
+    // Anodizer-specific stages (appbundle, dmg, msi, pkg, nsis, templatefiles,
     // release, snapcraft-publish, blob) are interleaved at logical positions.
     let mut p = Pipeline::new();
 
@@ -1007,8 +1007,8 @@ pub fn build_release_pipeline() -> Pipeline {
 
 /// Build a pipeline that only runs the build stage (for --split mode).
 pub fn build_split_pipeline() -> Pipeline {
-    use anodize_stage_build::BuildStage;
-    use anodize_stage_upx::UpxStage;
+    use anodizer_stage_build::BuildStage;
+    use anodizer_stage_upx::UpxStage;
 
     let mut p = Pipeline::new();
     p.add(Box::new(BuildStage));
@@ -1018,10 +1018,10 @@ pub fn build_split_pipeline() -> Pipeline {
 
 /// Build a publish-only pipeline: release, publish, snapcraft-publish, blob stages.
 pub fn build_publish_pipeline() -> Pipeline {
-    use anodize_stage_blob::BlobStage;
-    use anodize_stage_publish::PublishStage;
-    use anodize_stage_release::ReleaseStage;
-    use anodize_stage_snapcraft::SnapcraftPublishStage;
+    use anodizer_stage_blob::BlobStage;
+    use anodizer_stage_publish::PublishStage;
+    use anodizer_stage_release::ReleaseStage;
+    use anodizer_stage_snapcraft::SnapcraftPublishStage;
 
     let mut p = Pipeline::new();
     p.add(Box::new(ReleaseStage));
@@ -1033,7 +1033,7 @@ pub fn build_publish_pipeline() -> Pipeline {
 
 /// Build an announce-only pipeline.
 pub fn build_announce_pipeline() -> Pipeline {
-    use anodize_stage_announce::AnnounceStage;
+    use anodizer_stage_announce::AnnounceStage;
 
     let mut p = Pipeline::new();
     p.add(Box::new(AnnounceStage));
@@ -1042,29 +1042,29 @@ pub fn build_announce_pipeline() -> Pipeline {
 
 /// Build a pipeline for --merge mode: all post-build stages.
 pub fn build_merge_pipeline() -> Pipeline {
-    use anodize_stage_announce::AnnounceStage;
-    use anodize_stage_appbundle::AppBundleStage;
-    use anodize_stage_archive::ArchiveStage;
-    use anodize_stage_blob::BlobStage;
-    use anodize_stage_changelog::ChangelogStage;
-    use anodize_stage_checksum::ChecksumStage;
-    use anodize_stage_dmg::DmgStage;
-    use anodize_stage_docker::DockerStage;
-    use anodize_stage_flatpak::FlatpakStage;
-    use anodize_stage_makeself::MakeselfStage;
-    use anodize_stage_msi::MsiStage;
-    use anodize_stage_nfpm::NfpmStage;
-    use anodize_stage_notarize::NotarizeStage;
-    use anodize_stage_nsis::NsisStage;
-    use anodize_stage_pkg::PkgStage;
-    use anodize_stage_publish::PublishStage;
-    use anodize_stage_release::ReleaseStage;
-    use anodize_stage_sbom::SbomStage;
-    use anodize_stage_sign::{DockerSignStage, SignStage};
-    use anodize_stage_snapcraft::{SnapcraftPublishStage, SnapcraftStage};
-    use anodize_stage_source::SourceStage;
-    use anodize_stage_srpm::SrpmStage;
-    use anodize_stage_templatefiles::TemplateFilesStage;
+    use anodizer_stage_announce::AnnounceStage;
+    use anodizer_stage_appbundle::AppBundleStage;
+    use anodizer_stage_archive::ArchiveStage;
+    use anodizer_stage_blob::BlobStage;
+    use anodizer_stage_changelog::ChangelogStage;
+    use anodizer_stage_checksum::ChecksumStage;
+    use anodizer_stage_dmg::DmgStage;
+    use anodizer_stage_docker::DockerStage;
+    use anodizer_stage_flatpak::FlatpakStage;
+    use anodizer_stage_makeself::MakeselfStage;
+    use anodizer_stage_msi::MsiStage;
+    use anodizer_stage_nfpm::NfpmStage;
+    use anodizer_stage_notarize::NotarizeStage;
+    use anodizer_stage_nsis::NsisStage;
+    use anodizer_stage_pkg::PkgStage;
+    use anodizer_stage_publish::PublishStage;
+    use anodizer_stage_release::ReleaseStage;
+    use anodizer_stage_sbom::SbomStage;
+    use anodizer_stage_sign::{DockerSignStage, SignStage};
+    use anodizer_stage_snapcraft::{SnapcraftPublishStage, SnapcraftStage};
+    use anodizer_stage_source::SourceStage;
+    use anodizer_stage_srpm::SrpmStage;
+    use anodizer_stage_templatefiles::TemplateFilesStage;
 
     // Merge pipeline: same order as build_release_pipeline minus Build/UPX.
     let mut p = Pipeline::new();
@@ -1202,7 +1202,7 @@ mod tests {
     #[test]
     fn test_load_config_includes_field_parses() {
         let tmp = TempDir::new().unwrap();
-        let cfg_path = tmp.path().join("anodize.yaml");
+        let cfg_path = tmp.path().join("anodizer.yaml");
         fs::write(
             &cfg_path,
             "project_name: myproject\nincludes:\n  - extra.yaml\ncrates: []\n",
@@ -1215,7 +1215,7 @@ mod tests {
         assert_eq!(config.project_name, "myproject");
         assert_eq!(
             config.includes,
-            Some(vec![anodize_core::config::IncludeSpec::Path(
+            Some(vec![anodizer_core::config::IncludeSpec::Path(
                 "extra.yaml".to_string()
             )])
         );
@@ -1230,7 +1230,7 @@ mod tests {
         let include_path = tmp.path().join("overrides.yaml");
         fs::write(&include_path, "dist: /custom/dist\n").unwrap();
 
-        let cfg_path = tmp.path().join("anodize.yaml");
+        let cfg_path = tmp.path().join("anodizer.yaml");
         fs::write(
             &cfg_path,
             "project_name: merged\nincludes:\n  - overrides.yaml\ncrates: []\n",
@@ -1253,7 +1253,7 @@ mod tests {
         )
         .unwrap();
 
-        let cfg_path = tmp.path().join("anodize.yaml");
+        let cfg_path = tmp.path().join("anodizer.yaml");
         fs::write(
             &cfg_path,
             "project_name: seq-test\nincludes:\n  - more-crates.yaml\ncrates:\n  - name: base-crate\n    path: crates/base\n",
@@ -1277,7 +1277,7 @@ mod tests {
         fs::write(&include_path, "dist: /from-include\n").unwrap();
 
         // Base config also defines dist — it should win.
-        let cfg_path = tmp.path().join("anodize.yaml");
+        let cfg_path = tmp.path().join("anodizer.yaml");
         fs::write(
             &cfg_path,
             "project_name: priority-test\nincludes:\n  - defaults.yaml\ndist: /from-base\ncrates: []\n",
@@ -1295,7 +1295,7 @@ mod tests {
     #[test]
     fn test_load_config_missing_include_file_returns_error() {
         let tmp = TempDir::new().unwrap();
-        let cfg_path = tmp.path().join("anodize.yaml");
+        let cfg_path = tmp.path().join("anodizer.yaml");
         fs::write(
             &cfg_path,
             "project_name: test\nincludes:\n  - nonexistent.yaml\ncrates: []\n",
@@ -1315,7 +1315,7 @@ mod tests {
     #[test]
     fn test_load_config_no_includes_works_as_before() {
         let tmp = TempDir::new().unwrap();
-        let cfg_path = tmp.path().join("anodize.yaml");
+        let cfg_path = tmp.path().join("anodizer.yaml");
         fs::write(&cfg_path, "project_name: simple\ncrates: []\n").unwrap();
 
         let config = load_config(&cfg_path).unwrap();
@@ -1328,7 +1328,7 @@ mod tests {
     #[test]
     fn test_load_config_version_1_accepted() {
         let tmp = TempDir::new().unwrap();
-        let cfg_path = tmp.path().join("anodize.yaml");
+        let cfg_path = tmp.path().join("anodizer.yaml");
         fs::write(&cfg_path, "project_name: test\nversion: 1\ncrates: []\n").unwrap();
         let config = load_config(&cfg_path).unwrap();
         assert_eq!(config.version, Some(1));
@@ -1337,7 +1337,7 @@ mod tests {
     #[test]
     fn test_load_config_version_2_accepted() {
         let tmp = TempDir::new().unwrap();
-        let cfg_path = tmp.path().join("anodize.yaml");
+        let cfg_path = tmp.path().join("anodizer.yaml");
         fs::write(&cfg_path, "project_name: test\nversion: 2\ncrates: []\n").unwrap();
         let config = load_config(&cfg_path).unwrap();
         assert_eq!(config.version, Some(2));
@@ -1346,7 +1346,7 @@ mod tests {
     #[test]
     fn test_load_config_version_99_rejected() {
         let tmp = TempDir::new().unwrap();
-        let cfg_path = tmp.path().join("anodize.yaml");
+        let cfg_path = tmp.path().join("anodizer.yaml");
         fs::write(&cfg_path, "project_name: test\nversion: 99\ncrates: []\n").unwrap();
         let result = load_config(&cfg_path);
         assert!(result.is_err());
@@ -1361,7 +1361,7 @@ mod tests {
     #[test]
     fn test_load_config_env_files_list_form() {
         let tmp = TempDir::new().unwrap();
-        let cfg_path = tmp.path().join("anodize.yaml");
+        let cfg_path = tmp.path().join("anodizer.yaml");
         fs::write(
             &cfg_path,
             "project_name: test\nenv_files:\n  - .env\n  - .release.env\ncrates: []\n",
@@ -1378,7 +1378,7 @@ mod tests {
     #[test]
     fn test_load_config_env_files_struct_form() {
         let tmp = TempDir::new().unwrap();
-        let cfg_path = tmp.path().join("anodize.yaml");
+        let cfg_path = tmp.path().join("anodizer.yaml");
         fs::write(
             &cfg_path,
             "project_name: test\nenv_files:\n  github_token: /tmp/gh_token\n  gitlab_token: /tmp/gl_token\ncrates: []\n",
@@ -1397,7 +1397,7 @@ mod tests {
     #[test]
     fn test_load_config_with_ignore_and_overrides() {
         let tmp = TempDir::new().unwrap();
-        let cfg_path = tmp.path().join("anodize.yaml");
+        let cfg_path = tmp.path().join("anodizer.yaml");
         fs::write(
             &cfg_path,
             r#"
@@ -1432,7 +1432,7 @@ crates: []
         let include_path = tmp.path().join("shared.yaml");
         fs::write(&include_path, "report_sizes: true\n").unwrap();
 
-        let cfg_path = tmp.path().join("anodize.yaml");
+        let cfg_path = tmp.path().join("anodizer.yaml");
         fs::write(
             &cfg_path,
             "project_name: structured\nincludes:\n  - from_file:\n      path: shared.yaml\ncrates: []\n",
@@ -1445,8 +1445,8 @@ crates: []
         // The includes field itself should deserialize as FromFile variant
         assert_eq!(
             config.includes,
-            Some(vec![anodize_core::config::IncludeSpec::FromFile {
-                from_file: anodize_core::config::IncludeFilePath {
+            Some(vec![anodizer_core::config::IncludeSpec::FromFile {
+                from_file: anodizer_core::config::IncludeFilePath {
                     path: "shared.yaml".to_string(),
                 },
             }])
@@ -1463,7 +1463,7 @@ crates: []
         let extra2 = tmp.path().join("extra2.yaml");
         fs::write(&extra2, "dist: /custom\n").unwrap();
 
-        let cfg_path = tmp.path().join("anodize.yaml");
+        let cfg_path = tmp.path().join("anodizer.yaml");
         fs::write(
             &cfg_path,
             r#"project_name: mixed
@@ -1486,7 +1486,7 @@ crates: []
     #[test]
     fn test_includes_from_file_absolute_path_rejected() {
         let tmp = TempDir::new().unwrap();
-        let cfg_path = tmp.path().join("anodize.yaml");
+        let cfg_path = tmp.path().join("anodizer.yaml");
         fs::write(
             &cfg_path,
             format!(
@@ -1513,7 +1513,7 @@ crates: []
     #[test]
     fn test_includes_from_file_missing_path_field() {
         let tmp = TempDir::new().unwrap();
-        let cfg_path = tmp.path().join("anodize.yaml");
+        let cfg_path = tmp.path().join("anodizer.yaml");
         fs::write(
             &cfg_path,
             "project_name: test\nincludes:\n  - from_file:\n      wrong_key: value\ncrates: []\n",
@@ -1544,7 +1544,7 @@ crates: []
         let inc2 = tmp.path().join("inc2.yaml");
         fs::write(&inc2, "report_sizes: true\n").unwrap();
 
-        let cfg_path = tmp.path().join("anodize.yaml");
+        let cfg_path = tmp.path().join("anodizer.yaml");
         fs::write(
             &cfg_path,
             "project_name: backcompat\nincludes:\n  - inc1.yaml\n  - inc2.yaml\ncrates: []\n",
@@ -1602,7 +1602,7 @@ crates: []
         let include_path = tmp.path().join("defaults.yaml");
         fs::write(&include_path, "report_sizes: true\n").unwrap();
 
-        let cfg_path = tmp.path().join("anodize.toml");
+        let cfg_path = tmp.path().join("anodizer.toml");
         fs::write(
             &cfg_path,
             "project_name = \"toml-test\"\nincludes = [\"defaults.yaml\"]\ncrates = []\n",
@@ -1621,7 +1621,7 @@ crates: []
         let include_path = tmp.path().join("shared.yaml");
         fs::write(&include_path, "dist: /shared-dist\n").unwrap();
 
-        let cfg_path = tmp.path().join("anodize.toml");
+        let cfg_path = tmp.path().join("anodizer.toml");
         fs::write(
             &cfg_path,
             r#"project_name = "toml-structured"
@@ -1646,17 +1646,20 @@ path = "shared.yaml"
     #[test]
     #[serial]
     fn test_header_keys_not_expanded_only_values() {
-        unsafe { std::env::set_var("ANODIZE_HDR_VAL", "expanded_val") };
+        unsafe { std::env::set_var("ANODIZER_HDR_VAL", "expanded_val") };
 
         let mut headers = std::collections::HashMap::new();
-        headers.insert("$KEY_LITERAL".to_string(), "${ANODIZE_HDR_VAL}".to_string());
+        headers.insert(
+            "$KEY_LITERAL".to_string(),
+            "${ANODIZER_HDR_VAL}".to_string(),
+        );
 
         // We can't call fetch_url_as_yaml without a real server, but we can verify
         // the expand_env_vars behavior that the code relies on: header keys are NOT
         // passed through expand_env_vars (only values are).
         // Verify: expanding the key would change it, but we don't expand keys.
         let key = "$KEY_LITERAL";
-        let value = "${ANODIZE_HDR_VAL}";
+        let value = "${ANODIZER_HDR_VAL}";
         assert_eq!(
             key, "$KEY_LITERAL",
             "header key must be preserved literally"
@@ -1674,7 +1677,7 @@ path = "shared.yaml"
             "expanding a key with valid var name destroys it — proves keys must not be expanded"
         );
 
-        unsafe { std::env::remove_var("ANODIZE_HDR_VAL") };
+        unsafe { std::env::remove_var("ANODIZER_HDR_VAL") };
     }
 
     // -----------------------------------------------------------------------
@@ -1714,7 +1717,7 @@ path = "shared.yaml"
         let include_path = tmp.path().join("shared.yaml");
         fs::write(&include_path, "report_sizes: true\n").unwrap();
 
-        let cfg_path = tmp.path().join("anodize.toml");
+        let cfg_path = tmp.path().join("anodizer.toml");
         fs::write(
             &cfg_path,
             r#"project_name = "toml-from-url-test"

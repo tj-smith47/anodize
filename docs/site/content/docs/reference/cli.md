@@ -23,7 +23,7 @@ Release Rust projects with ease
 ## Commands
 
 
-### `anodize release`
+### `anodizer release`
 
 Run the full release pipeline
 
@@ -38,7 +38,7 @@ Run the full release pipeline
 | `--dry-run` | — | — | Run full pipeline without side effects |
 | `--clean` | — | — | Remove dist directory before starting |
 | `--skip` | — | — | Skip stages (comma-separated, e.g. docker,announce) |
-| `--token` | — | — | GitHub token (overrides ANODIZE_GITHUB_TOKEN / GITHUB_TOKEN env vars) |
+| `--token` | — | — | GitHub token (overrides ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN env vars) |
 | `--timeout` | — | `60m` | Pipeline timeout duration (e.g., 60m, 1h, 5s) |
 | `--parallelism` | `-p` | — | Maximum number of parallel build jobs (default: number of CPUs) |
 | `--auto-snapshot` | — | — | Automatically set --snapshot if the git repo is dirty |
@@ -57,7 +57,7 @@ Run the full release pipeline
 | `--prepare` | — | — | Run local build + archive + sign + checksum + sbom stages but skip release / publish / announce (GoReleaser Pro parity). Artifacts stay in dist/ for inspection. |
 
 
-### `anodize build`
+### `anodizer build`
 
 Build binaries only (always runs in snapshot mode)
 
@@ -73,7 +73,7 @@ Build binaries only (always runs in snapshot mode)
 | `--skip` | — | — | Skip stages (comma-separated: pre-hooks, post-hooks, validate, before) |
 
 
-### `anodize check`
+### `anodizer check`
 
 Validate configuration
 
@@ -83,12 +83,12 @@ Validate configuration
 | `--workspace` | — | — | Validate a specific workspace in a monorepo config |
 
 
-### `anodize init`
+### `anodizer init`
 
 Generate starter config
 
 
-### `anodize changelog`
+### `anodizer changelog`
 
 Generate changelog only
 
@@ -98,7 +98,7 @@ Generate changelog only
 | `--crate` | — | — | Generate changelog for a specific crate |
 
 
-### `anodize completion`
+### `anodizer completion`
 
 Generate shell completions
 
@@ -108,22 +108,22 @@ Generate shell completions
 | `<shell>` | — | — | Shell to generate completions for |
 
 
-### `anodize healthcheck`
+### `anodizer healthcheck`
 
 Check availability of required external tools
 
 
-### `anodize man`
+### `anodizer man`
 
 Generate man pages to stdout
 
 
-### `anodize jsonschema`
+### `anodizer jsonschema`
 
-Output JSON Schema for .anodize.yaml
+Output JSON Schema for .anodizer.yaml
 
 
-### `anodize resolve-tag`
+### `anodizer resolve-tag`
 
 Resolve a git tag to its matching crate in the config
 
@@ -134,7 +134,7 @@ Resolve a git tag to its matching crate in the config
 | `--json` | — | — | Output as JSON |
 
 
-### `anodize targets`
+### `anodizer targets`
 
 Emit the configured build targets as a GitHub Actions matrix
 
@@ -145,7 +145,7 @@ Emit the configured build targets as a GitHub Actions matrix
 | `--crate` | — | — | Restrict to specific crate(s) |
 
 
-### `anodize tag`
+### `anodizer tag`
 
 Auto-tag based on commit message directives
 
@@ -158,7 +158,7 @@ Auto-tag based on commit message directives
 | `--crate` | — | — | Tag a specific crate in a workspace |
 
 
-### `anodize continue`
+### `anodizer continue`
 
 Continue a split release by merging artifacts and running post-build stages
 
@@ -169,10 +169,10 @@ Continue a split release by merging artifacts and running post-build stages
 | `--dist` | — | — | Custom dist directory (overrides config) |
 | `--dry-run` | — | — | Run full pipeline without side effects |
 | `--skip` | — | — | Skip stages (comma-separated, e.g. docker,announce) |
-| `--token` | — | — | GitHub token (overrides ANODIZE_GITHUB_TOKEN / GITHUB_TOKEN env vars) |
+| `--token` | — | — | GitHub token (overrides ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN env vars) |
 
 
-### `anodize publish`
+### `anodizer publish`
 
 Run only the publish stages (release, publish, blob) from a completed dist/
 
@@ -180,11 +180,11 @@ Run only the publish stages (release, publish, blob) from a completed dist/
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--dry-run` | — | — | Run full pipeline without side effects |
-| `--token` | — | — | GitHub token (overrides ANODIZE_GITHUB_TOKEN / GITHUB_TOKEN env vars) |
+| `--token` | — | — | GitHub token (overrides ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN env vars) |
 | `--dist` | — | — | Custom dist directory (overrides config) |
 
 
-### `anodize bump`
+### `anodizer bump`
 
 Bump crate versions (Conventional Commits → semver level)
 
@@ -206,7 +206,7 @@ Bump crate versions (Conventional Commits → semver level)
 | `--output` | — | `text` | Output format: text | json (json requires --dry-run) |
 
 
-### `anodize announce`
+### `anodizer announce`
 
 Run only the announce stage from a completed dist/
 
@@ -215,6 +215,6 @@ Run only the announce stage from a completed dist/
 |------|-------|---------|-------------|
 | `--dry-run` | — | — | Run full pipeline without side effects |
 | `--dist` | — | — | Custom dist directory (overrides config) |
-| `--token` | — | — | GitHub token (overrides ANODIZE_GITHUB_TOKEN / GITHUB_TOKEN env vars) |
+| `--token` | — | — | GitHub token (overrides ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN env vars) |
 | `--skip` | — | — | Skip stages (comma-separated) |
 

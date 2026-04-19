@@ -3,10 +3,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
 
-use anodize_core::artifact::{Artifact, ArtifactKind};
-use anodize_core::config::parse_octal_mode;
-use anodize_core::context::Context;
-use anodize_core::stage::Stage;
+use anodizer_core::artifact::{Artifact, ArtifactKind};
+use anodizer_core::config::parse_octal_mode;
+use anodizer_core::context::Context;
+use anodizer_core::stage::Stage;
 
 /// Default file permission mode (octal 0o655 = decimal 429).
 const DEFAULT_MODE: u32 = 0o655;
@@ -136,7 +136,7 @@ impl Stage for TemplateFilesStage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anodize_core::test_helpers::TestContextBuilder;
+    use anodizer_core::test_helpers::TestContextBuilder;
     use std::fs;
     use tempfile::TempDir;
 
@@ -164,7 +164,7 @@ mod tests {
         )
         .unwrap();
 
-        ctx.config.template_files = Some(vec![anodize_core::config::TemplateFileConfig {
+        ctx.config.template_files = Some(vec![anodizer_core::config::TemplateFileConfig {
             id: Some("greeting".to_string()),
             src: src_path.to_string_lossy().to_string(),
             dst: "greeting.txt".to_string(),
@@ -188,7 +188,7 @@ mod tests {
         let src_path = tmp.path().join("input.tpl");
         fs::write(&src_path, "static content").unwrap();
 
-        ctx.config.template_files = Some(vec![anodize_core::config::TemplateFileConfig {
+        ctx.config.template_files = Some(vec![anodizer_core::config::TemplateFileConfig {
             id: None,
             src: src_path.to_string_lossy().to_string(),
             dst: "subdir/output.txt".to_string(),
@@ -211,7 +211,7 @@ mod tests {
         let src_path = tmp.path().join("script.tpl");
         fs::write(&src_path, "#!/bin/sh\necho hi").unwrap();
 
-        ctx.config.template_files = Some(vec![anodize_core::config::TemplateFileConfig {
+        ctx.config.template_files = Some(vec![anodizer_core::config::TemplateFileConfig {
             id: None,
             src: src_path.to_string_lossy().to_string(),
             dst: "script.sh".to_string(),
@@ -238,7 +238,7 @@ mod tests {
         let src_path = tmp.path().join("exec.tpl");
         fs::write(&src_path, "#!/bin/bash").unwrap();
 
-        ctx.config.template_files = Some(vec![anodize_core::config::TemplateFileConfig {
+        ctx.config.template_files = Some(vec![anodizer_core::config::TemplateFileConfig {
             id: None,
             src: src_path.to_string_lossy().to_string(),
             dst: "exec.sh".to_string(),
@@ -275,7 +275,7 @@ mod tests {
             "{}/{{{{ .ProjectName }}}}-install.tpl",
             tmp.path().display()
         );
-        ctx.config.template_files = Some(vec![anodize_core::config::TemplateFileConfig {
+        ctx.config.template_files = Some(vec![anodizer_core::config::TemplateFileConfig {
             id: None,
             src: src_template,
             dst: "{{ .ProjectName }}-{{ .Version }}-install.sh".to_string(),
@@ -320,7 +320,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let mut ctx = build_ctx(&tmp);
 
-        ctx.config.template_files = Some(vec![anodize_core::config::TemplateFileConfig {
+        ctx.config.template_files = Some(vec![anodizer_core::config::TemplateFileConfig {
             id: Some("missing".to_string()),
             src: "/nonexistent/path/template.tpl".to_string(),
             dst: "output.txt".to_string(),
@@ -346,7 +346,7 @@ mod tests {
         let src_path = tmp.path().join("data.tpl");
         fs::write(&src_path, "some data").unwrap();
 
-        ctx.config.template_files = Some(vec![anodize_core::config::TemplateFileConfig {
+        ctx.config.template_files = Some(vec![anodizer_core::config::TemplateFileConfig {
             id: Some("my-file".to_string()),
             src: src_path.to_string_lossy().to_string(),
             dst: "data.txt".to_string(),
@@ -371,7 +371,7 @@ mod tests {
         let src_path = tmp.path().join("file.tpl");
         fs::write(&src_path, "content").unwrap();
 
-        ctx.config.template_files = Some(vec![anodize_core::config::TemplateFileConfig {
+        ctx.config.template_files = Some(vec![anodizer_core::config::TemplateFileConfig {
             id: None,
             src: src_path.to_string_lossy().to_string(),
             dst: "file.txt".to_string(),
@@ -398,19 +398,19 @@ mod tests {
         fs::write(&src_c, "content C static").unwrap();
 
         ctx.config.template_files = Some(vec![
-            anodize_core::config::TemplateFileConfig {
+            anodizer_core::config::TemplateFileConfig {
                 id: Some("file-a".to_string()),
                 src: src_a.to_string_lossy().to_string(),
                 dst: "a.txt".to_string(),
                 mode: None,
             },
-            anodize_core::config::TemplateFileConfig {
+            anodizer_core::config::TemplateFileConfig {
                 id: Some("file-b".to_string()),
                 src: src_b.to_string_lossy().to_string(),
                 dst: "subdir/b.txt".to_string(),
                 mode: Some("0755".to_string()),
             },
-            anodize_core::config::TemplateFileConfig {
+            anodizer_core::config::TemplateFileConfig {
                 id: Some("file-c".to_string()),
                 src: src_c.to_string_lossy().to_string(),
                 dst: "c.txt".to_string(),
@@ -456,7 +456,7 @@ mod tests {
         let src_path = tmp.path().join("bad.tpl");
         fs::write(&src_path, "Hello {{ invalid").unwrap();
 
-        ctx.config.template_files = Some(vec![anodize_core::config::TemplateFileConfig {
+        ctx.config.template_files = Some(vec![anodizer_core::config::TemplateFileConfig {
             id: Some("bad-template".to_string()),
             src: src_path.to_string_lossy().to_string(),
             dst: "bad.txt".to_string(),
@@ -485,7 +485,7 @@ mod tests {
         let src_path = tmp.path().join("escape.tpl");
         fs::write(&src_path, "trying to escape").unwrap();
 
-        ctx.config.template_files = Some(vec![anodize_core::config::TemplateFileConfig {
+        ctx.config.template_files = Some(vec![anodizer_core::config::TemplateFileConfig {
             id: None,
             src: src_path.to_string_lossy().to_string(),
             dst: "../escaped.txt".to_string(),
@@ -511,7 +511,7 @@ mod tests {
         let src_path = tmp.path().join("abs.tpl");
         fs::write(&src_path, "content").unwrap();
 
-        ctx.config.template_files = Some(vec![anodize_core::config::TemplateFileConfig {
+        ctx.config.template_files = Some(vec![anodizer_core::config::TemplateFileConfig {
             id: None,
             src: src_path.to_string_lossy().to_string(),
             dst: if cfg!(windows) {

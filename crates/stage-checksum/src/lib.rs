@@ -10,16 +10,16 @@ use sha1::Sha1;
 use sha2::{Sha224, Sha384, Sha512};
 use sha3::{Sha3_224, Sha3_256, Sha3_384, Sha3_512};
 
-use anodize_core::artifact::{Artifact, ArtifactKind, matches_id_filter};
-use anodize_core::config::ExtraFileSpec;
-use anodize_core::context::Context;
-use anodize_core::stage::Stage;
+use anodizer_core::artifact::{Artifact, ArtifactKind, matches_id_filter};
+use anodizer_core::config::ExtraFileSpec;
+use anodizer_core::context::Context;
+use anodizer_core::stage::Stage;
 
 // ---------------------------------------------------------------------------
 // Hash helpers
 // ---------------------------------------------------------------------------
 
-use anodize_core::hashing::hash_file_with;
+use anodizer_core::hashing::hash_file_with;
 
 pub fn sha1_file(path: &Path) -> Result<String> {
     hash_file_with::<Sha1>(path, "sha1")
@@ -29,7 +29,7 @@ pub fn sha224_file(path: &Path) -> Result<String> {
     hash_file_with::<Sha224>(path, "sha224")
 }
 
-pub use anodize_core::hashing::sha256_file;
+pub use anodizer_core::hashing::sha256_file;
 
 pub fn sha384_file(path: &Path) -> Result<String> {
     hash_file_with::<Sha384>(path, "sha384")
@@ -65,7 +65,7 @@ pub fn sha3_512_file(path: &Path) -> Result<String> {
 
 pub fn blake3_file(path: &Path) -> Result<String> {
     let mut hasher = blake3::Hasher::new();
-    anodize_core::hashing::hash_file_streaming(path, "blake3", |chunk| {
+    anodizer_core::hashing::hash_file_streaming(path, "blake3", |chunk| {
         hasher.update(chunk);
     })?;
     Ok(hasher.finalize().to_hex().to_string())
@@ -73,7 +73,7 @@ pub fn blake3_file(path: &Path) -> Result<String> {
 
 pub fn crc32_file(path: &Path) -> Result<String> {
     let mut hasher = crc32fast::Hasher::new();
-    anodize_core::hashing::hash_file_streaming(path, "crc32", |chunk| {
+    anodizer_core::hashing::hash_file_streaming(path, "crc32", |chunk| {
         hasher.update(chunk);
     })?;
     Ok(format!("{:08x}", hasher.finalize()))
@@ -144,9 +144,9 @@ struct ResolvedExtraFile {
 /// rest of this module.
 fn resolve_extra_files(
     specs: &[ExtraFileSpec],
-    log: &anodize_core::log::StageLogger,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<Vec<ResolvedExtraFile>> {
-    anodize_core::extrafiles::resolve(specs, log)
+    anodizer_core::extrafiles::resolve(specs, log)
         .map(|v| {
             v.into_iter()
                 .map(|r| ResolvedExtraFile {
@@ -308,7 +308,7 @@ impl Stage for ChecksumStage {
             if let Some(ref tpl_specs) = templated_extra_files
                 && !tpl_specs.is_empty()
             {
-                let rendered = anodize_core::templated_files::process_templated_extra_files(
+                let rendered = anodizer_core::templated_files::process_templated_extra_files(
                     tpl_specs, ctx, &dist, "checksum",
                 )?;
                 for (path, dst_name) in rendered {
@@ -375,7 +375,7 @@ impl Stage for ChecksumStage {
 
                 // Determine the display name for this artifact in the checksum line.
                 // If the extra file has a name_template, render it to get an alias.
-                let artifact_ext = anodize_core::template::extract_artifact_ext(filename);
+                let artifact_ext = anodizer_core::template::extract_artifact_ext(filename);
                 let checksum_name = if let Some(tmpl) = artifact.metadata.get("extra_name_template")
                 {
                     let mut vars = ctx.template_vars().clone();
@@ -386,7 +386,7 @@ impl Stage for ChecksumStage {
                     // }}` in extra_files name_template expect it available
                     // here too.
                     vars.set("Algorithm", &algorithm);
-                    anodize_core::template::render(tmpl, &vars)
+                    anodizer_core::template::render(tmpl, &vars)
                         .unwrap_or_else(|_| filename.to_string())
                 } else {
                     filename.to_string()
@@ -404,7 +404,7 @@ impl Stage for ChecksumStage {
                         vars.set("ArtifactExt", artifact_ext);
                         vars.set("Algorithm", &algorithm);
                         let rendered =
-                            anodize_core::template::render(tmpl, &vars).with_context(|| {
+                            anodizer_core::template::render(tmpl, &vars).with_context(|| {
                                 format!(
                                     "checksum: render split name_template for {}",
                                     artifact.path.display()
@@ -905,7 +905,7 @@ mod tests {
 
     #[test]
     fn test_extra_files_config_parsing() {
-        use anodize_core::config::ExtraFileSpec;
+        use anodizer_core::config::ExtraFileSpec;
 
         let yaml = r#"
 name_template: "checksums.txt"
@@ -914,7 +914,7 @@ extra_files:
   - "dist/*.bin"
   - "README.md"
 "#;
-        let cfg: anodize_core::config::ChecksumConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::ChecksumConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(
             cfg.extra_files,
             Some(vec![
@@ -932,7 +932,7 @@ ids:
   - "linux-amd64"
   - "darwin-arm64"
 "#;
-        let cfg: anodize_core::config::ChecksumConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::ChecksumConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(
             cfg.ids,
             Some(vec!["linux-amd64".to_string(), "darwin-arm64".to_string()])
@@ -943,8 +943,8 @@ ids:
 
     #[test]
     fn test_checksum_stage_run() {
-        use anodize_core::config::CrateConfig;
-        use anodize_core::test_helpers::TestContextBuilder;
+        use anodizer_core::config::CrateConfig;
+        use anodizer_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -1004,8 +1004,8 @@ ids:
 
     #[test]
     fn test_checksum_stage_dry_run() {
-        use anodize_core::config::CrateConfig;
-        use anodize_core::test_helpers::TestContextBuilder;
+        use anodizer_core::config::CrateConfig;
+        use anodizer_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -1053,8 +1053,8 @@ ids:
 
     #[test]
     fn test_checksum_stage_sha512() {
-        use anodize_core::config::{ChecksumConfig, CrateConfig};
-        use anodize_core::test_helpers::TestContextBuilder;
+        use anodizer_core::config::{ChecksumConfig, CrateConfig};
+        use anodizer_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -1109,8 +1109,8 @@ ids:
 
     #[test]
     fn test_checksum_stage_no_artifacts_skips() {
-        use anodize_core::config::CrateConfig;
-        use anodize_core::test_helpers::TestContextBuilder;
+        use anodizer_core::config::CrateConfig;
+        use anodizer_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -1137,8 +1137,8 @@ ids:
 
     #[test]
     fn test_checksum_stage_global_disable() {
-        use anodize_core::config::{ChecksumConfig, CrateConfig, Defaults, StringOrBool};
-        use anodize_core::test_helpers::TestContextBuilder;
+        use anodizer_core::config::{ChecksumConfig, CrateConfig, Defaults, StringOrBool};
+        use anodizer_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -1186,8 +1186,8 @@ ids:
 
     #[test]
     fn test_checksum_stage_per_crate_disable() {
-        use anodize_core::config::{ChecksumConfig, Config, CrateConfig, StringOrBool};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ChecksumConfig, Config, CrateConfig, StringOrBool};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -1232,8 +1232,8 @@ ids:
 
     #[test]
     fn test_checksum_stage_with_extra_files() {
-        use anodize_core::config::{ChecksumConfig, Config, CrateConfig, ExtraFileSpec};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ChecksumConfig, Config, CrateConfig, ExtraFileSpec};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -1296,8 +1296,8 @@ ids:
 
     #[test]
     fn test_checksum_stage_with_ids_filter() {
-        use anodize_core::config::{ChecksumConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ChecksumConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -1388,8 +1388,8 @@ ids:
         let file2 = dist.join("app-darwin.tar.gz");
         fs::write(&file2, b"test data").unwrap();
 
-        use anodize_core::config::{Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let config = Config {
             project_name: "app".to_string(),
@@ -1483,8 +1483,8 @@ ids:
         let archive = dist.join("release.tar.gz");
         fs::write(&archive, content).unwrap();
 
-        use anodize_core::config::{Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let config = Config {
             project_name: "fox".to_string(),
@@ -1542,8 +1542,8 @@ ids:
         let archive = dist.join("pkg.tar.gz");
         fs::write(&archive, b"some package content").unwrap();
 
-        use anodize_core::config::{ChecksumConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ChecksumConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let config = Config {
             project_name: "pkg".to_string(),
@@ -1598,7 +1598,7 @@ ids:
 
     #[test]
     fn test_checksum_of_fake_binary_via_builder() {
-        use anodize_core::test_helpers::{TestContextBuilder, create_fake_binary};
+        use anodizer_core::test_helpers::{TestContextBuilder, create_fake_binary};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -1610,7 +1610,7 @@ ids:
             .project_name("checksum-test")
             .tag("v2.0.0")
             .dist(dist.clone())
-            .crates(vec![anodize_core::config::CrateConfig {
+            .crates(vec![anodizer_core::config::CrateConfig {
                 name: "checksum-test".to_string(),
                 path: ".".to_string(),
                 tag_template: "v{{ .Version }}".to_string(),
@@ -1676,8 +1676,8 @@ ids:
 
     #[test]
     fn test_checksum_file_registered_as_checksum_artifact() {
-        use anodize_core::config::{Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -1737,8 +1737,8 @@ ids:
 
     #[test]
     fn test_checksum_missing_file_errors() {
-        use anodize_core::config::{Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -1783,8 +1783,8 @@ ids:
 
     #[test]
     fn test_extra_files_appear_in_combined_checksum() {
-        use anodize_core::config::{ChecksumConfig, Config, CrateConfig, ExtraFileSpec};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ChecksumConfig, Config, CrateConfig, ExtraFileSpec};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -1848,8 +1848,8 @@ ids:
     /// render failure and fell back to the raw filename.
     #[test]
     fn test_extra_files_name_template_exposes_algorithm_var() {
-        use anodize_core::config::{ChecksumConfig, Config, CrateConfig, ExtraFileSpec};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ChecksumConfig, Config, CrateConfig, ExtraFileSpec};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -1905,8 +1905,8 @@ ids:
 
     #[test]
     fn test_ids_filter_excludes_unmatched_artifacts() {
-        use anodize_core::config::{ChecksumConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ChecksumConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -2084,7 +2084,7 @@ ids:
 algorithm: "sha256"
 split: true
 "#;
-        let cfg: anodize_core::config::ChecksumConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::ChecksumConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.split, Some(true));
     }
 
@@ -2094,7 +2094,7 @@ split: true
 algorithm: "sha256"
 split: false
 "#;
-        let cfg: anodize_core::config::ChecksumConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::ChecksumConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.split, Some(false));
     }
 
@@ -2103,14 +2103,14 @@ split: false
         let yaml = r#"
 algorithm: "sha256"
 "#;
-        let cfg: anodize_core::config::ChecksumConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::ChecksumConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.split, None);
     }
 
     #[test]
     fn test_checksum_stage_split_true_no_combined_file() {
-        use anodize_core::config::{ChecksumConfig, CrateConfig};
-        use anodize_core::test_helpers::TestContextBuilder;
+        use anodizer_core::config::{ChecksumConfig, CrateConfig};
+        use anodizer_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -2171,8 +2171,8 @@ algorithm: "sha256"
 
     #[test]
     fn test_checksum_stage_split_false_only_combined() {
-        use anodize_core::config::{ChecksumConfig, CrateConfig};
-        use anodize_core::test_helpers::TestContextBuilder;
+        use anodizer_core::config::{ChecksumConfig, CrateConfig};
+        use anodizer_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -2235,8 +2235,8 @@ algorithm: "sha256"
     #[test]
     fn test_checksum_stage_default_split_only_combined() {
         // When split is not set (None), default behavior creates only combined (no sidecars)
-        use anodize_core::config::CrateConfig;
-        use anodize_core::test_helpers::TestContextBuilder;
+        use anodizer_core::config::CrateConfig;
+        use anodizer_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -2282,8 +2282,8 @@ algorithm: "sha256"
     fn test_checksum_stage_global_split_cascades_to_crate() {
         // When defaults.checksum.split = true and crate has no per-crate checksum config,
         // the global split setting should cascade down.
-        use anodize_core::config::{ChecksumConfig, CrateConfig, Defaults};
-        use anodize_core::test_helpers::TestContextBuilder;
+        use anodizer_core::config::{ChecksumConfig, CrateConfig, Defaults};
+        use anodizer_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -2337,8 +2337,8 @@ algorithm: "sha256"
 
     #[test]
     fn test_default_checksum_filename_uses_project_name_and_version() {
-        use anodize_core::config::CrateConfig;
-        use anodize_core::test_helpers::TestContextBuilder;
+        use anodizer_core::config::CrateConfig;
+        use anodizer_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -2420,9 +2420,9 @@ algorithm: "sha256"
 algorithm: "sha256"
 disable: "{{ if .IsSnapshot }}true{{ end }}"
 "#;
-        let cfg: anodize_core::config::ChecksumConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::ChecksumConfig = serde_yaml_ng::from_str(yaml).unwrap();
         match &cfg.disable {
-            Some(anodize_core::config::StringOrBool::String(s)) => {
+            Some(anodizer_core::config::StringOrBool::String(s)) => {
                 assert!(s.contains("IsSnapshot"));
                 assert!(cfg.disable.as_ref().unwrap().is_template());
             }
@@ -2436,17 +2436,17 @@ disable: "{{ if .IsSnapshot }}true{{ end }}"
 algorithm: "sha256"
 disable: true
 "#;
-        let cfg: anodize_core::config::ChecksumConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::ChecksumConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(
             cfg.disable,
-            Some(anodize_core::config::StringOrBool::Bool(true))
+            Some(anodizer_core::config::StringOrBool::Bool(true))
         );
         assert!(!cfg.disable.as_ref().unwrap().is_template());
     }
 
     #[test]
     fn test_config_extra_files_object_form() {
-        use anodize_core::config::ExtraFileSpec;
+        use anodizer_core::config::ExtraFileSpec;
 
         let yaml = r#"
 extra_files:
@@ -2454,7 +2454,7 @@ extra_files:
   - glob: "release/*.deb"
     name_template: "{{ .ArtifactName }}.checksum"
 "#;
-        let cfg: anodize_core::config::ChecksumConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::ChecksumConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let extra = cfg.extra_files.unwrap();
         assert_eq!(extra.len(), 2);
         assert_eq!(extra[0], ExtraFileSpec::Glob("dist/*.bin".to_string()));
@@ -2475,8 +2475,8 @@ extra_files:
 
     #[test]
     fn test_nonsplit_mode_does_not_create_sidecars() {
-        use anodize_core::config::CrateConfig;
-        use anodize_core::test_helpers::TestContextBuilder;
+        use anodizer_core::config::CrateConfig;
+        use anodizer_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -2542,8 +2542,8 @@ extra_files:
 
     #[test]
     fn test_split_mode_creates_sidecars_no_combined() {
-        use anodize_core::config::{ChecksumConfig, CrateConfig};
-        use anodize_core::test_helpers::TestContextBuilder;
+        use anodizer_core::config::{ChecksumConfig, CrateConfig};
+        use anodizer_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -2615,8 +2615,8 @@ extra_files:
 
     #[test]
     fn test_split_mode_with_name_template() {
-        use anodize_core::config::{ChecksumConfig, CrateConfig};
-        use anodize_core::test_helpers::TestContextBuilder;
+        use anodizer_core::config::{ChecksumConfig, CrateConfig};
+        use anodizer_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -2682,8 +2682,8 @@ extra_files:
 
     #[test]
     fn test_disable_template_string_skips_when_true() {
-        use anodize_core::config::{ChecksumConfig, CrateConfig, StringOrBool};
-        use anodize_core::test_helpers::TestContextBuilder;
+        use anodizer_core::config::{ChecksumConfig, CrateConfig, StringOrBool};
+        use anodizer_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -2733,8 +2733,8 @@ extra_files:
     fn test_extra_file_detailed_name_template_combined_mode() {
         // Verifies that ExtraFileSpec::Detailed with name_template correctly renames
         // the entry in the combined (non-split) checksum file via the template engine.
-        use anodize_core::config::{ChecksumConfig, Config, CrateConfig, ExtraFileSpec};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ChecksumConfig, Config, CrateConfig, ExtraFileSpec};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -2811,8 +2811,8 @@ extra_files:
 
     #[test]
     fn test_checksum_stage_with_templated_extra_files() {
-        use anodize_core::config::{ChecksumConfig, CrateConfig, TemplatedExtraFile};
-        use anodize_core::test_helpers::TestContextBuilder;
+        use anodizer_core::config::{ChecksumConfig, CrateConfig, TemplatedExtraFile};
+        use anodizer_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");

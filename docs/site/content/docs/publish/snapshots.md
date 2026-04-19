@@ -10,7 +10,7 @@ Snapshot mode runs the full build and archive pipeline but skips all publishing 
 ## Usage
 
 ```bash
-anodize release --snapshot
+anodizer release --snapshot
 ```
 
 ## Config
@@ -29,5 +29,5 @@ The default template appends `-SNAPSHOT` to the version.
 Automatically enable snapshot mode when the git repo has uncommitted changes:
 
 ```bash
-anodize release --auto-snapshot
+anodizer release --auto-snapshot
 ```

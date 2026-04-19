@@ -1,11 +1,11 @@
-# yaml-language-server: $schema=https://tj-smith47.github.io/anodize/schema.json
-# Anodize dogfooding config — exercises as many features as possible.
+# yaml-language-server: $schema=https://tj-smith47.github.io/anodizer/schema.json
+# Anodizer dogfooding config — exercises as many features as possible.
 # Templates use Tera syntax with Go-style compat.
 #   - Pipe filters: {{ Tag | trimprefix(prefix='v') }}
 #   - Variables: {{ RawVersion }}, {{ Branch }}, {{ CommitDate }}, etc.
 
 version: 2
-project_name: anodize
+project_name: anodizer
 dist: ./dist
 
 # Show artifact file sizes after build (confirms report_sizes wiring)
@@ -17,14 +17,14 @@ env:
 
 # Custom template variables accessible as {{ Var.repo_url }}
 variables:
-  repo_url: "https://github.com/tj-smith47/anodize"
+  repo_url: "https://github.com/tj-smith47/anodizer"
   description: "A Rust-native release automation tool"
 
 # Git tag discovery settings
 git:
   tag_sort: "-version:refname"
 
-# Auto-tagging configuration (used by `anodize tag`)
+# Auto-tagging configuration (used by `anodizer tag`)
 tag:
   default_bump: patch
   tag_prefix: "v"
@@ -36,7 +36,7 @@ tag:
 # Project metadata written to dist/metadata.json
 metadata:
   description: "A Rust-native release automation tool"
-  homepage: "https://github.com/tj-smith47/anodize"
+  homepage: "https://github.com/tj-smith47/anodizer"
   license: MIT
   maintainers:
     - "TJ Smith"
@@ -72,7 +72,7 @@ after:
 
 crates:
   # --- Tier 1: core (no workspace deps) ---
-  - name: anodize-core
+  - name: anodizer-core
     path: crates/core
     tag_template: "v{{ Version }}"
     publish:
@@ -81,190 +81,190 @@ crates:
         index_timeout: 300
 
   # --- Tier 2: stage crates (depend on core) ---
-  - name: anodize-stage-build
+  - name: anodizer-stage-build
     path: crates/stage-build
     tag_template: "v{{ Version }}"
-    depends_on: [anodize-core]
+    depends_on: [anodizer-core]
     publish:
       crates: { enabled: true }
-  - name: anodize-stage-archive
+  - name: anodizer-stage-archive
     path: crates/stage-archive
     tag_template: "v{{ Version }}"
-    depends_on: [anodize-core]
+    depends_on: [anodizer-core]
     publish:
       crates: { enabled: true }
-  - name: anodize-stage-nfpm
+  - name: anodizer-stage-nfpm
     path: crates/stage-nfpm
     tag_template: "v{{ Version }}"
-    depends_on: [anodize-core]
+    depends_on: [anodizer-core]
     publish:
       crates: { enabled: true }
-  - name: anodize-stage-checksum
+  - name: anodizer-stage-checksum
     path: crates/stage-checksum
     tag_template: "v{{ Version }}"
-    depends_on: [anodize-core]
+    depends_on: [anodizer-core]
     publish:
       crates: { enabled: true }
-  - name: anodize-stage-changelog
+  - name: anodizer-stage-changelog
     path: crates/stage-changelog
     tag_template: "v{{ Version }}"
-    depends_on: [anodize-core]
+    depends_on: [anodizer-core]
     publish:
       crates: { enabled: true }
-  - name: anodize-stage-release
+  - name: anodizer-stage-release
     path: crates/stage-release
     tag_template: "v{{ Version }}"
-    depends_on: [anodize-core]
+    depends_on: [anodizer-core]
     publish:
       crates: { enabled: true }
-  - name: anodize-stage-publish
+  - name: anodizer-stage-publish
     path: crates/stage-publish
     tag_template: "v{{ Version }}"
-    depends_on: [anodize-core]
+    depends_on: [anodizer-core]
     publish:
       crates: { enabled: true }
-  - name: anodize-stage-docker
+  - name: anodizer-stage-docker
     path: crates/stage-docker
     tag_template: "v{{ Version }}"
-    depends_on: [anodize-core]
+    depends_on: [anodizer-core]
     publish:
       crates: { enabled: true }
-  - name: anodize-stage-sign
+  - name: anodizer-stage-sign
     path: crates/stage-sign
     tag_template: "v{{ Version }}"
-    depends_on: [anodize-core]
+    depends_on: [anodizer-core]
     publish:
       crates: { enabled: true }
-  - name: anodize-stage-announce
+  - name: anodizer-stage-announce
     path: crates/stage-announce
     tag_template: "v{{ Version }}"
-    depends_on: [anodize-core]
+    depends_on: [anodizer-core]
     publish:
       crates: { enabled: true }
-  - name: anodize-stage-source
+  - name: anodizer-stage-source
     path: crates/stage-source
     tag_template: "v{{ Version }}"
-    depends_on: [anodize-core]
+    depends_on: [anodizer-core]
     publish:
       crates: { enabled: true }
-  - name: anodize-stage-upx
+  - name: anodizer-stage-upx
     path: crates/stage-upx
     tag_template: "v{{ Version }}"
-    depends_on: [anodize-core]
+    depends_on: [anodizer-core]
     publish:
       crates: { enabled: true }
-  - name: anodize-stage-snapcraft
+  - name: anodizer-stage-snapcraft
     path: crates/stage-snapcraft
     tag_template: "v{{ Version }}"
-    depends_on: [anodize-core]
+    depends_on: [anodizer-core]
     publish:
       crates: { enabled: true }
-  - name: anodize-stage-dmg
+  - name: anodizer-stage-dmg
     path: crates/stage-dmg
     tag_template: "v{{ Version }}"
-    depends_on: [anodize-core]
+    depends_on: [anodizer-core]
     publish:
       crates: { enabled: true }
-  - name: anodize-stage-msi
+  - name: anodizer-stage-msi
     path: crates/stage-msi
     tag_template: "v{{ Version }}"
-    depends_on: [anodize-core]
+    depends_on: [anodizer-core]
     publish:
       crates: { enabled: true }
-  - name: anodize-stage-pkg
+  - name: anodizer-stage-pkg
     path: crates/stage-pkg
     tag_template: "v{{ Version }}"
-    depends_on: [anodize-core]
+    depends_on: [anodizer-core]
     publish:
       crates: { enabled: true }
-  - name: anodize-stage-blob
+  - name: anodizer-stage-blob
     path: crates/stage-blob
     tag_template: "v{{ Version }}"
-    depends_on: [anodize-core]
+    depends_on: [anodizer-core]
     publish:
       crates: { enabled: true }
-  - name: anodize-stage-nsis
+  - name: anodizer-stage-nsis
     path: crates/stage-nsis
     tag_template: "v{{ Version }}"
-    depends_on: [anodize-core]
+    depends_on: [anodizer-core]
     publish:
       crates: { enabled: true }
-  - name: anodize-stage-appbundle
+  - name: anodizer-stage-appbundle
     path: crates/stage-appbundle
     tag_template: "v{{ Version }}"
-    depends_on: [anodize-core]
+    depends_on: [anodizer-core]
     publish:
       crates: { enabled: true }
-  - name: anodize-stage-flatpak
+  - name: anodizer-stage-flatpak
     path: crates/stage-flatpak
     tag_template: "v{{ Version }}"
-    depends_on: [anodize-core]
+    depends_on: [anodizer-core]
     publish:
       crates: { enabled: true }
-  - name: anodize-stage-notarize
+  - name: anodizer-stage-notarize
     path: crates/stage-notarize
     tag_template: "v{{ Version }}"
-    depends_on: [anodize-core]
+    depends_on: [anodizer-core]
     publish:
       crates: { enabled: true }
-  - name: anodize-stage-templatefiles
+  - name: anodizer-stage-templatefiles
     path: crates/stage-templatefiles
     tag_template: "v{{ Version }}"
-    depends_on: [anodize-core]
+    depends_on: [anodizer-core]
     publish:
       crates: { enabled: true }
-  - name: anodize-stage-makeself
+  - name: anodizer-stage-makeself
     path: crates/stage-makeself
     tag_template: "v{{ Version }}"
-    depends_on: [anodize-core]
+    depends_on: [anodizer-core]
     publish:
       crates: { enabled: true }
-  - name: anodize-stage-srpm
+  - name: anodizer-stage-srpm
     path: crates/stage-srpm
     tag_template: "v{{ Version }}"
-    depends_on: [anodize-core]
+    depends_on: [anodizer-core]
     publish:
       crates: { enabled: true }
-  - name: anodize-stage-sbom
+  - name: anodizer-stage-sbom
     path: crates/stage-sbom
     tag_template: "v{{ Version }}"
-    depends_on: [anodize-core]
+    depends_on: [anodizer-core]
     publish:
       crates: { enabled: true }
 
   # --- Tier 3: CLI binary (depends on all stages) ---
-  - name: anodize
+  - name: anodizer
     path: crates/cli
     tag_template: "v{{ Version }}"
     depends_on:
-      - anodize-core
-      - anodize-stage-build
-      - anodize-stage-archive
-      - anodize-stage-nfpm
-      - anodize-stage-checksum
-      - anodize-stage-changelog
-      - anodize-stage-release
-      - anodize-stage-publish
-      - anodize-stage-docker
-      - anodize-stage-sign
-      - anodize-stage-announce
-      - anodize-stage-source
-      - anodize-stage-upx
-      - anodize-stage-snapcraft
-      - anodize-stage-dmg
-      - anodize-stage-msi
-      - anodize-stage-pkg
-      - anodize-stage-blob
-      - anodize-stage-nsis
-      - anodize-stage-appbundle
-      - anodize-stage-flatpak
-      - anodize-stage-notarize
-      - anodize-stage-templatefiles
-      - anodize-stage-makeself
-      - anodize-stage-srpm
-      - anodize-stage-sbom
+      - anodizer-core
+      - anodizer-stage-build
+      - anodizer-stage-archive
+      - anodizer-stage-nfpm
+      - anodizer-stage-checksum
+      - anodizer-stage-changelog
+      - anodizer-stage-release
+      - anodizer-stage-publish
+      - anodizer-stage-docker
+      - anodizer-stage-sign
+      - anodizer-stage-announce
+      - anodizer-stage-source
+      - anodizer-stage-upx
+      - anodizer-stage-snapcraft
+      - anodizer-stage-dmg
+      - anodizer-stage-msi
+      - anodizer-stage-pkg
+      - anodizer-stage-blob
+      - anodizer-stage-nsis
+      - anodizer-stage-appbundle
+      - anodizer-stage-flatpak
+      - anodizer-stage-notarize
+      - anodizer-stage-templatefiles
+      - anodizer-stage-makeself
+      - anodizer-stage-srpm
+      - anodizer-stage-sbom
     builds:
-      - binary: anodize
+      - binary: anodizer
         features: []
         no_default_features: false
     archives:
@@ -282,20 +282,20 @@ crates:
       algorithm: sha256
     binstall:
       enabled: true
-      pkg_url: "https://github.com/tj-smith47/anodize/releases/download/v{{ Version }}/anodize-{{ Version }}-{ target }.tar.gz"
+      pkg_url: "https://github.com/tj-smith47/anodizer/releases/download/v{{ Version }}/anodizer-{{ Version }}-{ target }.tar.gz"
       bin_dir: ""
       pkg_fmt: tgz
     release:
       github:
         owner: tj-smith47
-        name: anodize
+        name: anodizer
       draft: false
       prerelease: auto
       make_latest: auto
       name_template: "{{ ProjectName }} {{ Tag }}"
       footer: |
         ---
-        Released with [anodize](https://github.com/tj-smith47/anodize) 🦀
+        Released with [anodizer](https://github.com/tj-smith47/anodizer) 🦀
       include_meta: true
     publish:
       crates:
@@ -309,9 +309,9 @@ crates:
         description: "A Rust-native release automation tool"
         license: MIT
         install: |
-          bin.install "anodize"
+          bin.install "anodizer"
         test: |
-          system "#{bin}/anodize", "--version"
+          system "#{bin}/anodizer", "--version"
       scoop:
         bucket:
           owner: tj-smith47
@@ -321,7 +321,7 @@ crates:
       chocolatey:
         project_repo:
           owner: tj-smith47
-          name: anodize
+          name: anodizer
         description: "A Rust-native release automation tool"
         license: MIT
         tags:
@@ -334,22 +334,22 @@ crates:
           name: winget-pkgs
         description: "A Rust-native release automation tool"
         license: MIT
-        package_identifier: "TJSmith.Anodize"
+        package_identifier: "TJSmith.Anodizer"
         publisher: "TJ Smith"
       aur:
         disable: true  # no AUR account registered yet
-        git_url: "ssh://aur@aur.archlinux.org/anodize-bin.git"
-        package_name: anodize-bin
+        git_url: "ssh://aur@aur.archlinux.org/anodizer-bin.git"
+        package_name: anodizer-bin
         description: "A Rust-native release automation tool"
         license: MIT
         depends:
           - glibc
       nix:
-        name: anodize
+        name: anodizer
         repository:
           owner: tj-smith47
           name: nix-pkgs
-        homepage: "https://github.com/tj-smith47/anodize"
+        homepage: "https://github.com/tj-smith47/anodizer"
         description: "A Rust-native release automation tool"
         license: mit
         skip_upload: false
@@ -358,15 +358,15 @@ crates:
           owner: tj-smith47
           name: krew-index
         short_description: "A Rust-native release automation tool"
-        homepage: "https://github.com/tj-smith47/anodize"
+        homepage: "https://github.com/tj-smith47/anodizer"
     nfpm:
-      - package_name: anodize
+      - package_name: anodizer
         formats:
           - deb
           - rpm
           - apk
         vendor: "TJ Smith"
-        homepage: "https://github.com/tj-smith47/anodize"
+        homepage: "https://github.com/tj-smith47/anodizer"
         maintainer: "TJ Smith <tj@example.com>"
         description: "A Rust-native release automation tool"
         license: MIT
@@ -374,14 +374,14 @@ crates:
         file_name_template: "{{ ProjectName }}_{{ RawVersion }}_{{ Os }}_{{ Arch }}"
         contents:
           - src: LICENSE
-            dst: /usr/share/doc/anodize/LICENSE
+            dst: /usr/share/doc/anodizer/LICENSE
           - src: README.md
-            dst: /usr/share/doc/anodize/README.md
+            dst: /usr/share/doc/anodizer/README.md
     snapcrafts:
-      - name: anodize
+      - name: anodizer
         summary: "A Rust-native release automation tool"
         description: |
-          Anodize is a release automation tool for Rust projects, inspired by
+          Anodizer is a release automation tool for Rust projects, inspired by
           GoReleaser. It handles building, packaging, publishing, and announcing
           releases across multiple platforms and package managers.
         grade: stable
@@ -389,42 +389,42 @@ crates:
         license: MIT
         publish: true
         apps:
-          anodize:
-            command: anodize
+          anodizer:
+            command: anodizer
             plugs:
               - home
               - network
               - network-bind
     flatpaks:
       - disable: true  # disabled — no Flatpak runtime configured yet
-        app_id: io.github.tj_smith47.Anodize
+        app_id: io.github.tj_smith47.Anodizer
         runtime: org.freedesktop.Platform
         runtime_version: "24.08"
         sdk: org.freedesktop.Sdk
-        command: anodize
+        command: anodizer
         finish_args:
           - "--share=network"
           - "--filesystem=host"
     app_bundles:
       - disable: true  # disabled — no macOS app bundle identity configured
-        bundle: io.github.tj-smith47.anodize
-        name: Anodize
+        bundle: io.github.tj-smith47.anodizer
+        name: Anodizer
     dmgs:
       - disable: true  # disabled — no macOS DMG configured (needs app_bundle first)
-        name: Anodize
+        name: Anodizer
     pkgs:
       - disable: true  # disabled — no macOS PKG signing identity configured
-        identifier: io.github.tj-smith47.anodize
+        identifier: io.github.tj-smith47.anodizer
     msis:
       - disable: true  # disabled — no WiX source file (.wxs) created
-        name: Anodize
+        name: Anodizer
     nsis:
       - disable: true  # disabled — no NSIS script created
-        name: Anodize
+        name: Anodizer
     blobs:
       - disable: true  # disabled — no cloud storage configured
         provider: s3
-        bucket: anodize-releases
+        bucket: anodizer-releases
 
 notarize:
   disable: true  # disabled — no Apple Developer credentials configured
@@ -537,14 +537,14 @@ docker_signs:
 milestones:
   - repo:
       owner: tj-smith47
-      name: anodize
+      name: anodizer
     close: false  # disabled — no milestones configured yet
     fail_on_error: false
     name_template: "{{ Tag }}"
 
 # DockerHub description sync
 dockerhub:
-  - disable: true  # disabled — no DockerHub image for anodize
+  - disable: true  # disabled — no DockerHub image for anodizer
     username: "{{ Env.DOCKERHUB_USERNAME }}"
     description: "A Rust-native release automation tool"
 
@@ -552,13 +552,13 @@ dockerhub:
 artifactories:
   - name: production
     disable: true  # disabled — no Artifactory instance
-    target: "https://artifactory.example.com/generic-local/anodize/{{ Tag }}/"
+    target: "https://artifactory.example.com/generic-local/anodizer/{{ Tag }}/"
     method: PUT
 
 # CloudSmith publisher
 cloudsmiths:
   - organization: tj-smith47
-    repository: anodize
+    repository: anodizer
     disable: true  # disabled — no CloudSmith account
 
 # Note: `fury:` and `npms:` publishers removed 2026-04-16 (see .claude/known-bugs.md);
@@ -567,14 +567,14 @@ cloudsmiths:
 # Source RPM configuration
 srpm:
   enabled: true
-  package_name: anodize
-  spec_file: anodize.spec
+  package_name: anodizer
+  spec_file: anodizer.spec
   file_name_template: "{{ ProjectName }}-{{ RawVersion }}-1.src.rpm"
 
 # Makeself self-extracting archives
 makeselfs:
   - id: default
-    name: "Anodize Installer"
+    name: "Anodizer Installer"
     script: scripts/makeself-install.sh
     name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}-installer.run"
 
@@ -595,7 +595,7 @@ announce:
     message_template: "{{ ProjectName }} {{ Tag }} released! {{ ReleaseURL }}"
   webhook:
     enabled: true
-    endpoint_url: "https://jarvispro.io/webhooks/anodize"
+    endpoint_url: "https://jarvispro.io/webhooks/anodizer"
     content_type: application/json
     message_template: '{"project":"{{ ProjectName }}","tag":"{{ Tag }}","url":"{{ ReleaseURL }}"}'
   telegram:

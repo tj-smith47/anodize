@@ -5,7 +5,7 @@ weight = 2
 template = "docs.html"
 +++
 
-Anodize supports Cargo workspaces with independent release cadences per crate. There are two layers: **crates** (always present) and **workspaces** (for larger monorepos that need per-workspace changelogs, skip lists, and release configs).
+Anodizer supports Cargo workspaces with independent release cadences per crate. There are two layers: **crates** (always present) and **workspaces** (for larger monorepos that need per-workspace changelogs, skip lists, and release configs).
 
 ## Flat crates config
 
@@ -69,15 +69,15 @@ Each crate uses its own `tag_template` for both tag discovery and tag creation. 
 
 ```bash
 # Release just the core library (uses core-v* tags)
-anodize release --crate my-core
+anodizer release --crate my-core
 
 # Release just the CLI (uses v* tags)
-anodize release --crate my-cli
+anodizer release --crate my-cli
 ```
 
 ### Dependency ordering
 
-Use `depends_on` to ensure crates are released in the right order. Anodize performs topological sorting — if `my-cli` depends on `my-core`, `my-core` is always released first.
+Use `depends_on` to ensure crates are released in the right order. Anodizer performs topological sorting — if `my-cli` depends on `my-core`, `my-core` is always released first.
 
 ### version_sync
 
@@ -86,17 +86,17 @@ When `version_sync.enabled: true` is set per-crate, the tag command also updates
 ### Release all changed crates
 
 ```bash
-anodize release --all
+anodizer release --all
 ```
 
 This detects which crates have unreleased changes (commits since their last tag) and releases them in dependency order.
 
 ## Auto-tagging a monorepo
 
-Loop `anodize tag --crate <name>` for each crate so each workspace gets its own release:
+Loop `anodizer tag --crate <name>` for each crate so each workspace gets its own release:
 
 ```yaml
-- uses: tj-smith47/anodize-action@v1
+- uses: tj-smith47/anodizer-action@v1
   with:
     install-only: true
 
@@ -105,7 +105,7 @@ Loop `anodize tag --crate <name>` for each crate so each workspace gets its own 
     GITHUB_TOKEN: ${{ secrets.GH_PAT }}
   run: |
     for crate in my-core my-cli my-operator; do
-      anodize tag --crate "$crate" || true
+      anodizer tag --crate "$crate" || true
     done
     git push origin HEAD || true
 ```
@@ -114,10 +114,10 @@ See [Auto-Tagging](@/docs/advanced/auto-tagging.md) and [GitHub Actions](@/docs/
 
 ## Resolving a tag to a crate
 
-Tag-triggered release workflows need to know which crate a given tag belongs to. `anodize resolve-tag` does that lookup:
+Tag-triggered release workflows need to know which crate a given tag belongs to. `anodizer resolve-tag` does that lookup:
 
 ```bash
-$ anodize resolve-tag core-v0.3.5 --json
+$ anodizer resolve-tag core-v0.3.5 --json
 {"crate":"my-core","path":"crates/my-core","has-builds":false}
 ```
 

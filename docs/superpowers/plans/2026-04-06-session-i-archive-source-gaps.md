@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Close 9 behavioral gaps between Anodize's archive/source stages and GoReleaser's reference implementation.
+**Goal:** Close 9 behavioral gaps between Anodizer's archive/source stages and GoReleaser's reference implementation.
 
 **Architecture:** All archive changes land in `crates/stage-archive/src/lib.rs`. Source changes land in `crates/stage-source/src/lib.rs`. A new `by_kinds_and_crate()` method is added to `ArtifactStore`. The `tar` crate is added to stage-source for programmatic tar header manipulation.
 
@@ -16,7 +16,7 @@
 - Modify: `crates/stage-archive/src/lib.rs:373-408` (resolve_file_specs)
 - Modify: `crates/stage-archive/src/lib.rs:977-1010` (extra_entries construction)
 
-GoReleaser's `archivefiles.go` computes the longest common prefix (LCP) of all files matched by a glob when `destination` is set, then stores files as `dst/relative_from_lcp`. Anodize flattens everything to just the filename. Reference: `/opt/repos/goreleaser/internal/archivefiles/archivefiles.go:46-63`.
+GoReleaser's `archivefiles.go` computes the longest common prefix (LCP) of all files matched by a glob when `destination` is set, then stores files as `dst/relative_from_lcp`. Anodizer flattens everything to just the filename. Reference: `/opt/repos/goreleaser/internal/archivefiles/archivefiles.go:46-63`.
 
 - [ ] **Step 1: Write failing test for LCP helper**
 
@@ -48,7 +48,7 @@ fn test_longest_common_prefix() {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cargo test -p anodize-stage-archive test_longest_common_prefix 2>&1 | tail -5`
+Run: `cargo test -p anodizer-stage-archive test_longest_common_prefix 2>&1 | tail -5`
 Expected: compile error — `longest_common_prefix` not defined
 
 - [ ] **Step 3: Implement LCP helpers**
@@ -77,7 +77,7 @@ fn longest_common_prefix(strs: &[String]) -> String {
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cargo test -p anodize-stage-archive test_longest_common_prefix 2>&1 | tail -5`
+Run: `cargo test -p anodizer-stage-archive test_longest_common_prefix 2>&1 | tail -5`
 Expected: PASS
 
 - [ ] **Step 5: Write failing test for resolve_file_specs with dst preserving directory structure**
@@ -114,7 +114,7 @@ fn test_resolve_file_specs_dst_preserves_directory_structure() {
 
 - [ ] **Step 6: Run test to verify it fails**
 
-Run: `cargo test -p anodize-stage-archive test_resolve_file_specs_dst_preserves 2>&1 | tail -10`
+Run: `cargo test -p anodizer-stage-archive test_resolve_file_specs_dst_preserves 2>&1 | tail -10`
 Expected: FAIL — dst is just "mydocs" for both files (no relative path appended)
 
 - [ ] **Step 7: Implement LCP-based destination in resolve_file_specs**
@@ -177,12 +177,12 @@ ArchiveFileSpec::Detailed {
 
 - [ ] **Step 8: Run test to verify it passes**
 
-Run: `cargo test -p anodize-stage-archive test_resolve_file_specs_dst_preserves 2>&1 | tail -5`
+Run: `cargo test -p anodizer-stage-archive test_resolve_file_specs_dst_preserves 2>&1 | tail -5`
 Expected: PASS
 
 - [ ] **Step 9: Run all archive tests to check for regressions**
 
-Run: `cargo test -p anodize-stage-archive 2>&1 | tail -20`
+Run: `cargo test -p anodizer-stage-archive 2>&1 | tail -20`
 Expected: all tests pass
 
 - [ ] **Step 10: Commit**
@@ -203,7 +203,7 @@ under the destination, matching GoReleaser's archivefiles.go behavior."
 **Files:**
 - Modify: `crates/stage-archive/src/lib.rs:1012-1013` (after all_entries construction)
 
-GoReleaser's `unique()` (archivefiles.go:92-110) warns when the same destination path appears twice and skips the duplicate. Anodize has no such check.
+GoReleaser's `unique()` (archivefiles.go:92-110) warns when the same destination path appears twice and skips the duplicate. Anodizer has no such check.
 
 - [ ] **Step 1: Write failing test**
 
@@ -238,7 +238,7 @@ fn test_duplicate_destination_detection() {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cargo test -p anodize-stage-archive test_duplicate_destination 2>&1 | tail -5`
+Run: `cargo test -p anodizer-stage-archive test_duplicate_destination 2>&1 | tail -5`
 Expected: compile error — `deduplicate_entries` not defined
 
 - [ ] **Step 3: Implement deduplicate_entries**
@@ -271,7 +271,7 @@ fn deduplicate_entries(entries: Vec<ArchiveEntry>) -> Vec<ArchiveEntry> {
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cargo test -p anodize-stage-archive test_duplicate_destination 2>&1 | tail -5`
+Run: `cargo test -p anodizer-stage-archive test_duplicate_destination 2>&1 | tail -5`
 Expected: PASS
 
 - [ ] **Step 5: Wire deduplicate_entries into the archive stage**
@@ -304,7 +304,7 @@ let path_refs: Vec<&Path> =
 
 - [ ] **Step 6: Run all archive tests**
 
-Run: `cargo test -p anodize-stage-archive 2>&1 | tail -20`
+Run: `cargo test -p anodizer-stage-archive 2>&1 | tail -20`
 Expected: all tests pass
 
 - [ ] **Step 7: Commit**
@@ -324,7 +324,7 @@ matching GoReleaser's unique() function in archivefiles.go."
 **Files:**
 - Modify: `crates/stage-archive/src/lib.rs` (after deduplication, before writing)
 
-GoReleaser sorts resolved files by destination path (archivefiles.go:66-68). Anodize does not sort.
+GoReleaser sorts resolved files by destination path (archivefiles.go:66-68). Anodizer does not sort.
 
 - [ ] **Step 1: Write failing test**
 
@@ -360,7 +360,7 @@ fn test_archive_entries_sorted_by_destination() {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cargo test -p anodize-stage-archive test_archive_entries_sorted 2>&1 | tail -5`
+Run: `cargo test -p anodizer-stage-archive test_archive_entries_sorted 2>&1 | tail -5`
 Expected: compile error — `sort_entries` not defined
 
 - [ ] **Step 3: Implement sort_entries**
@@ -378,7 +378,7 @@ fn sort_entries(mut entries: Vec<ArchiveEntry>) -> Vec<ArchiveEntry> {
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cargo test -p anodize-stage-archive test_archive_entries_sorted 2>&1 | tail -5`
+Run: `cargo test -p anodizer-stage-archive test_archive_entries_sorted 2>&1 | tail -5`
 Expected: PASS
 
 - [ ] **Step 5: Wire into archive stage**
@@ -395,7 +395,7 @@ let all_src_paths: Vec<PathBuf> = sorted.iter().map(|e| e.src.clone()).collect()
 
 - [ ] **Step 6: Run all archive tests**
 
-Run: `cargo test -p anodize-stage-archive 2>&1 | tail -20`
+Run: `cargo test -p anodizer-stage-archive 2>&1 | tail -20`
 Expected: all tests pass
 
 - [ ] **Step 7: Commit**
@@ -415,16 +415,16 @@ matching GoReleaser's sort behavior in archivefiles.go."
 **Files:**
 - Modify: `crates/stage-archive/src/lib.rs:938-946` (binary_info construction) and `977-1010` (extra_entries construction)
 
-GoReleaser templates `owner`, `group`, `mtime` through the template engine via `tmplInfo()` (archivefiles.go:73-89). Anodize uses raw config values without rendering.
+GoReleaser templates `owner`, `group`, `mtime` through the template engine via `tmplInfo()` (archivefiles.go:73-89). Anodizer uses raw config values without rendering.
 
 - [ ] **Step 1: Write failing test**
 
 ```rust
 #[test]
 fn test_file_info_template_rendering() {
-    use anodize_core::config::ArchiveFileInfo;
-    use anodize_core::context::{Context, ContextOptions};
-    use anodize_core::config::Config;
+    use anodizer_core::config::ArchiveFileInfo;
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::config::Config;
 
     let config = Config::default();
     let mut ctx = Context::new(config, ContextOptions::default());
@@ -448,7 +448,7 @@ fn test_file_info_template_rendering() {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cargo test -p anodize-stage-archive test_file_info_template 2>&1 | tail -5`
+Run: `cargo test -p anodizer-stage-archive test_file_info_template 2>&1 | tail -5`
 Expected: compile error — `render_file_info` not defined
 
 - [ ] **Step 3: Implement render_file_info**
@@ -460,10 +460,10 @@ Add near `apply_file_info_to_header`:
 /// Mode is left as-is since it's an octal literal, not a template.
 /// Matches GoReleaser's `tmplInfo()` in archivefiles.go.
 fn render_file_info(
-    info: &anodize_core::config::ArchiveFileInfo,
+    info: &anodizer_core::config::ArchiveFileInfo,
     ctx: &Context,
-) -> Result<anodize_core::config::ArchiveFileInfo> {
-    Ok(anodize_core::config::ArchiveFileInfo {
+) -> Result<anodizer_core::config::ArchiveFileInfo> {
+    Ok(anodizer_core::config::ArchiveFileInfo {
         owner: info
             .owner
             .as_deref()
@@ -486,7 +486,7 @@ fn render_file_info(
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cargo test -p anodize-stage-archive test_file_info_template 2>&1 | tail -5`
+Run: `cargo test -p anodizer-stage-archive test_file_info_template 2>&1 | tail -5`
 Expected: PASS
 
 - [ ] **Step 5: Wire render_file_info into archive stage**
@@ -495,7 +495,7 @@ In the `run()` method, render `binary_info` after constructing it (around line 9
 
 ```rust
 let binary_info = archive_cfg.builds_info.clone().unwrap_or_else(|| {
-    anodize_core::config::ArchiveFileInfo {
+    anodizer_core::config::ArchiveFileInfo {
         mode: Some("0755".to_string()),
         ..Default::default()
     }
@@ -513,7 +513,7 @@ Note: this changes the closure from `map` (infallible) to needing error handling
 
 - [ ] **Step 6: Run all archive tests**
 
-Run: `cargo test -p anodize-stage-archive 2>&1 | tail -20`
+Run: `cargo test -p anodizer-stage-archive 2>&1 | tail -20`
 Expected: all tests pass
 
 - [ ] **Step 7: Commit**
@@ -540,8 +540,8 @@ The `binaries` field IS already wired at lines 837-846. This task confirms it wi
 ```rust
 #[test]
 fn test_archive_stage_binaries_filter() {
-    use anodize_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
-    use anodize_core::context::{Context, ContextOptions};
+    use anodizer_core::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
+    use anodizer_core::context::{Context, ContextOptions};
 
     let tmp = TempDir::new().unwrap();
     let dist = tmp.path().join("dist");
@@ -613,7 +613,7 @@ fn test_archive_stage_binaries_filter() {
 
 - [ ] **Step 2: Run test to verify it passes**
 
-Run: `cargo test -p anodize-stage-archive test_archive_stage_binaries_filter 2>&1 | tail -10`
+Run: `cargo test -p anodizer-stage-archive test_archive_stage_binaries_filter 2>&1 | tail -10`
 Expected: PASS (confirming the filter is already wired)
 
 - [ ] **Step 3: Commit**
@@ -633,7 +633,7 @@ by name. This test documents that behavior."
 **Files:**
 - Modify: `crates/stage-archive/src/lib.rs:614-620` (default_name_template and default_binary_name_template)
 
-GoReleaser appends `{{ if not (eq .Amd64 "v1") }}{{ .Amd64 }}{{ end }}` to the default name template (archive.go:30). Anodize omits this.
+GoReleaser appends `{{ if not (eq .Amd64 "v1") }}{{ .Amd64 }}{{ end }}` to the default name template (archive.go:30). Anodizer omits this.
 
 - [ ] **Step 1: Write failing test**
 
@@ -658,13 +658,13 @@ fn test_default_name_template_includes_amd64_suffix() {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cargo test -p anodize-stage-archive test_default_name_template_includes_amd64 2>&1 | tail -5`
+Run: `cargo test -p anodizer-stage-archive test_default_name_template_includes_amd64 2>&1 | tail -5`
 Expected: FAIL — templates don't contain "Amd64"
 
 - [ ] **Step 3: Update default templates**
 
 GoReleaser Go template: `{{ if not (eq .Amd64 "v1") }}{{ .Amd64 }}{{ end }}`
-Anodize uses Tera. The equivalent Tera syntax:
+Anodizer uses Tera. The equivalent Tera syntax:
 
 ```rust
 fn default_name_template() -> &'static str {
@@ -680,7 +680,7 @@ Note: Check what Tera syntax the project uses for conditionals. The existing tem
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cargo test -p anodize-stage-archive test_default_name_template_includes_amd64 2>&1 | tail -5`
+Run: `cargo test -p anodizer-stage-archive test_default_name_template_includes_amd64 2>&1 | tail -5`
 Expected: PASS
 
 - [ ] **Step 5: Run a rendering test to verify Amd64 suffix actually renders**
@@ -690,8 +690,8 @@ Add a test that renders the template with Amd64 set to "v2":
 ```rust
 #[test]
 fn test_default_template_renders_amd64_v2_suffix() {
-    use anodize_core::config::Config;
-    use anodize_core::context::{Context, ContextOptions};
+    use anodizer_core::config::Config;
+    use anodizer_core::context::{Context, ContextOptions};
 
     let config = Config::default();
     let mut ctx = Context::new(config, ContextOptions::default());
@@ -707,8 +707,8 @@ fn test_default_template_renders_amd64_v2_suffix() {
 
 #[test]
 fn test_default_template_omits_amd64_v1_suffix() {
-    use anodize_core::config::Config;
-    use anodize_core::context::{Context, ContextOptions};
+    use anodizer_core::config::Config;
+    use anodizer_core::context::{Context, ContextOptions};
 
     let config = Config::default();
     let mut ctx = Context::new(config, ContextOptions::default());
@@ -725,12 +725,12 @@ fn test_default_template_omits_amd64_v1_suffix() {
 
 - [ ] **Step 6: Run both tests**
 
-Run: `cargo test -p anodize-stage-archive test_default_template_renders_amd64 test_default_template_omits_amd64 2>&1 | tail -10`
+Run: `cargo test -p anodizer-stage-archive test_default_template_renders_amd64 test_default_template_omits_amd64 2>&1 | tail -10`
 Expected: PASS
 
 - [ ] **Step 7: Run all archive tests for regressions**
 
-Run: `cargo test -p anodize-stage-archive 2>&1 | tail -20`
+Run: `cargo test -p anodizer-stage-archive 2>&1 | tail -20`
 Expected: all pass. If any existing tests break because they assert exact archive names without Amd64, update them to either set `Amd64` to "v1" or adjust expected names.
 
 - [ ] **Step 8: Commit**
@@ -751,7 +751,7 @@ and binary default name templates, matching GoReleaser's behavior."
 - Modify: `crates/core/src/artifact.rs` (add `by_kinds_and_crate` method)
 - Modify: `crates/stage-archive/src/lib.rs:739-744` (artifact query)
 
-GoReleaser archives `Binary`, `UniversalBinary`, `Header`, `CArchive`, and `CShared` (archive.go:120-124). Anodize only queries `Binary`.
+GoReleaser archives `Binary`, `UniversalBinary`, `Header`, `CArchive`, and `CShared` (archive.go:120-124). Anodizer only queries `Binary`.
 
 - [ ] **Step 1: Write failing test for by_kinds_and_crate**
 
@@ -805,7 +805,7 @@ fn test_by_kinds_and_crate() {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cargo test -p anodize-core test_by_kinds_and_crate 2>&1 | tail -5`
+Run: `cargo test -p anodizer-core test_by_kinds_and_crate 2>&1 | tail -5`
 Expected: compile error — `by_kinds_and_crate` not defined
 
 - [ ] **Step 3: Implement by_kinds_and_crate**
@@ -823,7 +823,7 @@ pub fn by_kinds_and_crate(&self, kinds: &[ArtifactKind], crate_name: &str) -> Ve
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cargo test -p anodize-core test_by_kinds_and_crate 2>&1 | tail -5`
+Run: `cargo test -p anodizer-core test_by_kinds_and_crate 2>&1 | tail -5`
 Expected: PASS
 
 - [ ] **Step 5: Update archive stage to query all 5 artifact types**
@@ -861,7 +861,7 @@ let all_binaries: Vec<Artifact> = ctx
 
 - [ ] **Step 6: Run all archive tests**
 
-Run: `cargo test -p anodize-stage-archive 2>&1 | tail -20`
+Run: `cargo test -p anodizer-stage-archive 2>&1 | tail -20`
 Expected: all pass
 
 - [ ] **Step 7: Commit**
@@ -916,14 +916,14 @@ fn test_source_extra_files_strip_parent() {
         .output()
         .unwrap();
 
-    let extra_files = vec![anodize_core::config::SourceFileEntry {
+    let extra_files = vec![anodizer_core::config::SourceFileEntry {
         src: nested_file.to_string_lossy().to_string(),
         dst: None,
         strip_parent: Some(true),
         info: None,
     }];
 
-    let log = anodize_core::log::StageLogger::new("source", false);
+    let log = anodizer_core::log::StageLogger::new("source", false);
     let result = create_source_archive(
         &dist, "tar.gz", "test-src", "test-src",
         &extra_files, repo_dir, "HEAD", &log,
@@ -958,7 +958,7 @@ fn test_source_extra_files_strip_parent() {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cargo test -p anodize-stage-source test_source_extra_files_strip_parent 2>&1 | tail -10`
+Run: `cargo test -p anodizer-stage-source test_source_extra_files_strip_parent 2>&1 | tail -10`
 Expected: FAIL or the test might already pass since fallback uses `file_name()`. If it passes, the real gap is when `dst` is also set — adjust test to use `dst: Some("configs".to_string())` and assert the file appears as `test-src/configs/config.toml`.
 
 - [ ] **Step 3: Implement strip_parent properly and remove warning**
@@ -1007,12 +1007,12 @@ Note: The old warning `log.warn("strip_parent is not yet supported...")` is remo
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cargo test -p anodize-stage-source test_source_extra_files_strip_parent 2>&1 | tail -10`
+Run: `cargo test -p anodizer-stage-source test_source_extra_files_strip_parent 2>&1 | tail -10`
 Expected: PASS
 
 - [ ] **Step 5: Run all source tests**
 
-Run: `cargo test -p anodize-stage-source 2>&1 | tail -20`
+Run: `cargo test -p anodizer-stage-source 2>&1 | tail -20`
 Expected: all pass
 
 - [ ] **Step 6: Commit**
@@ -1076,11 +1076,11 @@ fn test_source_extra_files_with_info() {
         .output()
         .unwrap();
 
-    let extra_files = vec![anodize_core::config::SourceFileEntry {
+    let extra_files = vec![anodizer_core::config::SourceFileEntry {
         src: extra_file.to_string_lossy().to_string(),
         dst: None,
         strip_parent: None,
-        info: Some(anodize_core::config::SourceFileInfo {
+        info: Some(anodizer_core::config::SourceFileInfo {
             owner: Some("deploy".to_string()),
             group: Some("staff".to_string()),
             mode: Some(0o644),
@@ -1088,7 +1088,7 @@ fn test_source_extra_files_with_info() {
         }),
     }];
 
-    let log = anodize_core::log::StageLogger::new("source", false);
+    let log = anodizer_core::log::StageLogger::new("source", false);
     let result = create_source_archive(
         &dist, "tar.gz", "test-src", "test-src",
         &extra_files, repo_dir, "HEAD", &log,
@@ -1120,7 +1120,7 @@ fn test_source_extra_files_with_info() {
 
 - [ ] **Step 3: Run test to verify it fails**
 
-Run: `cargo test -p anodize-stage-source test_source_extra_files_with_info 2>&1 | tail -10`
+Run: `cargo test -p anodizer-stage-source test_source_extra_files_with_info 2>&1 | tail -10`
 Expected: FAIL — metadata not applied (owner/mode will be from filesystem defaults)
 
 - [ ] **Step 4: Rewrite extra files append to use Rust tar crate**
@@ -1265,12 +1265,12 @@ Also add `use std::os::unix::fs::PermissionsExt;` at the top of the file (needed
 
 - [ ] **Step 5: Run test to verify it passes**
 
-Run: `cargo test -p anodize-stage-source test_source_extra_files_with_info 2>&1 | tail -10`
+Run: `cargo test -p anodizer-stage-source test_source_extra_files_with_info 2>&1 | tail -10`
 Expected: PASS
 
 - [ ] **Step 6: Run all source tests**
 
-Run: `cargo test -p anodize-stage-source 2>&1 | tail -20`
+Run: `cargo test -p anodizer-stage-source 2>&1 | tail -20`
 Expected: all pass
 
 - [ ] **Step 7: Run full workspace build**
@@ -1298,17 +1298,17 @@ and file info."
 
 - [ ] **Step 1: Run full test suite for both crates**
 
-Run: `cargo test -p anodize-stage-archive -p anodize-stage-source -p anodize-core 2>&1 | tail -30`
+Run: `cargo test -p anodizer-stage-archive -p anodizer-stage-source -p anodizer-core 2>&1 | tail -30`
 Expected: all tests pass
 
 - [ ] **Step 2: Run cargo clippy**
 
-Run: `cargo clippy -p anodize-stage-archive -p anodize-stage-source -p anodize-core 2>&1 | tail -20`
+Run: `cargo clippy -p anodizer-stage-archive -p anodizer-stage-source -p anodizer-core 2>&1 | tail -20`
 Expected: no warnings
 
 - [ ] **Step 3: Update parity session index**
 
-Mark all Session I items as checked in `/opt/repos/anodize/.claude/specs/parity-session-index.md`:
+Mark all Session I items as checked in `/opt/repos/anodizer/.claude/specs/parity-session-index.md`:
 - Change all `- [ ]` under Session I to `- [x]`
 
 - [ ] **Step 4: Commit**

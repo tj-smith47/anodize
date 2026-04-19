@@ -5,9 +5,9 @@ use std::process::Command;
 
 use anyhow::{Context as _, Result};
 
-use anodize_core::artifact::{Artifact, ArtifactKind};
-use anodize_core::context::Context;
-use anodize_core::stage::Stage;
+use anodizer_core::artifact::{Artifact, ArtifactKind};
+use anodizer_core::context::Context;
+use anodizer_core::stage::Stage;
 
 // ---------------------------------------------------------------------------
 // Default NSIS script
@@ -62,7 +62,7 @@ pub struct NsisStage;
 /// Parse Os and Arch from a Rust target triple using the shared mapping.
 fn os_arch_from_target(target: Option<&str>) -> (String, String) {
     target
-        .map(anodize_core::target::map_target)
+        .map(anodizer_core::target::map_target)
         .unwrap_or_else(|| ("windows".to_string(), "amd64".to_string()))
 }
 
@@ -110,7 +110,7 @@ impl Stage for NsisStage {
                 .filter(|b| {
                     b.target
                         .as_deref()
-                        .map(anodize_core::target::is_windows)
+                        .map(anodizer_core::target::is_windows)
                         .unwrap_or(false)
                 })
                 .cloned()
@@ -189,7 +189,7 @@ impl Stage for NsisStage {
                     .collect();
 
                 // Check that makensis is available once per config (not per binary)
-                if !dry_run && !anodize_core::util::find_binary("makensis") {
+                if !dry_run && !anodizer_core::util::find_binary("makensis") {
                     anyhow::bail!(
                         "makensis not found on PATH; install NSIS to create Windows installers"
                     );
@@ -259,7 +259,7 @@ impl Stage for NsisStage {
                         });
 
                         // If replace is set, mark archives for this crate+target for removal
-                        archives_to_remove.extend(anodize_core::util::collect_if_replace(
+                        archives_to_remove.extend(anodizer_core::util::collect_if_replace(
                             nsis_cfg.replace,
                             &ctx.artifacts,
                             &krate.name,
@@ -327,7 +327,7 @@ impl Stage for NsisStage {
                     if let Some(ref tpl_specs) = nsis_cfg.templated_extra_files
                         && !tpl_specs.is_empty()
                     {
-                        anodize_core::templated_files::process_templated_extra_files(
+                        anodizer_core::templated_files::process_templated_extra_files(
                             tpl_specs,
                             ctx,
                             staging_dir,
@@ -373,7 +373,7 @@ impl Stage for NsisStage {
                         let ts = ctx
                             .render_template(ts_tmpl)
                             .with_context(|| "nsis: render mod_timestamp template")?;
-                        anodize_core::util::apply_mod_timestamp(staging_dir, &ts, &log)?;
+                        anodizer_core::util::apply_mod_timestamp(staging_dir, &ts, &log)?;
                     }
 
                     // Build makensis command
@@ -400,8 +400,8 @@ impl Stage for NsisStage {
                         let ts = ctx
                             .render_template(ts_tmpl)
                             .with_context(|| "nsis: render mod_timestamp template for output")?;
-                        let mtime = anodize_core::util::parse_mod_timestamp(&ts)?;
-                        anodize_core::util::set_file_mtime(&exe_path, mtime)?;
+                        let mtime = anodizer_core::util::parse_mod_timestamp(&ts)?;
+                        anodizer_core::util::set_file_mtime(&exe_path, mtime)?;
                         log.status(&format!(
                             "applied mod_timestamp={ts} to {}",
                             exe_path.display()
@@ -425,7 +425,7 @@ impl Stage for NsisStage {
                     });
 
                     // If replace is set, mark archives for this crate+target for removal
-                    archives_to_remove.extend(anodize_core::util::collect_if_replace(
+                    archives_to_remove.extend(anodizer_core::util::collect_if_replace(
                         nsis_cfg.replace,
                         &ctx.artifacts,
                         &krate.name,
@@ -435,7 +435,7 @@ impl Stage for NsisStage {
             }
         }
 
-        anodize_core::template::clear_per_target_vars(ctx.template_vars_mut());
+        anodizer_core::template::clear_per_target_vars(ctx.template_vars_mut());
 
         // Remove replaced archives
         if !archives_to_remove.is_empty() {
@@ -564,8 +564,8 @@ mod tests {
 
     #[test]
     fn test_stage_skips_when_no_nsis_config() {
-        use anodize_core::config::Config;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
 
         let config = Config::default();
         let mut ctx = Context::new(config, ContextOptions::default());
@@ -576,8 +576,8 @@ mod tests {
 
     #[test]
     fn test_stage_skips_when_disabled() {
-        use anodize_core::config::{Config, CrateConfig, NsisConfig, StringOrBool};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, NsisConfig, StringOrBool};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -629,8 +629,8 @@ mod tests {
 
     #[test]
     fn test_stage_skips_when_disabled_via_template() {
-        use anodize_core::config::{Config, CrateConfig, NsisConfig, StringOrBool};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, NsisConfig, StringOrBool};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -680,8 +680,8 @@ mod tests {
 
     #[test]
     fn test_stage_dry_run_registers_artifacts() {
-        use anodize_core::config::{Config, CrateConfig, NsisConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, NsisConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -753,8 +753,8 @@ mod tests {
 
     #[test]
     fn test_stage_dry_run_with_name_template() {
-        use anodize_core::config::{Config, CrateConfig, NsisConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, NsisConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -810,8 +810,8 @@ mod tests {
 
     #[test]
     fn test_stage_dry_run_replace_removes_archives() {
-        use anodize_core::config::{Config, CrateConfig, NsisConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, NsisConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -893,8 +893,8 @@ mod tests {
 
     #[test]
     fn test_stage_ignores_non_windows_binaries() {
-        use anodize_core::config::{Config, CrateConfig, NsisConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, NsisConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -962,7 +962,7 @@ crates:
     nsis:
       - name: "{{ ProjectName }}_{{ Version }}_{{ Arch }}_setup.exe"
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let nsis_configs = config.crates[0].nsis.as_ref().unwrap();
         assert_eq!(nsis_configs.len(), 1);
         assert_eq!(
@@ -996,7 +996,7 @@ crates:
         mod_timestamp: "{{ .CommitTimestamp }}"
         disable: "false"
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let nsis_configs = config.crates[0].nsis.as_ref().unwrap();
         assert_eq!(nsis_configs.len(), 1);
 
@@ -1021,7 +1021,7 @@ crates:
         );
         assert_eq!(
             nsis.disable,
-            Some(anodize_core::config::StringOrBool::String(
+            Some(anodizer_core::config::StringOrBool::String(
                 "false".to_string()
             ))
         );
@@ -1029,8 +1029,8 @@ crates:
 
     #[test]
     fn test_invalid_name_template_errors() {
-        use anodize_core::config::{Config, CrateConfig, NsisConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, NsisConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -1080,8 +1080,8 @@ crates:
 
     #[test]
     fn test_stage_ids_filter() {
-        use anodize_core::config::{Config, CrateConfig, NsisConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, NsisConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -1144,8 +1144,8 @@ crates:
 
     #[test]
     fn test_stage_exe_extension_appended_in_dry_run() {
-        use anodize_core::config::{Config, CrateConfig, NsisConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, NsisConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -1204,10 +1204,10 @@ crates:
 
     // --- `nsis.if` template-conditional (GoReleaser Pro) ---
 
-    fn nsis_if_test_ctx(if_expr: Option<&str>) -> anodize_core::context::Context {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
-        use anodize_core::config::{Config, CrateConfig, NsisConfig};
-        use anodize_core::context::{Context, ContextOptions};
+    fn nsis_if_test_ctx(if_expr: Option<&str>) -> anodizer_core::context::Context {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::config::{Config, CrateConfig, NsisConfig};
+        use anodizer_core::context::{Context, ContextOptions};
         let tmp = tempfile::TempDir::new().unwrap();
         let mut config = Config::default();
         config.project_name = "myapp".to_string();
@@ -1248,7 +1248,7 @@ crates:
 
     #[test]
     fn test_nsis_if_false_skips_config() {
-        use anodize_core::artifact::ArtifactKind;
+        use anodizer_core::artifact::ArtifactKind;
         let mut ctx = nsis_if_test_ctx(Some("false"));
         NsisStage.run(&mut ctx).unwrap();
         assert_eq!(

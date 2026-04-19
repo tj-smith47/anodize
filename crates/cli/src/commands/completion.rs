@@ -6,7 +6,7 @@ use std::io;
 /// Generate shell completions and print them to stdout.
 pub fn run(shell: Shell) -> Result<()> {
     let mut cmd = crate::Cli::command();
-    generate(shell, &mut cmd, "anodize", &mut io::stdout());
+    generate(shell, &mut cmd, "anodizer", &mut io::stdout());
     Ok(())
 }
 
@@ -19,12 +19,12 @@ mod tests {
         // Generate bash completions into a buffer and verify non-empty output
         let mut cmd = crate::Cli::command();
         let mut buf = Vec::new();
-        generate(Shell::Bash, &mut cmd, "anodize", &mut buf);
+        generate(Shell::Bash, &mut cmd, "anodizer", &mut buf);
         let output = String::from_utf8(buf)
             .unwrap_or_else(|e| panic!("completions should be valid UTF-8: {e}"));
         assert!(!output.is_empty(), "bash completions should not be empty");
         assert!(
-            output.contains("anodize"),
+            output.contains("anodizer"),
             "bash completions should reference the command name"
         );
     }
@@ -33,7 +33,7 @@ mod tests {
     fn test_completion_zsh_produces_output() {
         let mut cmd = crate::Cli::command();
         let mut buf = Vec::new();
-        generate(Shell::Zsh, &mut cmd, "anodize", &mut buf);
+        generate(Shell::Zsh, &mut cmd, "anodizer", &mut buf);
         let output = String::from_utf8(buf)
             .unwrap_or_else(|e| panic!("completions should be valid UTF-8: {e}"));
         assert!(!output.is_empty(), "zsh completions should not be empty");
@@ -43,7 +43,7 @@ mod tests {
     fn test_completion_fish_produces_output() {
         let mut cmd = crate::Cli::command();
         let mut buf = Vec::new();
-        generate(Shell::Fish, &mut cmd, "anodize", &mut buf);
+        generate(Shell::Fish, &mut cmd, "anodizer", &mut buf);
         let output = String::from_utf8(buf)
             .unwrap_or_else(|e| panic!("completions should be valid UTF-8: {e}"));
         assert!(!output.is_empty(), "fish completions should not be empty");
@@ -53,7 +53,7 @@ mod tests {
     fn test_completion_powershell_produces_output() {
         let mut cmd = crate::Cli::command();
         let mut buf = Vec::new();
-        generate(Shell::PowerShell, &mut cmd, "anodize", &mut buf);
+        generate(Shell::PowerShell, &mut cmd, "anodizer", &mut buf);
         let output = String::from_utf8(buf)
             .unwrap_or_else(|e| panic!("completions should be valid UTF-8: {e}"));
         assert!(

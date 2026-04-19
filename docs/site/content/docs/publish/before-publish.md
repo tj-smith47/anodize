@@ -5,7 +5,7 @@ weight = 89
 template = "docs.html"
 +++
 
-Anodize supports running arbitrary shell commands before the pipeline starts and after it completes. These are the same hooks documented in [Global Hooks](/docs/general/hooks/), but this page focuses on their use around the publish phase.
+Anodizer supports running arbitrary shell commands before the pipeline starts and after it completes. These are the same hooks documented in [Global Hooks](/docs/general/hooks/), but this page focuses on their use around the publish phase.
 
 ## Config
 

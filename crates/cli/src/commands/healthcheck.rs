@@ -1,4 +1,4 @@
-use anodize_core::log::{StageLogger, Verbosity};
+use anodizer_core::log::{StageLogger, Verbosity};
 use anyhow::Result;
 use colored::Colorize;
 
@@ -82,7 +82,7 @@ fn tool_version(name: &str) -> Option<String> {
 pub fn run() -> Result<()> {
     let log = StageLogger::new("healthcheck", Verbosity::Normal);
 
-    log.status(&format!("{}", "Anodize Environment Health Check".bold()));
+    log.status(&format!("{}", "Anodizer Environment Health Check".bold()));
     log.status(&"=".repeat(40));
 
     let mut available_count = 0;

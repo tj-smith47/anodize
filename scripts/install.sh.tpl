@@ -1,9 +1,9 @@
 #!/bin/sh
-# Anodize remote installer — download and install the correct binary.
-# Usage: curl -sSfL https://github.com/tj-smith47/anodize/releases/latest/download/install.sh | sh
+# Anodizer remote installer — download and install the correct binary.
+# Usage: curl -sSfL https://github.com/tj-smith47/anodizer/releases/latest/download/install.sh | sh
 set -e
 
-REPO="tj-smith47/anodize"
+REPO="tj-smith47/anodizer"
 VERSION="{{ Version }}"
 PROJECT="{{ ProjectName }}"
 PREFIX="${PREFIX:-/usr/local}"

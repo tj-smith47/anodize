@@ -5,12 +5,12 @@ use std::sync::Arc;
 use anyhow::{Context as _, Result, bail};
 use base64::Engine as _;
 
-use anodize_core::artifact::{Artifact, ArtifactKind, release_uploadable_kinds};
-use anodize_core::config::{BlobConfig, ExtraFileSpec};
-use anodize_core::context::Context;
-use anodize_core::extrafiles;
-use anodize_core::stage::Stage;
-use anodize_core::template;
+use anodizer_core::artifact::{Artifact, ArtifactKind, release_uploadable_kinds};
+use anodizer_core::config::{BlobConfig, ExtraFileSpec};
+use anodizer_core::context::Context;
+use anodizer_core::extrafiles;
+use anodizer_core::stage::Stage;
+use anodizer_core::template;
 
 use object_store::path::Path as ObjectPath;
 use object_store::{ObjectStore, PutOptions};
@@ -408,7 +408,7 @@ fn build_put_options(config: &BlobConfig, filename: &str, ctx: &Context) -> Resu
     // GoReleaser never force-defaults `attachment;filename=...` — letting the
     // backend default preserves in-browser preview for images/PDFs/HTML.
     // Sentinel `"-"` disables the header explicitly (kept for parity with users
-    // migrating from earlier anodize configs).
+    // migrating from earlier anodizer configs).
     if let Some(disp_template) = config.content_disposition.as_deref()
         && !disp_template.is_empty()
         && disp_template != "-"
@@ -441,7 +441,7 @@ fn build_put_options(config: &BlobConfig, filename: &str, ctx: &Context) -> Resu
 fn resolve_extra_files(
     extra_files: &[ExtraFileSpec],
     ctx: &Context,
-    log: &anodize_core::log::StageLogger,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<Vec<(PathBuf, String)>> {
     let resolved = extrafiles::resolve(extra_files, log)?;
     let mut out = Vec::with_capacity(resolved.len());
@@ -787,7 +787,7 @@ impl Stage for BlobStage {
                 if let Some(ref tpl_specs) = blob_cfg.templated_extra_files
                     && !tpl_specs.is_empty()
                 {
-                    let rendered = anodize_core::templated_files::process_templated_extra_files(
+                    let rendered = anodizer_core::templated_files::process_templated_extra_files(
                         tpl_specs,
                         ctx,
                         &ctx.config.dist,
@@ -894,7 +894,7 @@ impl Stage for BlobStage {
             )
         };
 
-        anodize_core::parallel::run_parallel_chunks(&jobs, global_parallelism, "blob", run_job)?;
+        anodizer_core::parallel::run_parallel_chunks(&jobs, global_parallelism, "blob", run_job)?;
 
         for job in &jobs {
             log.status(&format!(
@@ -918,8 +918,8 @@ impl Stage for BlobStage {
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
-    use anodize_core::config::{BlobConfig, StringOrBool};
-    use anodize_core::context::{Context, ContextOptions};
+    use anodizer_core::config::{BlobConfig, StringOrBool};
+    use anodizer_core::context::{Context, ContextOptions};
 
     // -----------------------------------------------------------------------
     // Provider tests
@@ -1037,7 +1037,7 @@ mod tests {
 
     #[test]
     fn test_put_options_content_disposition_default_unset() {
-        // B3 fix: GoReleaser does NOT default content-disposition; anodize
+        // B3 fix: GoReleaser does NOT default content-disposition; anodizer
         // must not either, so in-browser preview (images/PDFs/HTML) keeps
         // working when users don't opt into attachment behavior.
         let config = BlobConfig::default();
@@ -1300,7 +1300,7 @@ blobs:
     bucket: my-releases
     region: us-west-2
 "#;
-        let crate_cfg: anodize_core::config::CrateConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let crate_cfg: anodizer_core::config::CrateConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let blobs = crate_cfg.blobs.unwrap();
         assert_eq!(blobs.len(), 1);
         assert_eq!(blobs[0].provider, "s3");
@@ -1315,7 +1315,7 @@ blobs:
   - provider: gs
     bucket: my-gcs-bucket
 "#;
-        let crate_cfg: anodize_core::config::CrateConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let crate_cfg: anodizer_core::config::CrateConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let blobs = crate_cfg.blobs.unwrap();
         assert_eq!(blobs[0].provider, "gs");
     }
@@ -1327,7 +1327,7 @@ blobs:
   - provider: azblob
     bucket: my-container
 "#;
-        let crate_cfg: anodize_core::config::CrateConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let crate_cfg: anodizer_core::config::CrateConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let blobs = crate_cfg.blobs.unwrap();
         assert_eq!(blobs[0].provider, "azblob");
     }
@@ -1343,7 +1343,7 @@ blobs:
   - provider: azblob
     bucket: azure-container
 "#;
-        let crate_cfg: anodize_core::config::CrateConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let crate_cfg: anodizer_core::config::CrateConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let blobs = crate_cfg.blobs.unwrap();
         assert_eq!(blobs.len(), 3);
     }
@@ -1374,7 +1374,7 @@ blobs:
     extra_files_only: false
     id: my-blob-config
 "#;
-        let crate_cfg: anodize_core::config::CrateConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let crate_cfg: anodizer_core::config::CrateConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let blobs = crate_cfg.blobs.unwrap();
         let b = &blobs[0];
         assert_eq!(b.provider, "s3");
@@ -1405,7 +1405,7 @@ blobs:
     bucket: b
     cache_control: "max-age=86400"
 "#;
-        let crate_cfg: anodize_core::config::CrateConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let crate_cfg: anodizer_core::config::CrateConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let blobs = crate_cfg.blobs.unwrap();
         assert_eq!(blobs[0].cache_control.as_ref().unwrap(), &["max-age=86400"]);
     }
@@ -1420,7 +1420,7 @@ blobs:
       - "max-age=86400"
       - "public"
 "#;
-        let crate_cfg: anodize_core::config::CrateConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let crate_cfg: anodizer_core::config::CrateConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let blobs = crate_cfg.blobs.unwrap();
         assert_eq!(
             blobs[0].cache_control.as_ref().unwrap(),
@@ -1436,7 +1436,7 @@ blobs:
     bucket: b
     disable: true
 "#;
-        let crate_cfg: anodize_core::config::CrateConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let crate_cfg: anodizer_core::config::CrateConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let blobs = crate_cfg.blobs.unwrap();
         assert_eq!(blobs[0].disable, Some(StringOrBool::Bool(true)));
     }
@@ -1449,7 +1449,7 @@ blobs:
     bucket: b
     disable: "{% if IsSnapshot %}true{% endif %}"
 "#;
-        let crate_cfg: anodize_core::config::CrateConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let crate_cfg: anodizer_core::config::CrateConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let blobs = crate_cfg.blobs.unwrap();
         match &blobs[0].disable {
             Some(StringOrBool::String(s)) => {
@@ -1492,7 +1492,7 @@ blobs:
         name: "LICENSE.txt"
       - glob: "./README.md"
 "#;
-        let crate_cfg: anodize_core::config::CrateConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let crate_cfg: anodizer_core::config::CrateConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let blobs = crate_cfg.blobs.unwrap();
         let extras = blobs[0].extra_files.as_ref().unwrap();
         assert_eq!(extras.len(), 2);
@@ -1512,7 +1512,7 @@ blobs:
       - glob: "./LICENSE"
         name_template: "LICENSE-{{ Tag }}"
 "#;
-        let crate_cfg: anodize_core::config::CrateConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let crate_cfg: anodizer_core::config::CrateConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let blobs = crate_cfg.blobs.unwrap();
         let extras = blobs[0].extra_files.as_ref().unwrap();
         assert_eq!(extras[0].name_template(), Some("LICENSE-{{ Tag }}"));
@@ -1524,7 +1524,7 @@ blobs:
 partial:
   by: goos
 "#;
-        let config: anodize_core::config::Config =
+        let config: anodizer_core::config::Config =
             serde_yaml_ng::from_str(&format!("project_name: test\ncrates: []\n{}", yaml)).unwrap();
         let partial = config.partial.unwrap();
         assert_eq!(partial.by.as_deref(), Some("goos"));
@@ -1533,14 +1533,14 @@ partial:
     #[test]
     fn test_partial_config_by_target() {
         let yaml = "project_name: test\ncrates: []\npartial:\n  by: target\n";
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.partial.unwrap().by.as_deref(), Some("target"));
     }
 
     #[test]
     fn test_partial_config_defaults() {
         let yaml = "project_name: test\ncrates: []\npartial: {}\n";
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         // by defaults to None, which the runtime interprets as "goos"
         assert!(config.partial.unwrap().by.is_none());
     }
@@ -1607,7 +1607,7 @@ partial:
     #[test]
     fn test_collect_artifacts_filters_by_crate() {
         let mut ctx = make_ctx();
-        ctx.artifacts.add(anodize_core::artifact::Artifact {
+        ctx.artifacts.add(anodizer_core::artifact::Artifact {
             kind: ArtifactKind::Archive,
             name: String::new(),
             path: PathBuf::from("dist/a.tar.gz"),
@@ -1616,7 +1616,7 @@ partial:
             metadata: Default::default(),
             size: None,
         });
-        ctx.artifacts.add(anodize_core::artifact::Artifact {
+        ctx.artifacts.add(anodizer_core::artifact::Artifact {
             kind: ArtifactKind::Archive,
             name: String::new(),
             path: PathBuf::from("dist/b.tar.gz"),
@@ -1634,7 +1634,7 @@ partial:
     #[test]
     fn test_collect_artifacts_extra_files_only() {
         let mut ctx = make_ctx();
-        ctx.artifacts.add(anodize_core::artifact::Artifact {
+        ctx.artifacts.add(anodizer_core::artifact::Artifact {
             kind: ArtifactKind::Archive,
             name: String::new(),
             path: PathBuf::from("dist/a.tar.gz"),
@@ -1656,7 +1656,7 @@ partial:
         let mut ctx = make_ctx();
         let mut meta = std::collections::HashMap::new();
         meta.insert("id".to_string(), "linux-build".to_string());
-        ctx.artifacts.add(anodize_core::artifact::Artifact {
+        ctx.artifacts.add(anodizer_core::artifact::Artifact {
             kind: ArtifactKind::Archive,
             name: String::new(),
             path: PathBuf::from("dist/a.tar.gz"),
@@ -1665,7 +1665,7 @@ partial:
             metadata: meta,
             size: None,
         });
-        ctx.artifacts.add(anodize_core::artifact::Artifact {
+        ctx.artifacts.add(anodizer_core::artifact::Artifact {
             kind: ArtifactKind::Archive,
             name: String::new(),
             path: PathBuf::from("dist/b.tar.gz"),
@@ -1685,7 +1685,7 @@ partial:
     #[test]
     fn test_collect_artifacts_includes_metadata_kind() {
         let mut ctx = make_ctx();
-        ctx.artifacts.add(anodize_core::artifact::Artifact {
+        ctx.artifacts.add(anodizer_core::artifact::Artifact {
             kind: ArtifactKind::Metadata,
             name: String::new(),
             path: PathBuf::from("dist/metadata.json"),
@@ -1714,9 +1714,9 @@ partial:
 
     #[test]
     fn test_blob_stage_skips_when_no_config() {
-        let config = anodize_core::config::Config {
+        let config = anodizer_core::config::Config {
             project_name: "test".to_string(),
-            crates: vec![anodize_core::config::CrateConfig {
+            crates: vec![anodizer_core::config::CrateConfig {
                 name: "mycrate".to_string(),
                 path: ".".to_string(),
                 ..Default::default()
@@ -1735,9 +1735,9 @@ partial:
 
     #[test]
     fn test_blob_stage_skips_disabled_config() {
-        let config = anodize_core::config::Config {
+        let config = anodizer_core::config::Config {
             project_name: "test".to_string(),
-            crates: vec![anodize_core::config::CrateConfig {
+            crates: vec![anodizer_core::config::CrateConfig {
                 name: "mycrate".to_string(),
                 path: ".".to_string(),
                 blobs: Some(vec![BlobConfig {
@@ -1762,9 +1762,9 @@ partial:
 
     #[test]
     fn test_blob_stage_empty_provider_error() {
-        let config = anodize_core::config::Config {
+        let config = anodizer_core::config::Config {
             project_name: "test".to_string(),
-            crates: vec![anodize_core::config::CrateConfig {
+            crates: vec![anodizer_core::config::CrateConfig {
                 name: "mycrate".to_string(),
                 path: ".".to_string(),
                 blobs: Some(vec![BlobConfig {
@@ -1794,9 +1794,9 @@ partial:
 
     #[test]
     fn test_blob_stage_empty_bucket_error() {
-        let config = anodize_core::config::Config {
+        let config = anodizer_core::config::Config {
             project_name: "test".to_string(),
-            crates: vec![anodize_core::config::CrateConfig {
+            crates: vec![anodizer_core::config::CrateConfig {
                 name: "mycrate".to_string(),
                 path: ".".to_string(),
                 blobs: Some(vec![BlobConfig {
@@ -1826,9 +1826,9 @@ partial:
 
     #[test]
     fn test_blob_stage_invalid_provider() {
-        let config = anodize_core::config::Config {
+        let config = anodizer_core::config::Config {
             project_name: "test".to_string(),
-            crates: vec![anodize_core::config::CrateConfig {
+            crates: vec![anodizer_core::config::CrateConfig {
                 name: "mycrate".to_string(),
                 path: ".".to_string(),
                 blobs: Some(vec![BlobConfig {
@@ -1853,9 +1853,9 @@ partial:
 
     #[test]
     fn test_blob_stage_dry_run_logs_commands() {
-        let config = anodize_core::config::Config {
+        let config = anodizer_core::config::Config {
             project_name: "test".to_string(),
-            crates: vec![anodize_core::config::CrateConfig {
+            crates: vec![anodizer_core::config::CrateConfig {
                 name: "mycrate".to_string(),
                 path: ".".to_string(),
                 blobs: Some(vec![BlobConfig {
@@ -1874,7 +1874,7 @@ partial:
         ctx.template_vars_mut().set("ProjectName", "test");
 
         // Add an artifact so there's something to "upload"
-        ctx.artifacts.add(anodize_core::artifact::Artifact {
+        ctx.artifacts.add(anodizer_core::artifact::Artifact {
             kind: ArtifactKind::Archive,
             name: String::new(),
             path: PathBuf::from("dist/test-v1.0.0.tar.gz"),
@@ -1932,7 +1932,8 @@ partial:
         ];
         let config = BlobConfig::default();
         let ctx = make_ctx();
-        let _log = anodize_core::log::StageLogger::new("test", anodize_core::log::Verbosity::Quiet);
+        let _log =
+            anodizer_core::log::StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
 
         let put_opts: Vec<PutOptions> = upload_items
             .iter()
@@ -1980,7 +1981,8 @@ partial:
         let upload_items = vec![(file1, "file.txt".to_string())];
         let config = BlobConfig::default();
         let ctx = make_ctx();
-        let _log = anodize_core::log::StageLogger::new("test", anodize_core::log::Verbosity::Quiet);
+        let _log =
+            anodizer_core::log::StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
 
         let put_opts: Vec<PutOptions> = upload_items
             .iter()
@@ -2022,7 +2024,8 @@ partial:
             ..Default::default()
         };
         let ctx = make_ctx();
-        let _log = anodize_core::log::StageLogger::new("test", anodize_core::log::Verbosity::Quiet);
+        let _log =
+            anodizer_core::log::StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
 
         let put_opts: Vec<PutOptions> = upload_items
             .iter()
@@ -2043,12 +2046,12 @@ partial:
     // Helpers
     // -----------------------------------------------------------------------
 
-    fn test_log() -> anodize_core::log::StageLogger {
-        anodize_core::log::StageLogger::new("test", anodize_core::log::Verbosity::Quiet)
+    fn test_log() -> anodizer_core::log::StageLogger {
+        anodizer_core::log::StageLogger::new("test", anodizer_core::log::Verbosity::Quiet)
     }
 
     fn make_ctx() -> Context {
-        let config = anodize_core::config::Config {
+        let config = anodizer_core::config::Config {
             project_name: "test".to_string(),
             ..Default::default()
         };
@@ -2061,7 +2064,7 @@ partial:
     }
 
     fn make_ctx_with_snapshot() -> Context {
-        let config = anodize_core::config::Config {
+        let config = anodizer_core::config::Config {
             project_name: "test".to_string(),
             ..Default::default()
         };

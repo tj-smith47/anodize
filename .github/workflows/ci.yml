@@ -69,8 +69,8 @@ jobs:
         if: github.ref == 'refs/heads/master' && runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
-          name: anodize-linux
-          path: target/release/anodize
+          name: anodizer-linux
+          path: target/release/anodizer
 
   package:
     name: Package (dry-run)
@@ -95,9 +95,9 @@ jobs:
         with:
           fetch-depth: 0
       - name: Validate release pipeline
-        uses: tj-smith47/anodize-action@master
+        uses: tj-smith47/anodizer-action@master
         with:
-          from-artifact: anodize-linux
+          from-artifact: anodizer-linux
           args: release --snapshot --single-target --clean --dry-run
 
   tag:
@@ -117,9 +117,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
       - name: Auto-tag release
-        uses: tj-smith47/anodize-action@master
+        uses: tj-smith47/anodizer-action@master
         with:
-          from-artifact: anodize-linux
+          from-artifact: anodizer-linux
           args: tag
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}

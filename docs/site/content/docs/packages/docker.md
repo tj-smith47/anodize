@@ -5,7 +5,7 @@ weight = 4
 template = "docs.html"
 +++
 
-Anodize builds Docker images via `docker buildx`, supporting multi-architecture builds with tag templates.
+Anodizer builds Docker images via `docker buildx`, supporting multi-architecture builds with tag templates.
 
 ## Minimal config
 

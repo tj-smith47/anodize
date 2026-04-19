@@ -51,7 +51,7 @@ This renders the template at the end of the pipeline and applies the resulting U
 
 ## Generated files
 
-Anodize always writes two JSON files to the dist directory:
+Anodizer always writes two JSON files to the dist directory:
 
 - **`metadata.json`** — project metadata: `project_name`, `tag`, `previous_tag`, `version`, `commit`, `date`, and runtime info (`goos`, `goarch`)
 - **`artifacts.json`** — full list of all artifacts produced during the release (see [Artifacts](/docs/general/artifacts/))

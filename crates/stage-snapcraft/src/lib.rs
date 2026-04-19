@@ -6,10 +6,10 @@ use std::process::Command;
 use anyhow::{Context as _, Result};
 use serde::Serialize;
 
-use anodize_core::artifact::{Artifact, ArtifactKind};
-use anodize_core::config::SnapcraftConfig;
-use anodize_core::context::Context;
-use anodize_core::stage::Stage;
+use anodizer_core::artifact::{Artifact, ArtifactKind};
+use anodizer_core::config::SnapcraftConfig;
+use anodizer_core::context::Context;
+use anodizer_core::stage::Stage;
 
 // GoReleaser's defaultNameTemplate (internal/pipe/snapcraft/snapcraft.go:103)
 // — preserves Os, Arm/Mips/Amd64 variant suffixes so multi-arch builds don't
@@ -173,7 +173,7 @@ fn is_valid_snap_arch(arch: &str) -> bool {
 // generate_snap_yaml
 // ---------------------------------------------------------------------------
 
-/// Generate a snap.yaml metadata string from the anodize snapcraft config.
+/// Generate a snap.yaml metadata string from the anodizer snapcraft config.
 ///
 /// this generates the `snap.yaml` file that goes into
 /// `prime/meta/snap.yaml` — it is *not* a `snapcraft.yaml` build recipe.
@@ -492,7 +492,7 @@ impl Stage for SnapcraftStage {
                 .filter(|b| {
                     b.target
                         .as_deref()
-                        .map(anodize_core::target::is_linux)
+                        .map(anodizer_core::target::is_linux)
                         .unwrap_or(false)
                 })
                 .cloned()
@@ -599,7 +599,7 @@ impl Stage for SnapcraftStage {
                     // Derive Os/Arch from the target triple for template rendering
                     let (os, arch) = target
                         .as_deref()
-                        .map(anodize_core::target::map_target)
+                        .map(anodizer_core::target::map_target)
                         .unwrap_or_else(|| ("linux".to_string(), "amd64".to_string()));
 
                     // Ensure output directory exists
@@ -685,7 +685,7 @@ impl Stage for SnapcraftStage {
                         });
 
                         // If replace is set, mark archives for this crate+target for removal
-                        archives_to_remove.extend(anodize_core::util::collect_if_replace(
+                        archives_to_remove.extend(anodizer_core::util::collect_if_replace(
                             snap_cfg.replace,
                             &ctx.artifacts,
                             &krate.name,
@@ -851,7 +851,7 @@ impl Stage for SnapcraftStage {
                     if let Some(ref tpl_specs) = snap_cfg.templated_extra_files
                         && !tpl_specs.is_empty()
                     {
-                        anodize_core::templated_files::process_templated_extra_files(
+                        anodizer_core::templated_files::process_templated_extra_files(
                             tpl_specs,
                             ctx,
                             &prime_dir,
@@ -861,7 +861,7 @@ impl Stage for SnapcraftStage {
 
                     // Apply mod_timestamp if set
                     if let Some(ts) = &snap_cfg.mod_timestamp {
-                        anodize_core::util::apply_mod_timestamp(&prime_dir, ts, &log)?;
+                        anodizer_core::util::apply_mod_timestamp(&prime_dir, ts, &log)?;
                     }
 
                     // Phase 1 done: compose subprocess args and hand the
@@ -873,7 +873,7 @@ impl Stage for SnapcraftStage {
 
                     // If replace is set, mark archives for this crate+target
                     // for removal — do it now while ctx.artifacts is accessible.
-                    archives_to_remove.extend(anodize_core::util::collect_if_replace(
+                    archives_to_remove.extend(anodizer_core::util::collect_if_replace(
                         snap_cfg.replace,
                         &ctx.artifacts,
                         &krate.name,
@@ -892,7 +892,7 @@ impl Stage for SnapcraftStage {
             }
         }
 
-        anodize_core::template::clear_per_target_vars(ctx.template_vars_mut());
+        anodizer_core::template::clear_per_target_vars(ctx.template_vars_mut());
 
         // ----------------------------------------------------------------
         // Phase 2 (parallel): run `snapcraft pack` per job. Bounded
@@ -901,7 +901,7 @@ impl Stage for SnapcraftStage {
         // ----------------------------------------------------------------
         if !jobs.is_empty() {
             let run_job = |job: &SnapcraftJob| -> Result<Artifact> {
-                let thread_log = anodize_core::log::StageLogger::new("snapcraft", log.verbosity());
+                let thread_log = anodizer_core::log::StageLogger::new("snapcraft", log.verbosity());
 
                 thread_log.status(&format!("running: {}", job.cmd_args.join(" ")));
 
@@ -927,7 +927,7 @@ impl Stage for SnapcraftStage {
                 })
             };
 
-            let results = anodize_core::parallel::run_parallel_chunks(
+            let results = anodizer_core::parallel::run_parallel_chunks(
                 &jobs,
                 parallelism,
                 "snapcraft",
@@ -1104,11 +1104,11 @@ impl Stage for SnapcraftPublishStage {
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
-    use anodize_core::config::{
+    use anodizer_core::config::{
         Config, CrateConfig, SnapcraftApp, SnapcraftConfig, SnapcraftExtraFileSpec,
         SnapcraftLayout, StringOrBool,
     };
-    use anodize_core::context::{Context, ContextOptions};
+    use anodizer_core::context::{Context, ContextOptions};
     use tempfile::TempDir;
 
     // -----------------------------------------------------------------------
@@ -1213,7 +1213,7 @@ mod tests {
         let mut apps_map = HashMap::new();
         apps_map.insert(
             "mysnap".to_string(),
-            anodize_core::config::SnapcraftApp::default(),
+            anodizer_core::config::SnapcraftApp::default(),
         );
 
         let cfg = SnapcraftConfig {
@@ -2747,7 +2747,7 @@ crates:
         let mut apps_map = HashMap::new();
         apps_map.insert(
             "mysnap".to_string(),
-            anodize_core::config::SnapcraftApp::default(),
+            anodizer_core::config::SnapcraftApp::default(),
         );
 
         let cfg = SnapcraftConfig {

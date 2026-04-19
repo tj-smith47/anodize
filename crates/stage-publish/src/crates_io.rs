@@ -1,7 +1,7 @@
-use anodize_core::config::CrateConfig;
-use anodize_core::context::Context;
-use anodize_core::log::StageLogger;
-use anodize_core::util::topological_sort;
+use anodizer_core::config::CrateConfig;
+use anodizer_core::context::Context;
+use anodizer_core::log::StageLogger;
+use anodizer_core::util::topological_sort;
 use anyhow::{Context as _, Result};
 use std::collections::{HashMap, HashSet};
 use std::process::Command;
@@ -86,7 +86,7 @@ fn is_already_published(crate_name: &str, version: &str) -> Result<bool> {
     use std::time::Duration;
 
     let url = sparse_index_url(crate_name);
-    let client = anodize_core::http::blocking_client(Duration::from_secs(10))
+    let client = anodizer_core::http::blocking_client(Duration::from_secs(10))
         .context("publish: build HTTP client for index check")?;
 
     let resp = client
@@ -136,7 +136,7 @@ fn poll_crates_io_index(
     let deadline = Duration::from_secs(timeout_secs);
     let url = sparse_index_url(crate_name);
 
-    let client = anodize_core::http::blocking_client(Duration::from_secs(10))
+    let client = anodizer_core::http::blocking_client(Duration::from_secs(10))
         .context("publish: build HTTP client for index polling")?;
 
     let mut backoff = INITIAL_POLL_DELAY;

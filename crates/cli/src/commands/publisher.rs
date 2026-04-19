@@ -1,10 +1,10 @@
 use std::process::Command;
 
-use anodize_core::artifact::{Artifact, ArtifactKind};
-use anodize_core::config::PublisherConfig;
-use anodize_core::log::StageLogger;
-use anodize_core::pipe_skip::SkipMemento;
-use anodize_core::template::{self, TemplateVars};
+use anodizer_core::artifact::{Artifact, ArtifactKind};
+use anodizer_core::config::PublisherConfig;
+use anodizer_core::log::StageLogger;
+use anodizer_core::pipe_skip::SkipMemento;
+use anodizer_core::template::{self, TemplateVars};
 use anyhow::{Context as _, Result};
 
 /// Split a command string into arguments, respecting single and double quotes.
@@ -91,22 +91,22 @@ pub fn run_publishers(
         let mut extra_artifacts: Vec<Artifact> = Vec::new();
         if let Some(ref extra_files) = publisher.extra_files {
             // Pre-render the glob templates, then delegate to the canonical resolver.
-            let rendered_specs: Vec<anodize_core::config::ExtraFileSpec> = extra_files
+            let rendered_specs: Vec<anodizer_core::config::ExtraFileSpec> = extra_files
                 .iter()
                 .map(|ef| {
                     let raw_glob = ef.glob();
                     let glob = template::render(raw_glob, base_vars)
                         .unwrap_or_else(|_| raw_glob.to_string());
                     match ef.name_template() {
-                        Some(nt) => anodize_core::config::ExtraFileSpec::Detailed {
+                        Some(nt) => anodizer_core::config::ExtraFileSpec::Detailed {
                             glob,
                             name_template: Some(nt.to_string()),
                         },
-                        None => anodize_core::config::ExtraFileSpec::Glob(glob),
+                        None => anodizer_core::config::ExtraFileSpec::Glob(glob),
                     }
                 })
                 .collect();
-            let resolved = anodize_core::extrafiles::resolve(&rendered_specs, log)?;
+            let resolved = anodizer_core::extrafiles::resolve(&rendered_specs, log)?;
             for r in resolved {
                 let name = if let Some(name_tmpl) = r.name_template.as_deref() {
                     template::render(name_tmpl, base_vars).unwrap_or_else(|_| name_tmpl.to_string())
@@ -137,7 +137,7 @@ pub fn run_publishers(
                 let tpl_dir = tempfile::TempDir::new()
                     .context("publisher: create temp dir for templated files")?;
                 let rendered =
-                    anodize_core::templated_files::process_templated_extra_files_with_vars(
+                    anodizer_core::templated_files::process_templated_extra_files_with_vars(
                         tpl_specs,
                         base_vars,
                         tpl_dir.path(),
@@ -382,7 +382,7 @@ pub fn build_publisher_command(
     vars.set("ArtifactName", &artifact_name);
     vars.set(
         "ArtifactExt",
-        anodize_core::template::extract_artifact_ext(&artifact_name),
+        anodizer_core::template::extract_artifact_ext(&artifact_name),
     );
     vars.set("ArtifactKind", artifact.kind.as_str());
     // Set ArtifactID from artifact metadata "id" key (Pro addition)
@@ -398,7 +398,7 @@ pub fn build_publisher_command(
     // Expose per-artifact Os, Arch, and Target template variables
     // (GoReleaser parity: custom publishers can reference {{ .Os }}, {{ .Arch }}, {{ .Target }})
     if let Some(ref target) = artifact.target {
-        let (os, arch) = anodize_core::target::map_target(target);
+        let (os, arch) = anodizer_core::target::map_target(target);
         vars.set("Os", &os);
         vars.set("Arch", &arch);
         vars.set("Target", target);
@@ -448,7 +448,7 @@ fn format_command_line(cmd: &str, args: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anodize_core::config::StringOrBool;
+    use anodizer_core::config::StringOrBool;
     use std::collections::HashMap;
     use std::path::PathBuf;
 
@@ -498,7 +498,7 @@ mod tests {
     }
 
     fn test_logger() -> StageLogger {
-        use anodize_core::log::Verbosity;
+        use anodizer_core::log::Verbosity;
         StageLogger::new("test", Verbosity::Normal)
     }
 
@@ -796,7 +796,7 @@ mod tests {
             templated_extra_files: None,
         }];
 
-        let memento = anodize_core::pipe_skip::SkipMemento::new();
+        let memento = anodizer_core::pipe_skip::SkipMemento::new();
         let result = run_publishers(
             &publishers,
             &artifacts,
@@ -836,7 +836,7 @@ mod tests {
             templated_extra_files: None,
         }];
 
-        let memento = anodize_core::pipe_skip::SkipMemento::new();
+        let memento = anodizer_core::pipe_skip::SkipMemento::new();
         let result = run_publishers(
             &publishers,
             &artifacts,
@@ -869,7 +869,7 @@ mod tests {
 
     #[test]
     fn test_publisher_config_yaml_parsing() {
-        use anodize_core::config::Config;
+        use anodizer_core::config::Config;
 
         let yaml = r#"
 project_name: test
@@ -916,7 +916,7 @@ crates:
 
     #[test]
     fn test_publisher_config_toml_parsing() {
-        use anodize_core::config::Config;
+        use anodizer_core::config::Config;
 
         let toml_str = r#"
 project_name = "test"
@@ -945,7 +945,7 @@ tag_template = "v{{ .Version }}"
 
     #[test]
     fn test_publishers_omitted_is_none() {
-        use anodize_core::config::Config;
+        use anodizer_core::config::Config;
 
         let yaml = r#"
 project_name: test
@@ -964,7 +964,7 @@ crates:
 
     #[test]
     fn test_publisher_config_parses_dir_and_disable() {
-        use anodize_core::config::Config;
+        use anodizer_core::config::Config;
 
         let yaml = r#"
 project_name: test
@@ -1116,7 +1116,7 @@ crates:
 
     #[test]
     fn test_publisher_config_parses_meta_and_extra_files() {
-        use anodize_core::config::Config;
+        use anodizer_core::config::Config;
 
         let yaml = r#"
 project_name: test

@@ -5,7 +5,7 @@ weight = 66
 template = "docs.html"
 +++
 
-Anodize can create self-extracting `.run` archives using [makeself](https://makeself.io/).
+Anodizer can create self-extracting `.run` archives using [makeself](https://makeself.io/).
 
 ## Minimal config
 

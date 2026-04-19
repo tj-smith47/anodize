@@ -5,10 +5,10 @@ use std::process::Command;
 
 use anyhow::{Context as _, Result};
 
-use anodize_core::artifact::{Artifact, ArtifactKind};
-use anodize_core::context::Context;
-use anodize_core::stage::Stage;
-use anodize_core::util::{parse_mod_timestamp, set_file_mtime};
+use anodizer_core::artifact::{Artifact, ArtifactKind};
+use anodizer_core::context::Context;
+use anodizer_core::stage::Stage;
+use anodizer_core::util::{parse_mod_timestamp, set_file_mtime};
 
 // ---------------------------------------------------------------------------
 // WiX version detection
@@ -53,11 +53,11 @@ impl WixVersion {
     /// Falls back to V4 if neither is found.
     pub fn detect_from_tools() -> Self {
         // Check for V4 first (preferred)
-        if anodize_core::util::find_binary("wix") {
+        if anodizer_core::util::find_binary("wix") {
             return WixVersion::V4;
         }
         // Check for V3 toolchain
-        if anodize_core::util::find_binary("candle") && anodize_core::util::find_binary("light") {
+        if anodizer_core::util::find_binary("candle") && anodizer_core::util::find_binary("light") {
             return WixVersion::V3;
         }
         // Default to V4
@@ -190,7 +190,7 @@ fn make_msi_artifact(
     target: &Option<String>,
     crate_name: &str,
     wix_version: WixVersion,
-    msi_cfg: &anodize_core::config::MsiConfig,
+    msi_cfg: &anodizer_core::config::MsiConfig,
     ctx: &Context,
     archives_to_remove: &mut Vec<PathBuf>,
 ) -> Artifact {
@@ -210,7 +210,7 @@ fn make_msi_artifact(
     }
 
     // Handle replace option — collect matching archives for removal
-    archives_to_remove.extend(anodize_core::util::collect_if_replace(
+    archives_to_remove.extend(anodizer_core::util::collect_if_replace(
         msi_cfg.replace,
         &ctx.artifacts,
         crate_name,
@@ -282,7 +282,7 @@ impl Stage for MsiStage {
                 .filter(|b| {
                     b.target
                         .as_deref()
-                        .map(anodize_core::target::is_windows)
+                        .map(anodizer_core::target::is_windows)
                         .unwrap_or(false)
                 })
                 .cloned()
@@ -325,13 +325,19 @@ impl Stage for MsiStage {
                 // config before any artifacts are built. Hard-errors on hook failure.
                 if let Some(pre) = msi_cfg.hooks.as_ref().and_then(|h| h.pre.as_ref()) {
                     let tmpl_vars = ctx.template_vars().clone();
-                    anodize_core::hooks::run_hooks(pre, "pre-msi", dry_run, &log, Some(&tmpl_vars))
-                        .with_context(|| {
-                            format!(
-                                "msi config '{}' for crate '{}': pre-msi hooks failed",
-                                msi_id_for_log, krate.name
-                            )
-                        })?;
+                    anodizer_core::hooks::run_hooks(
+                        pre,
+                        "pre-msi",
+                        dry_run,
+                        &log,
+                        Some(&tmpl_vars),
+                    )
+                    .with_context(|| {
+                        format!(
+                            "msi config '{}' for crate '{}': pre-msi hooks failed",
+                            msi_id_for_log, krate.name
+                        )
+                    })?;
                 }
 
                 // C2: Apply ids filtering
@@ -385,7 +391,7 @@ impl Stage for MsiStage {
                     // Derive Os/Arch from the target triple
                     let (_os, arch) = target
                         .as_deref()
-                        .map(anodize_core::target::map_target)
+                        .map(anodizer_core::target::map_target)
                         .unwrap_or_else(|| ("windows".to_string(), "amd64".to_string()));
 
                     let msi_arch = map_arch_to_msi(&arch).to_string();
@@ -641,7 +647,7 @@ impl Stage for MsiStage {
                 // config after all artifacts are built. Hard-errors on hook failure.
                 if let Some(post) = msi_cfg.hooks.as_ref().and_then(|h| h.post.as_ref()) {
                     let tmpl_vars = ctx.template_vars().clone();
-                    anodize_core::hooks::run_hooks(
+                    anodizer_core::hooks::run_hooks(
                         post,
                         "post-msi",
                         dry_run,
@@ -786,8 +792,8 @@ mod tests {
 
     #[test]
     fn test_stage_skips_when_no_msi_config() {
-        use anodize_core::config::Config;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
 
         let config = Config::default();
         let mut ctx = Context::new(config, ContextOptions::default());
@@ -799,8 +805,8 @@ mod tests {
 
     #[test]
     fn test_stage_skips_when_disabled() {
-        use anodize_core::config::{Config, CrateConfig, MsiConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, MsiConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -810,7 +816,7 @@ mod tests {
 
         let msi_cfg = MsiConfig {
             wxs: Some(wxs_path.to_string_lossy().into_owned()),
-            disable: Some(anodize_core::config::StringOrBool::Bool(true)),
+            disable: Some(anodizer_core::config::StringOrBool::Bool(true)),
             ..Default::default()
         };
 
@@ -843,9 +849,9 @@ mod tests {
 
     #[test]
     fn test_stage_dry_run_registers_artifacts() {
-        use anodize_core::artifact::Artifact;
-        use anodize_core::config::{Config, CrateConfig, MsiConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::artifact::Artifact;
+        use anodizer_core::config::{Config, CrateConfig, MsiConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -914,9 +920,9 @@ mod tests {
 
     #[test]
     fn test_stage_dry_run_with_name_template() {
-        use anodize_core::artifact::Artifact;
-        use anodize_core::config::{Config, CrateConfig, MsiConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::artifact::Artifact;
+        use anodizer_core::config::{Config, CrateConfig, MsiConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -972,9 +978,9 @@ mod tests {
 
     #[test]
     fn test_stage_errors_without_wxs() {
-        use anodize_core::artifact::Artifact;
-        use anodize_core::config::{Config, CrateConfig, MsiConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::artifact::Artifact;
+        use anodizer_core::config::{Config, CrateConfig, MsiConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -1040,7 +1046,7 @@ crates:
     msis:
       - wxs: app.wxs
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let msis = config.crates[0].msis.as_ref().unwrap();
         assert_eq!(msis.len(), 1);
         assert_eq!(msis[0].wxs.as_deref(), Some("app.wxs"));
@@ -1069,7 +1075,7 @@ crates:
         mod_timestamp: "2024-01-01T00:00:00Z"
         disable: false
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let msis = config.crates[0].msis.as_ref().unwrap();
         assert_eq!(msis.len(), 1);
 
@@ -1086,7 +1092,7 @@ crates:
         assert_eq!(msi.mod_timestamp.as_deref(), Some("2024-01-01T00:00:00Z"));
         assert_eq!(
             msi.disable,
-            Some(anodize_core::config::StringOrBool::Bool(false))
+            Some(anodizer_core::config::StringOrBool::Bool(false))
         );
     }
 
@@ -1096,7 +1102,7 @@ crates:
 
     #[test]
     fn test_wxs_template_rendering() {
-        use anodize_core::test_helpers::TestContextBuilder;
+        use anodizer_core::test_helpers::TestContextBuilder;
 
         let tmp = TempDir::new().unwrap();
         let wxs_content = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -1129,9 +1135,9 @@ crates:
 
     #[test]
     fn test_invalid_name_template_errors() {
-        use anodize_core::artifact::Artifact;
-        use anodize_core::config::{Config, CrateConfig, MsiConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::artifact::Artifact;
+        use anodizer_core::config::{Config, CrateConfig, MsiConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -1210,9 +1216,9 @@ crates:
 
     #[test]
     fn test_replace_removes_archive_artifacts() {
-        use anodize_core::artifact::Artifact;
-        use anodize_core::config::{Config, CrateConfig, MsiConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::artifact::Artifact;
+        use anodizer_core::config::{Config, CrateConfig, MsiConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -1282,8 +1288,8 @@ crates:
 
     #[test]
     fn test_stage_skips_with_warning_when_no_binaries() {
-        use anodize_core::config::{Config, CrateConfig, MsiConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, MsiConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -1334,9 +1340,9 @@ crates:
 
     #[test]
     fn test_ids_filtering_retains_matching_binaries() {
-        use anodize_core::artifact::Artifact;
-        use anodize_core::config::{Config, CrateConfig, MsiConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::artifact::Artifact;
+        use anodizer_core::config::{Config, CrateConfig, MsiConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -1406,9 +1412,9 @@ crates:
 
     #[test]
     fn test_ids_filtering_skips_when_no_match() {
-        use anodize_core::artifact::Artifact;
-        use anodize_core::config::{Config, CrateConfig, MsiConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::artifact::Artifact;
+        use anodizer_core::config::{Config, CrateConfig, MsiConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -1467,9 +1473,9 @@ crates:
 
     #[test]
     fn test_artifact_stores_config_id_in_metadata() {
-        use anodize_core::artifact::Artifact;
-        use anodize_core::config::{Config, CrateConfig, MsiConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::artifact::Artifact;
+        use anodizer_core::config::{Config, CrateConfig, MsiConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -1530,9 +1536,9 @@ crates:
 
     #[test]
     fn test_stage_dry_run_multiple_configs() {
-        use anodize_core::artifact::Artifact;
-        use anodize_core::config::{Config, CrateConfig, MsiConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::artifact::Artifact;
+        use anodizer_core::config::{Config, CrateConfig, MsiConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -1664,9 +1670,9 @@ crates:
 
     #[test]
     fn test_binary_path_template_var_set() {
-        use anodize_core::artifact::Artifact;
-        use anodize_core::config::{Config, CrateConfig, MsiConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::artifact::Artifact;
+        use anodizer_core::config::{Config, CrateConfig, MsiConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -1742,7 +1748,7 @@ crates:
           - LICENSE
           - doc/guide.pdf
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let msis = config.crates[0].msis.as_ref().unwrap();
         let extras = msis[0].extra_files.as_ref().unwrap();
         assert_eq!(extras.len(), 3);
@@ -1769,7 +1775,7 @@ crates:
           - WixUIExtension
           - WixUtilExtension
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let msis = config.crates[0].msis.as_ref().unwrap();
         let exts = msis[0].extensions.as_ref().unwrap();
         assert_eq!(exts.len(), 2);
@@ -1793,11 +1799,11 @@ crates:
       - wxs: app.wxs
         disable: true
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let msis = config.crates[0].msis.as_ref().unwrap();
         assert_eq!(
             msis[0].disable,
-            Some(anodize_core::config::StringOrBool::Bool(true))
+            Some(anodizer_core::config::StringOrBool::Bool(true))
         );
     }
 
@@ -1813,11 +1819,11 @@ crates:
       - wxs: app.wxs
         disable: "true"
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let msis = config.crates[0].msis.as_ref().unwrap();
         assert_eq!(
             msis[0].disable,
-            Some(anodize_core::config::StringOrBool::String(
+            Some(anodizer_core::config::StringOrBool::String(
                 "true".to_string()
             ))
         );
@@ -1835,11 +1841,11 @@ crates:
       - wxs: app.wxs
         disable: "{{ .Env.SKIP_MSI }}"
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let msis = config.crates[0].msis.as_ref().unwrap();
         assert_eq!(
             msis[0].disable,
-            Some(anodize_core::config::StringOrBool::String(
+            Some(anodizer_core::config::StringOrBool::String(
                 "{{ .Env.SKIP_MSI }}".to_string()
             ))
         );
@@ -1847,9 +1853,9 @@ crates:
 
     #[test]
     fn test_stage_disable_with_string_true() {
-        use anodize_core::artifact::Artifact;
-        use anodize_core::config::{Config, CrateConfig, MsiConfig, StringOrBool};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::artifact::Artifact;
+        use anodizer_core::config::{Config, CrateConfig, MsiConfig, StringOrBool};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let wxs_path = tmp.path().join("app.wxs");
@@ -1964,9 +1970,9 @@ crates:
 
     #[test]
     fn test_extra_files_copied_to_build_context() {
-        use anodize_core::artifact::Artifact;
-        use anodize_core::config::{Config, CrateConfig, MsiConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::artifact::Artifact;
+        use anodizer_core::config::{Config, CrateConfig, MsiConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -2037,9 +2043,9 @@ crates:
 
     #[test]
     fn test_extensions_in_dry_run() {
-        use anodize_core::artifact::Artifact;
-        use anodize_core::config::{Config, CrateConfig, MsiConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::artifact::Artifact;
+        use anodizer_core::config::{Config, CrateConfig, MsiConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -2122,7 +2128,7 @@ crates:
           - WixUIExtension
           - WixUtilExtension
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let msi = &config.crates[0].msis.as_ref().unwrap()[0];
 
         assert_eq!(msi.id.as_deref(), Some("my-msi"));
@@ -2137,7 +2143,7 @@ crates:
         assert_eq!(msi.mod_timestamp.as_deref(), Some("2024-01-01T00:00:00Z"));
         assert_eq!(
             msi.disable,
-            Some(anodize_core::config::StringOrBool::String(
+            Some(anodizer_core::config::StringOrBool::String(
                 "{{ .Env.SKIP_MSI }}".to_string()
             ))
         );
@@ -2153,9 +2159,9 @@ crates:
 
     // --- `msi.if` + `msi.hooks` (GoReleaser Pro) ---
 
-    fn msi_test_ctx_with_if(if_expr: Option<&str>) -> anodize_core::context::Context {
-        use anodize_core::config::{Config, CrateConfig, MsiConfig};
-        use anodize_core::context::{Context, ContextOptions};
+    fn msi_test_ctx_with_if(if_expr: Option<&str>) -> anodizer_core::context::Context {
+        use anodizer_core::config::{Config, CrateConfig, MsiConfig};
+        use anodizer_core::context::{Context, ContextOptions};
         let tmp = tempfile::TempDir::new().unwrap();
         let mut config = Config::default();
         config.project_name = "myapp".to_string();
@@ -2213,7 +2219,7 @@ crates:
     fn test_config_parse_msi_hooks_before_after_aliases() {
         // Serde aliases on BuildHooksConfig mean `before:`/`after:` (GoReleaser
         // docs) and `pre:`/`post:` both populate the same fields.
-        use anodize_core::config::Config;
+        use anodizer_core::config::Config;
         let yaml = r#"
 project_name: test
 crates:

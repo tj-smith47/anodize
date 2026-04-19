@@ -4,10 +4,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
 
-use anodize_core::artifact::{Artifact, ArtifactKind};
-use anodize_core::config::ArchiveFileSpec;
-use anodize_core::context::Context;
-use anodize_core::stage::Stage;
+use anodizer_core::artifact::{Artifact, ArtifactKind};
+use anodizer_core::config::ArchiveFileSpec;
+use anodizer_core::context::Context;
+use anodizer_core::stage::Stage;
 
 // ---------------------------------------------------------------------------
 // Info.plist generation
@@ -67,7 +67,7 @@ pub struct AppBundleStage;
 /// Parse Os and Arch from a Rust target triple using the shared mapping.
 fn os_arch_from_target(target: Option<&str>) -> (String, String) {
     target
-        .map(anodize_core::target::map_target)
+        .map(anodizer_core::target::map_target)
         .unwrap_or_else(|| ("darwin".to_string(), "amd64".to_string()))
 }
 
@@ -85,7 +85,7 @@ const DEFAULT_NAME_TEMPLATE: &str = "{{ ProjectName }}_{{ Arch }}.app";
 fn copy_extra_files(
     specs: &[ArchiveFileSpec],
     app_dir: &Path,
-    log: &anodize_core::log::StageLogger,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<()> {
     for spec in specs {
         match spec {
@@ -173,7 +173,7 @@ fn copy_extra_files(
 
 /// Recursively apply a mod_timestamp to all files in a directory tree.
 ///
-/// This is a local variant of `anodize_core::util::apply_mod_timestamp` because
+/// This is a local variant of `anodizer_core::util::apply_mod_timestamp` because
 /// the core utility only walks one directory level.  App bundles have a nested
 /// `Contents/{MacOS,Resources}/` structure, so we need recursive traversal.
 /// Modifying the core utility to be recursive could affect other stages that
@@ -181,15 +181,15 @@ fn copy_extra_files(
 fn apply_mod_timestamp_recursive(
     dir: &Path,
     raw: &str,
-    log: &anodize_core::log::StageLogger,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<()> {
-    let mtime = anodize_core::util::parse_mod_timestamp(raw)?;
+    let mtime = anodizer_core::util::parse_mod_timestamp(raw)?;
 
     for entry in fs::read_dir(dir).with_context(|| format!("read dir {}", dir.display()))? {
         let entry = entry?;
         let ft = entry.file_type()?;
         if ft.is_file() {
-            anodize_core::util::set_file_mtime(&entry.path(), mtime)?;
+            anodizer_core::util::set_file_mtime(&entry.path(), mtime)?;
         } else if ft.is_dir() {
             apply_mod_timestamp_recursive(&entry.path(), raw, log)?;
         }
@@ -249,7 +249,7 @@ impl Stage for AppBundleStage {
                 .filter(|b| {
                     b.target
                         .as_deref()
-                        .map(anodize_core::target::is_darwin)
+                        .map(anodizer_core::target::is_darwin)
                         .unwrap_or(false)
                 })
                 .cloned()
@@ -370,7 +370,7 @@ impl Stage for AppBundleStage {
                             format!("appbundle: render bundle template for {}", krate.name)
                         })?
                     } else {
-                        format!("com.anodize.{project_name}")
+                        format!("com.anodizer.{project_name}")
                     };
 
                     // Render icon path and extract filename (if icon is configured)
@@ -415,7 +415,7 @@ impl Stage for AppBundleStage {
                         });
 
                         // If replace is set, mark archives for this crate+target for removal
-                        archives_to_remove.extend(anodize_core::util::collect_if_replace(
+                        archives_to_remove.extend(anodizer_core::util::collect_if_replace(
                             bundle_cfg.replace,
                             &ctx.artifacts,
                             &krate.name,
@@ -497,7 +497,7 @@ impl Stage for AppBundleStage {
                         && !tpl_specs.is_empty()
                     {
                         let resources_dir = app_dir.join("Contents").join("Resources");
-                        anodize_core::templated_files::process_templated_extra_files(
+                        anodizer_core::templated_files::process_templated_extra_files(
                             tpl_specs,
                             ctx,
                             &resources_dir,
@@ -536,7 +536,7 @@ impl Stage for AppBundleStage {
                     });
 
                     // If replace is set, mark archives for this crate+target for removal
-                    archives_to_remove.extend(anodize_core::util::collect_if_replace(
+                    archives_to_remove.extend(anodizer_core::util::collect_if_replace(
                         bundle_cfg.replace,
                         &ctx.artifacts,
                         &krate.name,
@@ -546,7 +546,7 @@ impl Stage for AppBundleStage {
             }
         }
 
-        anodize_core::template::clear_per_target_vars(ctx.template_vars_mut());
+        anodizer_core::template::clear_per_target_vars(ctx.template_vars_mut());
 
         // Remove replaced archives
         if !archives_to_remove.is_empty() {
@@ -658,14 +658,14 @@ mod tests {
 
     #[test]
     fn test_default_bundle_id() {
-        // When no bundle ID is provided, should default to com.anodize.{project_name}
+        // When no bundle ID is provided, should default to com.anodizer.{project_name}
         let project_name = "myapp";
-        let default_id = format!("com.anodize.{project_name}");
-        assert_eq!(default_id, "com.anodize.myapp");
+        let default_id = format!("com.anodizer.{project_name}");
+        assert_eq!(default_id, "com.anodizer.myapp");
 
         // Verify this appears in the plist
         let plist = generate_info_plist("myapp", &default_id, project_name, "1.0.0", None);
-        assert!(plist.contains("<string>com.anodize.myapp</string>"));
+        assert!(plist.contains("<string>com.anodizer.myapp</string>"));
     }
 
     // -----------------------------------------------------------------------
@@ -674,8 +674,8 @@ mod tests {
 
     #[test]
     fn test_stage_skips_no_config() {
-        use anodize_core::config::Config;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
 
         // AppBundleStage should be a no-op when crates have no app_bundles block
         let config = Config::default();
@@ -687,8 +687,8 @@ mod tests {
 
     #[test]
     fn test_stage_dry_run() {
-        use anodize_core::config::{AppBundleConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{AppBundleConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -763,8 +763,8 @@ mod tests {
 
     #[test]
     fn test_stage_filters_darwin_only() {
-        use anodize_core::config::{AppBundleConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{AppBundleConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -823,8 +823,8 @@ mod tests {
 
     #[test]
     fn test_stage_dry_run_with_name_template() {
-        use anodize_core::config::{AppBundleConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{AppBundleConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -880,8 +880,8 @@ mod tests {
 
     #[test]
     fn test_stage_dry_run_app_extension_appended() {
-        use anodize_core::config::{AppBundleConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{AppBundleConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -940,8 +940,8 @@ mod tests {
 
     #[test]
     fn test_stage_ids_filter() {
-        use anodize_core::config::{AppBundleConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{AppBundleConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -1009,12 +1009,12 @@ mod tests {
 
     #[test]
     fn test_stage_default_bundle_id_in_dry_run() {
-        use anodize_core::config::{AppBundleConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{AppBundleConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
-        // No bundle ID specified — should default to com.anodize.{project_name}
+        // No bundle ID specified — should default to com.anodizer.{project_name}
         let bundle_cfg = AppBundleConfig::default();
 
         let mut config = Config::default();
@@ -1058,8 +1058,8 @@ mod tests {
 
     #[test]
     fn test_stage_live_creates_directory_structure() {
-        use anodize_core::config::{AppBundleConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{AppBundleConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -1145,8 +1145,8 @@ mod tests {
 
     #[test]
     fn test_stage_live_with_icon() {
-        use anodize_core::config::{AppBundleConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{AppBundleConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -1215,8 +1215,8 @@ mod tests {
 
     #[test]
     fn test_invalid_name_template_errors() {
-        use anodize_core::config::{AppBundleConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{AppBundleConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -1276,7 +1276,7 @@ crates:
       - name: "{{ ProjectName }}.app"
         bundle: "com.example.test"
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let bundles = config.crates[0].app_bundles.as_ref().unwrap();
         assert_eq!(bundles.len(), 1);
         assert_eq!(bundles[0].name.as_deref(), Some("{{ ProjectName }}.app"));
@@ -1305,7 +1305,7 @@ crates:
             dst: "Contents/SharedSupport"
         mod_timestamp: "{{ .CommitTimestamp }}"
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let bundles = config.crates[0].app_bundles.as_ref().unwrap();
         assert_eq!(bundles.len(), 1);
 
@@ -1341,8 +1341,8 @@ crates:
 
     #[test]
     fn test_stage_multiple_configs() {
-        use anodize_core::config::{AppBundleConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{AppBundleConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -1428,8 +1428,8 @@ crates:
 
     #[test]
     fn test_stage_disable_skips_config() {
-        use anodize_core::config::{AppBundleConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{AppBundleConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -1441,7 +1441,7 @@ crates:
         let disabled_cfg = AppBundleConfig {
             id: Some("disabled".to_string()),
             name: Some("{{ ProjectName }}-disabled-{{ Arch }}.app".to_string()),
-            disable: Some(anodize_core::config::StringOrBool::Bool(true)),
+            disable: Some(anodizer_core::config::StringOrBool::Bool(true)),
             ..Default::default()
         };
 
@@ -1511,12 +1511,12 @@ crates:
       - bundle: "com.example.test"
         disable: true
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let bundles = config.crates[0].app_bundles.as_ref().unwrap();
         assert_eq!(bundles.len(), 1);
         assert_eq!(
             bundles[0].disable,
-            Some(anodize_core::config::StringOrBool::Bool(true))
+            Some(anodizer_core::config::StringOrBool::Bool(true))
         );
     }
 
@@ -1531,8 +1531,8 @@ crates:
 
     #[test]
     fn test_stage_live_with_extra_files() {
-        use anodize_core::config::{AppBundleConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{AppBundleConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -1600,8 +1600,8 @@ crates:
 
     #[test]
     fn test_stage_live_mod_timestamp() {
-        use anodize_core::config::{AppBundleConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{AppBundleConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
         use std::time::{Duration, SystemTime};
 
         let tmp = tempfile::TempDir::new().unwrap();
@@ -1676,10 +1676,10 @@ crates:
 
     // --- `app_bundle.if` template-conditional (GoReleaser Pro) ---
 
-    fn appbundle_if_test_ctx(if_expr: Option<&str>) -> anodize_core::context::Context {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
-        use anodize_core::config::{AppBundleConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+    fn appbundle_if_test_ctx(if_expr: Option<&str>) -> anodizer_core::context::Context {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::config::{AppBundleConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
         let tmp = tempfile::TempDir::new().unwrap();
         let mut config = Config::default();
         config.project_name = "myapp".to_string();
@@ -1720,7 +1720,7 @@ crates:
 
     #[test]
     fn test_appbundle_if_false_skips_config() {
-        use anodize_core::artifact::ArtifactKind;
+        use anodizer_core::artifact::ArtifactKind;
         let mut ctx = appbundle_if_test_ctx(Some("false"));
         AppBundleStage.run(&mut ctx).unwrap();
         assert_eq!(

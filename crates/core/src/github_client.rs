@@ -10,7 +10,7 @@
 //! The mock client records every call and returns configurable responses:
 //!
 //! ```rust,ignore
-//! use anodize_core::github_client::{MockGitHubClient, ReleaseInfo, GitHubClient};
+//! use anodizer_core::github_client::{MockGitHubClient, ReleaseInfo, GitHubClient};
 //!
 //! let mock = MockGitHubClient::new();
 //! mock.set_create_release_response(Ok(ReleaseInfo {

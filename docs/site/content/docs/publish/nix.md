@@ -140,7 +140,7 @@ Only Linux and macOS (Darwin) artifacts are included. Nix system strings are der
 
 The `license` field must be a valid `lib.licenses` attribute from nixpkgs. Common values include `mit`, `asl20`, `gpl3Only`, `gpl3Plus`, `lgpl21Only`, `mpl20`, `isc`, `bsd2`, `bsd3`, `unlicense`, `asl20`.
 
-Run `anodize check` to validate the license identifier before releasing.
+Run `anodizer check` to validate the license identifier before releasing.
 
 ## Skipping prereleases
 

@@ -1,5 +1,5 @@
-use anodize_core::context::Context;
-use anodize_core::log::StageLogger;
+use anodizer_core::context::Context;
+use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result};
 
 use crate::util;
@@ -113,7 +113,7 @@ package() {
 
 /// Generate an Arch Linux PKGBUILD file string.
 pub fn generate_pkgbuild(params: &PkgbuildParams<'_>) -> Result<String> {
-    let tera = anodize_core::template::parse_static("pkgbuild", PKGBUILD_TEMPLATE)
+    let tera = anodizer_core::template::parse_static("pkgbuild", PKGBUILD_TEMPLATE)
         .context("aur: parse PKGBUILD template")?;
 
     let mut ctx = tera::Context::new();
@@ -191,7 +191,7 @@ pub fn generate_pkgbuild(params: &PkgbuildParams<'_>) -> Result<String> {
     };
     ctx.insert("install_line", &install_line);
 
-    anodize_core::template::render_static(&tera, "pkgbuild", &ctx, "aur")
+    anodizer_core::template::render_static(&tera, "pkgbuild", &ctx, "aur")
 }
 
 // ---------------------------------------------------------------------------
@@ -219,7 +219,7 @@ pkgname = {{ name }}
 
 /// Generate an AUR `.SRCINFO` file string from a Tera template.
 pub fn generate_srcinfo(params: &PkgbuildParams<'_>) -> Result<String> {
-    let tera = anodize_core::template::parse_static("srcinfo", SRCINFO_TEMPLATE)
+    let tera = anodizer_core::template::parse_static("srcinfo", SRCINFO_TEMPLATE)
         .context("aur: parse .SRCINFO template")?;
 
     let mut ctx = tera::Context::new();
@@ -267,7 +267,7 @@ pub fn generate_srcinfo(params: &PkgbuildParams<'_>) -> Result<String> {
         .collect();
     ctx.insert("sources", &sources);
 
-    anodize_core::template::render_static(&tera, "srcinfo", &ctx, "aur")
+    anodizer_core::template::render_static(&tera, "srcinfo", &ctx, "aur")
 }
 
 // ---------------------------------------------------------------------------
@@ -756,11 +756,11 @@ mod tests {
     #[test]
     fn test_generate_pkgbuild_complete_structure() {
         let pkgbuild = generate_pkgbuild(&PkgbuildParams {
-            name: "anodize",
+            name: "anodizer",
             version: "3.2.1",
             pkgrel: 1,
             description: "Release automation for Rust projects",
-            url: "https://github.com/tj-smith47/anodize",
+            url: "https://github.com/tj-smith47/anodizer",
             license: "Apache-2.0",
             maintainers: &["TJ Smith <tj@example.com>".to_string()],
             contributors: &[],
@@ -773,16 +773,16 @@ mod tests {
             sources: &[
                 (
                     "x86_64".to_string(),
-                    "https://github.com/tj-smith47/anodize/releases/download/v3.2.1/anodize-3.2.1-linux-amd64.tar.gz".to_string(),
+                    "https://github.com/tj-smith47/anodizer/releases/download/v3.2.1/anodizer-3.2.1-linux-amd64.tar.gz".to_string(),
                     "aabbccdd".to_string(),
                 ),
                 (
                     "aarch64".to_string(),
-                    "https://github.com/tj-smith47/anodize/releases/download/v3.2.1/anodize-3.2.1-linux-arm64.tar.gz".to_string(),
+                    "https://github.com/tj-smith47/anodizer/releases/download/v3.2.1/anodizer-3.2.1-linux-arm64.tar.gz".to_string(),
                     "eeff0011".to_string(),
                 ),
             ],
-            binary_name: "anodize",
+            binary_name: "anodizer",
             install_template: None,
             install_file: None,
         }).unwrap();
@@ -791,7 +791,7 @@ mod tests {
         assert!(pkgbuild.starts_with("# Maintainer: TJ Smith <tj@example.com>"));
 
         // Contains required fields
-        assert!(pkgbuild.contains("pkgname='anodize'"));
+        assert!(pkgbuild.contains("pkgname='anodizer'"));
         assert!(pkgbuild.contains("pkgver=3.2.1"));
         assert!(pkgbuild.contains("arch=('aarch64' 'x86_64')"));
 
@@ -1042,9 +1042,9 @@ mod tests {
 
     #[test]
     fn test_publish_to_aur_dry_run() {
-        use anodize_core::config::{AurConfig, Config, CrateConfig, PublishConfig};
-        use anodize_core::context::{Context, ContextOptions};
-        use anodize_core::log::{StageLogger, Verbosity};
+        use anodizer_core::config::{AurConfig, Config, CrateConfig, PublishConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::log::{StageLogger, Verbosity};
 
         let mut config = Config::default();
         config.crates = vec![CrateConfig {
@@ -1079,9 +1079,9 @@ mod tests {
     /// silently writing a PKGBUILD with placeholder URL + empty sha256.
     #[test]
     fn test_publish_to_aur_empty_linux_archive_set_hard_errors() {
-        use anodize_core::config::{AurConfig, Config, CrateConfig, PublishConfig};
-        use anodize_core::context::{Context, ContextOptions};
-        use anodize_core::log::{StageLogger, Verbosity};
+        use anodizer_core::config::{AurConfig, Config, CrateConfig, PublishConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::log::{StageLogger, Verbosity};
 
         let mut config = Config::default();
         config.crates = vec![CrateConfig {
@@ -1121,9 +1121,9 @@ mod tests {
 
     #[test]
     fn test_publish_to_aur_missing_config() {
-        use anodize_core::config::{Config, CrateConfig, PublishConfig};
-        use anodize_core::context::{Context, ContextOptions};
-        use anodize_core::log::{StageLogger, Verbosity};
+        use anodizer_core::config::{Config, CrateConfig, PublishConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::log::{StageLogger, Verbosity};
 
         let mut config = Config::default();
         config.crates = vec![CrateConfig {
@@ -1148,9 +1148,9 @@ mod tests {
 
     #[test]
     fn test_publish_to_aur_missing_git_url() {
-        use anodize_core::config::{AurConfig, Config, CrateConfig, PublishConfig};
-        use anodize_core::context::{Context, ContextOptions};
-        use anodize_core::log::{StageLogger, Verbosity};
+        use anodizer_core::config::{AurConfig, Config, CrateConfig, PublishConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::log::{StageLogger, Verbosity};
 
         let mut config = Config::default();
         config.crates = vec![CrateConfig {

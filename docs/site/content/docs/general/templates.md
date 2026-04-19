@@ -5,7 +5,7 @@ weight = 2
 template = "docs.html"
 +++
 
-Anodize uses the [Tera](https://keats.github.io/tera/) template engine (Jinja2/Django-like syntax). Templates can be used in most string fields throughout the configuration: name templates, tag templates, message templates, signing arguments, and more.
+Anodizer uses the [Tera](https://keats.github.io/tera/) template engine (Jinja2/Django-like syntax). Templates can be used in most string fields throughout the configuration: name templates, tag templates, message templates, signing arguments, and more.
 
 ## Syntax
 
@@ -17,7 +17,7 @@ name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
 
 ## GoReleaser compatibility
 
-For easier migration from GoReleaser, anodize accepts Go-style templates with a leading dot. These are automatically preprocessed before rendering:
+For easier migration from GoReleaser, anodizer accepts Go-style templates with a leading dot. These are automatically preprocessed before rendering:
 
 ```yaml
 # Both forms are equivalent:
@@ -29,7 +29,7 @@ You can freely mix both styles in the same config file. The leading dot is strip
 
 ### Common GoReleaser idiom → Tera mapping
 
-Anodize preprocesses most Go-template constructs into their Tera equivalents, but a handful of idioms copied verbatim from a `.goreleaser.yaml` will produce confusing errors. Use this table when migrating.
+Anodizer preprocesses most Go-template constructs into their Tera equivalents, but a handful of idioms copied verbatim from a `.goreleaser.yaml` will produce confusing errors. Use this table when migrating.
 
 | GoReleaser idiom | Tera equivalent | Notes |
 |---|---|---|

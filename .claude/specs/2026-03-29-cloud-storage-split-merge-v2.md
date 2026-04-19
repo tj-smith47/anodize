@@ -280,11 +280,11 @@ pub struct PartialConfig {
 | Env Var | Purpose | Priority |
 |---------|---------|----------|
 | `TARGET` | Full target triple override (highest priority) | 1 |
-| `ANODIZE_OS` | OS filter (equivalent to GoReleaser's `GGOOS`) | 2 |
-| `ANODIZE_ARCH` | Arch filter (equivalent to GoReleaser's `GGOARCH`) | 3 |
+| `ANODIZER_OS` | OS filter (equivalent to GoReleaser's `GGOOS`) | 2 |
+| `ANODIZER_ARCH` | Arch filter (equivalent to GoReleaser's `GGOARCH`) | 3 |
 | (host detection) | `rustc -vV` host triple | 4 (fallback) |
 
-Why `ANODIZE_OS`/`ANODIZE_ARCH` instead of reusing `GGOOS`/`GGOARCH`: GoReleaser's env vars use Go's `GOOS`/`GOARCH` naming (`linux`, `darwin`, `windows`, `amd64`, `arm64`). Rust uses different names (`x86_64-unknown-linux-gnu`, `aarch64-apple-darwin`). Using `ANODIZE_OS` makes the mapping explicit and avoids confusion. The values accepted map to the OS names from `target::map_target()`: `linux`, `darwin`, `windows`, `freebsd`, `netbsd`, `openbsd`, `android`.
+Why `ANODIZER_OS`/`ANODIZER_ARCH` instead of reusing `GGOOS`/`GGOARCH`: GoReleaser's env vars use Go's `GOOS`/`GOARCH` naming (`linux`, `darwin`, `windows`, `amd64`, `arm64`). Rust uses different names (`x86_64-unknown-linux-gnu`, `aarch64-apple-darwin`). Using `ANODIZER_OS` makes the mapping explicit and avoids confusion. The values accepted map to the OS names from `target::map_target()`: `linux`, `darwin`, `windows`, `freebsd`, `netbsd`, `openbsd`, `android`.
 
 ### Target Resolution Module
 
@@ -301,9 +301,9 @@ pub fn resolve_partial_target(
         return Ok(PartialTarget::Exact(target));
     }
 
-    // Priority 2: ANODIZE_OS + optional ANODIZE_ARCH
-    if let Ok(os) = std::env::var("ANODIZE_OS") {
-        let arch = std::env::var("ANODIZE_ARCH").ok();
+    // Priority 2: ANODIZER_OS + optional ANODIZER_ARCH
+    if let Ok(os) = std::env::var("ANODIZER_OS") {
+        let arch = std::env::var("ANODIZER_ARCH").ok();
         return Ok(PartialTarget::OsArch { os, arch });
     }
 
@@ -429,7 +429,7 @@ Written to `dist/{subdir}/context.json` during split. The merge phase loads all 
 ### Split Mode (`--split`)
 
 ```
-anodize release --split [--clean]
+anodizer release --split [--clean]
 ```
 
 1. Load config, resolve git info, populate template vars (same as normal release)
@@ -477,7 +477,7 @@ Runner suggestion:
 ### Merge Mode (`--merge`)
 
 ```
-anodize continue --merge [--dist <path>]
+anodizer continue --merge [--dist <path>]
 ```
 
 New `continue` subcommand (matching GoReleaser Pro's `goreleaser continue`).
@@ -503,7 +503,7 @@ If config hashes differ across split contexts, warn (not error — config may ha
 
 ### New CLI Commands
 
-**`anodize continue --merge`:**
+**`anodizer continue --merge`:**
 
 ```rust
 #[derive(clap::Args)]
@@ -518,7 +518,7 @@ pub struct ContinueOpts {
 }
 ```
 
-**`anodize publish`:**
+**`anodizer publish`:**
 
 Run only release + publish + blob stages from a completed dist/. Useful for CI pipelines that separate build from publish.
 
@@ -526,7 +526,7 @@ Run only release + publish + blob stages from a completed dist/. Useful for CI p
 // Pipeline: ReleaseStage → PublishStage → BlobStage
 ```
 
-**`anodize announce`:**
+**`anodizer announce`:**
 
 Run only the announce stage from a completed dist/.
 
@@ -584,7 +584,7 @@ During merge: Docker stage creates multi-arch manifests (`docker manifest create
 |----------|--------------|
 | No targets match partial filter | `"split: no build targets match {partial_target}. Available targets: [...]"` |
 | TARGET env var doesn't match any config target | `"split: TARGET={value} does not match any configured build target"` |
-| No context.json files found during merge | `"merge: no context.json files found in {dist}/. Run 'anodize release --split' first."` |
+| No context.json files found during merge | `"merge: no context.json files found in {dist}/. Run 'anodizer release --split' first."` |
 | Config hash mismatch across split contexts | `"merge: warning — config differs between split jobs (hash {a} vs {b}). Using config from {first_context}."` |
 | Unknown artifact kind in context.json | `"merge: unknown artifact kind '{kind}' in {file}. Skipping."` |
 | partial.by invalid value | `"partial.by: unknown value '{val}' (expected 'goos' or 'target')"` |
@@ -642,7 +642,7 @@ During merge: Docker stage creates multi-arch manifests (`docker manifest create
 - Dry-run: no store constructed, log output correct (2 tests)
 
 **Split/merge tests (target: 35+ tests):**
-- Target resolution: TARGET env, ANODIZE_OS/ARCH, host fallback (6 tests)
+- Target resolution: TARGET env, ANODIZER_OS/ARCH, host fallback (6 tests)
 - Target filtering: by goos, by target, no matches, partial matches (6 tests)
 - Dist subdirectory: naming for goos vs target mode (3 tests)
 - Context serialization: round-trip serialize/deserialize (2 tests)

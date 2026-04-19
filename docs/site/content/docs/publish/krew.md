@@ -5,7 +5,7 @@ weight = 8
 template = "docs.html"
 +++
 
-Anodize generates [Krew](https://krew.sigs.k8s.io/) plugin manifest YAML files and pushes them to your krew-index fork repository. Krew is the plugin manager for `kubectl`, and publishing to the Krew index lets users install your plugin with `kubectl krew install <name>`.
+Anodizer generates [Krew](https://krew.sigs.k8s.io/) plugin manifest YAML files and pushes them to your krew-index fork repository. Krew is the plugin manager for `kubectl`, and publishing to the Krew index lets users install your plugin with `kubectl krew install <name>`.
 
 ## Minimal config
 
@@ -51,7 +51,7 @@ Krew plugins are distributed through the [krew-index](https://github.com/kuberne
 
 1. **Fork** the `kubernetes-sigs/krew-index` repository to your GitHub account or organization.
 2. Set `manifests_repo.owner` and `manifests_repo.name` to point to your fork.
-3. Anodize will clone the fork, write the manifest into the `plugins/` directory, commit to a versioned branch (`<name>-v<version>`), push, and open a pull request against the upstream krew-index.
+3. Anodizer will clone the fork, write the manifest into the `plugins/` directory, commit to a versioned branch (`<name>-v<version>`), push, and open a pull request against the upstream krew-index.
 
 If you use the unified `repository` config instead of `manifests_repo`, you can configure PR behavior with the `pull_request` sub-key:
 
@@ -73,11 +73,11 @@ krew:
 
 ## Authentication
 
-Anodize resolves a GitHub token from the `repository.token` field, or falls back to the `GITHUB_TOKEN` / `ANODIZE_FORCE_TOKEN` environment variables. The token must have push access to your krew-index fork.
+Anodizer resolves a GitHub token from the `repository.token` field, or falls back to the `GITHUB_TOKEN` / `ANODIZER_FORCE_TOKEN` environment variables. The token must have push access to your krew-index fork.
 
 ## How plugin manifests are generated
 
-Anodize discovers all build artifacts for the crate (filtered by `ids`, `goamd64`, and `goarm` if set), then generates a Krew plugin manifest YAML file conforming to the `krew.googlecontainertools.github.com/v1alpha2` API.
+Anodizer discovers all build artifacts for the crate (filtered by `ids`, `goamd64`, and `goarm` if set), then generates a Krew plugin manifest YAML file conforming to the `krew.googlecontainertools.github.com/v1alpha2` API.
 
 Each artifact becomes a platform entry with:
 - **selector**: `matchLabels` for `os` (linux, darwin, windows) and `arch` (amd64, arm64)
@@ -158,4 +158,4 @@ crates:
 
 ## Dry-run mode
 
-When running with `--dry-run`, Anodize prints the plugin manifest it would generate and the target repository without cloning, committing, or pushing.
+When running with `--dry-run`, Anodizer prints the plugin manifest it would generate and the target repository without cloning, committing, or pushing.

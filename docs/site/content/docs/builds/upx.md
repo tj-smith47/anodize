@@ -7,7 +7,7 @@ template = "docs.html"
 
 [UPX](https://upx.github.io/) (the Ultimate Packer for eXecutables) compresses
 compiled binaries in-place, often reducing them to 30-50% of their original size.
-Anodize runs UPX immediately after the build stage and before archiving, so the
+Anodizer runs UPX immediately after the build stage and before archiving, so the
 smaller binaries flow into your archives, checksums, and releases automatically.
 
 ## Minimal config
@@ -143,7 +143,7 @@ Common patterns:
 Note that UPX itself does not support every executable format. If UPX
 encounters a binary it cannot compress (for example, a format it does not
 recognize), it reports a known exception such as `CantPackException` or
-`UnknownExecutableFormatException`. Anodize treats these as warnings and
+`UnknownExecutableFormatException`. Anodizer treats these as warnings and
 skips the binary rather than failing the build.
 
 ## Pipeline position
@@ -165,7 +165,7 @@ later release step.
 
 ## Parallel compression
 
-Anodize compresses matching binaries in parallel, bounded by the global
+Anodizer compresses matching binaries in parallel, bounded by the global
 `--parallelism` setting. Each chunk of binaries is processed concurrently
 using threads, matching the parallelism model used by other stages.
 

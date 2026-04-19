@@ -1,4 +1,4 @@
-use anodize_core::template::{self, TemplateVars};
+use anodizer_core::template::{self, TemplateVars};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use std::process::Command;
@@ -144,9 +144,9 @@ pub fn send_sendmail(params: &EmailParams<'_>) -> Result<()> {
     let message = build_rfc2822_message(params)?;
 
     // Try sendmail first, then msmtp
-    let (program, args) = if anodize_core::util::find_binary("sendmail") {
+    let (program, args) = if anodizer_core::util::find_binary("sendmail") {
         ("sendmail", vec!["-t"])
-    } else if anodize_core::util::find_binary("msmtp") {
+    } else if anodizer_core::util::find_binary("msmtp") {
         ("msmtp", vec!["-t"])
     } else {
         anyhow::bail!(

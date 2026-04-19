@@ -4,7 +4,7 @@ use std::process;
 mod gen_docs;
 
 #[derive(Parser)]
-#[command(name = "xtask", about = "Anodize development tasks")]
+#[command(name = "xtask", about = "Anodizer development tasks")]
 struct Xtask {
     #[command(subcommand)]
     command: XtaskCommand,

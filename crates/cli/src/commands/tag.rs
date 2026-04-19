@@ -1,8 +1,8 @@
-use anodize_core::config::{GitConfig, TagConfig};
-use anodize_core::git;
-use anodize_core::hooks::run_hooks;
-use anodize_core::log::{StageLogger, Verbosity};
-use anodize_core::template::TemplateVars;
+use anodizer_core::config::{GitConfig, TagConfig};
+use anodizer_core::git;
+use anodizer_core::hooks::run_hooks;
+use anodizer_core::log::{StageLogger, Verbosity};
+use anodizer_core::template::TemplateVars;
 use anyhow::{Result, bail};
 use regex::Regex;
 
@@ -126,7 +126,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
     // Helper closure to create a tag via the appropriate method, with
     // tag_pre_hooks / tag_post_hooks wrapping. Hooks receive template vars
     // `{{ .Tag }}`, `{{ .PrefixedTag }}`, `{{ .Version }}`, `{{ .PreviousTag }}`
-    // and process env `ANODIZE_CURRENT_TAG` / `ANODIZE_PREVIOUS_TAG`.
+    // and process env `ANODIZER_CURRENT_TAG` / `ANODIZER_PREVIOUS_TAG`.
     let strict = opts.strict;
     let tag_prefix_for_hooks = cfg.tag_prefix.clone();
     let pre_hooks = tag_config.tag_pre_hooks.clone().unwrap_or_default();
@@ -147,9 +147,9 @@ pub fn run(opts: TagOpts) -> Result<()> {
         // exist here, so mutating the process env is safe. Hooks read these
         // via their subprocess environment.
         unsafe {
-            std::env::set_var("ANODIZE_CURRENT_TAG", tag);
+            std::env::set_var("ANODIZER_CURRENT_TAG", tag);
             if let Some(p) = prev {
-                std::env::set_var("ANODIZE_PREVIOUS_TAG", p);
+                std::env::set_var("ANODIZER_PREVIOUS_TAG", p);
             }
         }
 
@@ -269,7 +269,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
         && match (crate_path.as_deref(), prev_tag.as_deref()) {
             (Some(path), Some(prev)) => {
                 match (
-                    anodize_stage_build::version_sync::read_cargo_version(path)
+                    anodizer_stage_build::version_sync::read_cargo_version(path)
                         .ok()
                         .and_then(|v| git::parse_semver(&v).ok()),
                     git::parse_semver_tag(prev).ok(),
@@ -322,7 +322,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
     // Cargo.toml version to avoid downgrading manually bumped versions.
     if version_sync_enabled
         && let Some(ref path) = crate_path
-        && let Ok(cargo_ver) = anodize_stage_build::version_sync::read_cargo_version(path)
+        && let Ok(cargo_ver) = anodizer_stage_build::version_sync::read_cargo_version(path)
         && let Ok(cargo_sv) = git::parse_semver(&cargo_ver)
     {
         let tag_tuple = (new_major, new_minor, new_patch);
@@ -359,7 +359,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
     if let Some(ref path) = crate_path
         && version_sync_enabled
     {
-        anodize_stage_build::version_sync::sync_version(path, &new_version, opts.dry_run, &log)?;
+        anodizer_stage_build::version_sync::sync_version(path, &new_version, opts.dry_run, &log)?;
 
         // Determine workspace root for cross-crate dep updates.
         let workspace_root = std::env::current_dir()
@@ -384,7 +384,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
 
         // Update dependency version specs in other workspace crates.
         let dep_modified = if let Some(ref name) = crate_name {
-            anodize_stage_build::version_sync::sync_workspace_deps(
+            anodizer_stage_build::version_sync::sync_workspace_deps(
                 &workspace_root,
                 name,
                 &new_version,
@@ -1235,7 +1235,7 @@ tag:
   tag_prefix: "v"
   branch_history: last
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let tag = config.tag.unwrap();
         assert_eq!(tag.default_bump, Some("patch".to_string()));
         assert_eq!(tag.branch_history, Some("last".to_string()));
@@ -1259,13 +1259,13 @@ tag_post_hooks:
         assert_eq!(pre.len(), 2);
         assert!(matches!(
             pre[0],
-            anodize_core::config::HookEntry::Simple(ref s) if s == "cargo update --workspace"
+            anodizer_core::config::HookEntry::Simple(ref s) if s == "cargo update --workspace"
         ));
         let post = cfg.tag_post_hooks.as_ref().unwrap();
         assert_eq!(post.len(), 1);
         assert!(matches!(
             post[0],
-            anodize_core::config::HookEntry::Simple(ref s) if s == "git push --follow-tags"
+            anodizer_core::config::HookEntry::Simple(ref s) if s == "git push --follow-tags"
         ));
     }
 

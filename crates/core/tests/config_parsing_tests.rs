@@ -5,7 +5,7 @@
 
 use std::path::PathBuf;
 
-use anodize_core::config::*;
+use anodizer_core::config::*;
 
 // ====================================================================
 // Task 4B: Config parsing depth — every field, every variation
@@ -324,7 +324,7 @@ fn test_parse_defaults_archives_omitted() {
 /// "unknown field" errors (consistent with nfpm + docker_manifests).
 #[test]
 fn test_parse_archives_accepts_deprecated_builds_alias() {
-    use anodize_core::config::ArchivesConfig;
+    use anodizer_core::config::ArchivesConfig;
     let yaml = r#"
 project_name: test
 crates:
@@ -417,7 +417,7 @@ crates: []
     assert_eq!(checksum.algorithm, Some("sha256".to_string()));
     assert_eq!(
         checksum.disable,
-        Some(anodize_core::config::StringOrBool::Bool(false))
+        Some(anodizer_core::config::StringOrBool::Bool(false))
     );
     assert_eq!(checksum.extra_files.as_ref().unwrap().len(), 1);
     assert_eq!(checksum.ids.as_ref().unwrap(), &["my-archive"]);
@@ -1315,7 +1315,7 @@ crates:
     let checksum = config.crates[0].checksum.as_ref().unwrap();
     assert_eq!(
         checksum.disable,
-        Some(anodize_core::config::StringOrBool::Bool(true))
+        Some(anodizer_core::config::StringOrBool::Bool(true))
     );
     // Other fields are still parsed even when disabled
     assert_eq!(checksum.algorithm, Some("sha512".to_string()));
@@ -2550,7 +2550,7 @@ crates: []
     let discord = config.announce.as_ref().unwrap().discord.as_ref().unwrap();
     assert_eq!(
         discord.enabled,
-        Some(anodize_core::config::StringOrBool::Bool(true))
+        Some(anodizer_core::config::StringOrBool::Bool(true))
     );
     assert_eq!(
         discord.webhook_url,
@@ -2576,7 +2576,7 @@ crates: []
     let slack = config.announce.as_ref().unwrap().slack.as_ref().unwrap();
     assert_eq!(
         slack.enabled,
-        Some(anodize_core::config::StringOrBool::Bool(true))
+        Some(anodizer_core::config::StringOrBool::Bool(true))
     );
 }
 
@@ -2598,7 +2598,7 @@ crates: []
     let webhook = config.announce.as_ref().unwrap().webhook.as_ref().unwrap();
     assert_eq!(
         webhook.enabled,
-        Some(anodize_core::config::StringOrBool::Bool(true))
+        Some(anodizer_core::config::StringOrBool::Bool(true))
     );
     assert_eq!(
         webhook.endpoint_url,
@@ -2746,7 +2746,7 @@ crates: []
     let cl = config.changelog.as_ref().unwrap();
     assert_eq!(
         cl.disable,
-        Some(anodize_core::config::StringOrBool::Bool(true))
+        Some(anodizer_core::config::StringOrBool::Bool(true))
     );
     // Groups are still parsed even when disabled
     assert_eq!(cl.groups.as_ref().unwrap().len(), 1);
@@ -3153,7 +3153,7 @@ crates: []
     let checksum = config.defaults.unwrap().checksum.unwrap();
     assert_eq!(
         checksum.disable,
-        Some(anodize_core::config::StringOrBool::String(
+        Some(anodizer_core::config::StringOrBool::String(
             "yes".to_string()
         ))
     );
@@ -3184,7 +3184,7 @@ crates: []
     let cl = config.changelog.as_ref().unwrap();
     assert_eq!(
         cl.disable,
-        Some(anodize_core::config::StringOrBool::Bool(true))
+        Some(anodizer_core::config::StringOrBool::Bool(true))
     );
     assert_eq!(cl.sort, Some("asc".to_string()));
     assert_eq!(cl.header, Some("header".to_string()));
@@ -3211,7 +3211,7 @@ crates:
     assert_eq!(release.draft, Some(true));
     assert_eq!(
         release.skip_upload,
-        Some(anodize_core::config::StringOrBool::Bool(true))
+        Some(anodizer_core::config::StringOrBool::Bool(true))
     );
     assert_eq!(release.replace_existing_draft, Some(true));
 }
@@ -3752,7 +3752,7 @@ crates: []
     let discord = config.announce.as_ref().unwrap().discord.as_ref().unwrap();
     assert_eq!(
         discord.enabled,
-        Some(anodize_core::config::StringOrBool::Bool(false))
+        Some(anodizer_core::config::StringOrBool::Bool(false))
     );
 }
 

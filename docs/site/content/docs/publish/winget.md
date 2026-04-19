@@ -5,7 +5,7 @@ weight = 6
 template = "docs.html"
 +++
 
-Anodize generates [WinGet](https://learn.microsoft.com/en-us/windows/package-manager/) YAML manifests and submits pull requests to the winget-pkgs community repository (or your own fork) via the GitHub API. WinGet is the official Windows Package Manager, allowing users to install your tool with `winget install Publisher.AppName`.
+Anodizer generates [WinGet](https://learn.microsoft.com/en-us/windows/package-manager/) YAML manifests and submits pull requests to the winget-pkgs community repository (or your own fork) via the GitHub API. WinGet is the official Windows Package Manager, allowing users to install your tool with `winget install Publisher.AppName`.
 
 ## Minimal config
 
@@ -24,7 +24,7 @@ crates:
 
 ## How it works
 
-1. Anodize collects your Windows `.zip` archive artifacts (or portable binary artifacts).
+1. Anodizer collects your Windows `.zip` archive artifacts (or portable binary artifacts).
 2. It generates three YAML manifest files following the WinGet 1.12.0 schema.
 3. The manifests are committed to a branch in your fork of the winget-pkgs repository.
 4. A pull request is submitted against `microsoft/winget-pkgs` (or a custom upstream).
@@ -37,7 +37,7 @@ Examples of valid identifiers:
 - `MyOrg.MyApp`
 - `Publisher.Category.AppName`
 
-If `package_identifier` is not set, Anodize auto-generates it as `Publisher.Name` (with spaces stripped from the publisher name).
+If `package_identifier` is not set, Anodizer auto-generates it as `Publisher.Name` (with spaces stripped from the publisher name).
 
 ## WinGet config fields
 
@@ -119,19 +119,19 @@ Each entry in the `dependencies` list has:
 
 ## Generated manifests
 
-Anodize generates the WinGet 3-file manifest format:
+Anodizer generates the WinGet 3-file manifest format:
 
 - **`PackageId.yaml`** -- Version manifest declaring the package identifier, version, and default locale.
 - **`PackageId.installer.yaml`** -- Installer manifest with download URLs, SHA-256 checksums, architecture mappings, and upgrade behavior. For `.zip` archives, nested installer entries map each binary as a portable executable.
 - **`PackageId.locale.en-US.yaml`** -- Default locale manifest with publisher info, descriptions, license, tags, release notes, and other metadata.
 
-Each file includes a YAML language server schema reference header and a generated-by-anodize comment.
+Each file includes a YAML language server schema reference header and a generated-by-anodizer comment.
 
-Manifests are placed at `manifests/<first-char>/<PackageId segments>/<version>/` inside the repository. For example, `TJSmith.Anodize` version `1.0.0` would be written to `manifests/t/TJSmith/Anodize/1.0.0/`. You can override this with the `path` field.
+Manifests are placed at `manifests/<first-char>/<PackageId segments>/<version>/` inside the repository. For example, `TJSmith.Anodizer` version `1.0.0` would be written to `manifests/t/TJSmith/Anodizer/1.0.0/`. You can override this with the `path` field.
 
 ## Architecture mapping
 
-Anodize maps Rust target triples to WinGet architecture identifiers:
+Anodizer maps Rust target triples to WinGet architecture identifiers:
 
 | Rust target | WinGet architecture |
 |-------------|---------------------|
@@ -143,12 +143,12 @@ Only Windows artifacts (detected by target triple or path) are included. Non-zip
 
 ## Installer types
 
-Anodize supports two installer types:
+Anodizer supports two installer types:
 
 - **zip** -- Archive artifacts containing portable executables. Each binary gets a `NestedInstallerFiles` entry with a `PortableCommandAlias`. If the archive wraps contents in a top-level directory, `RelativeFilePath` entries are prefixed accordingly.
 - **portable** -- Bare binary artifacts. Each binary gets a `Commands` entry.
 
-You cannot mix archive and portable binary artifacts in the same manifest. Anodize will error if both types are found.
+You cannot mix archive and portable binary artifacts in the same manifest. Anodizer will error if both types are found.
 
 ## skip_upload
 

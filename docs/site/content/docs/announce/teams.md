@@ -19,7 +19,7 @@ Create an incoming webhook in your Teams channel via **Connectors > Incoming Web
 
 ### Adaptive Card format
 
-The message is delivered as a Microsoft [Adaptive Card](https://adaptivecards.io/) (v1.4) wrapped inside a `message` payload. The `message_template` value becomes the text of a `TextBlock` element with word-wrap enabled. You do not need to construct the card JSON yourself -- anodize handles that.
+The message is delivered as a Microsoft [Adaptive Card](https://adaptivecards.io/) (v1.4) wrapped inside a `message` payload. The `message_template` value becomes the text of a `TextBlock` element with word-wrap enabled. You do not need to construct the card JSON yourself -- anodizer handles that.
 
 ### Environment variables
 

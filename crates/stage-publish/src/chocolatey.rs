@@ -1,5 +1,5 @@
-use anodize_core::context::Context;
-use anodize_core::log::StageLogger;
+use anodizer_core::context::Context;
+use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result};
 
 use crate::util;
@@ -49,7 +49,7 @@ pub struct NuspecParams<'a> {
     pub bug_tracker_url: Option<&'a str>,
     pub summary: Option<&'a str>,
     pub release_notes: Option<&'a str>,
-    pub dependencies: &'a [anodize_core::config::ChocolateyDependency],
+    pub dependencies: &'a [anodizer_core::config::ChocolateyDependency],
 }
 
 // ---------------------------------------------------------------------------
@@ -143,7 +143,7 @@ pub fn generate_nuspec(params: &NuspecParams<'_>) -> Result<String> {
     };
     let title = params.title.unwrap_or(params.name);
 
-    let tera = anodize_core::template::parse_static("nuspec", NUSPEC_TEMPLATE)
+    let tera = anodizer_core::template::parse_static("nuspec", NUSPEC_TEMPLATE)
         .context("chocolatey: parse nuspec template")?;
 
     let mut ctx = tera::Context::new();
@@ -200,7 +200,7 @@ pub fn generate_nuspec(params: &NuspecParams<'_>) -> Result<String> {
     ctx.insert("has_dependencies", &!dep_entries.is_empty());
     ctx.insert("dependencies", &dep_entries);
 
-    anodize_core::template::render_static(&tera, "nuspec", &ctx, "chocolatey")
+    anodizer_core::template::render_static(&tera, "nuspec", &ctx, "chocolatey")
 }
 
 // ---------------------------------------------------------------------------
@@ -228,18 +228,18 @@ pub fn generate_install_script(
     } else {
         INSTALL_SCRIPT_TEMPLATE_64
     };
-    let tera = anodize_core::template::parse_static("install", template)
+    let tera = anodizer_core::template::parse_static("install", template)
         .context("chocolatey: parse install script template")?;
     let mut ctx = tera::Context::new();
     ctx.insert("name", name);
     ctx.insert("url", url);
     ctx.insert("hash", hash);
-    anodize_core::template::render_static(&tera, "install", &ctx, "chocolatey")
+    anodizer_core::template::render_static(&tera, "install", &ctx, "chocolatey")
 }
 
 /// Generate a dual-arch install script with both 32-bit and 64-bit URLs.
 pub fn generate_install_script_dual(params: &InstallScriptDual<'_>) -> Result<String> {
-    let tera = anodize_core::template::parse_static("install", INSTALL_SCRIPT_TEMPLATE_DUAL)
+    let tera = anodizer_core::template::parse_static("install", INSTALL_SCRIPT_TEMPLATE_DUAL)
         .context("chocolatey: parse dual install script template")?;
     let mut ctx = tera::Context::new();
     ctx.insert("name", params.name);
@@ -247,7 +247,7 @@ pub fn generate_install_script_dual(params: &InstallScriptDual<'_>) -> Result<St
     ctx.insert("hash32", params.hash32);
     ctx.insert("url64", params.url64);
     ctx.insert("hash64", params.hash64);
-    anodize_core::template::render_static(&tera, "install", &ctx, "chocolatey")
+    anodizer_core::template::render_static(&tera, "install", &ctx, "chocolatey")
 }
 
 // ---------------------------------------------------------------------------
@@ -350,7 +350,7 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
         // Filter by amd64_variant microarchitecture variant.
         .filter(|a| {
             let target = a.target.as_deref().unwrap_or("");
-            let (_, arch) = anodize_core::target::map_target(target);
+            let (_, arch) = anodizer_core::target::map_target(target);
             if arch == "amd64"
                 && let Some(want) = amd64_variant
             {
@@ -383,9 +383,9 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
         }
     }
 
-    let resolve_artifact = |a: &anodize_core::artifact::Artifact| -> (String, String) {
+    let resolve_artifact = |a: &anodizer_core::artifact::Artifact| -> (String, String) {
         let target = a.target.as_deref().unwrap_or("");
-        let (_, raw_arch) = anodize_core::target::map_target(target);
+        let (_, raw_arch) = anodizer_core::target::map_target(target);
         let resolved_url = if let Some(tmpl) = url_template {
             util::render_url_template(tmpl, pkg_name, &version, &raw_arch, "windows")
         } else {
@@ -473,7 +473,7 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
         s.map(|v| {
             let mut vars = ctx.template_vars().clone();
             vars.set("Changelog", &release_notes_var);
-            anodize_core::template::render(v, &vars).unwrap_or_else(|_| v.to_string())
+            anodizer_core::template::render(v, &vars).unwrap_or_else(|_| v.to_string())
         })
     };
     let copyright_rendered = render(choco_cfg.copyright.as_deref());
@@ -736,7 +736,7 @@ fn package_exists(push_source: &str, name: &str, version: &str) -> bool {
         query_base, name, version
     );
 
-    let client = match anodize_core::http::blocking_client(std::time::Duration::from_secs(30)) {
+    let client = match anodizer_core::http::blocking_client(std::time::Duration::from_secs(30)) {
         Ok(c) => c,
         Err(_) => return false,
     };
@@ -794,7 +794,7 @@ fn push_nupkg(
     let form = reqwest::blocking::multipart::Form::new().part("package", form_file);
 
     let client = reqwest::blocking::Client::builder()
-        .user_agent("NuGet Command Line/6.10.0 (anodize)")
+        .user_agent("NuGet Command Line/6.10.0 (anodizer)")
         .timeout(std::time::Duration::from_secs(300))
         .build()
         .context("chocolatey: build http client")?;
@@ -1075,11 +1075,11 @@ mod tests {
 
     #[test]
     fn test_publish_to_chocolatey_dry_run() {
-        use anodize_core::config::{
+        use anodizer_core::config::{
             ChocolateyConfig, ChocolateyRepoConfig, Config, CrateConfig, PublishConfig,
         };
-        use anodize_core::context::{Context, ContextOptions};
-        use anodize_core::log::{StageLogger, Verbosity};
+        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::log::{StageLogger, Verbosity};
         let mut config = Config::default();
         config.crates = vec![CrateConfig {
             name: "mytool".to_string(),
@@ -1111,9 +1111,9 @@ mod tests {
 
     #[test]
     fn test_publish_to_chocolatey_missing_config() {
-        use anodize_core::config::{Config, CrateConfig, PublishConfig};
-        use anodize_core::context::{Context, ContextOptions};
-        use anodize_core::log::{StageLogger, Verbosity};
+        use anodizer_core::config::{Config, CrateConfig, PublishConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::log::{StageLogger, Verbosity};
         let mut config = Config::default();
         config.crates = vec![CrateConfig {
             name: "mytool".to_string(),
@@ -1135,9 +1135,9 @@ mod tests {
 
     #[test]
     fn test_publish_to_chocolatey_missing_project_repo() {
-        use anodize_core::config::{ChocolateyConfig, Config, CrateConfig, PublishConfig};
-        use anodize_core::context::{Context, ContextOptions};
-        use anodize_core::log::{StageLogger, Verbosity};
+        use anodizer_core::config::{ChocolateyConfig, Config, CrateConfig, PublishConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::log::{StageLogger, Verbosity};
         let mut config = Config::default();
         config.crates = vec![CrateConfig {
             name: "mytool".to_string(),
@@ -1166,11 +1166,11 @@ mod tests {
     #[test]
     fn test_generate_nuspec_all_optional_fields() {
         let deps = vec![
-            anodize_core::config::ChocolateyDependency {
+            anodizer_core::config::ChocolateyDependency {
                 id: "dotnetfx".to_string(),
                 version: Some("[4.5.1,)".to_string()),
             },
-            anodize_core::config::ChocolateyDependency {
+            anodizer_core::config::ChocolateyDependency {
                 id: "vcredist140".to_string(),
                 version: None,
             },
@@ -1236,7 +1236,7 @@ crates:
           owner: org
           name: test
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let choco = config.crates[0]
             .publish
             .as_ref()
@@ -1262,7 +1262,7 @@ crates:
           owner: org
           name: test
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let choco = config.crates[0]
             .publish
             .as_ref()

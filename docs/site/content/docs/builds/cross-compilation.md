@@ -5,7 +5,7 @@ weight = 2
 template = "docs.html"
 +++
 
-Anodize supports three cross-compilation strategies, configurable via the `cross` field.
+Anodizer supports three cross-compilation strategies, configurable via the `cross` field.
 
 ## Strategies
 
@@ -40,7 +40,7 @@ When `cross: auto` (the default):
 3. If `cross` is installed → use it
 4. Fall back to native `cargo build` (may fail for cross-platform targets)
 
-Run `anodize healthcheck` to see which tools are available.
+Run `anodizer healthcheck` to see which tools are available.
 
 ## Installing cross-compilation tools
 
@@ -57,8 +57,8 @@ cargo install cross
 Control the number of parallel build jobs with `--parallelism` / `-p`:
 
 ```bash
-anodize release -p 4        # max 4 parallel builds
-anodize release -p 1        # sequential builds
+anodizer release -p 4        # max 4 parallel builds
+anodizer release -p 1        # sequential builds
 ```
 
 Defaults to the number of logical CPUs.
@@ -68,5 +68,5 @@ Defaults to the number of logical CPUs.
 For local testing, build only for your host platform:
 
 ```bash
-anodize release --single-target
+anodizer release --single-target
 ```

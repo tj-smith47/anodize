@@ -5,7 +5,7 @@ weight = 80
 template = "docs.html"
 +++
 
-Anodize can upload release artifacts to JFrog Artifactory repositories.
+Anodizer can upload release artifacts to JFrog Artifactory repositories.
 
 ## Minimal config
 

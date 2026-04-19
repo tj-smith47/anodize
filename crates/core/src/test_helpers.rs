@@ -1,11 +1,11 @@
-//! Shared test infrastructure for the anodize workspace.
+//! Shared test infrastructure for the anodizer workspace.
 //!
 //! This module is gated behind the `test-helpers` feature so that other crates
 //! in the workspace can pull it in as a dev-dependency:
 //!
 //! ```toml
 //! [dev-dependencies]
-//! anodize-core = { workspace = true, features = ["test-helpers"] }
+//! anodizer-core = { workspace = true, features = ["test-helpers"] }
 //! ```
 //!
 //! Provides:
@@ -13,7 +13,7 @@
 //! - [`create_test_project`] — creates a minimal Cargo project on disk
 //! - [`init_git_repo`] — initializes a git repo with config, initial commit, and tag
 //! - [`init_git_repo_with_commits`] — initializes a git repo with multiple commits
-//! - [`create_config`] — writes `.anodize.yaml`
+//! - [`create_config`] — writes `.anodizer.yaml`
 //! - [`make_git_info`] — creates a [`GitInfo`] with sensible defaults
 //! - [`create_fake_binary`] — creates a dummy binary file for archive/checksum tests
 
@@ -33,7 +33,7 @@ use std::process::Command;
 /// # Example
 ///
 /// ```rust,ignore
-/// use anodize_core::test_helpers::TestContextBuilder;
+/// use anodizer_core::test_helpers::TestContextBuilder;
 ///
 /// let ctx = TestContextBuilder::new()
 ///     .project_name("my-app")
@@ -383,10 +383,10 @@ path = "src/main.rs"
     .unwrap_or_else(|e| panic!("failed to write src/main.rs: {e}"));
 }
 
-/// Write an `.anodize.yaml` config file in the given directory.
+/// Write an `.anodizer.yaml` config file in the given directory.
 pub fn create_config(dir: &Path, content: &str) {
-    fs::write(dir.join(".anodize.yaml"), content)
-        .unwrap_or_else(|e| panic!("failed to write .anodize.yaml: {e}"));
+    fs::write(dir.join(".anodizer.yaml"), content)
+        .unwrap_or_else(|e| panic!("failed to write .anodizer.yaml: {e}"));
 }
 
 /// Create a fake binary file at `dir/<name>` for testing archive/checksum stages.

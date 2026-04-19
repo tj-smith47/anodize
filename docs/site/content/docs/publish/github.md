@@ -18,7 +18,7 @@ crates:
         name: myapp
 ```
 
-If `github.owner` and `github.name` are omitted, anodize auto-detects them from the git remote URL.
+If `github.owner` and `github.name` are omitted, anodizer auto-detects them from the git remote URL.
 
 ## Release config fields
 
@@ -43,7 +43,7 @@ Set `GITHUB_TOKEN` as an environment variable or pass it via `--token`:
 
 ```bash
 export GITHUB_TOKEN="ghp_..."
-anodize release
+anodizer release
 ```
 
 ## Draft releases
@@ -55,7 +55,7 @@ release:
 
 ## Prerelease detection
 
-When `prerelease: auto` (default), anodize detects prereleases from the version string. Versions like `1.0.0-rc.1`, `1.0.0-beta.2` are automatically marked as prereleases.
+When `prerelease: auto` (default), anodizer detects prereleases from the version string. Versions like `1.0.0-rc.1`, `1.0.0-beta.2` are automatically marked as prereleases.
 
 ## Extra files
 

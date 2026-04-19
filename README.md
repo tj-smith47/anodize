@@ -1,12 +1,12 @@
-# Anodize
+# Anodizer
 
 A Rust-native release automation tool. The same declarative, config-driven release pipeline that [GoReleaser](https://goreleaser.com/) provides for Go — built for Rust.
 
-Anodize reads a declarative config file and executes a full release pipeline: build, archive, checksum, changelog, sign, release, publish, and announce — all from a single `anodize release` command.
+Anodizer reads a declarative config file and executes a full release pipeline: build, archive, checksum, changelog, sign, release, publish, and announce — all from a single `anodizer release` command.
 
 Written by [Claude](https://claude.ai); maintained by us.
 
-See the [Feature Dogfooding Matrix](https://tj-smith47.github.io/anodize/dogfooding/) for a per-feature tested / partial / untested status with proof links (CI runs, live release assets, unit + integration tests).
+See the [Feature Dogfooding Matrix](https://tj-smith47.github.io/anodizer/dogfooding/) for a per-feature tested / partial / untested status with proof links (CI runs, live release assets, unit + integration tests).
 
 ## Features
 
@@ -71,20 +71,20 @@ See the [Feature Dogfooding Matrix](https://tj-smith47.github.io/anodize/dogfood
 ### Homebrew (macOS/Linux)
 
 ```bash
-brew install tj-smith47/tap/anodize
+brew install tj-smith47/tap/anodizer
 ```
 
 ### Cargo
 
 ```bash
-cargo install anodize
+cargo install anodizer
 ```
 
 ### From source
 
 ```bash
-git clone https://github.com/tj-smith47/anodize.git
-cd anodize
+git clone https://github.com/tj-smith47/anodizer.git
+cd anodizer
 cargo install --path crates/cli
 ```
 
@@ -92,33 +92,33 @@ cargo install --path crates/cli
 
 ```bash
 # Generate a starter config from your Cargo workspace
-anodize init > .anodize.yaml
+anodizer init > .anodizer.yaml
 
 # Validate your config
-anodize check
+anodizer check
 
 # Check that required tools are available
-anodize healthcheck
+anodizer healthcheck
 
 # Build a snapshot (no publishing)
-anodize release --snapshot
+anodizer release --snapshot
 
 # Dry run (full pipeline, no side effects)
-anodize release --dry-run
+anodizer release --dry-run
 
 # Create a tag and release
 git tag -a v0.1.0 -m "v0.1.0"
 git push origin v0.1.0
 ```
 
-For CI-based releases, set `GITHUB_TOKEN` (or `ANODIZE_GITHUB_TOKEN`) as a secret — the release pipeline picks it up automatically.
+For CI-based releases, set `GITHUB_TOKEN` (or `ANODIZER_GITHUB_TOKEN`) as a secret — the release pipeline picks it up automatically.
 
 ## Configuration
 
-Anodize uses `.anodize.yaml` (or `.anodize.toml`) in your project root. Add a schema comment for editor autocomplete:
+Anodizer uses `.anodizer.yaml` (or `.anodizer.toml`) in your project root. Add a schema comment for editor autocomplete:
 
 ```yaml
-# yaml-language-server: $schema=https://tj-smith47.github.io/anodize/schema.json
+# yaml-language-server: $schema=https://tj-smith47.github.io/anodizer/schema.json
 
 project_name: myapp
 
@@ -153,7 +153,7 @@ crates:
           name: homebrew-tap
 ```
 
-See the [full configuration reference](https://tj-smith47.github.io/anodize/docs/reference/configuration/) and the [template reference](https://tj-smith47.github.io/anodize/docs/general/templates/) for all available fields, variables, and filters.
+See the [full configuration reference](https://tj-smith47.github.io/anodizer/docs/reference/configuration/) and the [template reference](https://tj-smith47.github.io/anodizer/docs/general/templates/) for all available fields, variables, and filters.
 
 ## GitHub Actions
 
@@ -177,11 +177,11 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Install anodize
-        run: cargo install anodize
+      - name: Install anodizer
+        run: cargo install anodizer
 
       - name: Release
-        run: anodize release --clean
+        run: anodizer release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
@@ -191,19 +191,19 @@ jobs:
 ### Commands
 
 ```
-anodize release                    Full release pipeline
-anodize build                      Build binaries only (snapshot mode)
-anodize check                      Validate configuration
-anodize init                       Generate starter config
-anodize changelog                  Generate changelog only
-anodize completion <shell>         Shell completions (bash/zsh/fish/powershell)
-anodize healthcheck                Check external tool availability
-anodize man                        Generate man pages
-anodize jsonschema                 Output JSON Schema for .anodize.yaml
-anodize tag                        Auto-tag from commit directives
-anodize publish                    Run publish stages from completed dist/
-anodize announce                   Run announce stage from completed dist/
-anodize continue                   Merge split build artifacts and resume pipeline
+anodizer release                    Full release pipeline
+anodizer build                      Build binaries only (snapshot mode)
+anodizer check                      Validate configuration
+anodizer init                       Generate starter config
+anodizer changelog                  Generate changelog only
+anodizer completion <shell>         Shell completions (bash/zsh/fish/powershell)
+anodizer healthcheck                Check external tool availability
+anodizer man                        Generate man pages
+anodizer jsonschema                 Output JSON Schema for .anodizer.yaml
+anodizer tag                        Auto-tag from commit directives
+anodizer publish                    Run publish stages from completed dist/
+anodizer announce                   Run announce stage from completed dist/
+anodizer continue                   Merge split build artifacts and resume pipeline
 ```
 
 ### Global Flags
@@ -243,7 +243,7 @@ anodize continue                   Merge split build artifacts and resume pipeli
 
 ## Documentation
 
-Full documentation is available at **[tj-smith47.github.io/anodize](https://tj-smith47.github.io/anodize/)**.
+Full documentation is available at **[tj-smith47.github.io/anodizer](https://tj-smith47.github.io/anodizer/)**.
 
 ## License
 

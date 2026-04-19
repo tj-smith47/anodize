@@ -60,7 +60,7 @@ jobs:
       - name: Generate JSON Schema
         run: |
           task build
-          ./target/release/anodize jsonschema > docs/site/static/schema.json
+          ./target/release/anodizer jsonschema > docs/site/static/schema.json
 
       - name: Build site
         run: cd docs/site && zola build

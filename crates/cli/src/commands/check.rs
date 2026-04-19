@@ -1,7 +1,7 @@
 use super::helpers;
 use crate::pipeline;
-use anodize_core::config::{Config, CrateConfig};
-use anodize_core::log::{StageLogger, Verbosity};
+use anodizer_core::config::{Config, CrateConfig};
+use anodizer_core::log::{StageLogger, Verbosity};
 use anyhow::{Result, bail};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -23,7 +23,7 @@ pub fn run(
     // before they reach the release pipeline.
     for (prop, msg) in &deprecations {
         eprintln!(
-            "DEPRECATED: {} — see https://anodize.dev/deprecations#{}",
+            "DEPRECATED: {} — see https://anodizer.dev/deprecations#{}",
             msg,
             prop.replace('.', "-").to_lowercase()
         );
@@ -232,7 +232,7 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
 
     // 6. Warn if changelog is disabled but has other fields configured
     if let Some(cl) = &config.changelog
-        && cl.disable == Some(anodize_core::config::StringOrBool::Bool(true))
+        && cl.disable == Some(anodizer_core::config::StringOrBool::Bool(true))
     {
         let has_other = cl.sort.is_some()
             || cl.filters.is_some()
@@ -431,7 +431,7 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
 
     if check_env {
         let needs_cross = config.crates.iter().any(|c| {
-            use anodize_core::config::CrossStrategy;
+            use anodizer_core::config::CrossStrategy;
             matches!(
                 &c.cross,
                 Some(CrossStrategy::Zigbuild) | Some(CrossStrategy::Auto)
@@ -479,11 +479,11 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
 
         let needs_release = config.crates.iter().any(|c| c.release.is_some());
         if needs_release
-            && std::env::var("ANODIZE_GITHUB_TOKEN").is_err()
+            && std::env::var("ANODIZER_GITHUB_TOKEN").is_err()
             && std::env::var("GITHUB_TOKEN").is_err()
         {
             warnings.push(
-                "no GitHub token found but release sections are configured; set GITHUB_TOKEN or ANODIZE_GITHUB_TOKEN"
+                "no GitHub token found but release sections are configured; set GITHUB_TOKEN or ANODIZER_GITHUB_TOKEN"
                     .to_string(),
             );
         }
@@ -617,7 +617,7 @@ pub fn find_cycle(crates: &[CrateConfig]) -> Option<Vec<String>> {
 /// `context` is a human-readable prefix for the error message (e.g. "crate 'foo'" or
 /// "workspace 'ws': crate 'bar'").
 fn validate_tag_template(tag_template: &str, context: &str, errors: &mut Vec<String>) {
-    if !tag_template.is_empty() && !anodize_core::git::has_version_placeholder(tag_template) {
+    if !tag_template.is_empty() && !anodizer_core::git::has_version_placeholder(tag_template) {
         errors.push(format!(
             "{}: tag_template '{}' must contain '{{{{ .Version }}}}' or '{{{{ Version }}}}' \
              (e.g. 'v{{{{ .Version }}}}' or 'myapp-v{{{{ Version }}}}')",
@@ -627,7 +627,7 @@ fn validate_tag_template(tag_template: &str, context: &str, errors: &mut Vec<Str
 }
 
 fn tool_available(name: &str) -> bool {
-    anodize_core::util::find_binary(name)
+    anodizer_core::util::find_binary(name)
 }
 
 // ---------------------------------------------------------------------------
@@ -637,7 +637,7 @@ fn tool_available(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anodize_core::config::{Config, CrateConfig, WorkspaceConfig};
+    use anodizer_core::config::{Config, CrateConfig, WorkspaceConfig};
 
     fn make_crate(name: &str, tag_template: &str, depends_on: Option<Vec<&str>>) -> CrateConfig {
         CrateConfig {
@@ -759,7 +759,7 @@ mod tests {
 
     #[test]
     fn test_copy_from_valid() {
-        use anodize_core::config::BuildConfig;
+        use anodizer_core::config::BuildConfig;
         let mut c = make_crate("a", "a-v{{ .Version }}", None);
         c.builds = Some(vec![
             BuildConfig {
@@ -778,7 +778,7 @@ mod tests {
 
     #[test]
     fn test_copy_from_invalid() {
-        use anodize_core::config::BuildConfig;
+        use anodizer_core::config::BuildConfig;
         let mut c = make_crate("a", "a-v{{ .Version }}", None);
         c.builds = Some(vec![BuildConfig {
             binary: "b".to_string(),
@@ -794,10 +794,10 @@ mod tests {
 
     #[test]
     fn test_check_changelog_disabled_with_other_fields_passes() {
-        use anodize_core::config::{ChangelogConfig, ChangelogGroup};
+        use anodizer_core::config::{ChangelogConfig, ChangelogGroup};
         let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
         config.changelog = Some(ChangelogConfig {
-            disable: Some(anodize_core::config::StringOrBool::Bool(true)),
+            disable: Some(anodizer_core::config::StringOrBool::Bool(true)),
             sort: Some("desc".to_string()),
             header: Some("header".to_string()),
             groups: Some(vec![ChangelogGroup {
@@ -814,7 +814,7 @@ mod tests {
 
     #[test]
     fn test_check_checksum_disabled_with_other_fields_passes() {
-        use anodize_core::config::{ChecksumConfig, Defaults, StringOrBool};
+        use anodizer_core::config::{ChecksumConfig, Defaults, StringOrBool};
         let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
         config.defaults = Some(Defaults {
             checksum: Some(ChecksumConfig {
@@ -915,7 +915,7 @@ mod tests {
 
     #[test]
     fn test_check_per_crate_checksum_disabled_with_other_fields_passes() {
-        use anodize_core::config::{ChecksumConfig, StringOrBool};
+        use anodizer_core::config::{ChecksumConfig, StringOrBool};
         let mut c = make_crate("a", "a-v{{ .Version }}", None);
         c.checksum = Some(ChecksumConfig {
             disable: Some(StringOrBool::Bool(true)),
@@ -1109,7 +1109,7 @@ mod tests {
 
     #[test]
     fn test_invalid_source_format_fails() {
-        use anodize_core::config::SourceConfig;
+        use anodizer_core::config::SourceConfig;
         let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
         config.source = Some(SourceConfig {
             enabled: Some(true),
@@ -1126,7 +1126,7 @@ mod tests {
 
     #[test]
     fn test_valid_source_formats_pass() {
-        use anodize_core::config::SourceConfig;
+        use anodizer_core::config::SourceConfig;
         for fmt in &["tar.gz", "tgz", "tar", "zip"] {
             let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
             config.source = Some(SourceConfig {
@@ -1146,7 +1146,7 @@ mod tests {
 
     #[test]
     fn test_invalid_sbom_artifacts_fails() {
-        use anodize_core::config::SbomConfig;
+        use anodizer_core::config::SbomConfig;
         let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
         config.sboms = vec![SbomConfig {
             artifacts: Some("invalid".to_string()),
@@ -1160,7 +1160,7 @@ mod tests {
 
     #[test]
     fn test_valid_sbom_artifacts_pass() {
-        use anodize_core::config::SbomConfig;
+        use anodizer_core::config::SbomConfig;
         for art in &[
             "source",
             "archive",
@@ -1189,7 +1189,7 @@ mod tests {
 
     #[test]
     fn test_blob_config_valid_provider() {
-        use anodize_core::config::BlobConfig;
+        use anodizer_core::config::BlobConfig;
         for provider in &["s3", "gcs", "gs", "azblob", "azure"] {
             let mut config = make_config(vec![make_crate("a", "v{{ .Version }}", None)]);
             config.crates[0].blobs = Some(vec![BlobConfig {
@@ -1207,7 +1207,7 @@ mod tests {
 
     #[test]
     fn test_blob_config_invalid_provider() {
-        use anodize_core::config::BlobConfig;
+        use anodizer_core::config::BlobConfig;
         let mut config = make_config(vec![make_crate("a", "v{{ .Version }}", None)]);
         config.crates[0].blobs = Some(vec![BlobConfig {
             provider: "dropbox".to_string(),
@@ -1222,7 +1222,7 @@ mod tests {
 
     #[test]
     fn test_blob_config_empty_provider() {
-        use anodize_core::config::BlobConfig;
+        use anodizer_core::config::BlobConfig;
         let mut config = make_config(vec![make_crate("a", "v{{ .Version }}", None)]);
         config.crates[0].blobs = Some(vec![BlobConfig {
             provider: String::new(),
@@ -1237,7 +1237,7 @@ mod tests {
 
     #[test]
     fn test_blob_config_empty_bucket() {
-        use anodize_core::config::BlobConfig;
+        use anodizer_core::config::BlobConfig;
         let mut config = make_config(vec![make_crate("a", "v{{ .Version }}", None)]);
         config.crates[0].blobs = Some(vec![BlobConfig {
             provider: "s3".to_string(),
@@ -1252,7 +1252,7 @@ mod tests {
 
     #[test]
     fn test_blob_config_id_in_error_label() {
-        use anodize_core::config::BlobConfig;
+        use anodizer_core::config::BlobConfig;
         let mut config = make_config(vec![make_crate("a", "v{{ .Version }}", None)]);
         config.crates[0].blobs = Some(vec![BlobConfig {
             id: Some("my-upload".to_string()),

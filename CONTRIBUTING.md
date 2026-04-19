@@ -1,6 +1,6 @@
-# Contributing to Anodize
+# Contributing to Anodizer
 
-Thank you for your interest in contributing to Anodize! This document provides guidelines and instructions for contributing.
+Thank you for your interest in contributing to Anodizer! This document provides guidelines and instructions for contributing.
 
 ## Getting Started
 
@@ -14,8 +14,8 @@ Thank you for your interest in contributing to Anodize! This document provides g
 
 ```bash
 # Clone the repository
-git clone https://github.com/tj-smith47/anodize.git
-cd anodize
+git clone https://github.com/tj-smith47/anodizer.git
+cd anodizer
 
 # Build the project
 cargo build
@@ -30,7 +30,7 @@ cargo run -- --help
 ### Project Structure
 
 ```
-anodize/
+anodizer/
   crates/
     cli/              # CLI entry point (clap-based)
     core/             # Core types: config, template, artifact, pipeline context
@@ -102,8 +102,8 @@ cargo test
 Or test a specific crate:
 
 ```bash
-cargo test -p anodize-core
-cargo test -p anodize-stage-archive
+cargo test -p anodizer-core
+cargo test -p anodizer-stage-archive
 ```
 
 #### Integration Tests
@@ -111,7 +111,7 @@ cargo test -p anodize-stage-archive
 Integration tests live in `crates/cli/tests/` and test multi-stage interactions:
 
 ```bash
-cargo test -p anodize-cli --test integration
+cargo test -p anodizer-cli --test integration
 ```
 
 #### E2E Tests
@@ -150,10 +150,10 @@ cargo test --test e2e
 
 When reporting issues, please include:
 
-- Anodize version (`anodize --version`)
+- Anodizer version (`anodizer --version`)
 - Operating system and architecture
 - Rust toolchain version (`rustc --version`)
-- Your `.anodize.yaml` config (redact sensitive values)
+- Your `.anodizer.yaml` config (redact sensitive values)
 - The full error output
 - Steps to reproduce the issue
 
@@ -167,4 +167,4 @@ When reporting issues, please include:
 
 ## License
 
-By contributing to Anodize, you agree that your contributions will be licensed under the MIT License.
+By contributing to Anodizer, you agree that your contributions will be licensed under the MIT License.

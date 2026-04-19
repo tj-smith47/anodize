@@ -5,7 +5,7 @@ weight = 86
 template = "docs.html"
 +++
 
-Anodize can publish NPM packages that wrap your compiled binaries, allowing users to install them via `npm install -g`.
+Anodizer can publish NPM packages that wrap your compiled binaries, allowing users to install them via `npm install -g`.
 
 ## Minimal config
 
@@ -40,7 +40,7 @@ npms:
 
 ## How it works
 
-Anodize generates:
+Anodizer generates:
 
 1. A `package.json` with a `postinstall` script
 2. A `postinstall.js` that detects the user's OS and architecture, downloads the correct binary from your release, and installs it

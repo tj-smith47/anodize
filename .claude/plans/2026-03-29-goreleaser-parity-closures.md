@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Close every Missing and Partial item in `.claude/specs/goreleaser-parity-matrix.md` so anodize achieves full GoReleaser behavioral parity.
+**Goal:** Close every Missing and Partial item in `.claude/specs/goreleaser-parity-matrix.md` so anodizer achieves full GoReleaser behavioral parity.
 
 **Architecture:** Each task targets one subsystem (stage). Config field additions in `crates/core/src/config.rs` are paired with their stage wiring in the same task so context stays together. Items genuinely N/A for a Rust tool (gomod proxy, ModulePath, goamd64) are re-marked as Implemented/N/A rather than implemented.
 
@@ -152,7 +152,7 @@ In `build_command()`, handle the `Tool(binary)` variant by using the specified b
 
 - [ ] **Step 10: Compile and test**
 
-Run: `cargo test -p anodize-stage-build`
+Run: `cargo test -p anodizer-stage-build`
 
 - [ ] **Step 11: Commit**
 
@@ -256,7 +256,7 @@ Run `hooks.pre` before creating each archive, `hooks.post` after.
 
 - [ ] **Step 8: Compile and test**
 
-Run: `cargo test -p anodize-stage-archive`
+Run: `cargo test -p anodizer-stage-archive`
 
 - [ ] **Step 9: Commit**
 
@@ -319,7 +319,7 @@ When `split: true`, use `name_template` to generate sidecar file names instead o
 
 - [ ] **Step 6: Compile and test**
 
-Run: `cargo test -p anodize-stage-checksum`
+Run: `cargo test -p anodizer-stage-checksum`
 
 - [ ] **Step 7: Commit**
 
@@ -401,7 +401,7 @@ In the release creation path:
 - `"keep-existing"`: If release body already exists, don't overwrite it
 - `"append"`: Append new content after existing body
 - `"prepend"`: Prepend new content before existing body
-- `"replace"` (default for anodize, change default to `"keep-existing"`): Replace entirely
+- `"replace"` (default for anodizer, change default to `"keep-existing"`): Replace entirely
 
 - [ ] **Step 4: Wire target_commitish**
 
@@ -425,7 +425,7 @@ For `ContentSource::FromUrl`.
 
 - [ ] **Step 9: Compile and test**
 
-Run: `cargo test -p anodize-stage-release`
+Run: `cargo test -p anodizer-stage-release`
 
 - [ ] **Step 10: Commit**
 
@@ -466,7 +466,7 @@ pub struct ChangelogGroup {
     pub title: String,
     pub regexp: Option<String>,
     pub order: Option<i32>,
-    /// Nested subgroups within this group (Pro feature, free in anodize).
+    /// Nested subgroups within this group (Pro feature, free in anodizer).
     pub groups: Option<Vec<ChangelogGroup>>,
 }
 ```
@@ -489,7 +489,7 @@ When rendering changelog groups, recursively process `group.groups` as sub-secti
 
 - [ ] **Step 6: Compile and test**
 
-Run: `cargo test -p anodize-stage-changelog`
+Run: `cargo test -p anodizer-stage-changelog`
 
 - [ ] **Step 7: Commit**
 
@@ -549,7 +549,7 @@ When signing docker images, set `digest` template var from the image digest meta
 
 - [ ] **Step 6: Compile and test**
 
-Run: `cargo test -p anodize-stage-sign`
+Run: `cargo test -p anodizer-stage-sign`
 
 - [ ] **Step 7: Commit**
 
@@ -630,7 +630,7 @@ After each docker build+push, run `docker inspect --format='{{.Id}}'` to get the
 
 - [ ] **Step 6: Compile and test**
 
-Run: `cargo test -p anodize-stage-docker`
+Run: `cargo test -p anodizer-stage-docker`
 
 - [ ] **Step 7: Commit**
 
@@ -776,7 +776,7 @@ When format is `"ipk"` or `"termux-deb"`, pass through to nfpm (which supports t
 
 - [ ] **Step 4: Compile and test**
 
-Run: `cargo test -p anodize-stage-nfpm`
+Run: `cargo test -p anodizer-stage-nfpm`
 
 - [ ] **Step 5: Commit**
 
@@ -879,7 +879,7 @@ Add `HomebrewCaskConfig` to config.rs and a `publish_homebrew_cask()` function t
 
 - [ ] **Step 7: Compile and test**
 
-Run: `cargo test -p anodize-stage-publish`
+Run: `cargo test -p anodizer-stage-publish`
 
 - [ ] **Step 8: Commit**
 
@@ -931,7 +931,7 @@ Mirror the homebrew approach: support `branch`, `token`, `pull_request`, `git` (
 
 - [ ] **Step 4: Compile and test**
 
-Run: `cargo test -p anodize-stage-publish`
+Run: `cargo test -p anodizer-stage-publish`
 
 - [ ] **Step 5: Commit**
 
@@ -992,7 +992,7 @@ Use `rayon` or `std::thread` to run publisher commands for each artifact in para
 
 - [ ] **Step 7: Compile and test**
 
-Run: `cargo test -p anodize-cli`
+Run: `cargo test -p anodizer-cli`
 
 - [ ] **Step 8: Commit**
 
@@ -1160,7 +1160,7 @@ For each new provider (Reddit, Twitter/X, Mastodon, Bluesky, LinkedIn, OpenColle
 
 - [ ] **Step 8: Compile and test**
 
-Run: `cargo test -p anodize-stage-announce`
+Run: `cargo test -p anodizer-stage-announce`
 
 - [ ] **Step 9: Commit**
 
@@ -1231,7 +1231,7 @@ In `Pipeline::run()`, when `fail_fast` is set and a stage fails, return immediat
 
 - [ ] **Step 6: Compile and test**
 
-Run: `cargo test -p anodize-cli`
+Run: `cargo test -p anodizer-cli`
 
 - [ ] **Step 7: Commit**
 
@@ -1266,7 +1266,7 @@ In `pipeline.rs:run_hooks()`, when processing a `Structured` hook with `if_condi
 
 - [ ] **Step 3: Compile and test**
 
-Run: `cargo test -p anodize-cli`
+Run: `cargo test -p anodizer-cli`
 
 - [ ] **Step 4: Commit**
 
@@ -1338,7 +1338,7 @@ In the snapcraft stage, when `publish: true` is set, run `snapcraft upload` + `s
 
 - [ ] **Step 4: Compile and test**
 
-Run: `cargo test -p anodize-stage-publish`
+Run: `cargo test -p anodizer-stage-publish`
 
 - [ ] **Step 5: Commit**
 

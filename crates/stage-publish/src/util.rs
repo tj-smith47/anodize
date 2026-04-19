@@ -1,8 +1,8 @@
-use anodize_core::artifact::{Artifact, ArtifactKind};
-use anodize_core::config::RepositoryConfig;
-use anodize_core::context::Context;
-use anodize_core::log::StageLogger;
-use anodize_core::template::{self, TemplateVars};
+use anodizer_core::artifact::{Artifact, ArtifactKind};
+use anodizer_core::config::RepositoryConfig;
+use anodizer_core::context::Context;
+use anodizer_core::log::StageLogger;
+use anodizer_core::template::{self, TemplateVars};
 use anyhow::{Context as _, Result};
 use std::path::Path;
 use std::process::Command;
@@ -23,7 +23,7 @@ pub(crate) fn format_matches(filename: &str, formats: &[impl AsRef<str>]) -> boo
         .any(|fmt| filename.ends_with(&format!(".{}", fmt.as_ref())))
 }
 
-pub(crate) use anodize_core::artifact::matches_id_filter;
+pub(crate) use anodizer_core::artifact::matches_id_filter;
 
 /// Resolve a secret/token env var name from config with template rendering.
 pub(crate) fn resolve_secret_name(
@@ -67,7 +67,7 @@ pub(crate) fn run_cmd_in(dir: &Path, program: &str, args: &[&str], label: &str) 
 // Publisher config lookup
 // ---------------------------------------------------------------------------
 
-use anodize_core::config::{CrateConfig, PublishConfig};
+use anodizer_core::config::{CrateConfig, PublishConfig};
 
 /// Look up a crate's config and its `publish` section by name, returning a
 /// descriptive error when either is missing.
@@ -111,7 +111,7 @@ pub(crate) fn resolve_artifact_kind(use_value: Option<&str>) -> ArtifactKind {
 // ---------------------------------------------------------------------------
 
 /// Resolve an auth token from the context, then a publisher-specific env var,
-/// then `ANODIZE_GITHUB_TOKEN`, then the generic `GITHUB_TOKEN` env var.
+/// then `ANODIZER_GITHUB_TOKEN`, then the generic `GITHUB_TOKEN` env var.
 pub(crate) fn resolve_token(ctx: &Context, env_var: Option<&str>) -> Option<String> {
     // Filter empty strings: GitHub Actions sets env vars from non-existent
     // secrets to "", which would short-circuit the fallback chain and prevent
@@ -127,7 +127,7 @@ pub(crate) fn resolve_token(ctx: &Context, env_var: Option<&str>) -> Option<Stri
                 .and_then(non_empty)
         })
         .or_else(|| {
-            std::env::var("ANODIZE_GITHUB_TOKEN")
+            std::env::var("ANODIZER_GITHUB_TOKEN")
                 .ok()
                 .and_then(non_empty)
         })
@@ -227,7 +227,7 @@ pub(crate) fn clone_repo_ssh(
         // parent so it lives as long as the caller's tempdir.  We use a
         // sibling directory to avoid conflicts with the clone itself.
         let key_dir = tmp_dir.parent().unwrap_or(tmp_dir);
-        let key_path = key_dir.join(".anodize_ssh_key");
+        let key_path = key_dir.join(".anodizer_ssh_key");
         std::fs::write(&key_path, key_content)
             .with_context(|| format!("{label}: write SSH private key"))?;
         // SSH requires the key file to be user-readable only.
@@ -278,7 +278,7 @@ pub(crate) fn clone_repo(
     label: &str,
     log: &StageLogger,
 ) -> Result<()> {
-    // Warn when token_type is set to a non-GitHub value, since anodize
+    // Warn when token_type is set to a non-GitHub value, since anodizer
     // currently only supports GitHub-based repository publishing.
     if let Some(r) = repo
         && let Some(ref tt) = r.token_type
@@ -506,7 +506,7 @@ fn create_pr_via_api(
     let payload = serde_json::json!({
         "title": title, "head": head, "base": base_branch, "body": body, "draft": draft,
     });
-    let client = match anodize_core::http::blocking_client(std::time::Duration::from_secs(30)) {
+    let client = match anodizer_core::http::blocking_client(std::time::Duration::from_secs(30)) {
         Ok(c) => c,
         Err(e) => {
             log.warn(&format!("{label}: build HTTP client: {e}"));
@@ -587,7 +587,7 @@ pub(crate) fn maybe_submit_pr(
         .unwrap_or("main");
     let token = repo
         .and_then(|r| r.token.clone())
-        .or_else(|| std::env::var("ANODIZE_GITHUB_TOKEN").ok())
+        .or_else(|| std::env::var("ANODIZER_GITHUB_TOKEN").ok())
         .or_else(|| std::env::var("GITHUB_TOKEN").ok());
 
     // Fork sync: when the PR targets a different upstream repository, sync first.
@@ -653,13 +653,13 @@ pub(crate) struct CommitOptions<'a> {
     /// Git commit author email (passed via `-c user.email=X`).
     pub author_email: Option<String>,
     /// Enable GPG/SSH signing for the commit.
-    pub signing: Option<&'a anodize_core::config::CommitSigningConfig>,
+    pub signing: Option<&'a anodizer_core::config::CommitSigningConfig>,
 }
 
 /// Resolve repository owner/name from a RepositoryConfig, falling back to
 /// a legacy config's owner/name pair.
 pub(crate) fn resolve_repo_owner_name(
-    repo: Option<&anodize_core::config::RepositoryConfig>,
+    repo: Option<&anodizer_core::config::RepositoryConfig>,
     legacy_owner: Option<&str>,
     legacy_name: Option<&str>,
 ) -> Option<(String, String)> {
@@ -676,11 +676,11 @@ pub(crate) fn resolve_repo_owner_name(
 
 /// Default commit author name used when no author is configured.
 /// Mirrors GoReleaser's default of "goreleaserbot" (internal/commitauthor/author.go:11).
-const DEFAULT_COMMIT_AUTHOR_NAME: &str = "anodize";
+const DEFAULT_COMMIT_AUTHOR_NAME: &str = "anodizer";
 
 /// Default commit author email used when no author is configured.
 /// Mirrors GoReleaser's default of "bot@goreleaser.com" (internal/commitauthor/author.go:12).
-const DEFAULT_COMMIT_AUTHOR_EMAIL: &str = "bot@anodize.dev";
+const DEFAULT_COMMIT_AUTHOR_EMAIL: &str = "bot@anodizer.dev";
 
 /// Resolve commit author name/email from a CommitAuthorConfig, falling back
 /// to legacy per-publisher fields, then to the local `git config user.{name,
@@ -688,7 +688,7 @@ const DEFAULT_COMMIT_AUTHOR_EMAIL: &str = "bot@anodize.dev";
 ///
 /// The `git config` step exists so that publisher PRs (Homebrew tap, AUR,
 /// krew-index, winget-pkgs, ...) carry the release engineer's identity
-/// instead of `anodize <bot@anodize.dev>`. The bot identity does not match
+/// instead of `anodizer <bot@anodizer.dev>`. The bot identity does not match
 /// any GitHub-registered email, so it cannot pass CNCF EasyCLA on
 /// kubernetes-sigs/krew-index PRs and similar workflows.
 ///
@@ -696,7 +696,7 @@ const DEFAULT_COMMIT_AUTHOR_EMAIL: &str = "bot@anodize.dev";
 /// so that values read from git config (which need allocation) can be returned
 /// alongside borrowed config values.
 pub(crate) fn resolve_commit_opts<'a>(
-    commit_author: Option<&'a anodize_core::config::CommitAuthorConfig>,
+    commit_author: Option<&'a anodizer_core::config::CommitAuthorConfig>,
     legacy_name: Option<&'a str>,
     legacy_email: Option<&'a str>,
 ) -> CommitOptions<'a> {
@@ -712,11 +712,11 @@ pub(crate) fn resolve_commit_opts<'a>(
 
     let name = cfg_name
         .map(|s| s.to_string())
-        .or_else(anodize_core::git::local_git_user_name)
+        .or_else(anodizer_core::git::local_git_user_name)
         .unwrap_or_else(|| DEFAULT_COMMIT_AUTHOR_NAME.to_string());
     let email = cfg_email
         .map(|s| s.to_string())
-        .or_else(anodize_core::git::local_git_user_email)
+        .or_else(anodizer_core::git::local_git_user_email)
         .unwrap_or_else(|| DEFAULT_COMMIT_AUTHOR_EMAIL.to_string());
 
     CommitOptions {
@@ -726,10 +726,10 @@ pub(crate) fn resolve_commit_opts<'a>(
     }
 }
 
-/// Resolve the repository token from: RepositoryConfig.token -> env_var -> ANODIZE_GITHUB_TOKEN -> GITHUB_TOKEN.
+/// Resolve the repository token from: RepositoryConfig.token -> env_var -> ANODIZER_GITHUB_TOKEN -> GITHUB_TOKEN.
 pub(crate) fn resolve_repo_token(
     ctx: &Context,
-    repo: Option<&anodize_core::config::RepositoryConfig>,
+    repo: Option<&anodizer_core::config::RepositoryConfig>,
     env_var: Option<&str>,
 ) -> Option<String> {
     // 1. Token from repository config
@@ -745,7 +745,7 @@ pub(crate) fn resolve_repo_token(
 
 /// Resolve the branch to push to from RepositoryConfig.
 pub(crate) fn resolve_branch(
-    repo: Option<&anodize_core::config::RepositoryConfig>,
+    repo: Option<&anodizer_core::config::RepositoryConfig>,
 ) -> Option<&str> {
     repo.and_then(|r| r.branch.as_deref())
 }
@@ -967,7 +967,7 @@ pub(crate) fn submit_pr_via_gh(
     label: &str,
     log: &StageLogger,
 ) {
-    let token = std::env::var("ANODIZE_GITHUB_TOKEN")
+    let token = std::env::var("ANODIZER_GITHUB_TOKEN")
         .ok()
         .or_else(|| std::env::var("GITHUB_TOKEN").ok());
 
@@ -1025,7 +1025,7 @@ pub(crate) fn submit_pr_via_gh(
 /// failure) so the caller can fall back to a sensible default.
 fn fetch_default_branch(owner: &str, name: &str, token: Option<&str>) -> Option<String> {
     let url = format!("https://api.github.com/repos/{}/{}", owner, name);
-    let mut req = anodize_core::http::blocking_client(std::time::Duration::from_secs(10))
+    let mut req = anodizer_core::http::blocking_client(std::time::Duration::from_secs(10))
         .ok()?
         .get(&url)
         .header("Accept", "application/vnd.github+json");
@@ -1090,10 +1090,10 @@ pub(crate) fn require_windows_artifact(
 
 /// Infer the canonical OS string from a target triple.
 ///
-/// Delegates to [`anodize_core::target::map_target`] for the actual parsing.
+/// Delegates to [`anodizer_core::target::map_target`] for the actual parsing.
 /// Returns the mapped OS, or `fallback` when the OS is `"unknown"`.
 pub(crate) fn infer_os(target: &str, fallback: &str) -> String {
-    let (os, _) = anodize_core::target::map_target(target);
+    let (os, _) = anodizer_core::target::map_target(target);
     if os == "unknown" {
         fallback.to_string()
     } else {
@@ -1103,9 +1103,9 @@ pub(crate) fn infer_os(target: &str, fallback: &str) -> String {
 
 /// Infer the canonical architecture string from a target triple.
 ///
-/// Delegates to [`anodize_core::target::map_target`] for the actual parsing.
+/// Delegates to [`anodizer_core::target::map_target`] for the actual parsing.
 pub(crate) fn infer_arch(target: &str) -> String {
-    let (_, arch) = anodize_core::target::map_target(target);
+    let (_, arch) = anodizer_core::target::map_target(target);
     arch
 }
 
@@ -1384,9 +1384,9 @@ pub(crate) fn find_windows_artifact(ctx: &Context, crate_name: &str) -> Option<(
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
-    use anodize_core::artifact::{Artifact, ArtifactKind};
-    use anodize_core::config::{Config, CrateConfig};
-    use anodize_core::context::{Context, ContextOptions};
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::config::{Config, CrateConfig};
+    use anodizer_core::context::{Context, ContextOptions};
     use std::collections::HashMap;
     use std::path::PathBuf;
 

@@ -1941,7 +1941,7 @@ mod tests {
     #[test]
     fn test_missing_env_var_returns_empty_string() {
         // GoReleaser returns empty string for missing env vars.
-        // Anodize scans the template for Env.X references and pre-populates
+        // Anodizer scans the template for Env.X references and pre-populates
         // missing keys with "" so Tera doesn't error.
         let vars = test_vars();
         let result = render("{{ Env.NONEXISTENT_VAR_12345 }}", &vars).unwrap();
@@ -2003,15 +2003,15 @@ mod tests {
         // the template Env map wins.
         let mut vars = test_vars();
         // SAFETY: Test-only; no other threads read this env var.
-        unsafe { std::env::set_var("ANODIZE_TEST_PRIORITY", "from-process") };
-        vars.set_env("ANODIZE_TEST_PRIORITY", "from-template");
+        unsafe { std::env::set_var("ANODIZER_TEST_PRIORITY", "from-process") };
+        vars.set_env("ANODIZER_TEST_PRIORITY", "from-template");
         let result = render(
-            "{{ envOrDefault(name=\"ANODIZE_TEST_PRIORITY\", default=\"fallback\") }}",
+            "{{ envOrDefault(name=\"ANODIZER_TEST_PRIORITY\", default=\"fallback\") }}",
             &vars,
         )
         .unwrap();
         assert_eq!(result, "from-template");
-        unsafe { std::env::remove_var("ANODIZE_TEST_PRIORITY") };
+        unsafe { std::env::remove_var("ANODIZER_TEST_PRIORITY") };
     }
 
     #[test]
@@ -2020,21 +2020,21 @@ mod tests {
         // fall back to the process env.
         let vars = test_vars();
         // SAFETY: Test-only; no other threads read this env var.
-        unsafe { std::env::set_var("ANODIZE_TEST_ENV_OR_DEFAULT", "from-process-env") };
+        unsafe { std::env::set_var("ANODIZER_TEST_ENV_OR_DEFAULT", "from-process-env") };
         let result = render(
-            "{{ envOrDefault(name=\"ANODIZE_TEST_ENV_OR_DEFAULT\", default=\"fallback\") }}",
+            "{{ envOrDefault(name=\"ANODIZER_TEST_ENV_OR_DEFAULT\", default=\"fallback\") }}",
             &vars,
         )
         .unwrap();
         assert_eq!(result, "from-process-env");
-        unsafe { std::env::remove_var("ANODIZE_TEST_ENV_OR_DEFAULT") };
+        unsafe { std::env::remove_var("ANODIZER_TEST_ENV_OR_DEFAULT") };
     }
 
     #[test]
     fn test_env_or_default_returns_default_when_unset() {
         let vars = test_vars();
         let result = render(
-            "{{ envOrDefault(name=\"ANODIZE_TEST_UNSET_VAR_XYZ\", default=\"fallback\") }}",
+            "{{ envOrDefault(name=\"ANODIZER_TEST_UNSET_VAR_XYZ\", default=\"fallback\") }}",
             &vars,
         )
         .unwrap();
@@ -2045,7 +2045,7 @@ mod tests {
     fn test_env_or_default_returns_empty_when_no_default() {
         let vars = test_vars();
         let result = render(
-            "{{ envOrDefault(name=\"ANODIZE_TEST_UNSET_VAR_XYZ2\") }}",
+            "{{ envOrDefault(name=\"ANODIZER_TEST_UNSET_VAR_XYZ2\") }}",
             &vars,
         )
         .unwrap();
@@ -2091,21 +2091,21 @@ mod tests {
         // fall back to the process env.
         let vars = test_vars();
         // SAFETY: Test-only; no other threads read this env var.
-        unsafe { std::env::set_var("ANODIZE_TEST_IS_SET", "yes") };
+        unsafe { std::env::set_var("ANODIZER_TEST_IS_SET", "yes") };
         let result = render(
-            "{% if isEnvSet(name=\"ANODIZE_TEST_IS_SET\") %}SET{% else %}UNSET{% endif %}",
+            "{% if isEnvSet(name=\"ANODIZER_TEST_IS_SET\") %}SET{% else %}UNSET{% endif %}",
             &vars,
         )
         .unwrap();
         assert_eq!(result, "SET");
-        unsafe { std::env::remove_var("ANODIZE_TEST_IS_SET") };
+        unsafe { std::env::remove_var("ANODIZER_TEST_IS_SET") };
     }
 
     #[test]
     fn test_is_env_set_false_when_unset() {
         let vars = test_vars();
         let result = render(
-            "{% if isEnvSet(name=\"ANODIZE_TEST_NOT_SET_XYZ\") %}SET{% else %}UNSET{% endif %}",
+            "{% if isEnvSet(name=\"ANODIZER_TEST_NOT_SET_XYZ\") %}SET{% else %}UNSET{% endif %}",
             &vars,
         )
         .unwrap();
@@ -2266,7 +2266,7 @@ mod tests {
     fn test_read_file_nonexistent_returns_empty() {
         let vars = test_vars();
         let result = render(
-            "{{ readFile(path=\"/tmp/anodize_test_nonexistent_file_xyz\") }}",
+            "{{ readFile(path=\"/tmp/anodizer_test_nonexistent_file_xyz\") }}",
             &vars,
         )
         .unwrap();
@@ -2292,7 +2292,7 @@ mod tests {
     fn test_must_read_file_nonexistent_errors() {
         let vars = test_vars();
         let result = render(
-            "{{ mustReadFile(path=\"/tmp/anodize_test_nonexistent_file_xyz\") }}",
+            "{{ mustReadFile(path=\"/tmp/anodizer_test_nonexistent_file_xyz\") }}",
             &vars,
         );
         assert!(
@@ -2521,10 +2521,10 @@ mod tests {
     #[test]
     fn test_custom_var_multiple() {
         let mut vars = test_vars();
-        vars.set_custom_var("name", "anodize");
+        vars.set_custom_var("name", "anodizer");
         vars.set_custom_var("desc", "release tool");
         let result = render("{{ .Var.name }} - {{ .Var.desc }}", &vars).unwrap();
-        assert_eq!(result, "anodize - release tool");
+        assert_eq!(result, "anodizer - release tool");
     }
 
     #[test]

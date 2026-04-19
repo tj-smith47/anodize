@@ -2104,7 +2104,7 @@
       }
     },
     "BuildHooksConfig": {
-      "description": "Pre/post hook configuration shared across multiple stages. Despite the `Build` prefix in the name, this type is used by both the **build** stage (pre/post compilation hooks) and the **archive** stage (pre/post archiving hooks). The name is kept for backward compatibility with existing configs. **Not** to be confused with the top-level `HooksConfig` (which carries a flat `hooks: Vec<String>` list for `before`/`after` lifecycle hooks).\n\nGoReleaser parity: archive hooks in GoReleaser use `before`/`after` (not `pre`/`post`). Anodize accepts both spellings via serde aliases so configs copied from GoReleaser docs don't silently drop their hooks.",
+      "description": "Pre/post hook configuration shared across multiple stages. Despite the `Build` prefix in the name, this type is used by both the **build** stage (pre/post compilation hooks) and the **archive** stage (pre/post archiving hooks). The name is kept for backward compatibility with existing configs. **Not** to be confused with the top-level `HooksConfig` (which carries a flat `hooks: Vec<String>` list for `before`/`after` lifecycle hooks).\n\nGoReleaser parity: archive hooks in GoReleaser use `before`/`after` (not `pre`/`post`). Anodizer accepts both spellings via serde aliases so configs copied from GoReleaser docs don't silently drop their hooks.",
       "type": "object",
       "properties": {
         "post": {
@@ -4487,7 +4487,7 @@
       }
     },
     "EnvFilesConfig": {
-      "description": "Environment file configuration.\n\nAccepts two forms: - **List form** (anodize extension): array of `.env` file paths loaded as KEY=VALUE. ```yaml env_files: - .env - .release.env ``` - **Struct form** (GoReleaser parity): paths to files containing provider tokens. ```yaml env_files: github_token: ~/.config/goreleaser/github_token gitlab_token: ~/.config/goreleaser/gitlab_token gitea_token: ~/.config/goreleaser/gitea_token ```",
+      "description": "Environment file configuration.\n\nAccepts two forms: - **List form** (anodizer extension): array of `.env` file paths loaded as KEY=VALUE. ```yaml env_files: - .env - .release.env ``` - **Struct form** (GoReleaser parity): paths to files containing provider tokens. ```yaml env_files: github_token: ~/.config/goreleaser/github_token gitlab_token: ~/.config/goreleaser/gitlab_token gitea_token: ~/.config/goreleaser/gitea_token ```",
       "anyOf": [
         {
           "description": "List of `.env` file paths to load (KEY=VALUE format).",
@@ -4780,7 +4780,7 @@
       }
     },
     "GitConfig": {
-      "description": "Git-level tag discovery and sorting settings.\n\nControls how anodize discovers and orders tags when determining the current and previous versions. This is separate from `TagConfig`, which controls version *bumping* logic.",
+      "description": "Git-level tag discovery and sorting settings.\n\nControls how anodizer discovers and orders tags when determining the current and previous versions. This is separate from `TagConfig`, which controls version *bumping* logic.",
       "type": "object",
       "properties": {
         "ignore_tag_prefixes": {
@@ -5828,7 +5828,7 @@
           }
         },
         "post": {
-          "description": "Commands to run after the pipeline or stage completes. Anodize extension (GoReleaser has no top-level `after:` block).",
+          "description": "Commands to run after the pipeline or stage completes. Anodizer extension (GoReleaser has no top-level `after:` block).",
           "default": null,
           "type": [
             "array",
@@ -9060,7 +9060,7 @@
           ]
         },
         "tag": {
-          "description": "Override the release tag (template string). When set, this tag is used as the `tag_name` in the GitHub release API instead of the crate's `tag_template`. Useful in monorepo setups to strip a tag prefix (e.g. `\"{{ .Tag }}\"` to publish `v1.0.0` instead of `myapp/v1.0.0`). This is a GoReleaser Pro feature provided for free by anodize.",
+          "description": "Override the release tag (template string). When set, this tag is used as the `tag_name` in the GitHub release API instead of the crate's `tag_template`. Useful in monorepo setups to strip a tag prefix (e.g. `\"{{ .Tag }}\"` to publish `v1.0.0` instead of `myapp/v1.0.0`). This is a GoReleaser Pro feature provided for free by anodizer.",
           "default": null,
           "type": [
             "string",
@@ -10887,7 +10887,7 @@
           ]
         },
         "tag_post_hooks": {
-          "description": "Commands to run after `anodize tag` successfully creates and pushes the tag. Env and template vars same as `tag_pre_hooks`.",
+          "description": "Commands to run after `anodizer tag` successfully creates and pushes the tag. Env and template vars same as `tag_pre_hooks`.",
           "default": null,
           "type": [
             "array",
@@ -10898,7 +10898,7 @@
           }
         },
         "tag_pre_hooks": {
-          "description": "Commands to run before `anodize tag` creates the tag. Useful for updating lockfiles or committing sibling changes that must be part of the tagged commit. Env: `ANODIZE_CURRENT_TAG`, `ANODIZE_PREVIOUS_TAG` are set; template vars `{{ .Tag }}`, `{{ .PreviousTag }}`, `{{ .Version }}`, `{{ .PrefixedTag }}` are available.",
+          "description": "Commands to run before `anodizer tag` creates the tag. Useful for updating lockfiles or committing sibling changes that must be part of the tagged commit. Env: `ANODIZER_CURRENT_TAG`, `ANODIZER_PREVIOUS_TAG` are set; template vars `{{ .Tag }}`, `{{ .PreviousTag }}`, `{{ .Version }}`, `{{ .PrefixedTag }}` are available.",
           "default": null,
           "type": [
             "array",

@@ -10,14 +10,14 @@
 
 use std::path::Path;
 
-use anodize_core::url::percent_encode_path_segment;
+use anodizer_core::url::percent_encode_path_segment;
 use anyhow::{Context as _, Result, bail};
 use reqwest::Client;
 
 use crate::compose_body_for_mode;
 
 // ---------------------------------------------------------------------------
-// URL-encoding aliases — consolidated onto `anodize_core::url::percent_encode_path_segment`.
+// URL-encoding aliases — consolidated onto `anodizer_core::url::percent_encode_path_segment`.
 // GitLab, Gitea and GitHub all use the same strict segment set so a tag like
 // `v1.0.0+build.1` produces identical URLs across backends.
 // ---------------------------------------------------------------------------

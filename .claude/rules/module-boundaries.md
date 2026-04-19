@@ -1,4 +1,4 @@
-# anodize module boundaries
+# anodizer module boundaries
 
 This rule documents which modules are allowed to call `std::process::Command::new`
 (or any other subprocess-spawning API) directly. The aim: keep subprocess

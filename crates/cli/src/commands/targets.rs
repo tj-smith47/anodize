@@ -1,4 +1,4 @@
-use anodize_core::config::Config;
+use anodizer_core::config::Config;
 use anyhow::{Result, bail};
 use std::path::PathBuf;
 
@@ -27,7 +27,7 @@ struct Matrix {
     include: Vec<MatrixEntry>,
 }
 
-/// Map anodize's normalized OS label to a GitHub Actions runner label.
+/// Map anodizer's normalized OS label to a GitHub Actions runner label.
 fn runner_label(os: &str) -> &'static str {
     match os {
         "linux" => "ubuntu-latest",
@@ -55,7 +55,7 @@ fn artifact_suffix(runs_on: &str) -> &'static str {
 fn build_matrix(targets: &[String]) -> Matrix {
     let mut include = Vec::new();
     for t in targets {
-        let (os, _arch) = anodize_core::target::map_target(t);
+        let (os, _arch) = anodizer_core::target::map_target(t);
         let runner = runner_label(&os).to_string();
         let artifact = format!("dist-{}", artifact_suffix(&runner));
         include.push(MatrixEntry {
@@ -77,7 +77,7 @@ pub fn run(opts: TargetsOpts) -> Result<()> {
 
     let config: Config = match config_path {
         Some(ref path) => crate::pipeline::load_config(path)?,
-        None => bail!("no anodize config found"),
+        None => bail!("no anodizer config found"),
     };
 
     let targets = collect_build_targets(&config, &opts.crate_names);
@@ -101,7 +101,7 @@ pub fn run(opts: TargetsOpts) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anodize_core::config::{BuildConfig, Config, CrateConfig, Defaults, WorkspaceConfig};
+    use anodizer_core::config::{BuildConfig, Config, CrateConfig, Defaults, WorkspaceConfig};
 
     fn base_config() -> Config {
         Config {
@@ -192,7 +192,7 @@ mod tests {
                 &["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"],
             )],
             defaults: Some(Defaults {
-                ignore: Some(vec![anodize_core::config::BuildIgnore {
+                ignore: Some(vec![anodizer_core::config::BuildIgnore {
                     os: "windows".to_string(),
                     arch: "amd64".to_string(),
                 }]),

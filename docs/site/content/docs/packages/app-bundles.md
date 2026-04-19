@@ -5,7 +5,7 @@ weight = 64
 template = "docs.html"
 +++
 
-Anodize can package your macOS binaries into `.app` bundles with a proper directory structure, `Info.plist`, and optional icon.
+Anodizer can package your macOS binaries into `.app` bundles with a proper directory structure, `Info.plist`, and optional icon.
 
 ## Minimal config
 
@@ -48,7 +48,7 @@ MyApp.app/
 
 ## Info.plist
 
-Anodize auto-generates `Info.plist` with:
+Anodizer auto-generates `Info.plist` with:
 
 | Key | Value |
 |-----|-------|

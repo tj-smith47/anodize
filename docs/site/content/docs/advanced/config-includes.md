@@ -5,18 +5,18 @@ weight = 3
 template = "docs.html"
 +++
 
-Anodize lets you split your configuration across multiple files using the
+Anodizer lets you split your configuration across multiple files using the
 `includes` field. Included files provide **defaults** that the base config
 can selectively override, making it easy to share common settings across
 projects or separate concerns into focused files.
 
 ## Basic usage
 
-Add an `includes` list to your `.anodize.yaml`. Each entry points to another
+Add an `includes` list to your `.anodizer.yaml`. Each entry points to another
 YAML or TOML config file:
 
 ```yaml
-# .anodize.yaml
+# .anodizer.yaml
 project_name: my-app
 includes:
   - configs/defaults.yaml
@@ -68,14 +68,14 @@ includes:
 #### GitHub shorthand
 
 URLs that do not start with `http://` or `https://` are treated as GitHub
-raw-content paths. Anodize prepends `https://raw.githubusercontent.com/`
+raw-content paths. Anodizer prepends `https://raw.githubusercontent.com/`
 automatically:
 
 ```yaml
 includes:
-  # Expands to: https://raw.githubusercontent.com/myorg/shared-configs/main/anodize.yaml
+  # Expands to: https://raw.githubusercontent.com/myorg/shared-configs/main/anodizer.yaml
   - from_url:
-      url: myorg/shared-configs/main/anodize.yaml
+      url: myorg/shared-configs/main/anodizer.yaml
 ```
 
 #### Custom headers
@@ -154,7 +154,7 @@ crates:
 ```
 
 ```yaml
-# .anodize.yaml (base config)
+# .anodizer.yaml (base config)
 project_name: my-app
 includes:
   - defaults.yaml
@@ -184,7 +184,7 @@ Includes work in TOML config files too. Use TOML array-of-tables syntax for
 structured includes:
 
 ```toml
-# .anodize.toml
+# .anodizer.toml
 project_name = "my-app"
 includes = ["defaults.yaml"]
 crates = []
@@ -212,7 +212,7 @@ format. The format is detected by file extension.
 Host a base config in a central repository and include it in every project:
 
 ```yaml
-# In each project's .anodize.yaml
+# In each project's .anodizer.yaml
 includes:
   - from_url:
       url: myorg/release-configs/main/base.yaml
@@ -234,7 +234,7 @@ only what it needs.
 Break a complex config into focused files:
 
 ```yaml
-# .anodize.yaml
+# .anodizer.yaml
 project_name: my-app
 includes:
   - configs/builds.yaml        # build matrix, cross-compilation
@@ -270,7 +270,7 @@ release:
 ```
 
 ```yaml
-# .anodize.yaml
+# .anodizer.yaml
 project_name: my-app
 includes:
   - configs/base.yaml
@@ -293,7 +293,7 @@ variables:
 ```
 
 ```yaml
-# .anodize.yaml
+# .anodizer.yaml
 includes:
   - shared/variables.yaml
 project_name: my-app

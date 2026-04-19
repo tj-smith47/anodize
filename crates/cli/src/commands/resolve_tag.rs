@@ -16,7 +16,7 @@ pub fn run(opts: ResolveTagOpts) -> Result<()> {
 
     let config = match config_path {
         Some(ref path) => crate::pipeline::load_config(path)?,
-        None => bail!("no anodize config found"),
+        None => bail!("no anodizer config found"),
     };
 
     // Collect all crates from top-level and workspaces.
@@ -36,9 +36,9 @@ pub fn run(opts: ResolveTagOpts) -> Result<()> {
     // Match the tag against each crate's tag_template prefix.
     // Prefer the longest matching prefix (most specific) to avoid ambiguity
     // when one prefix is a substring of another (e.g. "v" vs "v2-").
-    let mut best: Option<(&anodize_core::config::CrateConfig, usize)> = None;
+    let mut best: Option<(&anodizer_core::config::CrateConfig, usize)> = None;
     for c in &all_crates {
-        if let Some(prefix) = anodize_core::git::extract_tag_prefix(&c.tag_template)
+        if let Some(prefix) = anodizer_core::git::extract_tag_prefix(&c.tag_template)
             && opts.tag.starts_with(&prefix)
         {
             let remainder = &opts.tag[prefix.len()..];

@@ -1,10 +1,10 @@
-use anodize_core::config::ChangelogGroup;
-use anodize_core::context::Context;
-use anodize_core::git::{
+use anodizer_core::config::ChangelogGroup;
+use anodizer_core::context::Context;
+use anodizer_core::git::{
     find_latest_tag_matching_with_prefix, get_all_commits_paths, get_commits_between_paths,
 };
-use anodize_core::stage::Stage;
-use anodize_core::template::{self, TemplateVars};
+use anodizer_core::stage::Stage;
+use anodizer_core::template::{self, TemplateVars};
 use anyhow::{Context as _, Result};
 use regex::Regex;
 use std::sync::LazyLock;
@@ -117,7 +117,7 @@ pub(crate) fn extract_co_authors(message: &str) -> Vec<String> {
 pub(crate) fn apply_filters(
     commits: &[CommitInfo],
     exclude: &[String],
-    _log: &anodize_core::log::StageLogger,
+    _log: &anodizer_core::log::StageLogger,
 ) -> Result<Vec<CommitInfo>> {
     let mut patterns: Vec<Regex> = Vec::with_capacity(exclude.len());
     for p in exclude {
@@ -144,7 +144,7 @@ pub(crate) fn apply_filters(
 pub(crate) fn apply_include_filters(
     commits: &[CommitInfo],
     include: &[String],
-    _log: &anodize_core::log::StageLogger,
+    _log: &anodizer_core::log::StageLogger,
 ) -> Result<Vec<CommitInfo>> {
     if include.is_empty() {
         return Ok(commits.to_vec());
@@ -204,7 +204,7 @@ pub(crate) fn sort_commits(commits: &mut [CommitInfo], order: &str) -> Result<()
 pub(crate) fn group_commits(
     commits: &[CommitInfo],
     groups: &[ChangelogGroup],
-    _log: &anodize_core::log::StageLogger,
+    _log: &anodizer_core::log::StageLogger,
 ) -> Result<Vec<GroupedCommits>> {
     group_commits_inner(commits, groups, 1)
 }
@@ -515,7 +515,7 @@ fn render_commit_line(
 }
 
 // ---------------------------------------------------------------------------
-// Public render API — used by `anodize bump --commit` to bundle a changelog
+// Public render API — used by `anodizer bump --commit` to bundle a changelog
 // edit alongside the version bump in a single commit.
 // ---------------------------------------------------------------------------
 
@@ -542,11 +542,11 @@ pub struct ChangelogUpdate {
 /// Render a `## [<to_version>]` section for the given crate's changelog and
 /// merge it into the crate's `CHANGELOG.md`.
 ///
-/// Used by `anodize bump --commit` to produce a single staged file edit that
+/// Used by `anodizer bump --commit` to produce a single staged file edit that
 /// can be bundled into the bump commit.
 ///
 /// Returns `Ok(None)` when:
-///   - `<workspace_root>/.anodize.yaml` is absent, unreadable, or has no
+///   - `<workspace_root>/.anodizer.yaml` is absent, unreadable, or has no
 ///     `changelog:` section
 ///   - there are no qualifying commits since `from_tag` (or `HEAD` history,
 ///     when `from_tag` is `None`) touching `crate_path`
@@ -562,13 +562,13 @@ pub fn render_crate_section(
     from_tag: Option<&str>,
     to_version: &str,
 ) -> Result<Option<ChangelogUpdate>> {
-    use anodize_core::log::{StageLogger, Verbosity};
+    use anodizer_core::log::{StageLogger, Verbosity};
 
-    // Load just the changelog section from .anodize.yaml. We deliberately
+    // Load just the changelog section from .anodizer.yaml. We deliberately
     // skip the include/deprecation machinery in `cli::pipeline::load_config`
     // so this stays usable from non-CLI contexts (it lives in core's dep graph
     // already; pulling cli in would create a cycle).
-    let cfg_path = workspace_root.join(".anodize.yaml");
+    let cfg_path = workspace_root.join(".anodizer.yaml");
     if !cfg_path.is_file() {
         return Ok(None);
     }
@@ -580,7 +580,7 @@ pub fn render_crate_section(
         Some(v) => v.clone(),
         None => return Ok(None),
     };
-    let cfg: anodize_core::config::ChangelogConfig = serde_yaml_ng::from_value(changelog_yaml)
+    let cfg: anodizer_core::config::ChangelogConfig = serde_yaml_ng::from_value(changelog_yaml)
         .with_context(|| {
             format!(
                 "failed to deserialize changelog config from {}",
@@ -722,7 +722,7 @@ fn fetch_git_commits_in(
     workspace_root: &std::path::Path,
     from: Option<&str>,
     path_filter: Option<&str>,
-) -> Result<Vec<anodize_core::git::Commit>> {
+) -> Result<Vec<anodizer_core::git::Commit>> {
     use std::process::Command;
     let range = match from {
         Some(t) => format!("{}..HEAD", t),
@@ -754,8 +754,8 @@ fn fetch_git_commits_in(
     Ok(parse_git_log_records(&text))
 }
 
-fn parse_git_log_records(text: &str) -> Vec<anodize_core::git::Commit> {
-    use anodize_core::git::Commit;
+fn parse_git_log_records(text: &str) -> Vec<anodizer_core::git::Commit> {
+    use anodizer_core::git::Commit;
     text.split('\x1e')
         .map(|s| s.trim_matches(['\n', '\r']))
         .filter(|s| !s.is_empty())
@@ -1181,7 +1181,7 @@ fn fetch_git_commits(
     prev_tag: &Option<String>,
     paths: &[String],
     crate_name: &str,
-    log: &anodize_core::log::StageLogger,
+    log: &anodizer_core::log::StageLogger,
 ) -> Vec<CommitInfo> {
     let raw_commits = match prev_tag {
         Some(tag) => get_commits_between_paths(tag, "HEAD", paths).unwrap_or_default(),
@@ -1222,9 +1222,9 @@ fn fetch_github_commits(
     ctx: &Context,
     prev_tag: &Option<String>,
     paths: &[String],
-    log: &anodize_core::log::StageLogger,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<(Vec<CommitInfo>, String)> {
-    use anodize_core::git::{detect_github_repo, gh_api_get, gh_api_get_paginated};
+    use anodizer_core::git::{detect_github_repo, gh_api_get, gh_api_get_paginated};
     use std::collections::BTreeSet;
 
     let token = ctx.options.token.as_deref();
@@ -1379,9 +1379,9 @@ fn fetch_github_commits(
 fn fetch_gitlab_commits(
     ctx: &Context,
     prev_tag: &Option<String>,
-    log: &anodize_core::log::StageLogger,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<(Vec<CommitInfo>, String)> {
-    use anodize_core::git::detect_owner_repo;
+    use anodizer_core::git::detect_owner_repo;
 
     let token = ctx
         .options
@@ -1438,7 +1438,7 @@ fn fetch_gitlab_commits(
     log.status(&format!("fetching commits from GitLab API: {}", url));
 
     let client = reqwest::blocking::Client::builder()
-        .user_agent(anodize_core::http::USER_AGENT)
+        .user_agent(anodizer_core::http::USER_AGENT)
         .danger_accept_invalid_certs(skip_tls)
         .timeout(std::time::Duration::from_secs(30))
         .build()?;
@@ -1532,9 +1532,9 @@ fn fetch_gitlab_commits(
 fn fetch_gitea_commits(
     ctx: &Context,
     prev_tag: &Option<String>,
-    log: &anodize_core::log::StageLogger,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<(Vec<CommitInfo>, String)> {
-    use anodize_core::git::detect_owner_repo;
+    use anodizer_core::git::detect_owner_repo;
     use std::collections::BTreeSet;
 
     let token = ctx
@@ -1569,7 +1569,7 @@ fn fetch_gitea_commits(
     log.status(&format!("fetching commits from Gitea API: {}", url));
 
     let client = reqwest::blocking::Client::builder()
-        .user_agent(anodize_core::http::USER_AGENT)
+        .user_agent(anodizer_core::http::USER_AGENT)
         .danger_accept_invalid_certs(skip_tls)
         .timeout(std::time::Duration::from_secs(30))
         .build()?;
@@ -1674,7 +1674,7 @@ fn fetch_gitea_commits(
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
-    use anodize_core::log::{StageLogger, Verbosity};
+    use anodizer_core::log::{StageLogger, Verbosity};
     use serial_test::serial;
 
     fn test_logger() -> StageLogger {
@@ -1918,7 +1918,7 @@ mod tests {
         // Simulate the header/footer wrapping logic from ChangelogStage::run
         // (uses double-newline separator matching GoReleaser)
         let header = "# My Release Notes";
-        let footer = "---\nGenerated by anodize";
+        let footer = "---\nGenerated by anodizer";
         let mut final_md = String::new();
         final_md.push_str(header);
         final_md.push_str("\n\n");
@@ -1930,7 +1930,7 @@ mod tests {
         assert!(final_md.starts_with("# My Release Notes\n\n"));
         assert!(final_md.contains("## Features"));
         assert!(final_md.contains("add X"));
-        assert!(final_md.ends_with("Generated by anodize\n"));
+        assert!(final_md.ends_with("Generated by anodizer\n"));
     }
 
     #[test]
@@ -1975,13 +1975,13 @@ mod tests {
 
     #[test]
     fn test_changelog_stage_disabled_skips() {
-        use anodize_core::config::{ChangelogConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ChangelogConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let mut config = Config::default();
         config.project_name = "test".to_string();
         config.changelog = Some(ChangelogConfig {
-            disable: Some(anodize_core::config::StringOrBool::Bool(true)),
+            disable: Some(anodizer_core::config::StringOrBool::Bool(true)),
             ..Default::default()
         });
         config.crates = vec![CrateConfig {
@@ -2126,7 +2126,7 @@ filters:
   exclude:
     - "^chore"
 "#;
-        let cfg: anodize_core::config::ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let include = cfg.filters.as_ref().unwrap().include.as_ref().unwrap();
         assert_eq!(include.len(), 2);
         assert_eq!(include[0], "^feat");
@@ -2140,7 +2140,7 @@ filters:
         let yaml = r#"
 use: github-native
 "#;
-        let cfg: anodize_core::config::ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.use_source.as_deref(), Some("github-native"));
     }
 
@@ -2149,7 +2149,7 @@ use: github-native
         let yaml = r#"
 abbrev: 10
 "#;
-        let cfg: anodize_core::config::ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.abbrev, Some(10));
     }
 
@@ -2159,8 +2159,8 @@ abbrev: 10
 
     #[test]
     fn test_changelog_stage_github_native_produces_empty() {
-        use anodize_core::config::{ChangelogConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ChangelogConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let mut config = Config::default();
         config.project_name = "test".to_string();
@@ -2230,7 +2230,7 @@ abbrev: 10
     /// commit messages with real-looking hashes.
     #[test]
     fn test_integration_full_changelog_pipeline_with_groups() {
-        use anodize_core::config::ChangelogGroup;
+        use anodizer_core::config::ChangelogGroup;
 
         // Simulate raw git commits as the changelog stage would receive them
         let raw_messages = vec![
@@ -2402,7 +2402,7 @@ abbrev: 10
 
     #[test]
     fn test_integration_changelog_with_include_filters() {
-        use anodize_core::config::ChangelogGroup;
+        use anodizer_core::config::ChangelogGroup;
 
         // Simulate commits
         let messages = [
@@ -2554,10 +2554,10 @@ abbrev: 10
     #[test]
     #[serial]
     fn test_integration_changelog_stage_with_real_git_repo() {
-        use anodize_core::config::{
+        use anodizer_core::config::{
             ChangelogConfig, ChangelogFilters, ChangelogGroup, Config, CrateConfig,
         };
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::context::{Context, ContextOptions};
         use std::process::Command;
 
         let tmp = tempfile::tempdir().unwrap();
@@ -2818,13 +2818,13 @@ abbrev: 10
 
     #[test]
     fn test_disable_skips_stage_entirely() {
-        use anodize_core::config::{ChangelogConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ChangelogConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let mut config = Config::default();
         config.project_name = "test".to_string();
         config.changelog = Some(ChangelogConfig {
-            disable: Some(anodize_core::config::StringOrBool::Bool(true)),
+            disable: Some(anodizer_core::config::StringOrBool::Bool(true)),
             ..Default::default()
         });
         config.crates = vec![CrateConfig {
@@ -2864,8 +2864,8 @@ abbrev: 10
     #[test]
     #[serial]
     fn test_changelog_written_to_correct_output_location() {
-        use anodize_core::config::{ChangelogConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ChangelogConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
         use std::process::Command;
 
         let tmp = tempfile::tempdir().unwrap();
@@ -3025,8 +3025,8 @@ abbrev: 10
     #[test]
     #[serial]
     fn test_changelog_create_dist_dir_failure() {
-        use anodize_core::config::{Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
         use std::process::Command;
 
         let tmp = tempfile::tempdir().unwrap();
@@ -3091,8 +3091,8 @@ abbrev: 10
     #[test]
     #[serial]
     fn test_changelog_write_failure_on_readonly_path() {
-        use anodize_core::config::{Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
         use std::process::Command;
 
         let tmp = tempfile::tempdir().unwrap();
@@ -3156,8 +3156,8 @@ abbrev: 10
     #[test]
     #[serial]
     fn test_changelog_dry_run_writes_file() {
-        use anodize_core::config::{Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
         use std::process::Command;
 
         let tmp = tempfile::tempdir().unwrap();
@@ -3286,7 +3286,7 @@ abbrev: 10
 sort: asc
 format: "{{ ShortSHA }} {{ Message }} by {{ AuthorName }}"
 "#;
-        let cfg: anodize_core::config::ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(
             cfg.format.as_deref(),
             Some("{{ ShortSHA }} {{ Message }} by {{ AuthorName }}")
@@ -3356,8 +3356,8 @@ format: "{{ ShortSHA }} {{ Message }} by {{ AuthorName }}"
     fn test_header_footer_template_rendering() {
         // Simulate what ChangelogStage::run does: render header/footer through
         // ctx.render_template() before inserting them.
-        use anodize_core::config::Config;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
 
         let mut config = Config::default();
         config.project_name = "myapp".to_string();
@@ -3377,8 +3377,8 @@ format: "{{ ShortSHA }} {{ Message }} by {{ AuthorName }}"
     #[test]
     fn test_header_with_plain_string_passes_through() {
         // A header without template variables should pass through unchanged.
-        use anodize_core::config::Config;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
 
         let config = Config::default();
         let ctx = Context::new(config, ContextOptions::default());
@@ -3398,9 +3398,9 @@ format: "{{ ShortSHA }} {{ Message }} by {{ AuthorName }}"
 disable: "{{ if .IsSnapshot }}true{{ end }}"
 sort: asc
 "#;
-        let cfg: anodize_core::config::ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
         match &cfg.disable {
-            Some(anodize_core::config::StringOrBool::String(s)) => {
+            Some(anodizer_core::config::StringOrBool::String(s)) => {
                 assert!(s.contains("IsSnapshot"), "should contain template string");
             }
             other => panic!("expected StringOrBool::String, got {:?}", other),
@@ -3412,10 +3412,10 @@ sort: asc
         let yaml = r#"
 disable: true
 "#;
-        let cfg: anodize_core::config::ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(
             cfg.disable,
-            Some(anodize_core::config::StringOrBool::Bool(true))
+            Some(anodizer_core::config::StringOrBool::Bool(true))
         );
     }
 
@@ -3424,7 +3424,7 @@ disable: true
         let yaml = r#"
 abbrev: -1
 "#;
-        let cfg: anodize_core::config::ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.abbrev, Some(-1));
     }
 
@@ -3447,7 +3447,7 @@ groups:
     regexp: "^fix"
     order: 1
 "#;
-        let cfg: anodize_core::config::ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let groups = cfg.groups.as_ref().unwrap();
         assert_eq!(groups.len(), 2);
 
@@ -3471,7 +3471,7 @@ groups:
 use: github
 format: "{{ ShortSHA }} {{ Message }} @{{ Logins }}"
 "#;
-        let cfg: anodize_core::config::ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.use_source.as_deref(), Some("github"));
         assert!(cfg.format.as_ref().unwrap().contains("Logins"));
     }
@@ -3896,7 +3896,7 @@ format: "{{ ShortSHA }} {{ Message }} @{{ Logins }}"
 
     #[test]
     fn test_changelog_ai_config_deserializes() {
-        use anodize_core::config::ChangelogConfig;
+        use anodizer_core::config::ChangelogConfig;
         let yaml = r#"
 ai:
   use: anthropic
@@ -3922,7 +3922,7 @@ paths:
 
     #[test]
     fn test_changelog_ai_prompt_inline() {
-        use anodize_core::config::{ChangelogAiConfig, ChangelogAiPrompt};
+        use anodizer_core::config::{ChangelogAiConfig, ChangelogAiPrompt};
         let yaml = r#"
 use: openai
 model: gpt-4
@@ -3937,7 +3937,7 @@ prompt: "Summarize these release notes"
 
     #[test]
     fn test_changelog_ai_prompt_from_file() {
-        use anodize_core::config::{ChangelogAiConfig, ChangelogAiPrompt};
+        use anodizer_core::config::{ChangelogAiConfig, ChangelogAiPrompt};
         let yaml = r#"
 use: openai
 prompt:
@@ -3955,7 +3955,7 @@ prompt:
 
     #[test]
     fn test_changelog_ai_prompt_from_url() {
-        use anodize_core::config::{ChangelogAiConfig, ChangelogAiPrompt};
+        use anodizer_core::config::{ChangelogAiConfig, ChangelogAiPrompt};
         let yaml = r#"
 use: anthropic
 prompt:
@@ -3990,7 +3990,7 @@ prompt:
 
     #[test]
     fn test_resolve_prompt_source_file_overrides_url() {
-        use anodize_core::config::{
+        use anodizer_core::config::{
             ChangelogAiPromptSource, ContentFromFile, ContentFromUrl, ResolvedPromptSource,
         };
         let src = ChangelogAiPromptSource {
@@ -4010,7 +4010,9 @@ prompt:
 
     #[test]
     fn test_resolve_prompt_source_url_only() {
-        use anodize_core::config::{ChangelogAiPromptSource, ContentFromUrl, ResolvedPromptSource};
+        use anodizer_core::config::{
+            ChangelogAiPromptSource, ContentFromUrl, ResolvedPromptSource,
+        };
         let mut headers = std::collections::HashMap::new();
         headers.insert("Auth".to_string(), "Bearer x".to_string());
         let src = ChangelogAiPromptSource {
@@ -4034,7 +4036,7 @@ prompt:
 
     #[test]
     fn test_resolve_prompt_source_none() {
-        use anodize_core::config::{ChangelogAiPromptSource, ResolvedPromptSource};
+        use anodizer_core::config::{ChangelogAiPromptSource, ResolvedPromptSource};
         let src = ChangelogAiPromptSource {
             from_file: None,
             from_url: None,
@@ -4044,7 +4046,7 @@ prompt:
 
     #[test]
     fn test_resolve_prompt_source_file_with_empty_path_falls_through() {
-        use anodize_core::config::{
+        use anodizer_core::config::{
             ChangelogAiPromptSource, ContentFromFile, ContentFromUrl, ResolvedPromptSource,
         };
         let src = ChangelogAiPromptSource {
@@ -4085,7 +4087,7 @@ prompt:
         let yaml = r#"
 use: gitlab
 "#;
-        let cfg: anodize_core::config::ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.use_source.as_deref(), Some("gitlab"));
     }
 
@@ -4094,7 +4096,7 @@ use: gitlab
         let yaml = r#"
 use: gitea
 "#;
-        let cfg: anodize_core::config::ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.use_source.as_deref(), Some("gitea"));
     }
 
@@ -4102,8 +4104,8 @@ use: gitea
     fn test_validation_rejects_unsupported_source() {
         // Exercise the actual production validation path — "bitbucket" should
         // cause the stage to bail with "unsupported use source".
-        use anodize_core::config::{ChangelogConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ChangelogConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let mut config = Config::default();
         config.project_name = "test".to_string();
@@ -4131,8 +4133,8 @@ use: gitea
         // When use: gitlab but no token is available, should fall back to git
         // (which will also fail in a test environment, but the point is that
         // the stage doesn't bail on "unsupported use source").
-        use anodize_core::config::{ChangelogConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ChangelogConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
         let mut config = Config::default();
@@ -4170,8 +4172,8 @@ use: gitea
 
     #[test]
     fn test_changelog_stage_gitea_falls_back_to_git_no_token() {
-        use anodize_core::config::{ChangelogConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ChangelogConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
         let mut config = Config::default();
@@ -4205,8 +4207,8 @@ use: gitea
 
     #[test]
     fn test_changelog_stage_unsupported_source_bails() {
-        use anodize_core::config::{ChangelogConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ChangelogConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let mut config = Config::default();
         config.project_name = "test".to_string();

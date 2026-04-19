@@ -1,9 +1,9 @@
-use anodize_core::artifact::{Artifact, ArtifactKind};
-use anodize_core::config::{Config, ForceTokenKind, GitHubConfig, WorkspaceConfig};
-use anodize_core::context::Context;
-use anodize_core::git;
-use anodize_core::log::StageLogger;
-use anodize_core::scm::{self, ScmTokenType};
+use anodizer_core::artifact::{Artifact, ArtifactKind};
+use anodizer_core::config::{Config, ForceTokenKind, GitHubConfig, WorkspaceConfig};
+use anodizer_core::context::Context;
+use anodizer_core::git;
+use anodizer_core::log::StageLogger;
+use anodizer_core::scm::{self, ScmTokenType};
 use anyhow::{Context as _, Result};
 use std::collections::HashMap;
 use std::path::Path;
@@ -24,7 +24,7 @@ fn set_env_var_single_threaded(key: &str, value: &str) {
 }
 
 /// Resolve the effective `force_token` kind — config field first, then the
-/// `ANODIZE_FORCE_TOKEN` env var, then the `GORELEASER_FORCE_TOKEN` compat
+/// `ANODIZER_FORCE_TOKEN` env var, then the `GORELEASER_FORCE_TOKEN` compat
 /// fallback. Returns `None` if nothing is set (or the value isn't a recognised
 /// backend).
 ///
@@ -32,7 +32,7 @@ fn set_env_var_single_threaded(key: &str, value: &str) {
 /// a new backend only needs to be wired in this one place.
 fn resolve_force_token(config: &Config) -> Option<ForceTokenKind> {
     config.force_token.as_ref().cloned().or_else(|| {
-        let env_val = std::env::var("ANODIZE_FORCE_TOKEN")
+        let env_val = std::env::var("ANODIZER_FORCE_TOKEN")
             .ok()
             .or_else(|| std::env::var("GORELEASER_FORCE_TOKEN").ok())?;
         match env_val.to_lowercase().as_str() {
@@ -97,7 +97,7 @@ pub fn collect_build_targets(config: &Config, selected_crates: &[String]) -> Vec
         && let Some(ref ignores) = defaults.ignore
     {
         targets.retain(|t| {
-            let (os, arch) = anodize_core::target::map_target(t);
+            let (os, arch) = anodizer_core::target::map_target(t);
             !ignores.iter().any(|ig| ig.os == os && ig.arch == arch)
         });
     }
@@ -152,10 +152,10 @@ pub fn resolve_git_context(
         );
     }
 
-    // Allow env var overrides for tag discovery. Anodize-native var wins;
+    // Allow env var overrides for tag discovery. Anodizer-native var wins;
     // the GoReleaser compat alias is checked as a fallback so CI jobs migrating
     // from GoReleaser pick up their existing env vars without rewiring.
-    let tag_override = std::env::var("ANODIZE_CURRENT_TAG")
+    let tag_override = std::env::var("ANODIZER_CURRENT_TAG")
         .ok()
         .filter(|s| !s.is_empty())
         .or_else(|| {
@@ -198,7 +198,7 @@ pub fn resolve_git_context(
     if let Some(crate_cfg) = first_crate {
         let tag = if let Some(ref override_tag) = tag_override {
             log.verbose(&format!(
-                "using ANODIZE_CURRENT_TAG override: {}",
+                "using ANODIZER_CURRENT_TAG override: {}",
                 override_tag
             ));
             override_tag.clone()
@@ -262,9 +262,9 @@ pub fn resolve_git_context(
                     }
                 }
 
-                // Allow ANODIZE_PREVIOUS_TAG (or GoReleaser compat
+                // Allow ANODIZER_PREVIOUS_TAG (or GoReleaser compat
                 // GORELEASER_PREVIOUS_TAG) env override for the previous tag.
-                let prev_override = std::env::var("ANODIZE_PREVIOUS_TAG")
+                let prev_override = std::env::var("ANODIZER_PREVIOUS_TAG")
                     .ok()
                     .filter(|s| !s.is_empty())
                     .or_else(|| {
@@ -274,7 +274,7 @@ pub fn resolve_git_context(
                     });
                 if let Some(prev_override) = prev_override {
                     log.verbose(&format!(
-                        "using ANODIZE_PREVIOUS_TAG override: {}",
+                        "using ANODIZER_PREVIOUS_TAG override: {}",
                         prev_override
                     ));
                     git_info.previous_tag = Some(prev_override);
@@ -359,7 +359,7 @@ pub fn resolve_git_context(
 pub fn setup_env(
     ctx: &mut Context,
     config: &Config,
-    log: &anodize_core::log::StageLogger,
+    log: &anodizer_core::log::StageLogger,
 ) -> anyhow::Result<()> {
     // Load ALL process environment variables first (lowest priority)
     for (key, value) in std::env::vars() {
@@ -372,15 +372,15 @@ pub fn setup_env(
     // serialization and subprocess injection).
     if let Some(ref env_files_config) = config.env_files {
         match env_files_config {
-            anodize_core::config::EnvFilesConfig::List(files) => {
-                let env_vars = anodize_core::config::load_env_files(files, log, ctx.is_strict())
+            anodizer_core::config::EnvFilesConfig::List(files) => {
+                let env_vars = anodizer_core::config::load_env_files(files, log, ctx.is_strict())
                     .map_err(|e| anyhow::anyhow!("{}", e))?;
                 for (key, value) in &env_vars {
                     ctx.template_vars_mut().set_config_env(key, value);
                 }
             }
-            anodize_core::config::EnvFilesConfig::TokenFiles(token_config) => {
-                let token_vars = anodize_core::config::load_token_files(token_config, log)
+            anodizer_core::config::EnvFilesConfig::TokenFiles(token_config) => {
+                let token_vars = anodizer_core::config::load_token_files(token_config, log)
                     .map_err(|e| anyhow::anyhow!("{}", e))?;
                 for (key, value) in &token_vars {
                     ctx.template_vars_mut().set_config_env(key, value);
@@ -391,8 +391,8 @@ pub fn setup_env(
     } else {
         // always check default
         // token file paths even when env_files is not configured.
-        let default_config = anodize_core::config::EnvFilesTokenConfig::default();
-        let token_vars = anodize_core::config::load_token_files(&default_config, log)
+        let default_config = anodizer_core::config::EnvFilesTokenConfig::default();
+        let token_vars = anodizer_core::config::load_token_files(&default_config, log)
             .map_err(|e| anyhow::anyhow!("{}", e))?;
         for (key, value) in &token_vars {
             ctx.template_vars_mut().set_config_env(key, value);
@@ -440,7 +440,7 @@ pub fn setup_env(
             // SAFETY: single-threaded pipeline setup, see set_env_var_single_threaded.
             unsafe {
                 std::env::remove_var("GITHUB_TOKEN");
-                std::env::remove_var("ANODIZE_GITHUB_TOKEN");
+                std::env::remove_var("ANODIZER_GITHUB_TOKEN");
             }
         }
         if !keep_gitlab {
@@ -457,7 +457,7 @@ pub fn setup_env(
     // When multiple SCM tokens are set without force_token, error early.
     if resolved_force.is_none() {
         let has_github =
-            std::env::var("GITHUB_TOKEN").is_ok() || std::env::var("ANODIZE_GITHUB_TOKEN").is_ok();
+            std::env::var("GITHUB_TOKEN").is_ok() || std::env::var("ANODIZER_GITHUB_TOKEN").is_ok();
         let has_gitlab = std::env::var("GITLAB_TOKEN").is_ok();
         let has_gitea = std::env::var("GITEA_TOKEN").is_ok();
         let count = [has_github, has_gitlab, has_gitea]
@@ -467,7 +467,7 @@ pub fn setup_env(
         if count > 1 {
             anyhow::bail!(
                 "multiple SCM tokens set simultaneously ({}). Set force_token in config \
-                 or ANODIZE_FORCE_TOKEN env var to specify which to use.",
+                 or ANODIZER_FORCE_TOKEN env var to specify which to use.",
                 [
                     if has_github {
                         Some("GITHUB_TOKEN")
@@ -503,12 +503,12 @@ pub fn setup_env(
             && !release_disabled;
         if needs_token {
             let hint = match ctx.token_type {
-                anodize_core::scm::ScmTokenType::GitLab => {
+                anodizer_core::scm::ScmTokenType::GitLab => {
                     "no GitLab token found. Set GITLAB_TOKEN."
                 }
-                anodize_core::scm::ScmTokenType::Gitea => "no Gitea token found. Set GITEA_TOKEN.",
-                anodize_core::scm::ScmTokenType::GitHub => {
-                    "no GitHub token found. Set GITHUB_TOKEN or ANODIZE_GITHUB_TOKEN."
+                anodizer_core::scm::ScmTokenType::Gitea => "no Gitea token found. Set GITEA_TOKEN.",
+                anodizer_core::scm::ScmTokenType::GitHub => {
+                    "no GitHub token found. Set GITHUB_TOKEN or ANODIZER_GITHUB_TOKEN."
                 }
             };
             anyhow::bail!("{}", hint);
@@ -540,7 +540,7 @@ pub fn write_effective_config(config: &Config, log: &StageLogger) -> Result<()> 
 /// Print the artifact size report if `report_sizes` is enabled in config.
 pub fn run_report_sizes(ctx: &mut Context, config: &Config, log: &StageLogger) {
     if config.report_sizes.unwrap_or(false) {
-        anodize_core::artifact::print_size_report(&mut ctx.artifacts, log);
+        anodizer_core::artifact::print_size_report(&mut ctx.artifacts, log);
     }
 }
 
@@ -559,8 +559,8 @@ pub fn write_metadata_and_artifacts(
         .with_context(|| format!("failed to create dist directory: {}", dist.display()))?;
 
     let metadata_path = dist.join("metadata.json");
-    let goos = anodize_core::context::map_os_to_goos(std::env::consts::OS);
-    let goarch = anodize_core::context::map_arch_to_goarch(std::env::consts::ARCH);
+    let goos = anodizer_core::context::map_os_to_goos(std::env::consts::OS);
+    let goarch = anodizer_core::context::map_arch_to_goarch(std::env::consts::ARCH);
 
     let tag = ctx.template_vars().get("Tag").cloned().unwrap_or_default();
     let previous_tag = ctx
@@ -595,7 +595,7 @@ pub fn write_metadata_and_artifacts(
         .with_context(|| format!("failed to write {}", metadata_path.display()))?;
     log.status(&format!("wrote {}", metadata_path.display()));
 
-    ctx.artifacts.add(anodize_core::artifact::Artifact {
+    ctx.artifacts.add(anodizer_core::artifact::Artifact {
         kind: ArtifactKind::Metadata,
         name: "metadata.json".to_string(),
         path: metadata_path.clone(),
@@ -623,10 +623,10 @@ pub fn write_metadata_and_artifacts(
             .render_template(ts_tmpl)
             .context("failed to render metadata.mod_timestamp template")?;
         if !rendered.is_empty() {
-            let mtime = anodize_core::util::parse_mod_timestamp(&rendered)
+            let mtime = anodizer_core::util::parse_mod_timestamp(&rendered)
                 .with_context(|| format!("invalid metadata.mod_timestamp value: {:?}", rendered))?;
-            anodize_core::util::set_file_mtime(&metadata_path, mtime)?;
-            anodize_core::util::set_file_mtime(&artifacts_path, mtime)?;
+            anodizer_core::util::set_file_mtime(&metadata_path, mtime)?;
+            anodizer_core::util::set_file_mtime(&artifacts_path, mtime)?;
             log.status(&format!(
                 "set mtime on metadata.json and artifacts.json to {}",
                 rendered
@@ -702,7 +702,7 @@ pub fn setup_context(ctx: &mut Context, config: &Config, log: &StageLogger) -> R
 ///
 /// This sets `ctx.token_type` based on priority (highest first):
 /// 1. `config.force_token` — explicit user config (`force_token: gitlab`)
-/// 2. `ANODIZE_FORCE_TOKEN` env var — e.g. `github`, `gitlab`, `gitea`
+/// 2. `ANODIZER_FORCE_TOKEN` env var — e.g. `github`, `gitlab`, `gitea`
 /// 3. `GORELEASER_FORCE_TOKEN` env var — GoReleaser compat fallback
 /// 4. Environment variable presence — `GITLAB_TOKEN` → GitLab, `GITEA_TOKEN` → Gitea
 /// 5. Default — GitHub
@@ -711,7 +711,7 @@ pub fn setup_context(ctx: &mut Context, config: &Config, log: &StageLogger) -> R
 /// set by a CLI flag) from the appropriate environment variable:
 /// - GitLab: `GITLAB_TOKEN`
 /// - Gitea: `GITEA_TOKEN`
-/// - GitHub: `ANODIZE_GITHUB_TOKEN` or `GITHUB_TOKEN`
+/// - GitHub: `ANODIZER_GITHUB_TOKEN` or `GITHUB_TOKEN`
 pub fn resolve_scm_token_type(ctx: &mut Context, config: &Config) {
     // Detect which SCM backend to use from environment variables.
     let env_hint = if std::env::var("GITLAB_TOKEN").is_ok() {
@@ -731,7 +731,7 @@ pub fn resolve_scm_token_type(ctx: &mut Context, config: &Config) {
         ctx.options.token = match ctx.token_type {
             ScmTokenType::GitLab => std::env::var("GITLAB_TOKEN").ok(),
             ScmTokenType::Gitea => std::env::var("GITEA_TOKEN").ok(),
-            ScmTokenType::GitHub => std::env::var("ANODIZE_GITHUB_TOKEN")
+            ScmTokenType::GitHub => std::env::var("ANODIZER_GITHUB_TOKEN")
                 .ok()
                 .or_else(|| std::env::var("GITHUB_TOKEN").ok()),
         };
@@ -789,9 +789,9 @@ pub fn load_artifacts_from_dist(ctx: &mut Context, dist: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anodize_core::config::{ChangelogConfig, CrateConfig, SignConfig};
-    use anodize_core::context::ContextOptions;
-    use anodize_core::scm::ScmTokenType;
+    use anodizer_core::config::{ChangelogConfig, CrateConfig, SignConfig};
+    use anodizer_core::context::ContextOptions;
+    use anodizer_core::scm::ScmTokenType;
 
     fn make_crate(name: &str) -> CrateConfig {
         CrateConfig {
@@ -930,8 +930,8 @@ mod tests {
 
     #[test]
     fn test_load_artifacts_from_dist_valid() {
-        use anodize_core::artifact::ArtifactKind;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::artifact::ArtifactKind;
+        use anodizer_core::context::{Context, ContextOptions};
 
         let dir = tempfile::TempDir::new().unwrap();
         let artifacts_json = serde_json::json!([
@@ -988,7 +988,7 @@ mod tests {
 
     #[test]
     fn test_load_artifacts_from_dist_missing_file() {
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let dir = tempfile::TempDir::new().unwrap();
         let config = Config::default();
@@ -1004,7 +1004,7 @@ mod tests {
 
     #[test]
     fn test_load_artifacts_from_dist_invalid_json() {
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(dir.path().join("artifacts.json"), "not valid json").unwrap();
@@ -1017,7 +1017,7 @@ mod tests {
 
     #[test]
     fn test_load_artifacts_from_dist_unknown_kind() {
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let dir = tempfile::TempDir::new().unwrap();
         let artifacts_json = serde_json::json!([
@@ -1049,8 +1049,8 @@ mod tests {
 
     #[test]
     fn test_load_artifacts_from_dist_roundtrip() {
-        use anodize_core::artifact::{Artifact, ArtifactKind, ArtifactRegistry};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::artifact::{Artifact, ArtifactKind, ArtifactRegistry};
+        use anodizer_core::context::{Context, ContextOptions};
 
         // Build an artifact registry, serialize, write, then load back
         let mut registry = ArtifactRegistry::new();
@@ -1115,9 +1115,9 @@ mod tests {
         let saved: Vec<(&str, Option<String>)> = [
             "GITLAB_TOKEN",
             "GITEA_TOKEN",
-            "ANODIZE_GITHUB_TOKEN",
+            "ANODIZER_GITHUB_TOKEN",
             "GITHUB_TOKEN",
-            "ANODIZE_FORCE_TOKEN",
+            "ANODIZER_FORCE_TOKEN",
             "GORELEASER_FORCE_TOKEN",
         ]
         .iter()
@@ -1231,9 +1231,9 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_scm_token_type_anodize_github_token_takes_precedence() {
+    fn test_resolve_scm_token_type_anodizer_github_token_takes_precedence() {
         with_clean_token_env(|| {
-            unsafe { std::env::set_var("ANODIZE_GITHUB_TOKEN", "anodize-tok") };
+            unsafe { std::env::set_var("ANODIZER_GITHUB_TOKEN", "anodizer-tok") };
             unsafe { std::env::set_var("GITHUB_TOKEN", "gh-tok") };
 
             let config = Config::default();
@@ -1243,8 +1243,8 @@ mod tests {
             assert_eq!(ctx.token_type, ScmTokenType::GitHub);
             assert_eq!(
                 ctx.options.token.as_deref(),
-                Some("anodize-tok"),
-                "ANODIZE_GITHUB_TOKEN should take precedence over GITHUB_TOKEN"
+                Some("anodizer-tok"),
+                "ANODIZER_GITHUB_TOKEN should take precedence over GITHUB_TOKEN"
             );
         });
     }
@@ -1318,10 +1318,10 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_scm_token_type_anodize_force_token_env_gitlab() {
+    fn test_resolve_scm_token_type_anodizer_force_token_env_gitlab() {
         with_clean_token_env(|| {
-            // ANODIZE_FORCE_TOKEN env var should override env-based detection.
-            unsafe { std::env::set_var("ANODIZE_FORCE_TOKEN", "gitlab") };
+            // ANODIZER_FORCE_TOKEN env var should override env-based detection.
+            unsafe { std::env::set_var("ANODIZER_FORCE_TOKEN", "gitlab") };
             unsafe { std::env::set_var("GITLAB_TOKEN", "glpat-env") };
 
             let config = Config::default();
@@ -1331,17 +1331,17 @@ mod tests {
             assert_eq!(
                 ctx.token_type,
                 ScmTokenType::GitLab,
-                "ANODIZE_FORCE_TOKEN=gitlab should force GitLab"
+                "ANODIZER_FORCE_TOKEN=gitlab should force GitLab"
             );
             assert_eq!(ctx.options.token.as_deref(), Some("glpat-env"));
         });
     }
 
     #[test]
-    fn test_resolve_scm_token_type_anodize_force_token_env_github() {
+    fn test_resolve_scm_token_type_anodizer_force_token_env_github() {
         with_clean_token_env(|| {
             // Force GitHub even though GITLAB_TOKEN is present.
-            unsafe { std::env::set_var("ANODIZE_FORCE_TOKEN", "github") };
+            unsafe { std::env::set_var("ANODIZER_FORCE_TOKEN", "github") };
             unsafe { std::env::set_var("GITLAB_TOKEN", "glpat-ignored") };
             unsafe { std::env::set_var("GITHUB_TOKEN", "ghp-forced") };
 
@@ -1352,7 +1352,7 @@ mod tests {
             assert_eq!(
                 ctx.token_type,
                 ScmTokenType::GitHub,
-                "ANODIZE_FORCE_TOKEN=github should override GITLAB_TOKEN detection"
+                "ANODIZER_FORCE_TOKEN=github should override GITLAB_TOKEN detection"
             );
             assert_eq!(ctx.options.token.as_deref(), Some("ghp-forced"));
         });
@@ -1361,7 +1361,7 @@ mod tests {
     #[test]
     fn test_resolve_scm_token_type_goreleaser_force_token_compat() {
         with_clean_token_env(|| {
-            // GORELEASER_FORCE_TOKEN is the compat fallback when ANODIZE_ is not set.
+            // GORELEASER_FORCE_TOKEN is the compat fallback when ANODIZER_ is not set.
             unsafe { std::env::set_var("GORELEASER_FORCE_TOKEN", "gitea") };
             unsafe { std::env::set_var("GITEA_TOKEN", "gitea-compat") };
 
@@ -1379,10 +1379,10 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_scm_token_type_anodize_force_token_overrides_goreleaser() {
+    fn test_resolve_scm_token_type_anodizer_force_token_overrides_goreleaser() {
         with_clean_token_env(|| {
-            // When both env vars are set, ANODIZE_FORCE_TOKEN takes precedence.
-            unsafe { std::env::set_var("ANODIZE_FORCE_TOKEN", "github") };
+            // When both env vars are set, ANODIZER_FORCE_TOKEN takes precedence.
+            unsafe { std::env::set_var("ANODIZER_FORCE_TOKEN", "github") };
             unsafe { std::env::set_var("GORELEASER_FORCE_TOKEN", "gitlab") };
             unsafe { std::env::set_var("GITHUB_TOKEN", "ghp-wins") };
             unsafe { std::env::set_var("GITLAB_TOKEN", "glpat-loses") };
@@ -1394,7 +1394,7 @@ mod tests {
             assert_eq!(
                 ctx.token_type,
                 ScmTokenType::GitHub,
-                "ANODIZE_FORCE_TOKEN should take precedence over GORELEASER_FORCE_TOKEN"
+                "ANODIZER_FORCE_TOKEN should take precedence over GORELEASER_FORCE_TOKEN"
             );
             assert_eq!(ctx.options.token.as_deref(), Some("ghp-wins"));
         });
@@ -1404,7 +1404,7 @@ mod tests {
     fn test_resolve_scm_token_type_config_force_token_overrides_env() {
         with_clean_token_env(|| {
             // Config-level force_token should override env var.
-            unsafe { std::env::set_var("ANODIZE_FORCE_TOKEN", "gitlab") };
+            unsafe { std::env::set_var("ANODIZER_FORCE_TOKEN", "gitlab") };
             unsafe { std::env::set_var("GITHUB_TOKEN", "ghp-config") };
 
             let config = Config {
@@ -1417,7 +1417,7 @@ mod tests {
             assert_eq!(
                 ctx.token_type,
                 ScmTokenType::GitHub,
-                "config.force_token should override ANODIZE_FORCE_TOKEN env var"
+                "config.force_token should override ANODIZER_FORCE_TOKEN env var"
             );
             assert_eq!(ctx.options.token.as_deref(), Some("ghp-config"));
         });
@@ -1427,7 +1427,7 @@ mod tests {
     fn test_resolve_scm_token_type_invalid_force_token_env_ignored() {
         with_clean_token_env(|| {
             // Invalid value should be ignored, falling back to env-based detection.
-            unsafe { std::env::set_var("ANODIZE_FORCE_TOKEN", "invalid") };
+            unsafe { std::env::set_var("ANODIZER_FORCE_TOKEN", "invalid") };
             unsafe { std::env::set_var("GITLAB_TOKEN", "glpat-detected") };
 
             let config = Config::default();
@@ -1437,7 +1437,7 @@ mod tests {
             assert_eq!(
                 ctx.token_type,
                 ScmTokenType::GitLab,
-                "invalid ANODIZE_FORCE_TOKEN should fall back to env detection"
+                "invalid ANODIZER_FORCE_TOKEN should fall back to env detection"
             );
             assert_eq!(ctx.options.token.as_deref(), Some("glpat-detected"));
         });

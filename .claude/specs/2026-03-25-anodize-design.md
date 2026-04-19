@@ -1,4 +1,4 @@
-# Anodize — Design Spec
+# Anodizer — Design Spec
 
 **Date:** 2026-03-25
 **Status:** Draft
@@ -6,9 +6,9 @@
 
 ## Overview
 
-Anodize is a Rust-native, open-source alternative to GoReleaser. A single CLI binary that reads a declarative config file and executes a full release pipeline: build, archive, checksum, changelog, GitHub release, Docker images, package manager publishing, and more. Written in Rust for performance. Mirrors GoReleaser's UX and feature surface, adapted for Rust idioms and toolchain. GoReleaser Pro features are free.
+Anodizer is a Rust-native, open-source alternative to GoReleaser. A single CLI binary that reads a declarative config file and executes a full release pipeline: build, archive, checksum, changelog, GitHub release, Docker images, package manager publishing, and more. Written in Rust for performance. Mirrors GoReleaser's UX and feature surface, adapted for Rust idioms and toolchain. GoReleaser Pro features are free.
 
-Config filenames: `anodize.yaml` / `anodize.toml` (or `.anodize.yaml` / `.anodize.toml`).
+Config filenames: `anodizer.yaml` / `anodizer.toml` (or `.anodizer.yaml` / `.anodizer.toml`).
 
 ### Goals
 
@@ -17,7 +17,7 @@ Config filenames: `anodize.yaml` / `anodize.toml` (or `.anodize.yaml` / `.anodiz
 - First-class Rust workspace support with per-crate release cadences
 - First-class crates.io publishing with dependency-aware ordering
 - Familiar UX for GoReleaser users — same config structure, same CLI verbs, same template vocabulary
-- Single statically-linked binary, installable via `cargo install anodize`
+- Single statically-linked binary, installable via `cargo install anodizer`
 
 ### Non-Goals (Release 1)
 
@@ -95,7 +95,7 @@ crates/
 
 ## Configuration
 
-Supports both TOML and YAML, auto-detected by file extension (`anodize.yaml` or `anodize.toml`). YAML is the canonical documentation format; TOML support uses the same struct definitions via serde, so the schema is structurally identical.
+Supports both TOML and YAML, auto-detected by file extension (`anodizer.yaml` or `anodizer.toml`). YAML is the canonical documentation format; TOML support uses the same struct definitions via serde, so the schema is structurally identical.
 
 ### Full Config Schema
 
@@ -350,7 +350,7 @@ announce:
 
 ## Cross-Compilation
 
-Rust lacks Go's built-in cross-compilation. Anodize provides a transparent, layered strategy:
+Rust lacks Go's built-in cross-compilation. Anodizer provides a transparent, layered strategy:
 
 1. **Prefer `cargo-zigbuild`** — uses Zig as a cross-linker. No Docker, fast, handles most targets. Closest to Go's "just works" experience.
 2. **Fall back to `cross`** — Docker-based. Seamless but requires Docker.
@@ -372,7 +372,7 @@ GoReleaser uses Go's `text/template` with `{{ .FieldName }}` dot-accessor syntax
 
 ### Approach
 
-Anodize uses the **[Tera](https://keats.github.io/tera/) template engine** with a Go-style preprocessor for migration compatibility. The preprocessor translates Go-style `{{ .Field }}` → `{{ Field }}` before passing templates to Tera, so users can copy template strings from GoReleaser configs without changes. Tera provides:
+Anodizer uses the **[Tera](https://keats.github.io/tera/) template engine** with a Go-style preprocessor for migration compatibility. The preprocessor translates Go-style `{{ .Field }}` → `{{ Field }}` before passing templates to Tera, so users can copy template strings from GoReleaser configs without changes. Tera provides:
 
 - **Variable substitution:** `{{ ProjectName }}`, `{{ Version }}`, `{{ Tag }}`, `{{ ShortCommit }}`, `{{ FullCommit }}`, `{{ Commit }}`
 - **Nested access:** `{{ Env.VAR }}` — environment variable access
@@ -409,20 +409,20 @@ Rust target triples are mapped to GoReleaser-compatible short names:
 Mirrors GoReleaser's command structure:
 
 ```
-anodize release                          # Full pipeline (default)
-anodize release --crate cfgd-core        # Release a specific crate
-anodize release --crate cfgd-core --crate cfgd  # Multiple crates, dependency-ordered
-anodize release --all                    # All crates with unreleased changes
-anodize release --all --force            # All crates regardless of changes
-anodize release --snapshot               # Build everything, don't publish
-anodize release --skip=publish,announce  # Skip specific stages
-anodize release --clean                  # Remove dist/ before building
-anodize release --dry-run                # Full pipeline, skip all external side effects
-anodize build                            # Build only
-anodize build --crate cfgd              # Build a specific crate
-anodize check                            # Validate config
-anodize init                             # Generate starter config
-anodize changelog                        # Generate changelog only
+anodizer release                          # Full pipeline (default)
+anodizer release --crate cfgd-core        # Release a specific crate
+anodizer release --crate cfgd-core --crate cfgd  # Multiple crates, dependency-ordered
+anodizer release --all                    # All crates with unreleased changes
+anodizer release --all --force            # All crates regardless of changes
+anodizer release --snapshot               # Build everything, don't publish
+anodizer release --skip=publish,announce  # Skip specific stages
+anodizer release --clean                  # Remove dist/ before building
+anodizer release --dry-run                # Full pipeline, skip all external side effects
+anodizer build                            # Build only
+anodizer build --crate cfgd              # Build a specific crate
+anodizer check                            # Validate config
+anodizer init                             # Generate starter config
+anodizer changelog                        # Generate changelog only
 ```
 
 ### `--skip` Stage Identifiers
@@ -445,9 +445,9 @@ Rust-aware config generation:
 
 ### Version and Tag Contract
 
-Anodize expects a git tag matching the crate's `tag_template` (with `{{ .Version }}` replaced by the version from the crate's `Cargo.toml`) to exist at or before HEAD. Specifically:
+Anodizer expects a git tag matching the crate's `tag_template` (with `{{ .Version }}` replaced by the version from the crate's `Cargo.toml`) to exist at or before HEAD. Specifically:
 
-- **Normal release:** Tag must exist at HEAD. If no matching tag is found, anodize exits with an error suggesting the user create the tag first (e.g., `git tag -a v0.2.0 -m "Release v0.2.0"`).
+- **Normal release:** Tag must exist at HEAD. If no matching tag is found, anodizer exits with an error suggesting the user create the tag first (e.g., `git tag -a v0.2.0 -m "Release v0.2.0"`).
 - **Snapshot mode (`--snapshot`):** No tag required. Version is read from `Cargo.toml` and the snapshot name template is applied.
 - **Tag discovery:** For each crate, find the most recent tag matching the crate's `tag_template` pattern (with the version portion replaced by a semver regex). This is used to determine the previous version for changelog generation.
 
@@ -460,7 +460,7 @@ Anodize expects a git tag matching the crate's `tag_template` (with `{{ .Version
 
 ### Change Detection (`--all`)
 
-When `--all` is used, anodize determines which crates have unreleased changes:
+When `--all` is used, anodizer determines which crates have unreleased changes:
 
 1. **Tag discovery:** For each crate, find the most recent tag matching the crate's `tag_template` pattern by scanning `git tag --list` and matching against the template with the version portion replaced by a semver regex (e.g., `tag_template: "cfgd-core-v{{ .Version }}"` → regex `^cfgd-core-v\d+\.\d+\.\d+`). Tags are sorted by semver to find the latest.
 2. **No previous tag:** If no matching tag exists for a crate, it is treated as unreleased (all changes are new).
@@ -586,7 +586,7 @@ Central to the pipeline, matching GoReleaser's internal model:
 - Login handled externally (user runs `docker login` or CI provides creds)
 - Registers `DockerImage` artifacts
 
-**Multi-arch binary staging:** Anodize stages pre-built binaries into architecture-specific directories before invoking `docker buildx`. The Docker build context is set to the staging directory:
+**Multi-arch binary staging:** Anodizer stages pre-built binaries into architecture-specific directories before invoking `docker buildx`. The Docker build context is set to the staging directory:
 
 ```
 dist/docker/<crate>/<image-index>/    <- build context
@@ -598,7 +598,7 @@ dist/docker/<crate>/<image-index>/    <- build context
   Dockerfile                          <- copied from the configured dockerfile path
 ```
 
-Anodize copies the configured Dockerfile into the staging directory alongside the binaries, then invokes `docker buildx build` with the staging directory as the build context. The Dockerfile uses `TARGETARCH` (provided automatically by `docker buildx`) to select the correct binary:
+Anodizer copies the configured Dockerfile into the staging directory alongside the binaries, then invokes `docker buildx build` with the staging directory as the build context. The Dockerfile uses `TARGETARCH` (provided automatically by `docker buildx`) to select the correct binary:
 
 ```dockerfile
 FROM debian:bookworm-slim

@@ -5,9 +5,9 @@ use std::process::Command;
 
 use anyhow::{Context as _, Result};
 
-use anodize_core::artifact::{Artifact, ArtifactKind};
-use anodize_core::context::Context;
-use anodize_core::stage::Stage;
+use anodizer_core::artifact::{Artifact, ArtifactKind};
+use anodizer_core::context::Context;
+use anodizer_core::stage::Stage;
 
 // ---------------------------------------------------------------------------
 // pkgbuild_command
@@ -108,7 +108,7 @@ impl Stage for PkgStage {
                 .filter(|b| {
                     b.target
                         .as_deref()
-                        .map(anodize_core::target::is_darwin)
+                        .map(anodizer_core::target::is_darwin)
                         .unwrap_or(false)
                 })
                 .cloned()
@@ -240,7 +240,7 @@ impl Stage for PkgStage {
                     // Derive Os/Arch from the target triple for template rendering
                     let (os, arch) = target
                         .as_deref()
-                        .map(anodize_core::target::map_target)
+                        .map(anodizer_core::target::map_target)
                         .unwrap_or_else(|| ("darwin".to_string(), "amd64".to_string()));
 
                     // Set Os/Arch/Target in template vars for name template rendering
@@ -297,7 +297,7 @@ impl Stage for PkgStage {
                         });
 
                         // Track archives to remove if replace is true
-                        archive_paths_to_remove.extend(anodize_core::util::collect_if_replace(
+                        archive_paths_to_remove.extend(anodizer_core::util::collect_if_replace(
                             pkg_cfg.replace,
                             &ctx.artifacts,
                             &krate.name,
@@ -355,7 +355,7 @@ impl Stage for PkgStage {
 
                     // Apply mod_timestamp if set
                     if let Some(ts) = &pkg_cfg.mod_timestamp {
-                        anodize_core::util::apply_mod_timestamp(staging_dir, ts, &log)?;
+                        anodizer_core::util::apply_mod_timestamp(staging_dir, ts, &log)?;
                     }
 
                     // Ensure output directory exists
@@ -404,7 +404,7 @@ impl Stage for PkgStage {
                     });
 
                     // Track archives to remove if replace is true
-                    archive_paths_to_remove.extend(anodize_core::util::collect_if_replace(
+                    archive_paths_to_remove.extend(anodizer_core::util::collect_if_replace(
                         pkg_cfg.replace,
                         &ctx.artifacts,
                         &krate.name,
@@ -414,7 +414,7 @@ impl Stage for PkgStage {
             }
         }
 
-        anodize_core::template::clear_per_target_vars(ctx.template_vars_mut());
+        anodizer_core::template::clear_per_target_vars(ctx.template_vars_mut());
 
         // Remove archive artifacts marked for replacement
         if !archive_paths_to_remove.is_empty() {
@@ -438,9 +438,9 @@ impl Stage for PkgStage {
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
-    use anodize_core::artifact::{Artifact, ArtifactKind};
-    use anodize_core::config::{Config, CrateConfig, ExtraFileSpec, PkgConfig, StringOrBool};
-    use anodize_core::context::{Context, ContextOptions};
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::config::{Config, CrateConfig, ExtraFileSpec, PkgConfig, StringOrBool};
+    use anodizer_core::context::{Context, ContextOptions};
     use tempfile::TempDir;
 
     // -- pkgbuild_command tests --
@@ -1633,10 +1633,10 @@ crates:
 
     // --- `pkg.if` template-conditional (GoReleaser Pro) ---
 
-    fn pkg_if_test_ctx(if_expr: Option<&str>) -> anodize_core::context::Context {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
-        use anodize_core::config::{Config, CrateConfig, PkgConfig};
-        use anodize_core::context::{Context, ContextOptions};
+    fn pkg_if_test_ctx(if_expr: Option<&str>) -> anodizer_core::context::Context {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::config::{Config, CrateConfig, PkgConfig};
+        use anodizer_core::context::{Context, ContextOptions};
         let tmp = tempfile::TempDir::new().unwrap();
         let mut config = Config::default();
         config.project_name = "myapp".to_string();
@@ -1677,7 +1677,7 @@ crates:
 
     #[test]
     fn test_pkg_if_false_skips_config() {
-        use anodize_core::artifact::ArtifactKind;
+        use anodizer_core::artifact::ArtifactKind;
         let mut ctx = pkg_if_test_ctx(Some("false"));
         PkgStage.run(&mut ctx).unwrap();
         assert_eq!(

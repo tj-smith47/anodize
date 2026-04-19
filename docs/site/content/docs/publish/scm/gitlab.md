@@ -5,7 +5,7 @@ weight = 1
 template = "docs.html"
 +++
 
-Anodize can create releases and upload assets to GitLab repositories.
+Anodizer can create releases and upload assets to GitLab repositories.
 
 ## Minimal config
 

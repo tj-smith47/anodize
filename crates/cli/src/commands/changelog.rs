@@ -1,8 +1,8 @@
 use super::helpers;
 use crate::pipeline;
-use anodize_core::context::{Context, ContextOptions};
-use anodize_core::log::{StageLogger, Verbosity};
-use anodize_core::stage::Stage;
+use anodizer_core::context::{Context, ContextOptions};
+use anodizer_core::log::{StageLogger, Verbosity};
+use anodizer_core::stage::Stage;
 use anyhow::Result;
 use std::path::Path;
 
@@ -41,7 +41,7 @@ pub fn run(
     helpers::resolve_git_context(&mut ctx, &config, &log)?;
 
     // Run the changelog stage
-    let stage = anodize_stage_changelog::ChangelogStage;
+    let stage = anodizer_stage_changelog::ChangelogStage;
     stage.run(&mut ctx)?;
 
     // Print changelogs to stdout

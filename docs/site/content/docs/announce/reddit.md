@@ -37,7 +37,7 @@ announce:
 ## How it works
 
 Reddit requires an OAuth2 bearer token even for script-type apps that use
-password auth. Anodize performs a two-step flow on every run:
+password auth. Anodizer performs a two-step flow on every run:
 
 1. Exchanges `application_id` + `REDDIT_SECRET` + `username` + `REDDIT_PASSWORD`
    for a short-lived bearer token via `POST /api/v1/access_token`.
@@ -45,7 +45,7 @@ password auth. Anodize performs a two-step flow on every run:
    `POST https://oauth.reddit.com/api/submit`.
 
 Reddit's API returns HTTP 200 even when a submission fails at the application
-level. Anodize checks the `json.errors` array in the response body and treats
+level. Anodizer checks the `json.errors` array in the response body and treats
 any non-empty errors array as a failure.
 
 ## Setting up a Reddit app

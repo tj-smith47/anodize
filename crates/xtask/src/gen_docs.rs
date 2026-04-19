@@ -109,7 +109,7 @@ struct CmdInfo {
 }
 
 fn generate_cli_reference(tera: &Tera) -> Result<String, String> {
-    let cmd = anodize_cli::build_cli();
+    let cmd = anodizer_cli::build_cli();
 
     let about = cmd.get_about().map(|a| a.to_string()).unwrap_or_default();
 
@@ -404,7 +404,7 @@ fn extract_fields(props: &Map<String, Schema>) -> Vec<ConfigField> {
 }
 
 fn generate_config_reference(tera: &Tera) -> Result<String, String> {
-    let root_schema = schemars::schema_for!(anodize_core::config::Config);
+    let root_schema = schemars::schema_for!(anodizer_core::config::Config);
     let defs = &root_schema.definitions;
     let root = &root_schema.schema;
 
@@ -469,7 +469,7 @@ fn generate_config_reference(tera: &Tera) -> Result<String, String> {
 mod tests {
     #[test]
     fn test_schema_has_all_config_fields() {
-        let schema = schemars::schema_for!(anodize_core::config::Config);
+        let schema = schemars::schema_for!(anodizer_core::config::Config);
         let root = schema.schema;
         let props = root
             .object
@@ -519,7 +519,7 @@ mod tests {
     #[test]
     fn test_all_config_fields_resolve_to_non_empty_type() {
         use schemars::schema::Schema;
-        let schema = schemars::schema_for!(anodize_core::config::Config);
+        let schema = schemars::schema_for!(anodizer_core::config::Config);
         let root = schema.schema;
         let props = root
             .object

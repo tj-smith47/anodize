@@ -1,4 +1,4 @@
-//! Cargo.toml reading + editing for `anodize bump`.
+//! Cargo.toml reading + editing for `anodizer bump`.
 //!
 //! Uses `toml_edit` to preserve formatting and comments. Responsibilities:
 //!   - Load the workspace graph (root Cargo.toml + member manifests).
@@ -8,7 +8,7 @@
 //!     `[build-dependencies]` entries that reference a bumped member
 //!     by its new version (unless `--exact` is set).
 
-use anodize_core::log::StageLogger;
+use anodizer_core::log::StageLogger;
 use anyhow::{Context, Result, bail};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

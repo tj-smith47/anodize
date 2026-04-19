@@ -100,7 +100,7 @@ Target triple components are mapped to Snapcraft architecture names:
 
 ## Publishing to the Snap Store
 
-Set `publish: true` and authenticate with `snapcraft login` (or set `SNAPCRAFT_STORE_CREDENTIALS`) before running anodize. When `channel_templates` is provided, the snap is released to those channels automatically via `snapcraft upload --release`.
+Set `publish: true` and authenticate with `snapcraft login` (or set `SNAPCRAFT_STORE_CREDENTIALS`) before running anodizer. When `channel_templates` is provided, the snap is released to those channels automatically via `snapcraft upload --release`.
 
 ## Full example
 

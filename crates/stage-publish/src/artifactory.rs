@@ -1,7 +1,7 @@
-use anodize_core::artifact::{Artifact, ArtifactKind};
-use anodize_core::context::Context;
-use anodize_core::hashing::sha256_file;
-use anodize_core::log::StageLogger;
+use anodizer_core::artifact::{Artifact, ArtifactKind};
+use anodizer_core::context::Context;
+use anodizer_core::hashing::sha256_file;
+use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result, bail};
 use std::collections::HashMap;
 use std::fs;
@@ -134,7 +134,7 @@ pub fn build_reqwest_client(
     client_key_path: Option<&str>,
     trusted_certs_pem: Option<&str>,
 ) -> Result<reqwest::blocking::Client> {
-    let mut builder = reqwest::blocking::ClientBuilder::new().user_agent("anodize/1.0");
+    let mut builder = reqwest::blocking::ClientBuilder::new().user_agent("anodizer/1.0");
 
     // mTLS client certificate
     if let (Some(cert_path), Some(key_path)) = (client_cert_path, client_key_path) {
@@ -282,15 +282,15 @@ pub fn upload_single_artifact(
             vars.set("ArtifactName", artifact.name());
             vars.set(
                 "ArtifactExt",
-                anodize_core::template::extract_artifact_ext(artifact.name()),
+                anodizer_core::template::extract_artifact_ext(artifact.name()),
             );
             if let Some(ref target) = artifact.target {
-                let (os, arch) = anodize_core::target::map_target(target);
+                let (os, arch) = anodizer_core::target::map_target(target);
                 vars.set("Os", &os);
                 vars.set("Arch", &arch);
                 vars.set("Target", target);
             }
-            anodize_core::template::render(v, &vars).unwrap_or_else(|_| v.clone())
+            anodizer_core::template::render(v, &vars).unwrap_or_else(|_| v.clone())
         };
         req = req.header(k.as_str(), rendered_v);
     }
@@ -379,7 +379,7 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
         // HTTP method (default: PUT).
         let method = entry.method.as_deref().unwrap_or("PUT");
 
-        // Resolve credentials via the anodize ctx env resolver (matches
+        // Resolve credentials via the anodizer ctx env resolver (matches
         // GoReleaser internal/http/http.go:168-178). Cascade:
         //   Username: config → ARTIFACTORY_{NAME}_USERNAME
         //   Password: config → ARTIFACTORY_{NAME}_SECRET
@@ -587,8 +587,8 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
-    use anodize_core::config::{ArtifactoryConfig, Config, StringOrBool};
-    use anodize_core::context::{Context, ContextOptions};
+    use anodizer_core::config::{ArtifactoryConfig, Config, StringOrBool};
+    use anodizer_core::context::{Context, ContextOptions};
     use std::path::PathBuf;
 
     fn dry_run_ctx(config: Config) -> Context {

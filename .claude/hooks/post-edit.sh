@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# anodize project post-edit hook: Rust conventions for a release tool.
+# anodizer project post-edit hook: Rust conventions for a release tool.
 # Scoping (honest):
 #   - BLOCK (exit 2): things that MUST be immediately correct (hardcoded secrets).
 #   - WARN  (exit 0, stderr): convention drift tracked as migration in known-bugs.md.
@@ -32,11 +32,11 @@ check_warn '^use log::'                  'log::* should be tracing::* — tracke
 check_warn '#\[allow\(dead_code\)\]'     'dead_code suppression — delete or justify'
 
 if (( ${#warns[@]} > 0 )); then
-  printf 'anodize advisory in %s:\n' "$path" >&2
+  printf 'anodizer advisory in %s:\n' "$path" >&2
   printf '  - %s\n' "${warns[@]}" >&2
 fi
 if (( ${#blockers[@]} > 0 )); then
-  printf 'anodize BLOCKERS in %s:\n' "$path" >&2
+  printf 'anodizer BLOCKERS in %s:\n' "$path" >&2
   printf '  - %s\n' "${blockers[@]}" >&2
   exit 2
 fi

@@ -1,14 +1,14 @@
-# Test Coverage Comparison: anodize vs GoReleaser
+# Test Coverage Comparison: anodizer vs GoReleaser
 
 **Date:** 2026-03-26
 **GoReleaser version:** main branch (latest)
-**anodize version:** session-3/release-readiness branch (814 tests)
+**anodizer version:** session-3/release-readiness branch (814 tests)
 
 ---
 
 ## 1. Total Test Count
 
-| Metric | GoReleaser | anodize |
+| Metric | GoReleaser | anodizer |
 |--------|-----------|---------|
 | Test files | 164 | ~30 (crate modules + integration) |
 | Top-level test functions | ~600 | 814 |
@@ -89,18 +89,18 @@ Concrete counts gathered from individual test files (top-level + subtests):
 
 ## 2. Coverage Percentage
 
-| Metric | GoReleaser | anodize |
+| Metric | GoReleaser | anodizer |
 |--------|-----------|---------|
 | Overall line coverage | Unknown (Codecov badge present, page not scrapeable) | **80.4%** (4,983/6,198 lines) |
 | Coverage tool | `go test -coverpkg=./... -covermode=atomic` | cargo-llvm-cov |
 
-**Verdict: Tie / slight anodize advantage on transparency.** GoReleaser tracks
+**Verdict: Tie / slight anodizer advantage on transparency.** GoReleaser tracks
 coverage via Codecov but doesn't publish the number prominently. Based on the
 test density and patterns observed, GoReleaser likely has 60-75% coverage (Go
 projects with this test density and many external-dependency pipes typically land
-there). anodize's 80.4% is strong and verifiable.
+there). anodizer's 80.4% is strong and verifiable.
 
-**Caveat:** GoReleaser has far more code (estimated ~40-60k lines Go vs anodize's
+**Caveat:** GoReleaser has far more code (estimated ~40-60k lines Go vs anodizer's
 ~6,200 lines Rust), so raw coverage percentage comparisons have limited meaning.
 GoReleaser has massive surface area for package managers, container tools, and
 SCM providers that are hard to unit test without real infrastructure.
@@ -111,12 +111,12 @@ SCM providers that are hard to unit test without real infrastructure.
 
 ### Stages We Both Have
 
-| Stage | GoReleaser tests | anodize tests | Verdict |
+| Stage | GoReleaser tests | anodizer tests | Verdict |
 |-------|-----------------|---------------|---------|
 | **Archive** | 48 (archive) + 16 (sourcearchive) = 64 | 37 (stage) + 14 (integration) = 51 | GoReleaser slightly ahead |
 | **Build** | 37 (pipe/build) + 174 (builders/golang) + ~50 (rust/zig/bun/deno) = ~261 | 12 (stage) + 25 (integration) = 37 | **GoReleaser massively ahead** |
 | **Changelog** | 107 | 52 (stage) + 6 (integration) = 58 | **GoReleaser ahead** (2x) |
-| **Checksums** | 27 | 33 (stage) + 12 (integration) = 45 | **anodize ahead** |
+| **Checksums** | 27 | 33 (stage) + 12 (integration) = 45 | **anodizer ahead** |
 | **Docker** | 66 (pipe) + docker v2 tests | 25 (stage) + 4 (integration) = 29 | **GoReleaser well ahead** |
 | **nFPM** | 75 | 30 (stage) + 5 (integration) = 35 | **GoReleaser ahead** (2x) |
 | **Release** | 40 (pipe) + 85 (client tests) = 125 | 48 (stage) + 5 (integration) = 53 | **GoReleaser well ahead** |
@@ -127,7 +127,7 @@ SCM providers that are hard to unit test without real infrastructure.
 
 ### Stages GoReleaser Has That We Don't Test
 
-| Stage | GoReleaser tests | anodize equivalent |
+| Stage | GoReleaser tests | anodizer equivalent |
 |-------|-----------------|-------------------|
 | Snapcraft | 35 | None |
 | AUR | 38 | None |
@@ -146,9 +146,9 @@ SCM providers that are hard to unit test without real infrastructure.
 | Notary (macOS signing) | Tests exist | None |
 | Artifactory/Upload | Tests exist | None |
 
-This represents **~475+ tests** for stages/features that anodize doesn't have at all.
+This represents **~475+ tests** for stages/features that anodizer doesn't have at all.
 
-### Stages Where anodize Is Competitive or Ahead
+### Stages Where anodizer Is Competitive or Ahead
 
 | Stage | Notes |
 |-------|-------|
@@ -163,42 +163,42 @@ This represents **~475+ tests** for stages/features that anodize doesn't have at
 
 ### Config Parsing Depth
 
-| Aspect | GoReleaser | anodize |
+| Aspect | GoReleaser | anodizer |
 |--------|-----------|---------|
 | Config parsing tests | ~19 (top-level YAML loading, version checks, error cases) | **265** (every field, every type, valid/default/invalid/edge) |
 | Per-field validation | Tested implicitly in pipe Default() methods | Tested explicitly with dedicated test per field |
 | Config error tests | Scattered across pipes | Centralized + comprehensive |
 
-**Verdict: anodize is dramatically stronger.** GoReleaser's config testing philosophy
+**Verdict: anodizer is dramatically stronger.** GoReleaser's config testing philosophy
 is to validate config correctness at the pipe level (each pipe's `Default()` method
-validates its section). anodize tests config parsing exhaustively at the config layer.
+validates its section). anodizer tests config parsing exhaustively at the config layer.
 This is a genuine architectural advantage.
 
 ### Behavior Tests (does config produce correct output?)
 
-| Aspect | GoReleaser | anodize |
+| Aspect | GoReleaser | anodizer |
 |--------|-----------|---------|
 | Stage behavior tests | ~800+ across all pipes | ~60 |
 | Golden file comparisons | Extensive (brew formulas, scoop manifests, nix expressions, krew manifests, winget manifests, AUR PKGBUILDs) | None |
 
 **Verdict: GoReleaser is far ahead.** Golden file testing for generated package
-manager manifests is a pattern anodize hasn't adopted. GoReleaser verifies exact
+manager manifests is a pattern anodizer hasn't adopted. GoReleaser verifies exact
 output of generated Homebrew formulas, Scoop manifests, etc. against reference
 files. This catches regressions in template rendering that unit tests miss.
 
 ### Error Path Tests
 
-| Aspect | GoReleaser | anodize |
+| Aspect | GoReleaser | anodizer |
 |--------|-----------|---------|
 | Error path tests | ~200+ (invalid templates, missing env vars, bad configs, failed hooks, etc.) | ~56 |
 
-**Verdict: GoReleaser ahead** by volume, but anodize's error tests are well-structured
+**Verdict: GoReleaser ahead** by volume, but anodizer's error tests are well-structured
 and cover the critical paths. GoReleaser's advantage is breadth (more pipes = more
 error paths to test).
 
 ### E2E / Integration Tests
 
-| Aspect | GoReleaser | anodize |
+| Aspect | GoReleaser | anodizer |
 |--------|-----------|---------|
 | Full pipeline tests | cmd/release_test.go (~20), cmd/build_test.go (~31) | 22 E2E pipeline tests |
 | Real builds | Yes (Go builds, Rust builds via builders) | Yes (real cargo builds) |
@@ -208,17 +208,17 @@ error paths to test).
 
 **Verdict: Roughly comparable for scope-adjusted comparison.** Both projects test
 real builds, real git repos, and real file I/O. GoReleaser tests on multiple
-platforms (Ubuntu + Windows). anodize's 22 E2E tests are proportionally reasonable
+platforms (Ubuntu + Windows). anodizer's 22 E2E tests are proportionally reasonable
 for its codebase size.
 
 ### Fuzz Tests
 
-| Aspect | GoReleaser | anodize |
+| Aspect | GoReleaser | anodizer |
 |--------|-----------|---------|
 | Fuzz test functions | 7 (5 template, 2 artifact checksum) | 0 |
 | Fuzz infrastructure | Go's built-in `testing.F` | None |
 
-**Verdict: GoReleaser ahead.** anodize has no fuzz testing. This is a gap, especially
+**Verdict: GoReleaser ahead.** anodizer has no fuzz testing. This is a gap, especially
 for template rendering and config parsing which are parser-heavy code that benefits
 from fuzzing.
 
@@ -226,7 +226,7 @@ from fuzzing.
 
 ## 5. Testing Patterns
 
-| Pattern | GoReleaser | anodize |
+| Pattern | GoReleaser | anodizer |
 |---------|-----------|---------|
 | Table-driven tests | Pervasive (Go idiom, `t.Run` with test case maps/slices) | Some (Rust `#[test]` per case) |
 | Golden files | Yes (`internal/golden` package, RequireEqualRb/Yaml/JSON/Txt) | No |
@@ -242,15 +242,15 @@ from fuzzing.
 
 ### Key Pattern Differences
 
-**GoReleaser's httptest approach vs anodize's mock trait approach:**
+**GoReleaser's httptest approach vs anodizer's mock trait approach:**
 GoReleaser spins up real HTTP servers (`httptest.NewServer`) with custom handlers
 to simulate GitHub/GitLab/Gitea APIs. This tests real HTTP serialization,
-headers, status codes. anodize uses a `MockGitHubClient` trait implementation,
+headers, status codes. anodizer uses a `MockGitHubClient` trait implementation,
 which is simpler but doesn't test HTTP-level concerns.
 
 **Golden files:** GoReleaser's golden file pattern is a significant testing advantage.
 When brew/scoop/nix/winget/AUR templates change, tests automatically catch output
-regressions by diffing against reference files. anodize has no equivalent.
+regressions by diffing against reference files. anodizer has no equivalent.
 
 ---
 
@@ -305,7 +305,7 @@ regressions by diffing against reference files. anodize has no equivalent.
 
 ## 7. What We Test That GoReleaser Doesn't
 
-| Area | anodize advantage | Details |
+| Area | anodizer advantage | Details |
 |------|-------------------|---------|
 | **Config parsing exhaustiveness** | Major | 265 tests covering every field individually. GoReleaser has ~19 config-level tests and relies on pipes to validate their own sections. Our approach catches config regressions earlier |
 | **Checksum algorithm breadth** | Minor | We test blake2b, blake2s, sha224, sha384 in addition to the common ones |
@@ -322,7 +322,7 @@ regressions by diffing against reference files. anodize has no equivalent.
 
 - **GoReleaser: ~2,000 tests across 164 files** with 7 fuzz tests, golden file testing,
   httptest servers, cross-platform CI, and coverage via Codecov.
-- **anodize: 814 tests across ~30 modules** with 80.4% line coverage, strong config
+- **anodizer: 814 tests across ~30 modules** with 80.4% line coverage, strong config
   parsing tests, and solid E2E pipeline tests.
 
 ### Where GoReleaser Is Stronger
@@ -338,7 +338,7 @@ regressions by diffing against reference files. anodize has no equivalent.
 9. **Cross-platform CI:** They test on Windows. We don't
 10. **Feature breadth:** ~615 tests for features we don't have at all
 
-### Where anodize Is Stronger
+### Where anodizer Is Stronger
 
 1. **Config parsing:** 265 tests vs ~19. This is our clear win
 2. **Checksums:** 45 tests vs 27, with more algorithm coverage
@@ -361,7 +361,7 @@ is mostly driven by:
 2. More tests per shared feature (especially build, sign, changelog, brew)
 3. Testing patterns we haven't adopted (golden files, fuzz, httptest)
 
-**However, anodize's test quality is strong for its scope.** 814 tests at 80.4%
+**However, anodizer's test quality is strong for its scope.** 814 tests at 80.4%
 coverage with 265 config parsing tests is solid engineering. The config parsing
 depth is genuinely better than GoReleaser's approach. The E2E tests are
 proportionally competitive.

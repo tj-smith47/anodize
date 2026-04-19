@@ -1,8 +1,8 @@
 use super::helpers;
 use crate::pipeline;
-use anodize_core::context::{Context, ContextOptions};
-use anodize_core::log::{StageLogger, Verbosity};
-use anodize_core::stage::Stage;
+use anodizer_core::context::{Context, ContextOptions};
+use anodizer_core::log::{StageLogger, Verbosity};
+use anodizer_core::stage::Stage;
 use anyhow::{Context as _, Result};
 use std::path::PathBuf;
 
@@ -75,12 +75,12 @@ pub fn run(opts: BuildOpts) -> Result<()> {
     helpers::write_effective_config(&config, &log)?;
 
     // Run build stage
-    let build_stage = anodize_stage_build::BuildStage;
+    let build_stage = anodizer_stage_build::BuildStage;
     log.verbose("running build stage");
     build_stage.run(&mut ctx)?;
 
     // Run UPX stage (compresses binaries if configured)
-    let upx_stage = anodize_stage_upx::UpxStage;
+    let upx_stage = anodizer_stage_upx::UpxStage;
     log.verbose("running upx stage");
     upx_stage.run(&mut ctx)?;
 
@@ -90,14 +90,14 @@ pub fn run(opts: BuildOpts) -> Result<()> {
     // break user expectations (`signs: [{artifacts: all}]` means "sign
     // everything at release time", not "sign binaries at build time").
     if !ctx.should_skip("sign") {
-        let binary_sign_stage = anodize_stage_sign::BinarySignStage;
+        let binary_sign_stage = anodizer_stage_sign::BinarySignStage;
         log.verbose("running binary-sign stage");
         binary_sign_stage.run(&mut ctx)?;
     }
 
     // macOS notarization (GoReleaser BuildCmdPipeline: notary.MacOS).
     if !ctx.should_skip("notarize") {
-        let notarize_stage = anodize_stage_notarize::NotarizeStage;
+        let notarize_stage = anodizer_stage_notarize::NotarizeStage;
         log.verbose("running notarize stage");
         notarize_stage.run(&mut ctx)?;
     }
@@ -120,7 +120,7 @@ pub fn run(opts: BuildOpts) -> Result<()> {
             .artifacts
             .all()
             .iter()
-            .filter(|a| a.kind == anodize_core::artifact::ArtifactKind::Binary)
+            .filter(|a| a.kind == anodizer_core::artifact::ArtifactKind::Binary)
             .collect();
 
         if binaries.is_empty() {

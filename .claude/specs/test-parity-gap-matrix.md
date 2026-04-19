@@ -1,7 +1,7 @@
-# Test Parity Gap Matrix: Anodize vs GoReleaser
+# Test Parity Gap Matrix: Anodizer vs GoReleaser
 
 **Refresh date:** 2026-04-18 (A1 inventory mapper rerun; 2026-04-16 baseline closures applied)
-**Anodize baseline:** ~3176 tests across 26 crates (~179k LOC per `wc -l crates/*/src/**`, grown from 441 tests / 17.8k LOC since March baseline)
+**Anodizer baseline:** ~3176 tests across 26 crates (~179k LOC per `wc -l crates/*/src/**`, grown from 441 tests / 17.8k LOC since March baseline)
 **GoReleaser baseline:** ~164 test files, ~44k lines of test code, est. 3000+ test cases (unchanged — pinned to GoReleaser HEAD `f7e73e3`)
 
 > **How to read this file.** Upper section is the refreshed parity-status summary (partial + missing features with verification commands). The legacy Gap Matrix below (Section 4) enumerates test-case-level gaps; kept for reference but not required reading for audit waves.
@@ -14,11 +14,11 @@ Source: Section 2 of `goreleaser-complete-feature-inventory.md`. Only rows with 
 
 | name | parity_status | ecosystem_relevance | verification command / test name | notes |
 |------|---------------|---------------------|----------------------------------|-------|
-| `goreleaser man` (man page generation) | missing | niche | `cargo run --bin anodize -- man --help` (currently errors — subcommand absent) | Nice-to-have; `clap_mangen` would be the implementation path. Not required. |
-| `--soft` flag on `anodize check` | missing | niche | `cargo run --bin anodize -- check --soft` (currently errors — flag absent) | Pro feature; anodize check is strict by default. |
-| `continue_on_error` per-stage | missing | niche | no stage currently surfaces `continue_on_error` as a config key | Anodize is fail-fast; would need per-stage opt-in. |
-| `metadata.full_description.from_url` | partial | niche | `anodize check` against `metadata.full_description.from_url: ...` raises "`from_url` is not yet supported at metadata context time" (core/src/context.rs:754) | Inline and `from_file` paths work; `FromUrl` deferred. |
-| `mcp registry` (MCP server manifest publish) | missing | niche | no anodize stage; new GoReleaser pipe at `internal/pipe/mcp/` | MCP registry still forming; no Rust demand signal surfaced. |
+| `goreleaser man` (man page generation) | missing | niche | `cargo run --bin anodizer -- man --help` (currently errors — subcommand absent) | Nice-to-have; `clap_mangen` would be the implementation path. Not required. |
+| `--soft` flag on `anodizer check` | missing | niche | `cargo run --bin anodizer -- check --soft` (currently errors — flag absent) | Pro feature; anodizer check is strict by default. |
+| `continue_on_error` per-stage | missing | niche | no stage currently surfaces `continue_on_error` as a config key | Anodizer is fail-fast; would need per-stage opt-in. |
+| `metadata.full_description.from_url` | partial | niche | `anodizer check` against `metadata.full_description.from_url: ...` raises "`from_url` is not yet supported at metadata context time" (core/src/context.rs:754) | Inline and `from_file` paths work; `FromUrl` deferred. |
+| `mcp registry` (MCP server manifest publish) | missing | niche | no anodizer stage; new GoReleaser pipe at `internal/pipe/mcp/` | MCP registry still forming; no Rust demand signal surfaced. |
 
 **No required or strongly-suggested CLI features are in the partial/missing set.** This matches the 2026-04-18 completion statement in the CLI inventory (`Completion achieved: yes`).
 
@@ -28,26 +28,26 @@ Source: Section 2 of `goreleaser-complete-feature-inventory.md`. Only rows with 
 
 For auditors A2/A3/A4 who need to spot-check behavioral parity rather than take the inventory's `implemented` at face value:
 
-| area | anodize test entry point | goreleaser reference test |
+| area | anodizer test entry point | goreleaser reference test |
 |------|--------------------------|----------------------------|
-| build | `cargo test -p anodize-stage-build` + `crates/cli/tests/integration.rs::test_e2e_build_command_matches_goreleaser_pipeline_outputs` | `internal/pipe/build/build_test.go`, `internal/builders/rust/build_test.go` |
-| archive | `cargo test -p anodize-stage-archive` | `internal/pipe/archive/archive_test.go` |
-| checksum | `cargo test -p anodize-stage-checksum` | `internal/pipe/checksums/checksums_test.go` |
-| nfpm | `cargo test -p anodize-stage-nfpm` (incl. `filename.rs` per-packager tests) | `internal/pipe/nfpm/nfpm_test.go` |
-| homebrew | `cargo test -p anodize-stage-publish --test homebrew_integration` | `internal/pipe/brew/brew_test.go`, `internal/pipe/cask/cask_test.go` |
-| docker | `cargo test -p anodize-stage-docker` | `internal/pipe/docker/docker_test.go`, `internal/pipe/docker/v2/*_test.go`, `internal/pipe/docker/manifest_test.go`, `internal/pipe/dockerdigest/digest_test.go` |
-| sign | `cargo test -p anodize-stage-sign` | `internal/pipe/sign/sign_test.go`, `sign_binary_test.go`, `sign_docker_test.go` |
-| sbom | `cargo test -p anodize-stage-sbom` | `internal/pipe/sbom/sbom_test.go` |
-| changelog | `cargo test -p anodize-stage-changelog` | `internal/pipe/changelog/changelog_test.go` |
-| release | `cargo test -p anodize-stage-release` (with MockGitHubClient) | `internal/pipe/release/release_test.go` |
-| announce | `cargo test -p anodize-stage-announce` (14 providers) | `internal/pipe/{discord,slack,telegram,teams,mattermost,smtp,reddit,twitter,mastodon,bluesky,linkedin,opencollective,discourse,webhook}/*_test.go` |
-| publish | `cargo test -p anodize-stage-publish` (homebrew/scoop/chocolatey/winget/aur/krew/nix/artifactory/cloudsmith/dockerhub/crates_io) | `internal/pipe/{brew,cask,scoop,chocolatey,winget,aur,krew,nix,artifactory,cloudsmith,custompublishers}/*_test.go` |
-| blob | `cargo test -p anodize-stage-blob` | `internal/pipe/blob/*_test.go` |
-| notarize | `cargo test -p anodize-stage-notarize` | `internal/pipe/notary/*_test.go` |
-| snapcraft / flatpak / makeself / srpm / upx / dmg / msi / pkg / nsis / appbundle / source / templatefiles | `cargo test -p anodize-stage-<name>` | `internal/pipe/<name>/*_test.go` |
-| partial | `cargo test -p anodize --test partial` + `commands/continue_cmd.rs` tests | `internal/pipe/partial/partial_test.go` |
-| templates | `cargo test -p anodize-core --test template` | `internal/tmpl/tmpl_test.go` |
-| CLI E2E | `cargo test -p anodize --test integration` | `cmd/*_test.go` |
+| build | `cargo test -p anodizer-stage-build` + `crates/cli/tests/integration.rs::test_e2e_build_command_matches_goreleaser_pipeline_outputs` | `internal/pipe/build/build_test.go`, `internal/builders/rust/build_test.go` |
+| archive | `cargo test -p anodizer-stage-archive` | `internal/pipe/archive/archive_test.go` |
+| checksum | `cargo test -p anodizer-stage-checksum` | `internal/pipe/checksums/checksums_test.go` |
+| nfpm | `cargo test -p anodizer-stage-nfpm` (incl. `filename.rs` per-packager tests) | `internal/pipe/nfpm/nfpm_test.go` |
+| homebrew | `cargo test -p anodizer-stage-publish --test homebrew_integration` | `internal/pipe/brew/brew_test.go`, `internal/pipe/cask/cask_test.go` |
+| docker | `cargo test -p anodizer-stage-docker` | `internal/pipe/docker/docker_test.go`, `internal/pipe/docker/v2/*_test.go`, `internal/pipe/docker/manifest_test.go`, `internal/pipe/dockerdigest/digest_test.go` |
+| sign | `cargo test -p anodizer-stage-sign` | `internal/pipe/sign/sign_test.go`, `sign_binary_test.go`, `sign_docker_test.go` |
+| sbom | `cargo test -p anodizer-stage-sbom` | `internal/pipe/sbom/sbom_test.go` |
+| changelog | `cargo test -p anodizer-stage-changelog` | `internal/pipe/changelog/changelog_test.go` |
+| release | `cargo test -p anodizer-stage-release` (with MockGitHubClient) | `internal/pipe/release/release_test.go` |
+| announce | `cargo test -p anodizer-stage-announce` (14 providers) | `internal/pipe/{discord,slack,telegram,teams,mattermost,smtp,reddit,twitter,mastodon,bluesky,linkedin,opencollective,discourse,webhook}/*_test.go` |
+| publish | `cargo test -p anodizer-stage-publish` (homebrew/scoop/chocolatey/winget/aur/krew/nix/artifactory/cloudsmith/dockerhub/crates_io) | `internal/pipe/{brew,cask,scoop,chocolatey,winget,aur,krew,nix,artifactory,cloudsmith,custompublishers}/*_test.go` |
+| blob | `cargo test -p anodizer-stage-blob` | `internal/pipe/blob/*_test.go` |
+| notarize | `cargo test -p anodizer-stage-notarize` | `internal/pipe/notary/*_test.go` |
+| snapcraft / flatpak / makeself / srpm / upx / dmg / msi / pkg / nsis / appbundle / source / templatefiles | `cargo test -p anodizer-stage-<name>` | `internal/pipe/<name>/*_test.go` |
+| partial | `cargo test -p anodizer --test partial` + `commands/continue_cmd.rs` tests | `internal/pipe/partial/partial_test.go` |
+| templates | `cargo test -p anodizer-core --test template` | `internal/tmpl/tmpl_test.go` |
+| CLI E2E | `cargo test -p anodizer --test integration` | `cmd/*_test.go` |
 
 ---
 
@@ -488,8 +488,8 @@ GoReleaser's testing strategy was analyzed by reading test files across their ma
 | **Missing: --single-target flag** | - | - | - | - | 0 | **test --single-target limits build to host triple** |
 | **Missing: publisher subcommand** | - | - | - | - | 0 | **test publisher command invocation with custom publishers** |
 | **Missing: healthcheck subcommand** | - | - | - | - | 0 | **test healthcheck detects missing tools** |
-| **Missing: TOML config E2E** | - | - | - | Y | 0 | **test full pipeline with .anodize.toml config** |
-| **Missing: config file search precedence** | - | - | - | - | 0 | **test that .anodize.yaml is found before anodize.yaml** |
+| **Missing: TOML config E2E** | - | - | - | Y | 0 | **test full pipeline with .anodizer.toml config** |
+| **Missing: config file search precedence** | - | - | - | - | 0 | **test that .anodizer.yaml is found before anodizer.yaml** |
 | **Missing: multi-crate release E2E** | - | - | - | Y | 0 | **test releasing multiple crates with depends_on ordering** |
 | **Missing: selected_crates filter E2E** | - | - | - | Y | 0 | **test releasing specific crates with --crate flag** |
 
@@ -520,11 +520,11 @@ GoReleaser's testing strategy was analyzed by reading test files across their ma
 
 ### Key Structural Gaps vs GoReleaser
 
-1. **No mock client for API testing** -- GoReleaser's `client.Mock` enables testing the full release/publish pipeline without network calls. Anodize has no equivalent, leaving all API-touching code paths untested.
-2. **No real-subprocess tests for build** -- GoReleaser uses a `fakeBuilder` to test the build pipeline without actually compiling. Anodize's build tests only verify command construction.
-3. **No golden file testing** -- GoReleaser compares generated formulae/manifests against golden files. Anodize's integration tests verify structure but not exact output stability.
-4. **No defaults propagation tests** -- GoReleaser has a dedicated `defaults_test.go` that verifies all config fields get correct defaults. Anodize lacks this.
-5. **No fuzz testing** -- GoReleaser fuzzes templates and artifact operations. Anodize has none.
+1. **No mock client for API testing** -- GoReleaser's `client.Mock` enables testing the full release/publish pipeline without network calls. Anodizer has no equivalent, leaving all API-touching code paths untested.
+2. **No real-subprocess tests for build** -- GoReleaser uses a `fakeBuilder` to test the build pipeline without actually compiling. Anodizer's build tests only verify command construction.
+3. **No golden file testing** -- GoReleaser compares generated formulae/manifests against golden files. Anodizer's integration tests verify structure but not exact output stability.
+4. **No defaults propagation tests** -- GoReleaser has a dedicated `defaults_test.go` that verifies all config fields get correct defaults. Anodizer lacks this.
+5. **No fuzz testing** -- GoReleaser fuzzes templates and artifact operations. Anodizer has none.
 6. **No real git repo tests outside changelog** -- Only the changelog stage tests against real git repos. Build, release, and other stages that depend on git info are not tested with real repos.
 
 ---
@@ -570,7 +570,7 @@ Ranked by impact (bugs they would catch) and frequency (how often the code path 
 
 ## Recommended Test Infrastructure Additions
 
-To close the biggest gaps, anodize needs:
+To close the biggest gaps, anodizer needs:
 
 1. **Mock HTTP Client trait** -- Abstract the GitHub/crates.io API behind a trait, with a mock implementation that records calls. This unblocks testing the entire release and publish pipeline without network access.
 

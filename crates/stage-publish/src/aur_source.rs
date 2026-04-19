@@ -1,6 +1,6 @@
-use anodize_core::config::AurSourceConfig;
-use anodize_core::context::Context;
-use anodize_core::log::StageLogger;
+use anodizer_core::config::AurSourceConfig;
+use anodizer_core::context::Context;
+use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result};
 
 use crate::util;
@@ -156,8 +156,8 @@ fn publish_aur_source_entry(
         .with_context(|| format!("{}: write .SRCINFO", label))?;
 
     // Register artifacts
-    ctx.artifacts.add(anodize_core::artifact::Artifact {
-        kind: anodize_core::artifact::ArtifactKind::SourcePkgBuild,
+    ctx.artifacts.add(anodizer_core::artifact::Artifact {
+        kind: anodizer_core::artifact::ArtifactKind::SourcePkgBuild,
         name: "PKGBUILD".to_string(),
         path: aur_dir.join("PKGBUILD"),
         target: None,
@@ -171,8 +171,8 @@ fn publish_aur_source_entry(
         size: None,
     });
 
-    ctx.artifacts.add(anodize_core::artifact::Artifact {
-        kind: anodize_core::artifact::ArtifactKind::SourceSrcInfo,
+    ctx.artifacts.add(anodizer_core::artifact::Artifact {
+        kind: anodizer_core::artifact::ArtifactKind::SourceSrcInfo,
         name: ".SRCINFO".to_string(),
         path: aur_dir.join(".SRCINFO"),
         target: None,
@@ -582,7 +582,7 @@ mod tests {
 
     #[test]
     fn test_top_level_aur_sources_config_parsing() {
-        use anodize_core::config::Config;
+        use anodizer_core::config::Config;
 
         let yaml = r#"
 project_name: test
@@ -616,7 +616,7 @@ crates:
 
     #[test]
     fn test_aur_source_config_parsing() {
-        use anodize_core::config::Config;
+        use anodizer_core::config::Config;
 
         let yaml = r#"
 project_name: test

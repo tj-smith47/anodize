@@ -1,5 +1,5 @@
-use anodize_core::context::Context;
-use anodize_core::log::StageLogger;
+use anodizer_core::context::Context;
+use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result};
 
 use crate::util;
@@ -285,7 +285,7 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         // Filter by amd64_variant microarchitecture variant.
         .filter(|a| {
             let target = a.target.as_deref().unwrap_or("");
-            let (_, arch) = anodize_core::target::map_target(target);
+            let (_, arch) = anodizer_core::target::map_target(target);
             if arch == "amd64"
                 && let Some(want) = amd64_variant
             {
@@ -295,7 +295,7 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         })
         .map(|a| {
             let target = a.target.as_deref().unwrap_or("");
-            let (_, raw_arch) = anodize_core::target::map_target(target);
+            let (_, raw_arch) = anodizer_core::target::map_target(target);
 
             // Map architecture to Scoop keys.
             let scoop_arch = match raw_arch.as_str() {
@@ -497,7 +497,7 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         pr_branch,
         &format!("Update {} manifest to {}", manifest_name, version),
         &format!(
-            "## Manifest\n- **Name**: {}\n- **Version**: {}\n\nAutomatically submitted by anodize.",
+            "## Manifest\n- **Name**: {}\n- **Version**: {}\n\nAutomatically submitted by anodizer.",
             manifest_name, version
         ),
         "scoop",
@@ -556,9 +556,11 @@ mod tests {
 
     #[test]
     fn test_publish_to_scoop_dry_run() {
-        use anodize_core::config::{BucketConfig, Config, CrateConfig, PublishConfig, ScoopConfig};
-        use anodize_core::context::{Context, ContextOptions};
-        use anodize_core::log::{StageLogger, Verbosity};
+        use anodizer_core::config::{
+            BucketConfig, Config, CrateConfig, PublishConfig, ScoopConfig,
+        };
+        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::log::{StageLogger, Verbosity};
 
         let mut config = Config::default();
         config.crates = vec![CrateConfig {
@@ -609,15 +611,15 @@ mod tests {
     #[test]
     fn test_integration_manifest_complete_json_structure() {
         let opts = ManifestOptions {
-            github_slug: Some("tj-smith47/anodize".to_string()),
+            github_slug: Some("tj-smith47/anodizer".to_string()),
             ..Default::default()
         };
         let entries = arch_64(
-            "https://github.com/tj-smith47/anodize/releases/download/v3.2.1/anodize-3.2.1-windows-amd64.zip",
+            "https://github.com/tj-smith47/anodizer/releases/download/v3.2.1/anodizer-3.2.1-windows-amd64.zip",
             "aabbccdd1122334455667788",
         );
         let manifest = generate_manifest_with_opts(
-            "anodize",
+            "anodizer",
             "3.2.1",
             &entries,
             "Release automation for Rust projects",
@@ -633,7 +635,7 @@ mod tests {
         // Verify top-level fields exist and have correct values
         assert_eq!(json["version"], "3.2.1");
         assert_eq!(json["description"], "Release automation for Rust projects");
-        assert_eq!(json["homepage"], "https://github.com/tj-smith47/anodize");
+        assert_eq!(json["homepage"], "https://github.com/tj-smith47/anodizer");
         assert_eq!(json["license"], "Apache-2.0");
 
         // Verify architecture.64bit structure
@@ -644,10 +646,10 @@ mod tests {
         );
         assert_eq!(
             arch_64["url"],
-            "https://github.com/tj-smith47/anodize/releases/download/v3.2.1/anodize-3.2.1-windows-amd64.zip"
+            "https://github.com/tj-smith47/anodizer/releases/download/v3.2.1/anodizer-3.2.1-windows-amd64.zip"
         );
         assert_eq!(arch_64["hash"], "aabbccdd1122334455667788");
-        assert_eq!(arch_64["bin"], "anodize.exe");
+        assert_eq!(arch_64["bin"], "anodizer.exe");
 
         // checkver and autoupdate are NOT emitted.
         assert!(
@@ -1199,9 +1201,11 @@ mod tests {
 
     #[test]
     fn test_publish_to_scoop_skip_upload_true() {
-        use anodize_core::config::{BucketConfig, Config, CrateConfig, PublishConfig, ScoopConfig};
-        use anodize_core::context::{Context, ContextOptions};
-        use anodize_core::log::{StageLogger, Verbosity};
+        use anodizer_core::config::{
+            BucketConfig, Config, CrateConfig, PublishConfig, ScoopConfig,
+        };
+        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::log::{StageLogger, Verbosity};
 
         let config = Config {
             crates: vec![CrateConfig {
@@ -1214,7 +1218,7 @@ mod tests {
                             owner: "myorg".to_string(),
                             name: "scoop-bucket".to_string(),
                         }),
-                        skip_upload: Some(anodize_core::config::StringOrBool::String(
+                        skip_upload: Some(anodizer_core::config::StringOrBool::String(
                             "true".to_string(),
                         )),
                         ..Default::default()
@@ -1233,9 +1237,11 @@ mod tests {
 
     #[test]
     fn test_publish_to_scoop_skip_upload_auto_prerelease() {
-        use anodize_core::config::{BucketConfig, Config, CrateConfig, PublishConfig, ScoopConfig};
-        use anodize_core::context::{Context, ContextOptions};
-        use anodize_core::log::{StageLogger, Verbosity};
+        use anodizer_core::config::{
+            BucketConfig, Config, CrateConfig, PublishConfig, ScoopConfig,
+        };
+        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::log::{StageLogger, Verbosity};
 
         let config = Config {
             crates: vec![CrateConfig {
@@ -1248,7 +1254,7 @@ mod tests {
                             owner: "myorg".to_string(),
                             name: "scoop-bucket".to_string(),
                         }),
-                        skip_upload: Some(anodize_core::config::StringOrBool::String(
+                        skip_upload: Some(anodizer_core::config::StringOrBool::String(
                             "auto".to_string(),
                         )),
                         ..Default::default()
@@ -1293,9 +1299,11 @@ mod tests {
 
     #[test]
     fn test_publish_to_scoop_dry_run_with_directory() {
-        use anodize_core::config::{BucketConfig, Config, CrateConfig, PublishConfig, ScoopConfig};
-        use anodize_core::context::{Context, ContextOptions};
-        use anodize_core::log::{StageLogger, Verbosity};
+        use anodizer_core::config::{
+            BucketConfig, Config, CrateConfig, PublishConfig, ScoopConfig,
+        };
+        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::log::{StageLogger, Verbosity};
 
         let mut config = Config::default();
         config.crates = vec![CrateConfig {

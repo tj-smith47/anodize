@@ -5,11 +5,11 @@ pub use split::run_merge;
 
 use super::helpers;
 use crate::pipeline;
-use anodize_core::config::{Config, CrateConfig, WorkspaceConfig};
-use anodize_core::context::{Context, ContextOptions};
-use anodize_core::git;
-use anodize_core::log::{StageLogger, Verbosity};
-use anodize_core::template;
+use anodizer_core::config::{Config, CrateConfig, WorkspaceConfig};
+use anodizer_core::context::{Context, ContextOptions};
+use anodizer_core::git;
+use anodizer_core::log::{StageLogger, Verbosity};
+use anodizer_core::template;
 use anyhow::{Context as _, Result};
 use chrono::Utc;
 use std::path::PathBuf;
@@ -141,7 +141,7 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
             )
         })?;
         let release = config.release.get_or_insert_with(Default::default);
-        release.header = Some(anodize_core::config::ContentSource::Inline(header_content));
+        release.header = Some(anodizer_core::config::ContentSource::Inline(header_content));
     }
     // --release-header-tmpl overrides --release-header: file content is
     // stored as-is and rendered through the template engine by the release stage.
@@ -153,7 +153,7 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
             )
         })?;
         let release = config.release.get_or_insert_with(Default::default);
-        release.header = Some(anodize_core::config::ContentSource::Inline(raw));
+        release.header = Some(anodizer_core::config::ContentSource::Inline(raw));
     }
     if let Some(ref footer_path) = opts.release_footer {
         let footer_content = std::fs::read_to_string(footer_path).with_context(|| {
@@ -163,7 +163,7 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
             )
         })?;
         let release = config.release.get_or_insert_with(Default::default);
-        release.footer = Some(anodize_core::config::ContentSource::Inline(footer_content));
+        release.footer = Some(anodizer_core::config::ContentSource::Inline(footer_content));
     }
     // --release-footer-tmpl overrides --release-footer (template-rendered).
     if let Some(ref footer_tmpl_path) = opts.release_footer_tmpl {
@@ -174,7 +174,7 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
             )
         })?;
         let release = config.release.get_or_insert_with(Default::default);
-        release.footer = Some(anodize_core::config::ContentSource::Inline(raw));
+        release.footer = Some(anodizer_core::config::ContentSource::Inline(raw));
     }
 
     if opts.clean && !opts.dry_run {
@@ -484,7 +484,7 @@ fn run_post_pipeline(
     ctx: &mut Context,
     config: &Config,
     dry_run: bool,
-    log: &anodize_core::log::StageLogger,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<()> {
     // Print artifact size table if configured
     helpers::run_report_sizes(ctx, config, log);
@@ -527,7 +527,7 @@ fn run_post_pipeline(
 /// Detect which crates have changes since their last tag.
 fn detect_changed_crates(
     crates: &[CrateConfig],
-    git_config: Option<&anodize_core::config::GitConfig>,
+    git_config: Option<&anodizer_core::config::GitConfig>,
     monorepo_prefix: Option<&str>,
     log: &StageLogger,
 ) -> Result<Vec<String>> {
@@ -690,7 +690,7 @@ fn topo_sort_selected(all_crates: &[CrateConfig], selected: &[String]) -> Vec<St
         .map(|c| (c.name.clone(), c.depends_on.clone().unwrap_or_default()))
         .collect();
 
-    anodize_core::util::topological_sort(&items)
+    anodizer_core::util::topological_sort(&items)
 }
 
 // ---------------------------------------------------------------------------
@@ -700,7 +700,7 @@ fn topo_sort_selected(all_crates: &[CrateConfig], selected: &[String]) -> Vec<St
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anodize_core::config::{CrateConfig, WorkspaceConfig};
+    use anodizer_core::config::{CrateConfig, WorkspaceConfig};
 
     fn make_crate(name: &str, deps: Option<Vec<&str>>) -> CrateConfig {
         CrateConfig {
@@ -829,7 +829,7 @@ mod tests {
     /// - `changelog` replaces top-level changelog when workspace has its own
     #[test]
     fn test_workspace_overlay_semantics() {
-        use anodize_core::config::{ChangelogConfig, SignConfig};
+        use anodizer_core::config::{ChangelogConfig, SignConfig};
         use std::collections::HashMap;
 
         // Build a top-level config with env, signs, and changelog
@@ -995,7 +995,7 @@ mod tests {
 
     #[test]
     fn test_draft_flag_overrides_existing_config() {
-        use anodize_core::config::ReleaseConfig;
+        use anodizer_core::config::ReleaseConfig;
 
         // Start with a config that has draft=false
         let mut config = Config {

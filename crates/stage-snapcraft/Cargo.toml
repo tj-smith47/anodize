@@ -1,14 +1,14 @@
 [package]
-name = "anodize-stage-snapcraft"
+name = "anodizer-stage-snapcraft"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "Snapcraft packaging stage for anodize release automation"
+description = "Snapcraft packaging stage for anodizer release automation"
 
 [dependencies]
-anodize-core.workspace = true
+anodizer-core.workspace = true
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true

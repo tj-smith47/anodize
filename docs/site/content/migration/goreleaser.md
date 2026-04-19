@@ -1,15 +1,15 @@
 +++
 title = "From GoReleaser"
-description = "Migrate from GoReleaser to anodize"
+description = "Migrate from GoReleaser to anodizer"
 weight = 1
 template = "docs.html"
 +++
 
-If you're coming from GoReleaser, anodize will feel familiar. The config structure, CLI verbs, and template vocabulary are intentionally similar.
+If you're coming from GoReleaser, anodizer will feel familiar. The config structure, CLI verbs, and template vocabulary are intentionally similar.
 
 ## Config mapping
 
-| GoReleaser | Anodize | Notes |
+| GoReleaser | Anodizer | Notes |
 |------------|---------|-------|
 | `project_name` | `project_name` | Identical |
 | `builds` | `crates[].builds` | Nested under crate config |
@@ -29,10 +29,10 @@ If you're coming from GoReleaser, anodize will feel familiar. The config structu
 
 ## Template syntax
 
-Both GoReleaser and anodize template styles work:
+Both GoReleaser and anodizer template styles work:
 
 ```yaml
-# GoReleaser style (works in anodize):
+# GoReleaser style (works in anodizer):
 name_template: "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
 
 # Native Tera style:
@@ -41,22 +41,22 @@ name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
 
 ## Key differences
 
-1. **Crate-centric config**: In GoReleaser, builds/archives/releases are top-level arrays. In anodize, they're nested under `crates[]` to support workspace-based releases.
+1. **Crate-centric config**: In GoReleaser, builds/archives/releases are top-level arrays. In anodizer, they're nested under `crates[]` to support workspace-based releases.
 
-2. **Cross-compilation**: GoReleaser uses `GOOS`/`GOARCH`. Anodize uses Rust target triples (`x86_64-unknown-linux-gnu`) with auto-detected cross-compilation strategy.
+2. **Cross-compilation**: GoReleaser uses `GOOS`/`GOARCH`. Anodizer uses Rust target triples (`x86_64-unknown-linux-gnu`) with auto-detected cross-compilation strategy.
 
-3. **Template engine**: GoReleaser uses Go templates. Anodize uses Tera (Jinja2-like). The GoReleaser `{{ .Field }}` syntax is supported for compatibility, but Tera's native syntax offers more features (pipes, filters, loops).
+3. **Template engine**: GoReleaser uses Go templates. Anodizer uses Tera (Jinja2-like). The GoReleaser `{{ .Field }}` syntax is supported for compatibility, but Tera's native syntax offers more features (pipes, filters, loops).
 
 4. **Package manager names**: `brews` → `publish.homebrew`, `scoop` → `publish.scoop`.
 
 ## Migration steps
 
-1. Install anodize: `cargo install anodize`
-2. Run `anodize init` to generate a starter config from your `Cargo.toml`
-3. Copy relevant settings from your `.goreleaser.yaml` into `.anodize.yaml`, adjusting for the nested crate structure
-4. Run `anodize check` to validate
-5. Run `anodize release --dry-run` to verify the pipeline
-6. Replace the `goreleaser/goreleaser-action` step in CI with [`tj-smith47/anodize-action`](@/docs/ci/anodize-action.md)
+1. Install anodizer: `cargo install anodizer`
+2. Run `anodizer init` to generate a starter config from your `Cargo.toml`
+3. Copy relevant settings from your `.goreleaser.yaml` into `.anodizer.yaml`, adjusting for the nested crate structure
+4. Run `anodizer check` to validate
+5. Run `anodizer release --dry-run` to verify the pipeline
+6. Replace the `goreleaser/goreleaser-action` step in CI with [`tj-smith47/anodizer-action`](@/docs/ci/anodizer-action.md)
 
 ## CI workflow replacement
 
@@ -71,15 +71,15 @@ Where a GoReleaser workflow looks like:
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-The anodize equivalent is:
+The anodizer equivalent is:
 
 ```yaml
-- uses: tj-smith47/anodize-action@v1
+- uses: tj-smith47/anodizer-action@v1
   with:
-    auto-install: true          # auto-installs nfpm, cosign, etc. from .anodize.yaml
+    auto-install: true          # auto-installs nfpm, cosign, etc. from .anodizer.yaml
     args: release --clean
   env:
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-`auto-install: true` parses `.anodize.yaml` and installs pipeline dependencies (nfpm for linux packages, cosign for signing, zig/cargo-zigbuild for cross-compilation, ...) — the anodize action's equivalent of GoReleaser's bundled Go-native implementations. See [anodize-action reference](@/docs/ci/anodize-action.md) for all inputs.
+`auto-install: true` parses `.anodizer.yaml` and installs pipeline dependencies (nfpm for linux packages, cosign for signing, zig/cargo-zigbuild for cross-compilation, ...) — the anodizer action's equivalent of GoReleaser's bundled Go-native implementations. See [anodizer-action reference](@/docs/ci/anodizer-action.md) for all inputs.

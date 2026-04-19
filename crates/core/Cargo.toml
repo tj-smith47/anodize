@@ -1,6 +1,6 @@
 [package]
-name = "anodize-core"
-description = "Core configuration, context, and template engine for the anodize release tool"
+name = "anodizer-core"
+description = "Core configuration, context, and template engine for the anodizer release tool"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,7 +13,7 @@ categories.workspace = true
 test-helpers = []
 
 [dev-dependencies]
-anodize-core = { path = ".", features = ["test-helpers"] }
+anodizer-core = { path = ".", features = ["test-helpers"] }
 serial_test.workspace = true
 tempfile = "3"
 

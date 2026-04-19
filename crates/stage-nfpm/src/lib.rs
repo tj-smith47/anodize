@@ -8,13 +8,13 @@ mod filename;
 use anyhow::{Context as _, Result, bail};
 use serde::Serialize;
 
-use anodize_core::artifact::{Artifact, ArtifactKind};
-use anodize_core::config::{
+use anodizer_core::artifact::{Artifact, ArtifactKind};
+use anodizer_core::config::{
     NfpmApkConfig, NfpmArchlinuxConfig, NfpmConfig, NfpmDebConfig, NfpmIpkConfig, NfpmRpmConfig,
     NfpmScripts, NfpmSignatureConfig,
 };
-use anodize_core::context::Context;
-use anodize_core::stage::Stage;
+use anodizer_core::context::Context;
+use anodizer_core::stage::Stage;
 
 // ---------------------------------------------------------------------------
 // Serde-serializable nfpm YAML model
@@ -320,7 +320,7 @@ pub struct NfpmLibraryPaths {
     pub c_shared: Vec<String>,
 }
 
-/// Generate an nfpm YAML configuration string from the anodize nfpm config.
+/// Generate an nfpm YAML configuration string from the anodizer nfpm config.
 ///
 /// `format` is the target packager format (e.g. "deb", "rpm") used to select
 /// format-specific dependencies from the `dependencies` HashMap.  Pass `None`
@@ -342,7 +342,7 @@ pub fn generate_nfpm_yaml(
     // Default env map: empty. The passphrase resolver falls back to process
     // env for unknown keys, so behavior is preserved for callers that don't
     // pass a ctx env map. `generate_nfpm_yaml_with_env` is the production
-    // entrypoint that passes the real anodize ctx env map.
+    // entrypoint that passes the real anodizer ctx env map.
     let empty_env = std::collections::HashMap::new();
     generate_nfpm_yaml_with_env(
         config,
@@ -355,7 +355,7 @@ pub fn generate_nfpm_yaml(
     )
 }
 
-/// Generate nfpm YAML using the anodize ctx env map (project `env:` +
+/// Generate nfpm YAML using the anodizer ctx env map (project `env:` +
 /// `env_files:` + process env) for passphrase resolution. Matches
 /// GoReleaser internal/pipe/nfpm/nfpm.go:640 which reads from `ctx.Env`
 /// rather than `os.Getenv`, so `NFPM_PASSPHRASE` defined in project YAML
@@ -658,9 +658,9 @@ pub fn generate_nfpm_yaml_with_env(
 ///   2. NFPM_{ID}_PASSPHRASE
 ///   3. NFPM_PASSPHRASE
 ///
-/// `env_map` is the anodize ctx env map (process env + project `env:` +
+/// `env_map` is the anodizer ctx env map (process env + project `env:` +
 /// `env_files:`). Looking up here — instead of `std::env::var` directly —
-/// means values defined in `.anodize.yaml` `env:` are visible to the signer,
+/// means values defined in `.anodizer.yaml` `env:` are visible to the signer,
 /// matching GoReleaser internal/pipe/nfpm/nfpm.go:640 which reads from
 /// `ctx.Env` rather than `os.Getenv`.
 ///
@@ -1003,7 +1003,7 @@ impl Stage for NfpmStage {
                 .filter(|b| {
                     b.target
                         .as_deref()
-                        .map(anodize_core::target::is_nfpm_target)
+                        .map(anodizer_core::target::is_nfpm_target)
                         .unwrap_or(false)
                 })
                 .cloned()
@@ -1159,7 +1159,7 @@ impl Stage for NfpmStage {
                     // Derive Os/Arch from the target triple for template rendering
                     let (base_os, base_arch) = target
                         .as_deref()
-                        .map(anodize_core::target::map_target)
+                        .map(anodizer_core::target::map_target)
                         .unwrap_or_else(|| ("linux".to_string(), "amd64".to_string()));
 
                     for format in &nfpm_cfg.formats {
@@ -1487,7 +1487,7 @@ impl Stage for NfpmStage {
                         }
 
                         // Generate YAML per format so format-specific deps are selected.
-                        // Pass the anodize ctx env map so passphrase lookups
+                        // Pass the anodizer ctx env map so passphrase lookups
                         // see project `env:` / `env_files:` values (W6 fix).
                         let yaml_content = generate_nfpm_yaml_with_env(
                             &rendered_cfg,
@@ -1620,7 +1620,7 @@ impl Stage for NfpmStage {
                             let rendered_mtime = ctx
                                 .render_template(raw_mtime)
                                 .unwrap_or_else(|_| raw_mtime.clone());
-                            match anodize_core::util::parse_mod_timestamp(&rendered_mtime) {
+                            match anodizer_core::util::parse_mod_timestamp(&rendered_mtime) {
                                 Ok(mt) => (Some(mt), Some(rendered_mtime)),
                                 Err(e) => {
                                     log.warn(&format!(
@@ -1649,7 +1649,7 @@ impl Stage for NfpmStage {
             }
         }
 
-        anodize_core::template::clear_per_target_vars(ctx.template_vars_mut());
+        anodizer_core::template::clear_per_target_vars(ctx.template_vars_mut());
         // nfpm also uses its own per-format / per-packaging vars; clear
         // them here so user-template state doesn't leak into downstream
         // stages like announce or publish.
@@ -1671,7 +1671,7 @@ impl Stage for NfpmStage {
         // ----------------------------------------------------------------
         if !jobs.is_empty() {
             let run_job = |job: &NfpmJob| -> Result<Artifact> {
-                let thread_log = anodize_core::log::StageLogger::new("nfpm", log.verbosity());
+                let thread_log = anodizer_core::log::StageLogger::new("nfpm", log.verbosity());
 
                 thread_log.status(&format!("running: {}", job.cmd_args.join(" ")));
 
@@ -1688,7 +1688,7 @@ impl Stage for NfpmStage {
 
                 // Reproducible-build mtime — pre-parsed in Phase 1.
                 if let Some(mt) = job.mtime {
-                    if let Err(e) = anodize_core::util::set_file_mtime(&job.pkg_path, mt) {
+                    if let Err(e) = anodizer_core::util::set_file_mtime(&job.pkg_path, mt) {
                         thread_log.warn(&format!(
                             "nfpm: failed to apply mtime to {}: {}",
                             job.pkg_path.display(),
@@ -1714,7 +1714,7 @@ impl Stage for NfpmStage {
             };
 
             let results =
-                anodize_core::parallel::run_parallel_chunks(&jobs, parallelism, "nfpm", run_job)?;
+                anodizer_core::parallel::run_parallel_chunks(&jobs, parallelism, "nfpm", run_job)?;
             new_artifacts.extend(results);
         }
 
@@ -1828,8 +1828,8 @@ mod tests {
 
     #[test]
     fn test_stage_skips_when_no_nfpm_config() {
-        use anodize_core::config::Config;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
 
         // NfpmStage should be a no-op when crates have no nfpm block
         let config = Config::default();
@@ -1841,7 +1841,7 @@ mod tests {
 
     #[test]
     fn test_generate_nfpm_yaml_with_contents() {
-        use anodize_core::config::NfpmContent;
+        use anodizer_core::config::NfpmContent;
         let nfpm_cfg = NfpmConfig {
             package_name: Some("myapp".to_string()),
             formats: vec!["rpm".to_string()],
@@ -1889,8 +1889,8 @@ mod tests {
 
     #[test]
     fn test_stage_dry_run_registers_artifacts() {
-        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -1939,7 +1939,7 @@ mod tests {
 
     #[test]
     fn test_generate_nfpm_yaml_with_scripts() {
-        use anodize_core::config::NfpmScripts;
+        use anodizer_core::config::NfpmScripts;
         let nfpm_cfg = NfpmConfig {
             package_name: Some("myapp".to_string()),
             formats: vec!["deb".to_string()],
@@ -2000,7 +2000,7 @@ mod tests {
 
     #[test]
     fn test_generate_nfpm_yaml_with_contents_type_and_file_info() {
-        use anodize_core::config::{NfpmContent, NfpmFileInfo};
+        use anodizer_core::config::{NfpmContent, NfpmFileInfo};
         let nfpm_cfg = NfpmConfig {
             package_name: Some("myapp".to_string()),
             formats: vec!["deb".to_string()],
@@ -2036,7 +2036,7 @@ mod tests {
 
     #[test]
     fn test_generate_nfpm_yaml_contents_without_file_info() {
-        use anodize_core::config::NfpmContent;
+        use anodizer_core::config::NfpmContent;
         let nfpm_cfg = NfpmConfig {
             package_name: Some("myapp".to_string()),
             formats: vec!["deb".to_string()],
@@ -2079,7 +2079,7 @@ crates:
           preinstall: /scripts/pre.sh
           postinstall: /scripts/post.sh
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let nfpm = config.crates[0].nfpm.as_ref().unwrap();
         let scripts = nfpm[0].scripts.as_ref().unwrap();
         assert_eq!(scripts.preinstall.as_deref(), Some("/scripts/pre.sh"));
@@ -2110,7 +2110,7 @@ crates:
         provides:
           - test-bin
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let nfpm = config.crates[0].nfpm.as_ref().unwrap();
         assert_eq!(nfpm[0].recommends.as_ref().unwrap(), &["libfoo"]);
         assert_eq!(nfpm[0].suggests.as_ref().unwrap(), &["libbar"]);
@@ -2139,7 +2139,7 @@ crates:
               group: wheel
               mode: "0755"
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let nfpm = config.crates[0].nfpm.as_ref().unwrap();
         let contents = nfpm[0].contents.as_ref().unwrap();
         assert_eq!(contents[0].content_type.as_deref(), Some("config"));
@@ -2177,7 +2177,7 @@ crates:
 
     #[test]
     fn test_scripts_block_appears_in_generated_yaml() {
-        use anodize_core::config::NfpmScripts;
+        use anodizer_core::config::NfpmScripts;
         let nfpm_cfg = NfpmConfig {
             package_name: Some("myapp".to_string()),
             formats: vec!["deb".to_string()],
@@ -2235,7 +2235,7 @@ crates:
 
     #[test]
     fn test_contents_type_and_file_info_serialize_correctly() {
-        use anodize_core::config::{NfpmContent, NfpmFileInfo};
+        use anodizer_core::config::{NfpmContent, NfpmFileInfo};
         let nfpm_cfg = NfpmConfig {
             package_name: Some("myapp".to_string()),
             formats: vec!["deb".to_string()],
@@ -2289,8 +2289,8 @@ crates:
 
     #[test]
     fn test_multiple_formats_in_one_pass() {
-        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -2337,8 +2337,8 @@ crates:
 
     #[test]
     fn test_file_name_template_rendering() {
-        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -2388,8 +2388,8 @@ crates:
 
     #[test]
     fn test_artifact_registration_of_linux_package() {
-        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -2484,8 +2484,8 @@ crates:
     #[test]
     fn test_nfpm_missing_binary_produces_error_in_live_mode() {
         // When nfpm binary is missing, the stage should fail with a clear error
-        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -2580,8 +2580,8 @@ crates:
 
     #[test]
     fn test_invalid_file_name_template_errors() {
-        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -2627,8 +2627,8 @@ crates:
 
     #[test]
     fn test_create_output_dir_failure_errors() {
-        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let nfpm_cfg = NfpmConfig {
             package_name: Some("myapp".to_string()),
@@ -2679,8 +2679,8 @@ crates:
 
     #[test]
     fn test_ids_filter_includes_matching_binaries_only() {
-        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -2741,8 +2741,8 @@ crates:
 
     #[test]
     fn test_ids_filter_no_match_produces_no_packages() {
-        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -2793,8 +2793,8 @@ crates:
 
     #[test]
     fn test_no_ids_includes_all_binaries() {
-        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -2855,8 +2855,8 @@ crates:
 
     #[test]
     fn test_id_metadata_set_on_created_artifacts() {
-        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -2902,8 +2902,8 @@ crates:
 
     #[test]
     fn test_no_id_means_no_id_in_metadata() {
-        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -2947,8 +2947,8 @@ crates:
 
     #[test]
     fn test_ids_filter_with_multiple_matching_ids() {
-        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -3277,7 +3277,7 @@ crates:
 
     #[test]
     fn test_generate_nfpm_yaml_file_info_mtime() {
-        use anodize_core::config::{NfpmContent, NfpmFileInfo};
+        use anodizer_core::config::{NfpmContent, NfpmFileInfo};
         let nfpm_cfg = NfpmConfig {
             package_name: Some("myapp".to_string()),
             formats: vec!["deb".to_string()],
@@ -3401,7 +3401,7 @@ crates:
 
     #[test]
     fn test_generate_nfpm_yaml_deb_config() {
-        use anodize_core::config::NfpmDebTriggers;
+        use anodizer_core::config::NfpmDebTriggers;
         let nfpm_cfg = NfpmConfig {
             package_name: Some("myapp".to_string()),
             formats: vec!["deb".to_string()],
@@ -3520,7 +3520,7 @@ crates:
 
     #[test]
     fn test_generate_nfpm_yaml_apk_config() {
-        use anodize_core::config::NfpmApkConfig;
+        use anodizer_core::config::NfpmApkConfig;
         let nfpm_cfg = NfpmConfig {
             package_name: Some("myapp".to_string()),
             formats: vec!["apk".to_string()],
@@ -3554,7 +3554,7 @@ crates:
 
     #[test]
     fn test_generate_nfpm_yaml_archlinux_config() {
-        use anodize_core::config::{NfpmArchlinuxConfig, NfpmArchlinuxScripts};
+        use anodizer_core::config::{NfpmArchlinuxConfig, NfpmArchlinuxScripts};
         let nfpm_cfg = NfpmConfig {
             package_name: Some("myapp".to_string()),
             formats: vec!["archlinux".to_string()],
@@ -3635,7 +3635,7 @@ crates:
 
     #[test]
     fn test_generate_nfpm_yaml_deb_triggers_all_fields() {
-        use anodize_core::config::NfpmDebTriggers;
+        use anodizer_core::config::NfpmDebTriggers;
         let nfpm_cfg = NfpmConfig {
             package_name: Some("myapp".to_string()),
             formats: vec!["deb".to_string()],
@@ -3692,8 +3692,8 @@ crates:
 
     #[test]
     fn test_termux_deb_format_produces_artifact() {
-        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -3740,8 +3740,8 @@ crates:
 
     #[test]
     fn test_ipk_format_produces_artifact() {
-        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -3804,7 +3804,7 @@ crates:
         umask: "0o002"
         mtime: "2023-01-01T00:00:00Z"
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
         assert_eq!(nfpm.epoch.as_deref(), Some("1"));
         assert_eq!(nfpm.release.as_deref(), Some("2"));
@@ -3840,7 +3840,7 @@ crates:
             key_file: /path/to/key.gpg
             key_id: ABCD1234
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
         let rpm = nfpm.rpm.as_ref().unwrap();
         assert_eq!(rpm.summary.as_deref(), Some("My package summary"));
@@ -3885,7 +3885,7 @@ crates:
           fields:
             Bugs: "https://github.com/example/project/issues"
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
         let deb = nfpm.deb.as_ref().unwrap();
         assert_eq!(deb.compression.as_deref(), Some("xz"));
@@ -3925,7 +3925,7 @@ crates:
           signature:
             key_file: /path/to/key.rsa
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
         let apk = nfpm.apk.as_ref().unwrap();
         let sig = apk.signature.as_ref().unwrap();
@@ -3950,7 +3950,7 @@ crates:
             preupgrade: scripts/preupgrade.sh
             postupgrade: scripts/postupgrade.sh
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
         let arch = nfpm.archlinux.as_ref().unwrap();
         assert_eq!(arch.pkgbase.as_deref(), Some("myapp-base"));
@@ -3986,7 +3986,7 @@ crates:
               mode: "0755"
               mtime: "2023-01-01T00:00:00Z"
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
         let fi = nfpm.contents.as_ref().unwrap()[0]
             .file_info
@@ -4013,7 +4013,7 @@ crates:
             key_id: ABCD1234
             key_passphrase: secret
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
         let sig = nfpm.rpm.as_ref().unwrap().signature.as_ref().unwrap();
         assert_eq!(sig.key_file.as_deref(), Some("/path/to/key.gpg"));
@@ -4047,7 +4047,7 @@ crates:
             activate_noawait:
               - triggers-noawait
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
         let triggers = nfpm.deb.as_ref().unwrap().triggers.as_ref().unwrap();
         assert_eq!(triggers.interest.as_ref().unwrap(), &["/usr/share/apps"]);
@@ -4072,7 +4072,7 @@ crates:
 
     #[test]
     fn test_generate_nfpm_yaml_all_format_sections_together() {
-        use anodize_core::config::{
+        use anodizer_core::config::{
             NfpmApkConfig, NfpmArchlinuxConfig, NfpmArchlinuxScripts, NfpmDebTriggers,
         };
         let nfpm_cfg = NfpmConfig {
@@ -4170,7 +4170,7 @@ crates:
       - package_name: test
         formats: [deb, termux.deb, ipk, rpm]
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
         assert_eq!(nfpm.formats, vec!["deb", "termux.deb", "ipk", "rpm"]);
     }
@@ -4251,8 +4251,8 @@ crates:
 
     #[test]
     fn test_default_filename_includes_arch() {
-        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -4307,8 +4307,8 @@ crates:
 
     #[test]
     fn test_default_filename_no_overwrite_multiple_arches() {
-        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -4386,8 +4386,8 @@ crates:
 
     #[test]
     fn test_conventional_filename_template_var() {
-        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -4448,8 +4448,8 @@ crates:
 
     #[test]
     fn test_conventional_extension_template_var() {
-        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -4507,8 +4507,8 @@ crates:
 
     #[test]
     fn test_format_template_var_set() {
-        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -4559,8 +4559,8 @@ crates:
 
     #[test]
     fn test_template_vars_cleared_after_stage() {
-        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -4609,8 +4609,8 @@ crates:
 
     #[test]
     fn test_stage_rejects_unknown_format() {
-        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -4729,7 +4729,7 @@ crates:
 
     #[test]
     fn test_content_packager_and_expand_in_yaml() {
-        use anodize_core::config::NfpmContent;
+        use anodizer_core::config::NfpmContent;
         let nfpm_cfg = NfpmConfig {
             package_name: Some("myapp".to_string()),
             formats: vec!["deb".to_string()],
@@ -4763,7 +4763,7 @@ crates:
 
     #[test]
     fn test_content_packager_and_expand_omitted_when_none() {
-        use anodize_core::config::NfpmContent;
+        use anodizer_core::config::NfpmContent;
         let nfpm_cfg = NfpmConfig {
             package_name: Some("myapp".to_string()),
             formats: vec!["deb".to_string()],
@@ -4801,7 +4801,7 @@ crates:
 
     #[test]
     fn test_apk_scripts_in_yaml() {
-        use anodize_core::config::{NfpmApkConfig, NfpmApkScripts};
+        use anodizer_core::config::{NfpmApkConfig, NfpmApkScripts};
         let nfpm_cfg = NfpmConfig {
             package_name: Some("myapp".to_string()),
             formats: vec!["apk".to_string()],
@@ -4839,7 +4839,7 @@ crates:
 
     #[test]
     fn test_apk_scripts_omitted_when_none() {
-        use anodize_core::config::NfpmApkConfig;
+        use anodizer_core::config::NfpmApkConfig;
         let nfpm_cfg = NfpmConfig {
             package_name: Some("myapp".to_string()),
             formats: vec!["apk".to_string()],
@@ -4893,7 +4893,7 @@ crates:
             preupgrade: scripts/pre.sh
             postupgrade: scripts/post.sh
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
         let apk = nfpm.apk.as_ref().unwrap();
         let scripts = apk.scripts.as_ref().unwrap();
@@ -4918,7 +4918,7 @@ crates:
             key_name: mykey.rsa.pub
             type: origin
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
         let sig = nfpm.deb.as_ref().unwrap().signature.as_ref().unwrap();
         assert_eq!(sig.key_name.as_deref(), Some("mykey.rsa.pub"));
@@ -4942,7 +4942,7 @@ crates:
             packager: deb
             expand: true
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
         let content = &nfpm.contents.as_ref().unwrap()[0];
         assert_eq!(content.packager.as_deref(), Some("deb"));
@@ -4951,8 +4951,8 @@ crates:
 
     #[test]
     fn test_release_template_var_in_file_name_template() {
-        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -5000,8 +5000,8 @@ crates:
 
     #[test]
     fn test_epoch_template_var_in_file_name_template() {
-        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -5049,8 +5049,8 @@ crates:
 
     #[test]
     fn test_release_and_epoch_default_to_empty_string() {
-        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -5098,8 +5098,8 @@ crates:
 
     #[test]
     fn test_release_and_epoch_combined_in_file_name_template() {
-        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -5152,7 +5152,7 @@ crates:
 
     #[test]
     fn test_libdirs_header_adds_content_entry() {
-        use anodize_core::config::NfpmLibdirs;
+        use anodizer_core::config::NfpmLibdirs;
         let nfpm_cfg = NfpmConfig {
             package_name: Some("mylib".to_string()),
             formats: vec!["deb".to_string()],
@@ -5191,7 +5191,7 @@ crates:
 
     #[test]
     fn test_libdirs_carchive_adds_content_entry() {
-        use anodize_core::config::NfpmLibdirs;
+        use anodizer_core::config::NfpmLibdirs;
         let nfpm_cfg = NfpmConfig {
             package_name: Some("mylib".to_string()),
             formats: vec!["deb".to_string()],
@@ -5226,7 +5226,7 @@ crates:
 
     #[test]
     fn test_libdirs_cshared_adds_content_entry() {
-        use anodize_core::config::NfpmLibdirs;
+        use anodizer_core::config::NfpmLibdirs;
         let nfpm_cfg = NfpmConfig {
             package_name: Some("mylib".to_string()),
             formats: vec!["deb".to_string()],
@@ -5265,7 +5265,7 @@ crates:
 
     #[test]
     fn test_libdirs_all_three_add_content_entries() {
-        use anodize_core::config::NfpmLibdirs;
+        use anodizer_core::config::NfpmLibdirs;
         let nfpm_cfg = NfpmConfig {
             package_name: Some("mylib".to_string()),
             formats: vec!["deb".to_string()],
@@ -5337,7 +5337,7 @@ crates:
 
     #[test]
     fn test_libdirs_defaults_applied_when_block_present() {
-        use anodize_core::config::NfpmLibdirs;
+        use anodizer_core::config::NfpmLibdirs;
         let nfpm_cfg = NfpmConfig {
             package_name: Some("myapp".to_string()),
             formats: vec!["deb".to_string()],
@@ -5407,7 +5407,7 @@ crates:
           carchive: /usr/lib
           cshared: /usr/lib
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
         let libdirs = nfpm.libdirs.as_ref().unwrap();
         assert_eq!(libdirs.header.as_deref(), Some("/usr/include"));
@@ -5472,15 +5472,15 @@ crates:
         formats: [deb]
         changelog: changelog.yaml
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let nfpm = &config.crates[0].nfpm.as_ref().unwrap()[0];
         assert_eq!(nfpm.changelog.as_deref(), Some("changelog.yaml"));
     }
 
     #[test]
     fn test_owner_group_template_rendering_in_stage() {
-        use anodize_core::config::{Config, CrateConfig, NfpmContent, NfpmFileInfo};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, NfpmContent, NfpmFileInfo};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -5541,7 +5541,7 @@ crates:
 
     #[test]
     fn test_owner_group_static_values_pass_through() {
-        use anodize_core::config::{NfpmContent, NfpmFileInfo};
+        use anodizer_core::config::{NfpmContent, NfpmFileInfo};
         // Static (non-template) owner/group should pass through unchanged
         let nfpm_cfg = NfpmConfig {
             package_name: Some("myapp".to_string()),
@@ -5581,7 +5581,7 @@ crates:
 
     #[test]
     fn test_libdirs_with_nested_library_path() {
-        use anodize_core::config::NfpmLibdirs;
+        use anodizer_core::config::NfpmLibdirs;
         // Actual library artifact at a nested path
         let nfpm_cfg = NfpmConfig {
             package_name: Some("mylib".to_string()),
@@ -5639,7 +5639,7 @@ crates:
 
     #[test]
     fn test_libdirs_no_artifacts_no_entries() {
-        use anodize_core::config::NfpmLibdirs;
+        use anodizer_core::config::NfpmLibdirs;
         // When libdirs config exists but no library artifacts, no entries should be added.
         // GoReleaser only adds library entries when actual artifacts exist.
         let nfpm_cfg = NfpmConfig {
@@ -5674,7 +5674,7 @@ crates:
 
     #[test]
     fn test_generate_nfpm_yaml_with_ipk_config() {
-        use anodize_core::config::{NfpmIpkAlternative, NfpmIpkConfig};
+        use anodizer_core::config::{NfpmIpkAlternative, NfpmIpkConfig};
         let nfpm_cfg = NfpmConfig {
             package_name: Some("myrouter".to_string()),
             formats: vec!["ipk".to_string()],
@@ -5739,7 +5739,7 @@ crates:
 
     #[test]
     fn test_generate_nfpm_yaml_ipk_empty_config_omitted() {
-        use anodize_core::config::NfpmIpkConfig;
+        use anodizer_core::config::NfpmIpkConfig;
         let nfpm_cfg = NfpmConfig {
             package_name: Some("myapp".to_string()),
             formats: vec!["ipk".to_string()],
@@ -5762,8 +5762,8 @@ crates:
 
     #[test]
     fn test_ipk_format_dry_run_produces_artifact() {
-        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let nfpm_cfg = NfpmConfig {
@@ -5829,7 +5829,7 @@ crates:
               target: /usr/bin/target
               link_name: /usr/bin/link
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let nfpm = config.crates[0].nfpm.as_ref().unwrap();
         let ipk = nfpm[0].ipk.as_ref().unwrap();
         assert_eq!(ipk.abi_version.as_deref(), Some("1.0"));
@@ -5853,11 +5853,11 @@ crates:
 
     #[test]
     fn test_template_rendering_in_nfpm_stage() {
-        use anodize_core::config::{
+        use anodizer_core::config::{
             Config, CrateConfig, NfpmConfig, NfpmContent, NfpmDebConfig, NfpmFileInfo, NfpmLibdirs,
             NfpmScripts, NfpmSignatureConfig,
         };
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let nfpm_cfg = NfpmConfig {
@@ -5931,7 +5931,7 @@ crates:
 
     #[test]
     fn test_generate_nfpm_yaml_ipk_fields() {
-        use anodize_core::config::{NfpmIpkAlternative, NfpmIpkConfig};
+        use anodizer_core::config::{NfpmIpkAlternative, NfpmIpkConfig};
         let nfpm_cfg = NfpmConfig {
             package_name: Some("myapp".to_string()),
             formats: vec!["ipk".to_string()],
@@ -6076,12 +6076,12 @@ crates:
 
     // --- `nfpm.if` template-conditional (GoReleaser Pro v2.4+) ---
 
-    fn nfpm_if_test_ctx(if_expr: Option<&str>) -> anodize_core::context::Context {
-        use anodize_core::config::{Config, CrateConfig, NfpmConfig};
-        use anodize_core::context::{Context, ContextOptions};
+    fn nfpm_if_test_ctx(if_expr: Option<&str>) -> anodizer_core::context::Context {
+        use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+        use anodizer_core::context::{Context, ContextOptions};
         let mut config = Config::default();
         config.project_name = "myapp".to_string();
-        config.dist = std::env::temp_dir().join("anodize-nfpm-if-test");
+        config.dist = std::env::temp_dir().join("anodizer-nfpm-if-test");
         let _ = std::fs::create_dir_all(&config.dist);
         let nfpm_cfg = NfpmConfig {
             package_name: Some("myapp".to_string()),
@@ -6163,9 +6163,9 @@ crates:
 
     #[test]
     fn test_nfpm_templated_contents_renders_file_body() {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
-        use anodize_core::config::{Config, CrateConfig, NfpmConfig, NfpmContent};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::config::{Config, CrateConfig, NfpmConfig, NfpmContent};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let src_file = tmp.path().join("greeting.tmpl");
@@ -6229,9 +6229,9 @@ crates:
 
     #[test]
     fn test_nfpm_templated_scripts_renders_script_body() {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
-        use anodize_core::config::{Config, CrateConfig, NfpmConfig, NfpmScripts};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::config::{Config, CrateConfig, NfpmConfig, NfpmScripts};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let pre_path = tmp.path().join("pre.sh.tmpl");
@@ -6290,9 +6290,9 @@ crates:
     fn test_nfpm_falls_back_to_project_metadata() {
         // GoReleaser Pro parity: when nfpm config doesn't set homepage/license/
         // description/maintainer, the values from project `metadata.*` should be used.
-        use anodize_core::artifact::{Artifact, ArtifactKind};
-        use anodize_core::config::{Config, CrateConfig, MetadataConfig, NfpmConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::config::{Config, CrateConfig, MetadataConfig, NfpmConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let mut config = Config::default();

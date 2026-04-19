@@ -5,7 +5,7 @@ weight = 2
 template = "docs.html"
 +++
 
-Anodize can create releases and upload assets to Gitea repositories.
+Anodizer can create releases and upload assets to Gitea repositories.
 
 ## Minimal config
 

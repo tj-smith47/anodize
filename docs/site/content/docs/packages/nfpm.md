@@ -5,7 +5,7 @@ weight = 3
 template = "docs.html"
 +++
 
-Anodize integrates with [nFPM](https://nfpm.goreleaser.com/) to generate native Linux packages.
+Anodizer integrates with [nFPM](https://nfpm.goreleaser.com/) to generate native Linux packages.
 
 ## Minimal config
 

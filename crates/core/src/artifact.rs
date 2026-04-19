@@ -956,7 +956,7 @@ mod tests {
     fn test_print_size_report_filters_and_stores_size() {
         use std::io::Write;
 
-        let dir = std::env::temp_dir().join("anodize_test_size_report");
+        let dir = std::env::temp_dir().join("anodizer_test_size_report");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 

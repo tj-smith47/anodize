@@ -1,7 +1,7 @@
 use crate::pipeline;
-use anodize_core::artifact;
-use anodize_core::config::Config;
-use anodize_core::context::Context;
+use anodizer_core::artifact;
+use anodizer_core::config::Config;
+use anodizer_core::context::Context;
 use anyhow::{Context as _, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -121,17 +121,17 @@ fn artifact_to_split(a: &artifact::Artifact) -> SplitArtifact {
 pub(super) fn run_split(
     ctx: &mut Context,
     config: &Config,
-    log: &anodize_core::log::StageLogger,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<()> {
     // Resolve partial target from env vars / host detection
-    let partial_target = anodize_core::partial::resolve_partial_target(&config.partial)?;
+    let partial_target = anodizer_core::partial::resolve_partial_target(&config.partial)?;
     let subdir = partial_target.dist_subdir();
 
     log.status(&format!(
         "split mode: building for {} (dist/{})",
         match &partial_target {
-            anodize_core::partial::PartialTarget::Exact(t) => t.clone(),
-            anodize_core::partial::PartialTarget::OsArch { os, arch } => {
+            anodizer_core::partial::PartialTarget::Exact(t) => t.clone(),
+            anodizer_core::partial::PartialTarget::OsArch { os, arch } => {
                 if let Some(a) = arch {
                     format!("{}/{}", os, a)
                 } else {
@@ -149,12 +149,12 @@ pub(super) fn run_split(
         anyhow::bail!(
             "split: no build targets match {}. Available targets: [{}]",
             match &partial_target {
-                anodize_core::partial::PartialTarget::Exact(t) => format!("TARGET={}", t),
-                anodize_core::partial::PartialTarget::OsArch { os, arch } => {
+                anodizer_core::partial::PartialTarget::Exact(t) => format!("TARGET={}", t),
+                anodizer_core::partial::PartialTarget::OsArch { os, arch } => {
                     if let Some(a) = arch {
-                        format!("ANODIZE_OS={}, ANODIZE_ARCH={}", os, a)
+                        format!("ANODIZER_OS={}, ANODIZER_ARCH={}", os, a)
                     } else {
-                        format!("ANODIZE_OS={}", os)
+                        format!("ANODIZER_OS={}", os)
                     }
                 }
             },
@@ -283,7 +283,7 @@ fn build_matrix(targets: &[String], split_by: &str) -> SplitMatrix {
 
     for t in targets {
         let entry_target = if split_by == "goos" {
-            let (os, _) = anodize_core::target::map_target(t);
+            let (os, _) = anodizer_core::target::map_target(t);
             os
         } else {
             t.clone()
@@ -291,8 +291,8 @@ fn build_matrix(targets: &[String], split_by: &str) -> SplitMatrix {
 
         if seen.insert(entry_target.clone()) {
             // For target mode, extract OS component for runner suggestion
-            let (os, _) = anodize_core::target::map_target(t);
-            let runner = anodize_core::partial::suggest_runner(&os);
+            let (os, _) = anodizer_core::target::map_target(t);
+            let runner = anodizer_core::partial::suggest_runner(&os);
             entries.push(MatrixEntry {
                 target: entry_target,
                 runner: runner.to_string(),
@@ -310,7 +310,7 @@ fn build_matrix(targets: &[String], split_by: &str) -> SplitMatrix {
 pub fn run_merge(
     ctx: &mut Context,
     config: &Config,
-    log: &anodize_core::log::StageLogger,
+    log: &anodizer_core::log::StageLogger,
     dry_run: bool,
     dist_override: Option<&Path>,
 ) -> Result<()> {
@@ -327,7 +327,7 @@ pub fn run_merge(
         if artifact_files.is_empty() {
             anyhow::bail!(
                 "merge: no context.json or artifacts.json files found in {}. \
-                 Run `anodize release --split` first.",
+                 Run `anodizer release --split` first.",
                 dist.display()
             );
         }
@@ -433,7 +433,7 @@ pub fn run_merge(
 fn run_merge_legacy(
     ctx: &mut Context,
     config: &Config,
-    log: &anodize_core::log::StageLogger,
+    log: &anodizer_core::log::StageLogger,
     dry_run: bool,
     artifact_files: &[PathBuf],
 ) -> Result<()> {
@@ -496,7 +496,7 @@ fn run_merge_legacy(
 /// Collect all build targets from config for matrix generation.
 ///
 /// Delegates to the shared `commands::helpers::collect_build_targets` so the
-/// `anodize targets` CLI and the split pipeline agree on target resolution.
+/// `anodizer targets` CLI and the split pipeline agree on target resolution.
 fn collect_build_targets(config: &Config, ctx: &Context) -> Vec<String> {
     crate::commands::helpers::collect_build_targets(config, &ctx.options.selected_crates)
 }
@@ -555,7 +555,7 @@ fn find_split_artifacts(dist: &Path) -> Result<Vec<PathBuf>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anodize_core::config::CrateConfig;
+    use anodizer_core::config::CrateConfig;
     use std::collections::HashMap;
 
     fn make_split_artifact(kind: &str, path: &str, target: Option<&str>) -> SplitArtifact {
@@ -566,8 +566,8 @@ mod tests {
                 .to_string_lossy()
                 .to_string(),
             path: path.to_string(),
-            goos: target.map(|t| anodize_core::target::map_target(t).0),
-            goarch: target.map(|t| anodize_core::target::map_target(t).1),
+            goos: target.map(|t| anodizer_core::target::map_target(t).0),
+            goarch: target.map(|t| anodizer_core::target::map_target(t).1),
             target: target.map(String::from),
             kind: kind.to_string(),
             type_s: kind.to_string(),
@@ -698,7 +698,7 @@ mod tests {
 
     #[test]
     fn test_collect_build_targets() {
-        use anodize_core::config::BuildConfig;
+        use anodizer_core::config::BuildConfig;
 
         let config = Config {
             project_name: "test".to_string(),
@@ -717,8 +717,8 @@ mod tests {
             }],
             ..Default::default()
         };
-        let opts = anodize_core::context::ContextOptions::default();
-        let ctx = anodize_core::context::Context::new(config.clone(), opts);
+        let opts = anodizer_core::context::ContextOptions::default();
+        let ctx = anodizer_core::context::Context::new(config.clone(), opts);
         let targets = collect_build_targets(&config, &ctx);
         assert_eq!(targets.len(), 2);
         assert!(targets.contains(&"x86_64-unknown-linux-gnu".to_string()));
@@ -727,7 +727,7 @@ mod tests {
 
     #[test]
     fn test_collect_build_targets_deduplicates() {
-        use anodize_core::config::BuildConfig;
+        use anodizer_core::config::BuildConfig;
 
         let config = Config {
             project_name: "test".to_string(),
@@ -755,15 +755,15 @@ mod tests {
             ],
             ..Default::default()
         };
-        let opts = anodize_core::context::ContextOptions::default();
-        let ctx = anodize_core::context::Context::new(config.clone(), opts);
+        let opts = anodizer_core::context::ContextOptions::default();
+        let ctx = anodizer_core::context::Context::new(config.clone(), opts);
         let targets = collect_build_targets(&config, &ctx);
         assert_eq!(targets.len(), 1, "should deduplicate targets");
     }
 
     #[test]
     fn test_collect_build_targets_from_defaults() {
-        use anodize_core::config::Defaults;
+        use anodizer_core::config::Defaults;
 
         let config = Config {
             project_name: "test".to_string(),
@@ -781,8 +781,8 @@ mod tests {
             }],
             ..Default::default()
         };
-        let opts = anodize_core::context::ContextOptions::default();
-        let ctx = anodize_core::context::Context::new(config.clone(), opts);
+        let opts = anodizer_core::context::ContextOptions::default();
+        let ctx = anodizer_core::context::Context::new(config.clone(), opts);
         let targets = collect_build_targets(&config, &ctx);
         assert_eq!(targets.len(), 2);
     }
@@ -871,7 +871,7 @@ mod tests {
 
     #[test]
     fn test_split_merge_artifact_kind_roundtrip() {
-        use anodize_core::artifact::ArtifactKind;
+        use anodizer_core::artifact::ArtifactKind;
 
         // All artifact kinds should round-trip through as_str/from_str
         let kinds = [
@@ -904,7 +904,7 @@ mod tests {
 
     #[test]
     fn test_artifact_kind_from_str_unknown() {
-        use anodize_core::artifact::ArtifactKind;
+        use anodizer_core::artifact::ArtifactKind;
         assert!(ArtifactKind::parse("unknown_kind").is_none());
         assert!(ArtifactKind::parse("").is_none());
     }

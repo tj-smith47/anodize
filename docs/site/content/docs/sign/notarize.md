@@ -5,7 +5,7 @@ weight = 3
 template = "docs.html"
 +++
 
-Anodize supports macOS code signing and notarization in two modes: cross-platform (via `rcodesign`, works on any OS) and native (via `codesign` + `xcrun notarytool`, macOS only).
+Anodizer supports macOS code signing and notarization in two modes: cross-platform (via `rcodesign`, works on any OS) and native (via `codesign` + `xcrun notarytool`, macOS only).
 
 ## Cross-platform mode (rcodesign)
 

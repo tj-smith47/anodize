@@ -1,6 +1,6 @@
 [package]
-name = "anodize-stage-announce"
-description = "Announce stage for the anodize release tool — sends release notifications via webhooks"
+name = "anodizer-stage-announce"
+description = "Announce stage for the anodizer release tool — sends release notifications via webhooks"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,7 +10,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-anodize-core.workspace = true
+anodizer-core.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 reqwest.workspace = true

@@ -1,13 +1,13 @@
-Name:           anodize
+Name:           anodizer
 Version:        {{ Version }}
 Release:        1%{?dist}
 Summary:        A Rust-native release automation tool
 License:        MIT
-URL:            https://github.com/tj-smith47/anodize
+URL:            https://github.com/tj-smith47/anodizer
 Source0:        %{name}-%{version}-source.tar.gz
 
 %description
-Anodize is a release automation tool for Rust projects, inspired by
+Anodizer is a release automation tool for Rust projects, inspired by
 GoReleaser. It handles building, packaging, publishing, and announcing
 releases across multiple platforms and package managers.
 

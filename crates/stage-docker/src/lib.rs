@@ -7,12 +7,12 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 
-use anodize_core::artifact::{Artifact, ArtifactKind, matches_id_filter};
-use anodize_core::config::{DockerDigestConfig, DockerRetryConfig, SkipPushConfig, StringOrBool};
-use anodize_core::context::Context;
-use anodize_core::log::StageLogger;
-use anodize_core::stage::Stage;
-use anodize_core::target::map_target;
+use anodizer_core::artifact::{Artifact, ArtifactKind, matches_id_filter};
+use anodizer_core::config::{DockerDigestConfig, DockerRetryConfig, SkipPushConfig, StringOrBool};
+use anodizer_core::context::Context;
+use anodizer_core::log::StageLogger;
+use anodizer_core::stage::Stage;
+use anodizer_core::target::map_target;
 
 // ---------------------------------------------------------------------------
 // levenshtein_distance
@@ -811,7 +811,7 @@ struct DockerBuildResult {
 fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<DockerBuildResult> {
     log.status(&format!("running: {}", job.cmd_args.join(" ")));
 
-    use anodize_core::retry::{RetryPolicy, retry_sync};
+    use anodizer_core::retry::{RetryPolicy, retry_sync};
     use std::ops::ControlFlow;
     let policy = RetryPolicy {
         max_attempts: job.max_attempts,
@@ -853,14 +853,14 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
             .collect();
 
         if !output.stdout.is_empty() {
-            let redacted = anodize_core::redact::redact_string(
+            let redacted = anodizer_core::redact::redact_string(
                 &String::from_utf8_lossy(&output.stdout),
                 &env_pairs,
             );
             output.stdout = redacted.into_bytes();
         }
         if !output.stderr.is_empty() {
-            let redacted = anodize_core::redact::redact_string(
+            let redacted = anodizer_core::redact::redact_string(
                 &String::from_utf8_lossy(&output.stderr),
                 &env_pairs,
             );
@@ -948,12 +948,12 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
         for tag in &job.rendered_tags {
             log.status(&format!("pushing {}", tag));
 
-            let push_policy = anodize_core::retry::RetryPolicy {
+            let push_policy = anodizer_core::retry::RetryPolicy {
                 max_attempts: job.max_attempts,
                 base_delay: job.base_delay,
                 max_delay: job.max_delay.unwrap_or(Duration::MAX),
             };
-            anodize_core::retry::retry_sync(&push_policy, |attempt| {
+            anodizer_core::retry::retry_sync(&push_policy, |attempt| {
                 use std::ops::ControlFlow;
                 if attempt > 1 {
                     log.warn(&format!(
@@ -996,14 +996,14 @@ fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<Docke
                 let mut stdout_bytes = push_output.stdout;
                 let mut stderr_bytes = push_output.stderr;
                 if !stdout_bytes.is_empty() {
-                    let redacted = anodize_core::redact::redact_string(
+                    let redacted = anodizer_core::redact::redact_string(
                         &String::from_utf8_lossy(&stdout_bytes),
                         &env_pairs,
                     );
                     stdout_bytes = redacted.into_bytes();
                 }
                 if !stderr_bytes.is_empty() {
-                    let redacted = anodize_core::redact::redact_string(
+                    let redacted = anodizer_core::redact::redact_string(
                         &String::from_utf8_lossy(&stderr_bytes),
                         &env_pairs,
                     );
@@ -1758,7 +1758,7 @@ impl Stage for DockerStage {
                 if let Some(ref tpl_specs) = docker_cfg.templated_extra_files
                     && !tpl_specs.is_empty()
                 {
-                    anodize_core::templated_files::process_templated_extra_files(
+                    anodizer_core::templated_files::process_templated_extra_files(
                         tpl_specs,
                         ctx,
                         &staging_dir,
@@ -2632,7 +2632,7 @@ impl Stage for DockerStage {
                             })?;
 
                         {
-                            use anodize_core::retry::{RetryPolicy, retry_sync};
+                            use anodizer_core::retry::{RetryPolicy, retry_sync};
                             use std::ops::ControlFlow;
                             let policy = RetryPolicy {
                                 max_attempts: manifest_max_attempts,
@@ -2698,7 +2698,7 @@ impl Stage for DockerStage {
                                 push_cmd.push(flag.clone());
                             }
 
-                            use anodize_core::retry::{RetryPolicy, retry_sync};
+                            use anodizer_core::retry::{RetryPolicy, retry_sync};
                             use std::ops::ControlFlow;
                             let policy = RetryPolicy {
                                 max_attempts: manifest_max_attempts,
@@ -2917,8 +2917,8 @@ mod tests {
 
     #[test]
     fn test_stage_skips_without_docker_config() {
-        use anodize_core::config::Config;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
 
         let config = Config::default();
         let mut ctx = Context::new(config, ContextOptions::default());
@@ -2978,9 +2978,9 @@ mod tests {
 
     #[test]
     fn test_docker_stage_dry_run_registers_artifacts() {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
-        use anodize_core::config::{Config, CrateConfig, DockerConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::config::{Config, CrateConfig, DockerConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -3096,7 +3096,7 @@ push_flags:
   - "--cache-to=type=registry,ref=ghcr.io/owner/app:cache"
   - "--provenance=true"
 "#;
-        let cfg: anodize_core::config::DockerConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::DockerConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.skip_push, Some(SkipPushConfig::Bool(true)));
         let extra = cfg.extra_files.unwrap();
         assert_eq!(extra.len(), 2);
@@ -3214,9 +3214,9 @@ push_flags:
 
     #[test]
     fn test_extra_files_copied_to_staging_dry_run() {
-        use anodize_core::artifact::ArtifactKind;
-        use anodize_core::config::{Config, CrateConfig, DockerConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::artifact::ArtifactKind;
+        use anodizer_core::config::{Config, CrateConfig, DockerConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -3286,8 +3286,8 @@ push_flags:
 
     #[test]
     fn test_extra_files_copied_to_staging_live() {
-        use anodize_core::config::{Config, CrateConfig, DockerConfig, DockerRetryConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, DockerConfig, DockerRetryConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -3386,7 +3386,7 @@ image_templates:
   - "ghcr.io/owner/app:latest"
 dockerfile: Dockerfile
 "#;
-        let cfg: anodize_core::config::DockerConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::DockerConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.skip_push, None);
         assert_eq!(cfg.extra_files, None);
         assert_eq!(cfg.push_flags, None);
@@ -3468,8 +3468,8 @@ dockerfile: Dockerfile
 
     #[test]
     fn test_image_template_rendering_with_context() {
-        use anodize_core::config::{Config, CrateConfig, DockerConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, DockerConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dockerfile = tmp.path().join("Dockerfile");
@@ -3538,9 +3538,9 @@ dockerfile: Dockerfile
 
     #[test]
     fn test_binary_staging_per_architecture_subdirectory() {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
-        use anodize_core::config::{Config, CrateConfig, DockerConfig, DockerRetryConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::config::{Config, CrateConfig, DockerConfig, DockerRetryConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -3686,8 +3686,8 @@ dockerfile: Dockerfile
 
     #[test]
     fn test_missing_dockerfile_errors_with_path() {
-        use anodize_core::config::{Config, CrateConfig, DockerConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, DockerConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -3745,8 +3745,8 @@ dockerfile: Dockerfile
     #[test]
     fn test_docker_build_failure_dry_run_skips_execution() {
         // In dry-run mode, even with invalid config, docker should not fail
-        use anodize_core::config::{Config, CrateConfig, DockerConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, DockerConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -3802,8 +3802,8 @@ dockerfile: Dockerfile
 
     #[test]
     fn test_extra_files_directory_entry_errors() {
-        use anodize_core::config::{Config, CrateConfig, DockerConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, DockerConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -3887,7 +3887,7 @@ labels:
   org.opencontainers.image.title: "MyApp"
   org.opencontainers.image.version: "{{ .Version }}"
 "#;
-        let cfg: anodize_core::config::DockerConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::DockerConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.id.as_deref(), Some("my-docker"));
         let ids = cfg.ids.as_ref().unwrap();
         assert_eq!(ids, &["linux-build", "windows-build"]);
@@ -3948,7 +3948,7 @@ image_templates:
   - "ghcr.io/owner/app:latest"
 dockerfile: Dockerfile
 "#;
-        let cfg: anodize_core::config::DockerConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::DockerConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.id, None);
         assert_eq!(cfg.ids, None);
         assert!(cfg.labels.is_none());
@@ -4019,7 +4019,7 @@ dockerfile: Dockerfile
 
     #[test]
     fn test_resolve_retry_params_defaults() {
-        use anodize_core::config::DockerRetryConfig;
+        use anodizer_core::config::DockerRetryConfig;
         let cfg = Some(DockerRetryConfig {
             attempts: None,
             delay: None,
@@ -4034,7 +4034,7 @@ dockerfile: Dockerfile
 
     #[test]
     fn test_resolve_retry_params_full() {
-        use anodize_core::config::DockerRetryConfig;
+        use anodizer_core::config::DockerRetryConfig;
         let cfg = Some(DockerRetryConfig {
             attempts: Some(3),
             delay: Some("500ms".to_string()),
@@ -4048,7 +4048,7 @@ dockerfile: Dockerfile
 
     #[test]
     fn test_resolve_retry_params_invalid_delay() {
-        use anodize_core::config::DockerRetryConfig;
+        use anodizer_core::config::DockerRetryConfig;
         let cfg = Some(DockerRetryConfig {
             attempts: Some(3),
             delay: Some("invalid".to_string()),
@@ -4068,7 +4068,7 @@ retry:
   delay: "2s"
   max_delay: "30s"
 "#;
-        let cfg: anodize_core::config::DockerConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::DockerConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let retry = cfg.retry.unwrap();
         assert_eq!(retry.attempts, Some(5));
         assert_eq!(retry.delay.as_deref(), Some("2s"));
@@ -4077,8 +4077,8 @@ retry:
 
     #[test]
     fn test_retry_dry_run_logs_config() {
-        use anodize_core::config::{Config, CrateConfig, DockerConfig, DockerRetryConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, DockerConfig, DockerRetryConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dockerfile = tmp.path().join("Dockerfile");
@@ -4145,8 +4145,8 @@ retry:
 
     #[test]
     fn test_no_retry_config_single_attempt_dry_run() {
-        use anodize_core::config::{Config, CrateConfig, DockerConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, DockerConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dockerfile = tmp.path().join("Dockerfile");
@@ -4217,7 +4217,7 @@ image_templates:
 dockerfile: Dockerfile
 skip_push: auto
 "#;
-        let cfg: anodize_core::config::DockerConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::DockerConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.skip_push, Some(SkipPushConfig::Auto));
     }
 
@@ -4229,7 +4229,7 @@ image_templates:
 dockerfile: Dockerfile
 skip_push: true
 "#;
-        let cfg: anodize_core::config::DockerConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::DockerConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.skip_push, Some(SkipPushConfig::Bool(true)));
     }
 
@@ -4241,7 +4241,7 @@ image_templates:
 dockerfile: Dockerfile
 skip_push: false
 "#;
-        let cfg: anodize_core::config::DockerConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::DockerConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.skip_push, Some(SkipPushConfig::Bool(false)));
     }
 
@@ -4253,7 +4253,7 @@ image_templates:
 dockerfile: Dockerfile
 use: podman
 "#;
-        let cfg: anodize_core::config::DockerConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::DockerConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.use_backend.as_deref(), Some("podman"));
     }
 
@@ -4265,7 +4265,7 @@ image_templates:
 dockerfile: Dockerfile
 use: buildx
 "#;
-        let cfg: anodize_core::config::DockerConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::DockerConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.use_backend.as_deref(), Some("buildx"));
     }
 
@@ -4277,7 +4277,7 @@ image_templates:
 dockerfile: Dockerfile
 use: docker
 "#;
-        let cfg: anodize_core::config::DockerConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::DockerConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.use_backend.as_deref(), Some("docker"));
     }
 
@@ -4288,13 +4288,13 @@ image_templates:
   - "ghcr.io/owner/app:latest"
 dockerfile: Dockerfile
 "#;
-        let cfg: anodize_core::config::DockerConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::DockerConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.use_backend, None);
     }
 
     #[test]
     fn test_config_docker_manifests_full() {
-        use anodize_core::config::Config;
+        use anodizer_core::config::Config;
         let yaml = r#"
 project_name: test
 crates:
@@ -4329,7 +4329,7 @@ crates:
 
     #[test]
     fn test_config_docker_manifests_omitted() {
-        use anodize_core::config::Config;
+        use anodizer_core::config::Config;
         let yaml = r#"
 project_name: test
 crates:
@@ -4343,8 +4343,8 @@ crates:
 
     #[test]
     fn test_resolve_skip_push_auto_prerelease() {
-        use anodize_core::config::Config;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
 
         let config = Config::default();
         let mut ctx = Context::new(config, ContextOptions::default());
@@ -4356,8 +4356,8 @@ crates:
 
     #[test]
     fn test_resolve_skip_push_auto_no_prerelease() {
-        use anodize_core::config::Config;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
 
         let config = Config::default();
         let mut ctx = Context::new(config, ContextOptions::default());
@@ -4369,8 +4369,8 @@ crates:
 
     #[test]
     fn test_resolve_skip_push_auto_prerelease_unset() {
-        use anodize_core::config::Config;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
 
         let config = Config::default();
         let ctx = Context::new(config, ContextOptions::default());
@@ -4384,8 +4384,8 @@ crates:
 
     #[test]
     fn test_resolve_skip_push_bool_true() {
-        use anodize_core::config::Config;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
 
         let config = Config::default();
         let ctx = Context::new(config, ContextOptions::default());
@@ -4396,8 +4396,8 @@ crates:
 
     #[test]
     fn test_resolve_skip_push_bool_false() {
-        use anodize_core::config::Config;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
 
         let config = Config::default();
         let ctx = Context::new(config, ContextOptions::default());
@@ -4408,8 +4408,8 @@ crates:
 
     #[test]
     fn test_resolve_skip_push_none() {
-        use anodize_core::config::Config;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
 
         let config = Config::default();
         let ctx = Context::new(config, ContextOptions::default());
@@ -4523,8 +4523,8 @@ crates:
 
     #[test]
     fn test_docker_manifest_dry_run() {
-        use anodize_core::config::{Config, CrateConfig, DockerManifestConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, DockerManifestConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let config = Config {
             project_name: "test".to_string(),
@@ -4587,8 +4587,8 @@ crates:
     fn test_docker_manifest_create_push_flags_template_rendering() {
         // S8 regression: create_flags and push_flags must receive the same
         // template context as V1 docker (`{{ .Tag }}`, `{{ .Env.* }}`).
-        use anodize_core::config::{Config, CrateConfig, DockerManifestConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, DockerManifestConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let config = Config {
             project_name: "test".to_string(),
@@ -4659,8 +4659,8 @@ crates:
 
     #[test]
     fn test_docker_manifest_skip_push_auto_prerelease() {
-        use anodize_core::config::{Config, CrateConfig, DockerManifestConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, DockerManifestConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let config = Config {
             project_name: "test".to_string(),
@@ -4710,7 +4710,7 @@ crates:
 
     #[test]
     fn test_docker_manifest_with_use_backend_podman() {
-        use anodize_core::config::DockerManifestConfig;
+        use anodizer_core::config::DockerManifestConfig;
         let yaml = r#"
 name_template: "ghcr.io/owner/app:latest"
 image_templates:
@@ -4723,8 +4723,8 @@ use: podman
 
     #[test]
     fn test_docker_stage_uses_backend_in_artifact_metadata() {
-        use anodize_core::config::{Config, CrateConfig, DockerConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, DockerConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dockerfile = tmp.path().join("Dockerfile");
@@ -5185,7 +5185,7 @@ retry:
   attempts: 5
   delay: "2s"
 "#;
-        let cfg: anodize_core::config::DockerV2Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::DockerV2Config = serde_yaml_ng::from_str(yaml).unwrap();
 
         assert_eq!(cfg.id, Some("myapp-docker".to_string()));
         assert_eq!(cfg.ids, Some(vec!["myapp-build".to_string()]));
@@ -5234,7 +5234,7 @@ images:
 tags:
   - latest
 "#;
-        let cfg: anodize_core::config::DockerV2Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::DockerV2Config = serde_yaml_ng::from_str(yaml).unwrap();
 
         assert_eq!(cfg.id, None);
         assert_eq!(cfg.ids, None);
@@ -5260,7 +5260,7 @@ images: ["img"]
 tags: ["latest"]
 disable: true
 "#;
-        let cfg: anodize_core::config::DockerV2Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::DockerV2Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.disable, Some(StringOrBool::Bool(true)));
     }
 
@@ -5272,7 +5272,7 @@ images: ["img"]
 tags: ["latest"]
 disable: "{{ if .IsSnapshot }}true{{ end }}"
 "#;
-        let cfg: anodize_core::config::DockerV2Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::DockerV2Config = serde_yaml_ng::from_str(yaml).unwrap();
         match cfg.disable {
             Some(StringOrBool::String(s)) => {
                 assert!(s.contains("IsSnapshot"));
@@ -5289,7 +5289,7 @@ images: ["img"]
 tags: ["latest"]
 sbom: true
 "#;
-        let cfg: anodize_core::config::DockerV2Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::DockerV2Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.sbom, Some(StringOrBool::Bool(true)));
     }
 
@@ -5301,14 +5301,14 @@ images: ["img"]
 tags: ["latest"]
 sbom: "true"
 "#;
-        let cfg: anodize_core::config::DockerV2Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::DockerV2Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.sbom, Some(StringOrBool::String("true".to_string())));
     }
 
     #[test]
     fn test_docker_v2_dry_run_registers_artifacts() {
-        use anodize_core::config::{Config, CrateConfig, DockerV2Config};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dockerfile = tmp.path().join("Dockerfile");
@@ -5369,8 +5369,8 @@ sbom: "true"
 
     #[test]
     fn test_docker_v2_dry_run_multiple_images_and_tags() {
-        use anodize_core::config::{Config, CrateConfig, DockerV2Config};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dockerfile = tmp.path().join("Dockerfile");
@@ -5435,8 +5435,8 @@ sbom: "true"
 
     #[test]
     fn test_docker_v2_disable_skips_build() {
-        use anodize_core::config::{Config, CrateConfig, DockerV2Config};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dockerfile = tmp.path().join("Dockerfile");
@@ -5483,8 +5483,8 @@ sbom: "true"
 
     #[test]
     fn test_docker_v2_extra_files_staging_live() {
-        use anodize_core::config::{Config, CrateConfig, DockerRetryConfig, DockerV2Config};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, DockerRetryConfig, DockerV2Config};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
 
@@ -5567,7 +5567,7 @@ crates:
           org.opencontainers.image.source: "https://github.com/owner/app"
         sbom: true
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.crates.len(), 1);
         let v2_configs = config.crates[0].docker_v2.as_ref().unwrap();
         assert_eq!(v2_configs.len(), 1);
@@ -5589,8 +5589,8 @@ crates:
 
     #[test]
     fn test_is_docker_v2_disabled_none() {
-        use anodize_core::config::Config;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
 
         let ctx = Context::new(Config::default(), ContextOptions::default());
         assert!(!is_docker_v2_disabled(&None, &ctx));
@@ -5598,8 +5598,8 @@ crates:
 
     #[test]
     fn test_is_docker_v2_disabled_bool_true() {
-        use anodize_core::config::Config;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
 
         let ctx = Context::new(Config::default(), ContextOptions::default());
         assert!(is_docker_v2_disabled(&Some(StringOrBool::Bool(true)), &ctx));
@@ -5607,8 +5607,8 @@ crates:
 
     #[test]
     fn test_is_docker_v2_disabled_bool_false() {
-        use anodize_core::config::Config;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
 
         let ctx = Context::new(Config::default(), ContextOptions::default());
         assert!(!is_docker_v2_disabled(
@@ -5619,8 +5619,8 @@ crates:
 
     #[test]
     fn test_is_docker_v2_sbom_enabled_none() {
-        use anodize_core::config::Config;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
 
         let ctx = Context::new(Config::default(), ContextOptions::default());
         assert!(!is_docker_v2_sbom_enabled(&None, &ctx));
@@ -5628,8 +5628,8 @@ crates:
 
     #[test]
     fn test_is_docker_v2_sbom_enabled_bool_true() {
-        use anodize_core::config::Config;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
 
         let ctx = Context::new(Config::default(), ContextOptions::default());
         assert!(is_docker_v2_sbom_enabled(
@@ -5640,8 +5640,8 @@ crates:
 
     #[test]
     fn test_is_docker_v2_sbom_enabled_bool_false() {
-        use anodize_core::config::Config;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
 
         let ctx = Context::new(Config::default(), ContextOptions::default());
         assert!(!is_docker_v2_sbom_enabled(
@@ -5652,8 +5652,8 @@ crates:
 
     #[test]
     fn test_is_docker_v2_disabled_string_true() {
-        use anodize_core::config::Config;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
 
         let ctx = Context::new(Config::default(), ContextOptions::default());
         assert!(is_docker_v2_disabled(
@@ -5664,8 +5664,8 @@ crates:
 
     #[test]
     fn test_is_docker_v2_disabled_string_false() {
-        use anodize_core::config::Config;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
 
         let ctx = Context::new(Config::default(), ContextOptions::default());
         assert!(!is_docker_v2_disabled(
@@ -5676,8 +5676,8 @@ crates:
 
     #[test]
     fn test_is_docker_v2_disabled_template_snapshot_true() {
-        use anodize_core::config::Config;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
 
         let mut ctx = Context::new(Config::default(), ContextOptions::default());
         ctx.template_vars_mut().set("IsSnapshot", "true");
@@ -5689,8 +5689,8 @@ crates:
 
     #[test]
     fn test_is_docker_v2_disabled_template_snapshot_false() {
-        use anodize_core::config::Config;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
 
         let mut ctx = Context::new(Config::default(), ContextOptions::default());
         ctx.template_vars_mut().set("IsSnapshot", "false");
@@ -5702,8 +5702,8 @@ crates:
 
     #[test]
     fn test_is_docker_v2_sbom_enabled_string_true() {
-        use anodize_core::config::Config;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
 
         let ctx = Context::new(Config::default(), ContextOptions::default());
         assert!(is_docker_v2_sbom_enabled(
@@ -5714,8 +5714,8 @@ crates:
 
     #[test]
     fn test_is_docker_v2_sbom_enabled_string_false() {
-        use anodize_core::config::Config;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
 
         let ctx = Context::new(Config::default(), ContextOptions::default());
         assert!(!is_docker_v2_sbom_enabled(
@@ -5726,8 +5726,8 @@ crates:
 
     #[test]
     fn test_is_docker_v2_sbom_enabled_template_snapshot_true() {
-        use anodize_core::config::Config;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
 
         let mut ctx = Context::new(Config::default(), ContextOptions::default());
         ctx.template_vars_mut().set("IsSnapshot", "true");
@@ -5739,8 +5739,8 @@ crates:
 
     #[test]
     fn test_is_docker_v2_sbom_enabled_template_snapshot_false() {
-        use anodize_core::config::Config;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
 
         let mut ctx = Context::new(Config::default(), ContextOptions::default());
         ctx.template_vars_mut().set("IsSnapshot", "false");
@@ -5753,8 +5753,8 @@ crates:
     #[test]
     fn test_docker_v2_build_args_render_in_command() {
         // Verify that build_args end up in the V2 command correctly
-        use anodize_core::config::{Config, CrateConfig, DockerV2Config};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dockerfile = tmp.path().join("Dockerfile");
@@ -5816,8 +5816,8 @@ crates:
 
     #[test]
     fn test_docker_v2_coexists_with_legacy() {
-        use anodize_core::config::{Config, CrateConfig, DockerConfig, DockerV2Config};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, DockerConfig, DockerV2Config};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = TempDir::new().unwrap();
         let dockerfile = tmp.path().join("Dockerfile");
@@ -5879,8 +5879,8 @@ crates:
 
     #[test]
     fn test_templated_extra_files_written_to_staging_dir() {
-        use anodize_core::config::TemplatedExtraFile;
-        use anodize_core::template::TemplateVars;
+        use anodizer_core::config::TemplatedExtraFile;
+        use anodizer_core::template::TemplateVars;
 
         let tmp = TempDir::new().unwrap();
         let staging_dir = tmp.path().join("staging");
@@ -5900,7 +5900,7 @@ crates:
             mode: None,
         }];
 
-        let results = anodize_core::templated_files::process_templated_extra_files_with_vars(
+        let results = anodizer_core::templated_files::process_templated_extra_files_with_vars(
             &specs,
             &vars,
             &staging_dir,
@@ -6037,7 +6037,7 @@ crates:
 
     #[test]
     fn test_docker_sign_config_output_bool() {
-        use anodize_core::config::DockerSignConfig;
+        use anodizer_core::config::DockerSignConfig;
         let yaml = r#"
 cmd: cosign
 output: true
@@ -6048,7 +6048,7 @@ output: true
 
     #[test]
     fn test_docker_sign_config_output_string() {
-        use anodize_core::config::DockerSignConfig;
+        use anodizer_core::config::DockerSignConfig;
         let yaml = r#"
 cmd: cosign
 output: "false"
@@ -6059,7 +6059,7 @@ output: "false"
 
     #[test]
     fn test_docker_sign_config_output_missing() {
-        use anodize_core::config::DockerSignConfig;
+        use anodizer_core::config::DockerSignConfig;
         let yaml = r#"
 cmd: cosign
 "#;
@@ -6069,7 +6069,7 @@ cmd: cosign
 
     #[test]
     fn test_docker_sign_config_output_template_string() {
-        use anodize_core::config::DockerSignConfig;
+        use anodizer_core::config::DockerSignConfig;
         let yaml = r#"
 cmd: cosign
 output: "{{ .IsSnapshot }}"
@@ -6082,7 +6082,7 @@ output: "{{ .IsSnapshot }}"
 
     #[test]
     fn test_sign_config_output_string_or_bool() {
-        use anodize_core::config::SignConfig;
+        use anodizer_core::config::SignConfig;
         let yaml_bool = r#"
 cmd: gpg
 output: true
@@ -6100,7 +6100,7 @@ output: "false"
 
     #[test]
     fn test_docker_digest_config_parses() {
-        use anodize_core::config::DockerDigestConfig;
+        use anodizer_core::config::DockerDigestConfig;
         let yaml = r#"
 disable: false
 name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
@@ -6115,7 +6115,7 @@ name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
 
     #[test]
     fn test_docker_digest_config_defaults() {
-        use anodize_core::config::DockerDigestConfig;
+        use anodizer_core::config::DockerDigestConfig;
         let yaml = "{}";
         let cfg: DockerDigestConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(cfg.disable.is_none());
@@ -6124,7 +6124,7 @@ name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
 
     #[test]
     fn test_docker_digest_config_disable_template() {
-        use anodize_core::config::DockerDigestConfig;
+        use anodizer_core::config::DockerDigestConfig;
         let yaml = r#"
 disable: "{{ .IsSnapshot }}"
 "#;
@@ -6445,7 +6445,8 @@ disable: "{{ .IsSnapshot }}"
         fs::write(root.join("binaries/arm64/myapp"), "bin").unwrap();
 
         // Just verify it doesn't panic — the output goes to log.warn
-        let log = anodize_core::log::StageLogger::new("test", anodize_core::log::Verbosity::Normal);
+        let log =
+            anodizer_core::log::StageLogger::new("test", anodizer_core::log::Verbosity::Normal);
         list_staging_dir_recursive(root, root, &log);
     }
 

@@ -1,14 +1,14 @@
 [package]
-name = "anodize-stage-blob"
+name = "anodizer-stage-blob"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "Cloud storage (S3/GCS/Azure) upload stage for anodize release automation"
+description = "Cloud storage (S3/GCS/Azure) upload stage for anodizer release automation"
 
 [dependencies]
-anodize-core.workspace = true
+anodizer-core.workspace = true
 anyhow.workspace = true
 base64.workspace = true
 glob.workspace = true

@@ -13,7 +13,7 @@ tasks:
       - "Cargo.toml"
       - "Cargo.lock"
     generates:
-      - "target/release/anodize"
+      - "target/release/anodizer"
     cmds:
       - cargo build --release
 
@@ -68,7 +68,7 @@ tasks:
     desc: Dry-run release pipeline (single target, no publish)
     deps: [build]
     cmds:
-      - ./target/release/anodize release --snapshot --single-target --clean --dry-run
+      - ./target/release/anodizer release --snapshot --single-target --clean --dry-run
 
   clean:
     desc: Remove build artifacts and dist directory

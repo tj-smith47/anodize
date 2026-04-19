@@ -2,17 +2,17 @@ use std::process::Command;
 
 use anyhow::{Context as _, Result};
 
-use anodize_core::artifact::ArtifactKind;
-use anodize_core::config::UpxConfig;
-use anodize_core::context::Context;
-use anodize_core::stage::Stage;
-use anodize_core::util::find_binary;
+use anodizer_core::artifact::ArtifactKind;
+use anodizer_core::config::UpxConfig;
+use anodizer_core::context::Context;
+use anodizer_core::stage::Stage;
+use anodizer_core::util::find_binary;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-use anodize_core::artifact::format_size;
+use anodizer_core::artifact::format_size;
 
 /// Match a target string against a glob-style pattern.
 /// Supports `*` as a wildcard that matches any sequence of characters.
@@ -161,12 +161,12 @@ impl Stage for UpxStage {
             // compress artifacts in parallel using
             // semerrgroup-style bounded concurrency (upx.go uses
             // semerrgroup.New(ctx.Parallelism)). Shared helper in
-            // anodize_core::parallel preserves bounded concurrency,
+            // anodizer_core::parallel preserves bounded concurrency,
             // submission-order results, fail-fast within a chunk, and
             // attributable panic reporting.
             let run_job = |job: &(std::path::PathBuf, Option<String>)| -> Result<()> {
                 let (artifact_path, target) = job;
-                let thread_log = anodize_core::log::StageLogger::new("upx", log.verbosity());
+                let thread_log = anodizer_core::log::StageLogger::new("upx", log.verbosity());
                 let artifact_str = artifact_path.to_string_lossy();
                 let id_label = upx_cfg.id.as_deref().unwrap_or("default");
                 let target_label = target.as_deref().unwrap_or("unknown");
@@ -242,7 +242,7 @@ impl Stage for UpxStage {
                 Ok(())
             };
 
-            anodize_core::parallel::run_parallel_chunks(
+            anodizer_core::parallel::run_parallel_chunks(
                 &matching_artifacts,
                 parallelism,
                 "upx",
@@ -261,9 +261,9 @@ impl Stage for UpxStage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anodize_core::artifact::{Artifact, ArtifactKind};
-    use anodize_core::config::UpxConfig;
-    use anodize_core::test_helpers::TestContextBuilder;
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::config::UpxConfig;
+    use anodizer_core::test_helpers::TestContextBuilder;
 
     // -----------------------------------------------------------------------
     // target_matches_pattern tests
@@ -466,7 +466,7 @@ upx:
     - "--lzma"
 crates: []
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.upx.len(), 1);
         assert_eq!(config.upx[0].binary, "/usr/bin/upx");
         assert_eq!(config.upx[0].args, vec!["--best", "--lzma"]);
@@ -487,7 +487,7 @@ upx:
     targets: ["*-windows-*"]
 crates: []
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.upx.len(), 2);
         assert_eq!(config.upx[0].id, Some("linux".to_string()));
         assert_eq!(config.upx[0].targets.as_ref().unwrap().len(), 2);
@@ -502,7 +502,7 @@ upx:
   - {}
 crates: []
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.upx.len(), 1);
         assert!(config.upx[0].enabled.is_none());
         assert_eq!(config.upx[0].binary, "upx");
@@ -518,7 +518,7 @@ crates: []
 project_name: test
 crates: []
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(config.upx.is_empty());
     }
 
@@ -531,7 +531,7 @@ upx:
   args: ["--best"]
 crates: []
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.upx.len(), 1);
         let ids = config.upx[0].ids.as_ref().unwrap();
         assert_eq!(ids, &["myapp", "helper"]);
@@ -546,7 +546,7 @@ upx:
   args: ["--best"]
 crates: []
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(config.upx[0].required);
     }
 
@@ -558,7 +558,7 @@ upx:
   enabled: false
 crates: []
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(
             config.upx[0]
                 .enabled
@@ -582,7 +582,7 @@ crates: []
     #[test]
     fn test_stage_skips_disabled_config() {
         let upx = vec![UpxConfig {
-            enabled: Some(anodize_core::config::StringOrBool::Bool(false)),
+            enabled: Some(anodizer_core::config::StringOrBool::Bool(false)),
             binary: "/nonexistent/binary".to_string(),
             args: vec!["--best".to_string()],
             ..Default::default()
@@ -632,7 +632,7 @@ crates: []
         let upx = vec![UpxConfig {
             binary: "/nonexistent/upx-binary-that-does-not-exist".to_string(),
             required: true,
-            enabled: Some(anodize_core::config::StringOrBool::Bool(true)),
+            enabled: Some(anodizer_core::config::StringOrBool::Bool(true)),
             ..Default::default()
         }];
 

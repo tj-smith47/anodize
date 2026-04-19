@@ -1,5 +1,5 @@
-use anodize_cli::{Cli, Commands, detect_host_target, num_cpus};
-use anodize_core::context::{VALID_BUILD_SKIPS, VALID_RELEASE_SKIPS, validate_skip_values};
+use anodizer_cli::{Cli, Commands, detect_host_target, num_cpus};
+use anodizer_core::context::{VALID_BUILD_SKIPS, VALID_RELEASE_SKIPS, validate_skip_values};
 
 use clap::Parser;
 use colored::Colorize;
@@ -60,8 +60,8 @@ fn enable_ci_colors() {
     if std::env::var_os("NO_COLOR").is_some() {
         return;
     }
-    // Respect explicit overrides — ANODIZE_COLOR or CLICOLOR_FORCE.
-    if let Ok(val) = std::env::var("ANODIZE_COLOR") {
+    // Respect explicit overrides — ANODIZER_COLOR or CLICOLOR_FORCE.
+    if let Ok(val) = std::env::var("ANODIZER_COLOR") {
         match val.as_str() {
             "always" => {
                 colored::control::set_override(true);
@@ -119,7 +119,7 @@ fn main() {
 
             // Resolve --auto-snapshot: if set and repo is dirty, force snapshot mode
             let effective_snapshot =
-                if !snapshot && auto_snapshot && anodize_core::git::is_git_dirty() {
+                if !snapshot && auto_snapshot && anodizer_core::git::is_git_dirty() {
                     eprintln!(
                         "{} repo is dirty, automatically enabling snapshot mode",
                         "Note:".yellow().bold()
@@ -225,7 +225,7 @@ fn main() {
         Commands::Completion { shell } => commands::completion::run(shell),
         Commands::Healthcheck => commands::healthcheck::run(),
         Commands::Man => {
-            let cmd = anodize_cli::build_cli();
+            let cmd = anodizer_cli::build_cli();
             let man = clap_mangen::Man::new(cmd);
             let mut buf = Vec::new();
             man.render(&mut buf)
@@ -275,9 +275,9 @@ fn main() {
         } => {
             if !merge {
                 eprintln!(
-                    "{} `anodize continue` requires --merge flag \
+                    "{} `anodizer continue` requires --merge flag \
                      — this command merges split-build artifacts from \
-                     `anodize release --split` and runs post-build stages \
+                     `anodizer release --split` and runs post-build stages \
                      (publish, announce, etc.)",
                     "Error:".red().bold()
                 );
@@ -374,13 +374,13 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anodize_cli::num_cpus;
+    use anodizer_cli::num_cpus;
     use clap::CommandFactory;
 
     #[test]
     fn test_cli_parses_release_with_new_flags() {
         let cli = Cli::try_parse_from([
-            "anodize",
+            "anodizer",
             "release",
             "--parallelism",
             "8",
@@ -399,7 +399,7 @@ mod tests {
     #[test]
     fn test_cli_parses_release_with_prepare_flag() {
         // GoReleaser Pro `--prepare`: local prep stages, no upstream publish.
-        let cli = Cli::try_parse_from(["anodize", "release", "--prepare"]);
+        let cli = Cli::try_parse_from(["anodizer", "release", "--prepare"]);
         assert!(
             cli.is_ok(),
             "CLI should parse --prepare: {:?}",
@@ -416,7 +416,7 @@ mod tests {
 
     #[test]
     fn test_cli_parses_release_parallelism_short() {
-        let cli = Cli::try_parse_from(["anodize", "release", "-p", "2"]);
+        let cli = Cli::try_parse_from(["anodizer", "release", "-p", "2"]);
         assert!(
             cli.is_ok(),
             "CLI should parse -p shorthand: {:?}",
@@ -427,7 +427,7 @@ mod tests {
     #[test]
     fn test_cli_parses_build_with_new_flags() {
         let cli =
-            Cli::try_parse_from(["anodize", "build", "--parallelism", "4", "--single-target"]);
+            Cli::try_parse_from(["anodizer", "build", "--parallelism", "4", "--single-target"]);
         assert!(
             cli.is_ok(),
             "CLI should parse build with new flags: {:?}",
@@ -437,7 +437,7 @@ mod tests {
 
     #[test]
     fn test_cli_parses_completion() {
-        let cli = Cli::try_parse_from(["anodize", "completion", "bash"]);
+        let cli = Cli::try_parse_from(["anodizer", "completion", "bash"]);
         assert!(
             cli.is_ok(),
             "CLI should parse completion command: {:?}",
@@ -447,7 +447,7 @@ mod tests {
 
     #[test]
     fn test_cli_parses_healthcheck() {
-        let cli = Cli::try_parse_from(["anodize", "healthcheck"]);
+        let cli = Cli::try_parse_from(["anodizer", "healthcheck"]);
         assert!(
             cli.is_ok(),
             "CLI should parse healthcheck command: {:?}",
@@ -457,7 +457,7 @@ mod tests {
 
     #[test]
     fn test_cli_release_default_parallelism() {
-        let cli = Cli::try_parse_from(["anodize", "release"]).unwrap();
+        let cli = Cli::try_parse_from(["anodizer", "release"]).unwrap();
         if let Commands::Release { parallelism, .. } = cli.command {
             assert!(
                 parallelism.is_none(),
@@ -471,7 +471,7 @@ mod tests {
 
     #[test]
     fn test_cli_build_default_parallelism() {
-        let cli = Cli::try_parse_from(["anodize", "build"]).unwrap();
+        let cli = Cli::try_parse_from(["anodizer", "build"]).unwrap();
         if let Commands::Build { parallelism, .. } = cli.command {
             assert!(
                 parallelism.is_none(),
@@ -509,7 +509,7 @@ mod tests {
     #[test]
     fn test_completion_shells_are_accepted() {
         for shell in ["bash", "zsh", "fish", "powershell"] {
-            let cli = Cli::try_parse_from(["anodize", "completion", shell]);
+            let cli = Cli::try_parse_from(["anodizer", "completion", shell]);
             assert!(
                 cli.is_ok(),
                 "CLI should accept completion for {}: {:?}",
@@ -544,7 +544,7 @@ mod tests {
 
     #[test]
     fn test_cli_parses_targets_json() {
-        let cli = Cli::try_parse_from(["anodize", "targets", "--json"]);
+        let cli = Cli::try_parse_from(["anodizer", "targets", "--json"]);
         assert!(
             cli.is_ok(),
             "CLI should parse targets --json: {:?}",
@@ -560,7 +560,7 @@ mod tests {
 
     #[test]
     fn test_cli_parses_targets_crate_filter() {
-        let cli = Cli::try_parse_from(["anodize", "targets", "--crate", "core", "--crate", "cli"]);
+        let cli = Cli::try_parse_from(["anodizer", "targets", "--crate", "core", "--crate", "cli"]);
         assert!(
             cli.is_ok(),
             "CLI should parse targets --crate: {:?}",
@@ -575,7 +575,7 @@ mod tests {
 
     #[test]
     fn test_cli_parses_jsonschema() {
-        let cli = Cli::try_parse_from(["anodize", "jsonschema"]);
+        let cli = Cli::try_parse_from(["anodizer", "jsonschema"]);
         assert!(
             cli.is_ok(),
             "CLI should parse jsonschema command: {:?}",
@@ -585,7 +585,7 @@ mod tests {
 
     #[test]
     fn test_cli_parses_tag_dry_run() {
-        let cli = Cli::try_parse_from(["anodize", "tag", "--dry-run"]);
+        let cli = Cli::try_parse_from(["anodizer", "tag", "--dry-run"]);
         assert!(
             cli.is_ok(),
             "CLI should parse tag --dry-run: {:?}",
@@ -600,7 +600,7 @@ mod tests {
 
     #[test]
     fn test_cli_parses_tag_custom_tag() {
-        let cli = Cli::try_parse_from(["anodize", "tag", "--custom-tag", "v5.0.0"]);
+        let cli = Cli::try_parse_from(["anodizer", "tag", "--custom-tag", "v5.0.0"]);
         assert!(
             cli.is_ok(),
             "CLI should parse tag --custom-tag: {:?}",
@@ -615,7 +615,7 @@ mod tests {
 
     #[test]
     fn test_cli_parses_tag_default_bump() {
-        let cli = Cli::try_parse_from(["anodize", "tag", "--default-bump", "major"]);
+        let cli = Cli::try_parse_from(["anodizer", "tag", "--default-bump", "major"]);
         assert!(
             cli.is_ok(),
             "CLI should parse tag --default-bump: {:?}",
@@ -630,7 +630,7 @@ mod tests {
 
     #[test]
     fn test_cli_parses_tag_crate_flag() {
-        let cli = Cli::try_parse_from(["anodize", "tag", "--crate", "my-lib"]);
+        let cli = Cli::try_parse_from(["anodizer", "tag", "--crate", "my-lib"]);
         assert!(cli.is_ok(), "CLI should parse tag --crate: {:?}", cli.err());
         if let Commands::Tag { crate_name, .. } = cli.unwrap().command {
             assert_eq!(crate_name, Some("my-lib".to_string()));
@@ -642,7 +642,7 @@ mod tests {
     #[test]
     fn test_cli_parses_tag_all_flags() {
         let cli = Cli::try_parse_from([
-            "anodize",
+            "anodizer",
             "tag",
             "--dry-run",
             "--custom-tag",
@@ -661,7 +661,7 @@ mod tests {
 
     #[test]
     fn test_cli_parses_release_nightly_flag() {
-        let cli = Cli::try_parse_from(["anodize", "release", "--nightly"]);
+        let cli = Cli::try_parse_from(["anodizer", "release", "--nightly"]);
         assert!(
             cli.is_ok(),
             "CLI should parse release --nightly: {:?}",
@@ -676,7 +676,7 @@ mod tests {
 
     #[test]
     fn test_cli_nightly_defaults_false() {
-        let cli = Cli::try_parse_from(["anodize", "release"]).unwrap();
+        let cli = Cli::try_parse_from(["anodizer", "release"]).unwrap();
         if let Commands::Release { nightly, .. } = cli.command {
             assert!(!nightly, "--nightly should default to false");
         } else {
@@ -702,7 +702,7 @@ mod tests {
 
     #[test]
     fn test_cli_parses_release_workspace_flag() {
-        let cli = Cli::try_parse_from(["anodize", "release", "--workspace", "frontend"]);
+        let cli = Cli::try_parse_from(["anodizer", "release", "--workspace", "frontend"]);
         assert!(
             cli.is_ok(),
             "CLI should parse release --workspace: {:?}",
@@ -717,7 +717,7 @@ mod tests {
 
     #[test]
     fn test_cli_release_workspace_defaults_none() {
-        let cli = Cli::try_parse_from(["anodize", "release"]).unwrap();
+        let cli = Cli::try_parse_from(["anodizer", "release"]).unwrap();
         if let Commands::Release { workspace, .. } = cli.command {
             assert!(workspace.is_none(), "--workspace should default to None");
         } else {
@@ -744,7 +744,7 @@ mod tests {
 
     #[test]
     fn test_cli_parses_build_workspace_flag() {
-        let cli = Cli::try_parse_from(["anodize", "build", "--workspace", "frontend"]);
+        let cli = Cli::try_parse_from(["anodizer", "build", "--workspace", "frontend"]);
         assert!(
             cli.is_ok(),
             "CLI should parse build --workspace: {:?}",
@@ -759,7 +759,7 @@ mod tests {
 
     #[test]
     fn test_cli_build_workspace_defaults_none() {
-        let cli = Cli::try_parse_from(["anodize", "build"]).unwrap();
+        let cli = Cli::try_parse_from(["anodizer", "build"]).unwrap();
         if let Commands::Build { workspace, .. } = cli.command {
             assert!(
                 workspace.is_none(),
@@ -789,7 +789,7 @@ mod tests {
 
     #[test]
     fn test_cli_parses_check_workspace_flag() {
-        let cli = Cli::try_parse_from(["anodize", "check", "--workspace", "backend"]);
+        let cli = Cli::try_parse_from(["anodizer", "check", "--workspace", "backend"]);
         assert!(
             cli.is_ok(),
             "CLI should parse check --workspace: {:?}",
@@ -804,7 +804,7 @@ mod tests {
 
     #[test]
     fn test_cli_check_workspace_defaults_none() {
-        let cli = Cli::try_parse_from(["anodize", "check"]).unwrap();
+        let cli = Cli::try_parse_from(["anodizer", "check"]).unwrap();
         if let Commands::Check { workspace } = cli.command {
             assert!(
                 workspace.is_none(),
@@ -833,23 +833,23 @@ mod tests {
     #[test]
     fn test_cli_parses_quiet_flag() {
         // --quiet long form
-        let cli = Cli::try_parse_from(["anodize", "--quiet", "release"]);
+        let cli = Cli::try_parse_from(["anodizer", "--quiet", "release"]);
         assert!(cli.is_ok(), "CLI should parse --quiet: {:?}", cli.err());
         assert!(cli.unwrap().quiet, "--quiet should set quiet to true");
 
         // -q short form
-        let cli = Cli::try_parse_from(["anodize", "-q", "release"]);
+        let cli = Cli::try_parse_from(["anodizer", "-q", "release"]);
         assert!(cli.is_ok(), "CLI should parse -q: {:?}", cli.err());
         assert!(cli.unwrap().quiet, "-q should set quiet to true");
 
         // quiet defaults to false
-        let cli = Cli::try_parse_from(["anodize", "release"]).unwrap();
+        let cli = Cli::try_parse_from(["anodizer", "release"]).unwrap();
         assert!(!cli.quiet, "quiet should default to false");
     }
 
     #[test]
     fn test_cli_parses_release_draft_flag() {
-        let cli = Cli::try_parse_from(["anodize", "release", "--draft"]);
+        let cli = Cli::try_parse_from(["anodizer", "release", "--draft"]);
         assert!(cli.is_ok(), "CLI should parse --draft: {:?}", cli.err());
         if let Commands::Release { draft, .. } = cli.unwrap().command {
             assert!(draft, "--draft should be true");
@@ -860,7 +860,7 @@ mod tests {
 
     #[test]
     fn test_cli_draft_defaults_false() {
-        let cli = Cli::try_parse_from(["anodize", "release"]).unwrap();
+        let cli = Cli::try_parse_from(["anodizer", "release"]).unwrap();
         if let Commands::Release { draft, .. } = cli.command {
             assert!(!draft, "--draft should default to false");
         } else {
@@ -871,7 +871,7 @@ mod tests {
     #[test]
     fn test_cli_parses_release_header_footer() {
         let cli = Cli::try_parse_from([
-            "anodize",
+            "anodizer",
             "release",
             "--release-header",
             "/tmp/header.md",
@@ -906,7 +906,7 @@ mod tests {
 
     #[test]
     fn test_cli_parses_release_split_flag() {
-        let cli = Cli::try_parse_from(["anodize", "release", "--split"]);
+        let cli = Cli::try_parse_from(["anodizer", "release", "--split"]);
         assert!(cli.is_ok(), "CLI should parse --split: {:?}", cli.err());
         if let Commands::Release { split, merge, .. } = cli.unwrap().command {
             assert!(split, "--split should be true");
@@ -918,7 +918,7 @@ mod tests {
 
     #[test]
     fn test_cli_parses_release_merge_flag() {
-        let cli = Cli::try_parse_from(["anodize", "release", "--merge"]);
+        let cli = Cli::try_parse_from(["anodizer", "release", "--merge"]);
         assert!(cli.is_ok(), "CLI should parse --merge: {:?}", cli.err());
         if let Commands::Release { split, merge, .. } = cli.unwrap().command {
             assert!(!split, "--split should be false");
@@ -930,7 +930,7 @@ mod tests {
 
     #[test]
     fn test_cli_split_merge_default_false() {
-        let cli = Cli::try_parse_from(["anodize", "release"]).unwrap();
+        let cli = Cli::try_parse_from(["anodizer", "release"]).unwrap();
         if let Commands::Release { split, merge, .. } = cli.command {
             assert!(!split, "--split should default to false");
             assert!(!merge, "--merge should default to false");
@@ -941,7 +941,7 @@ mod tests {
 
     #[test]
     fn test_cli_split_with_single_target() {
-        let cli = Cli::try_parse_from(["anodize", "release", "--split", "--single-target"]);
+        let cli = Cli::try_parse_from(["anodizer", "release", "--split", "--single-target"]);
         assert!(
             cli.is_ok(),
             "CLI should parse --split --single-target: {:?}",
@@ -984,7 +984,7 @@ mod tests {
 
     #[test]
     fn test_cli_parses_fail_fast() {
-        let cli = Cli::try_parse_from(["anodize", "release", "--fail-fast"]);
+        let cli = Cli::try_parse_from(["anodizer", "release", "--fail-fast"]);
         assert!(cli.is_ok(), "CLI should parse --fail-fast: {:?}", cli.err());
         if let Commands::Release { fail_fast, .. } = cli.unwrap().command {
             assert!(fail_fast, "--fail-fast should be true");
@@ -995,7 +995,7 @@ mod tests {
 
     #[test]
     fn test_cli_fail_fast_defaults_false() {
-        let cli = Cli::try_parse_from(["anodize", "release"]).unwrap();
+        let cli = Cli::try_parse_from(["anodizer", "release"]).unwrap();
         if let Commands::Release { fail_fast, .. } = cli.command {
             assert!(!fail_fast, "--fail-fast should default to false");
         } else {
@@ -1006,7 +1006,7 @@ mod tests {
     #[test]
     fn test_cli_parses_release_notes_tmpl() {
         let cli = Cli::try_parse_from([
-            "anodize",
+            "anodizer",
             "release",
             "--release-notes-tmpl",
             "/tmp/notes.md.tmpl",
@@ -1031,7 +1031,7 @@ mod tests {
 
     #[test]
     fn test_cli_parses_build_output() {
-        let cli = Cli::try_parse_from(["anodize", "build", "-o", "./myapp"]);
+        let cli = Cli::try_parse_from(["anodizer", "build", "-o", "./myapp"]);
         assert!(cli.is_ok(), "CLI should parse build -o: {:?}", cli.err());
         if let Commands::Build { output, .. } = cli.unwrap().command {
             assert_eq!(output, Some(std::path::PathBuf::from("./myapp")));
@@ -1042,7 +1042,7 @@ mod tests {
 
     #[test]
     fn test_cli_parses_build_output_long() {
-        let cli = Cli::try_parse_from(["anodize", "build", "--output", "/usr/local/bin/myapp"]);
+        let cli = Cli::try_parse_from(["anodizer", "build", "--output", "/usr/local/bin/myapp"]);
         assert!(
             cli.is_ok(),
             "CLI should parse build --output: {:?}",
@@ -1060,7 +1060,7 @@ mod tests {
 
     #[test]
     fn test_cli_parses_man_command() {
-        let cli = Cli::try_parse_from(["anodize", "man"]);
+        let cli = Cli::try_parse_from(["anodizer", "man"]);
         assert!(cli.is_ok(), "CLI should parse man command: {:?}", cli.err());
         assert!(matches!(cli.unwrap().command, Commands::Man));
     }
@@ -1096,7 +1096,7 @@ mod tests {
 
     #[test]
     fn test_cli_split_merge_mutually_exclusive() {
-        let result = Cli::try_parse_from(["anodize", "release", "--split", "--merge"]);
+        let result = Cli::try_parse_from(["anodizer", "release", "--split", "--merge"]);
         assert!(
             result.is_err(),
             "--split and --merge should be mutually exclusive"
@@ -1114,8 +1114,14 @@ mod tests {
 
     #[test]
     fn test_cli_release_crate_workspace_mutually_exclusive() {
-        let result =
-            Cli::try_parse_from(["anodize", "release", "--crate", "foo", "--workspace", "bar"]);
+        let result = Cli::try_parse_from([
+            "anodizer",
+            "release",
+            "--crate",
+            "foo",
+            "--workspace",
+            "bar",
+        ]);
         assert!(
             result.is_err(),
             "--crate and --workspace should be mutually exclusive on release"
@@ -1136,7 +1142,7 @@ mod tests {
     #[test]
     fn test_cli_build_crate_workspace_mutually_exclusive() {
         let result =
-            Cli::try_parse_from(["anodize", "build", "--crate", "foo", "--workspace", "bar"]);
+            Cli::try_parse_from(["anodizer", "build", "--crate", "foo", "--workspace", "bar"]);
         assert!(
             result.is_err(),
             "--crate and --workspace should be mutually exclusive on build"
@@ -1157,7 +1163,7 @@ mod tests {
     #[test]
     fn test_cli_check_workspace_has_no_crate_conflict() {
         // Check command has --workspace but no --crate, so no conflict applies.
-        let result = Cli::try_parse_from(["anodize", "check", "--workspace", "bar"]);
+        let result = Cli::try_parse_from(["anodizer", "check", "--workspace", "bar"]);
         assert!(
             result.is_ok(),
             "check --workspace should parse successfully: {:?}",

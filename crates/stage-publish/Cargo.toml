@@ -1,6 +1,6 @@
 [package]
-name = "anodize-stage-publish"
-description = "Publish stage for the anodize release tool — publishes crates and package manager manifests"
+name = "anodizer-stage-publish"
+description = "Publish stage for the anodizer release tool — publishes crates and package manager manifests"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,7 +10,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-anodize-core.workspace = true
+anodizer-core.workspace = true
 anyhow.workspace = true
 glob.workspace = true
 serde = { workspace = true, features = ["derive"] }
@@ -25,4 +25,4 @@ reqwest.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]
-anodize-core = { workspace = true, features = ["test-helpers"] }
+anodizer-core = { workspace = true, features = ["test-helpers"] }

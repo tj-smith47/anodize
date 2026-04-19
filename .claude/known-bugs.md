@@ -21,15 +21,15 @@ violations, user-reported issues.
 
 ### cfgd v0.3.5 dogfooding — 2026-04-19 (3 BLOCKER)
 
-Surfaced by reviewing the open winget + krew PRs anodize created for cfgd v0.3.5 (microsoft/winget-pkgs#361032, kubernetes-sigs/krew-index#5595). Both PRs currently fail CI because of generator bugs in anodize publishers. Fixes MUST land before cfgd can bump `ANODIZE_REV` and re-run the v0.3.5 pipeline (tags/releases already deleted on the cfgd side).
+Surfaced by reviewing the open winget + krew PRs anodizer created for cfgd v0.3.5 (microsoft/winget-pkgs#361032, kubernetes-sigs/krew-index#5595). Both PRs currently fail CI because of generator bugs in anodizer publishers. Fixes MUST land before cfgd can bump `ANODIZER_REV` and re-run the v0.3.5 pipeline (tags/releases already deleted on the cfgd side).
 
 - [x] 2026-04-19 dogfood (BLOCKER C1): publishers emit `sha256: ''` for every artifact because stage-checksum writes the hash as `metadata["Checksum"] = "algorithm:hash"` (see crates/stage-checksum/src/lib.rs:547-549) but every publisher reads `metadata.get("sha256").cloned().unwrap_or_default()`. The keys don't match. Only stage-notarize (crates/stage-notarize/src/lib.rs:39) writes the lowercase `sha256` key — notarized macOS artifacts are the only case that produces a non-empty hash today. Affected sites (8): crates/stage-publish/src/winget.rs:696, winget.rs:736, krew.rs (via util.rs:1116 in artifact_to_os_artifact), scoop.rs:318, homebrew.rs:453, homebrew.rs:502, homebrew.rs:1513, chocolatey.rs:397. Fix: in ChecksumStage::run, after building `checksum_map`, also write a lowercase `metadata.insert("sha256", hash)` (or `metadata.insert(algorithm.to_string(), hash)`) alongside the existing `"Checksum"` key. Alternatively switch every publisher call site to read `metadata["Checksum"]` and parse the `algorithm:` prefix — the former is one-site, safer. Symptoms in cfgd v0.3.5 PRs: winget manifest validator rejects with `Value type not permitted by 'type' constraint ... InstallerSha256` + `Required field missing. [InstallerSha256]`; krew CI fails with the same root cause. — resolved 2026-04-19. `crates/stage-checksum/src/lib.rs` now propagates two metadata keys per artifact: `Checksum` = `"<algo>:<hash>"` (legacy) AND `<algo>` = `<hash>` (publisher-friendly), so every publisher in `crates/stage-publish/src/{winget,krew,scoop,homebrew,chocolatey}.rs` that reads `metadata["sha256"]` now sees the expected hash.
 - [x] 2026-04-19 dogfood (BLOCKER C2): `map_target("darwin-universal")` returns arch `"darwin"` instead of something sensible like `"universal"` or `"all"`. Universal binaries are registered with `target: "darwin-universal"` in crates/stage-build/src/lib.rs:567; the map_target function in crates/core/src/target.rs:37-56 has no branch matching that arch, so the first-component fallback returns the literal string `"darwin"`. Downstream effects: krew manifest gets a third darwin entry with `os: darwin, arch: darwin`, archive naming produces `cfgd-0.3.5-darwin-darwin.tar.gz`, and krew CI validation (`kubernetes-sigs/krew-index#5595`) flags the malformed platform selector. Fix: extend `map_target` to match `darwin-universal` → arch `"all"` (or `"universal"` if a dedicated label is preferred), and verify crates/stage-publish/src/krew.rs:188-198 (already handles arch=="all" by expanding into amd64+arm64 entries) matches whatever label is chosen. Archive naming should also produce `cfgd-0.3.5-darwin-universal.tar.gz` or `cfgd-0.3.5-darwin-all.tar.gz`, not `darwin-darwin`. — resolved 2026-04-19. `crates/core/src/target.rs::map_target` now special-cases `triple == "darwin-universal"` → arch `"all"`, which `crates/stage-publish/src/krew.rs` already fans out to amd64 + arm64 entries; archive names now read `<name>-darwin-all.<ext>` instead of `darwin-darwin`.
-- [x] 2026-04-19 dogfood (BLOCKER C3): default commit author `anodize <bot@anodize.dev>` (crates/stage-publish/src/util.rs:681) blocks EasyCLA checks on any CNCF-project publisher PR. `bot@anodize.dev` is not a GitHub-registered email, so the Linux Foundation EasyCLA bot cannot match the commit author to a signed CLA. Today's cfgd v0.3.5 krew PR (kubernetes-sigs/krew-index#5595) is stuck on this. Fix options, best-to-worst: (1) make the default resolution order `commit_author.{name,email} → git config user.{name,email} → bot@anodize.dev` so a correctly-configured machine produces commits from the release-engineer's identity; (2) require users to override via `commit_author:` in their anodize config (current escape hatch — works, but catches every new consumer who hasn't read the docs); (3) register `bot@anodize.dev` against a GitHub App and sign the CNCF EasyCLA once as a shared identity (most work, permanent for every anodize user). — resolved 2026-04-19. Implemented option 1: `crates/stage-publish/src/util.rs::resolve_commit_opts` now resolves in order `commit_author config → git config user.{name,email} → bot@anodize.dev`. New `local_git_user_name` / `local_git_user_email` helpers added to `crates/core/src/git.rs`. `CommitOptions` switched to owned `String` fields so the runtime-read git-config values can be returned alongside borrowed config values.
+- [x] 2026-04-19 dogfood (BLOCKER C3): default commit author `anodizer <bot@anodizer.dev>` (crates/stage-publish/src/util.rs:681) blocks EasyCLA checks on any CNCF-project publisher PR. `bot@anodizer.dev` is not a GitHub-registered email, so the Linux Foundation EasyCLA bot cannot match the commit author to a signed CLA. Today's cfgd v0.3.5 krew PR (kubernetes-sigs/krew-index#5595) is stuck on this. Fix options, best-to-worst: (1) make the default resolution order `commit_author.{name,email} → git config user.{name,email} → bot@anodizer.dev` so a correctly-configured machine produces commits from the release-engineer's identity; (2) require users to override via `commit_author:` in their anodizer config (current escape hatch — works, but catches every new consumer who hasn't read the docs); (3) register `bot@anodizer.dev` against a GitHub App and sign the CNCF EasyCLA once as a shared identity (most work, permanent for every anodizer user). — resolved 2026-04-19. Implemented option 1: `crates/stage-publish/src/util.rs::resolve_commit_opts` now resolves in order `commit_author config → git config user.{name,email} → bot@anodizer.dev`. New `local_git_user_name` / `local_git_user_email` helpers added to `crates/core/src/git.rs`. `CommitOptions` switched to owned `String` fields so the runtime-read git-config values can be returned alongside borrowed config values.
 
 ### Wave A consolidation — 2026-04-18 (cycle 2)
 
-Findings from `/opt/repos/anodize/.claude/audits/2026-04-v0.x/` audit files. Totals: **10 BLOCKER / 21 WARN / 57 SUGGEST**. `findings_skipped_dup=0` (Active was empty when this consolidation started; no signature collisions possible). Every row carries an `audit:` file:line reference per anodize convention. Sources: A2 parity-build-archive, A3 parity-publishers, A4 parity-announcers, A5 pro-features-audit (+21 per-feature files), A6 safety, A7 dedup.
+Findings from `/opt/repos/anodizer/.claude/audits/2026-04-v0.x/` audit files. Totals: **10 BLOCKER / 21 WARN / 57 SUGGEST**. `findings_skipped_dup=0` (Active was empty when this consolidation started; no signature collisions possible). Every row carries an `audit:` file:line reference per anodizer convention. Sources: A2 parity-build-archive, A3 parity-publishers, A4 parity-announcers, A5 pro-features-audit (+21 per-feature files), A6 safety, A7 dedup.
 
 #### Blockers
 
@@ -64,7 +64,7 @@ Findings from `/opt/repos/anodize/.claude/audits/2026-04-v0.x/` audit files. Tot
   audit: crates/stage-publish/src/homebrew.rs:389, crates/stage-publish/src/homebrew.rs:1220, crates/stage-publish/src/chocolatey.rs:206, crates/stage-publish/src/chocolatey.rs:238, crates/stage-publish/src/chocolatey.rs:254, crates/stage-publish/src/aur.rs:200, crates/stage-publish/src/aur.rs:279
   audit: crates/cli/src/commands/helpers.rs:421, crates/cli/src/commands/helpers.rs:424
   audit: crates/core/src/context.rs:754
-  audit: /opt/repos/anodize/.claude/audits/2026-04-v0.x/safety.md
+  audit: /opt/repos/anodizer/.claude/audits/2026-04-v0.x/safety.md
   audit: crates/core/src/context.rs:754 (already tracked: above W3)
 
 #### Suggestions
@@ -94,19 +94,19 @@ Findings from `/opt/repos/anodize/.claude/audits/2026-04-v0.x/` audit files. Tot
   audit: crates/core/src/template.rs (see pro-template-helpers.md)
   audit: crates/stage-notarize/src/lib.rs (see pro-notarize.md)
   audit: crates/cli/src/commands/release/mod.rs (see pro-flag-prepare.md)
-  audit: /opt/repos/anodize/.claude/audits/2026-04-v0.x/pro-archive-hooks.md
-  audit: /opt/repos/anodize/.claude/audits/2026-04-v0.x/pro-release-tag.md
-  audit: /opt/repos/anodize/.claude/audits/2026-04-v0.x/pro-dmg.md
-  audit: /opt/repos/anodize/.claude/audits/2026-04-v0.x/pro-msi.md
-  audit: /opt/repos/anodize/.claude/audits/2026-04-v0.x/pro-pkg.md
-  audit: /opt/repos/anodize/.claude/audits/2026-04-v0.x/pro-nsis.md
-  audit: /opt/repos/anodize/.claude/audits/2026-04-v0.x/pro-app-bundle.md
-  audit: /opt/repos/anodize/.claude/audits/2026-04-v0.x/pro-monorepo.md
-  audit: /opt/repos/anodize/.claude/audits/2026-04-v0.x/pro-metadata.md
-  audit: /opt/repos/anodize/.claude/audits/2026-04-v0.x/pro-continue-publish-announce.md
-  audit: /opt/repos/anodize/.claude/audits/2026-04-v0.x/pro-flag-id.md
-  audit: /opt/repos/anodize/.claude/audits/2026-04-v0.x/pro-flag-split.md
-  audit: /opt/repos/anodize/.claude/audits/2026-04-v0.x/pro-variables.md
+  audit: /opt/repos/anodizer/.claude/audits/2026-04-v0.x/pro-archive-hooks.md
+  audit: /opt/repos/anodizer/.claude/audits/2026-04-v0.x/pro-release-tag.md
+  audit: /opt/repos/anodizer/.claude/audits/2026-04-v0.x/pro-dmg.md
+  audit: /opt/repos/anodizer/.claude/audits/2026-04-v0.x/pro-msi.md
+  audit: /opt/repos/anodizer/.claude/audits/2026-04-v0.x/pro-pkg.md
+  audit: /opt/repos/anodizer/.claude/audits/2026-04-v0.x/pro-nsis.md
+  audit: /opt/repos/anodizer/.claude/audits/2026-04-v0.x/pro-app-bundle.md
+  audit: /opt/repos/anodizer/.claude/audits/2026-04-v0.x/pro-monorepo.md
+  audit: /opt/repos/anodizer/.claude/audits/2026-04-v0.x/pro-metadata.md
+  audit: /opt/repos/anodizer/.claude/audits/2026-04-v0.x/pro-continue-publish-announce.md
+  audit: /opt/repos/anodizer/.claude/audits/2026-04-v0.x/pro-flag-id.md
+  audit: /opt/repos/anodizer/.claude/audits/2026-04-v0.x/pro-flag-split.md
+  audit: /opt/repos/anodizer/.claude/audits/2026-04-v0.x/pro-variables.md
   audit: crates/core/src/template.rs, crates/stage-sign/src/lib.rs:107, crates/stage-sign/src/lib.rs:608, crates/stage-sign/src/lib.rs:650-655, crates/core/src/hooks.rs:23-25
   audit: crates/stage-publish/src/homebrew.rs:{304,949}, crates/stage-publish/src/chocolatey.rs:{148,231,245}, crates/stage-publish/src/aur.rs:{121,231}, crates/stage-publish/src/winget.rs:{281,461,468,475}, crates/stage-publish/src/krew.rs:146, crates/stage-publish/src/scoop.rs:{160,181}
   audit: crates/core/src/git.rs, crates/core/src/hooks.rs, crates/stage-*/src/lib.rs (35 files, 171 call sites)
@@ -142,13 +142,13 @@ bullets (not checkbox lines) so the push gate correctly skips them.
 
 ## Inventory pre-seeds (inheritance for parity auditor · do-not-re-audit)
 
-These are durable decisions — not tasks. The `goreleaser-inventory-mapper` reads this section and writes matching rows into `anodize/.claude/specs/goreleaser-complete-feature-inventory.md` with `parity_status=implemented`, `notes` carrying the verification date + upstream ref, so future parity auditors read and skip. Bullet form (no `[ ]`) so the push gate doesn't treat these as unchecked tasks.
+These are durable decisions — not tasks. The `goreleaser-inventory-mapper` reads this section and writes matching rows into `anodizer/.claude/specs/goreleaser-complete-feature-inventory.md` with `parity_status=implemented`, `notes` carrying the verification date + upstream ref, so future parity auditors read and skip. Bullet form (no `[ ]`) so the push gate doesn't treat these as unchecked tasks.
 
 ### Verified matching upstream (2026-04-15 — GoReleaser HEAD as of that date)
 Citations to enrich during inventory mapping (A1). Flag as `needs-citation` in the inventory if upstream file:line cannot be pinned.
-- `Now.Format` — implemented. Preprocessor rewrites `{{ .Now.Format "FMT" }}` to `{{ Now | now_format(format="FMT") }}`. Anodize ref: `core/src/template.rs` (search `now_format`).
+- `Now.Format` — implemented. Preprocessor rewrites `{{ .Now.Format "FMT" }}` to `{{ Now | now_format(format="FMT") }}`. Anodizer ref: `core/src/template.rs` (search `now_format`).
 - `github_urls.skip_tls_verify` — fully wired in the GitHub client.
-- `ANODIZE_CURRENT_TAG` + HEAD validation — matches GoReleaser (`validate` still runs even when env tag is set).
+- `ANODIZER_CURRENT_TAG` + HEAD validation — matches GoReleaser (`validate` still runs even when env tag is set).
 - `--skip=unknown` — errors at parse time in `main.rs`; the warn-loop in `pipeline.rs:511-520` is dead. (Deletion of the dead loop is already an Active item — keep that; this line just affirms main.rs behaviour is correct.)
 - AUR arch `arm7` — intentionally absent; would duplicate existing coverage.
 - H2 Homebrew `Goarm = "6"` — matches GoReleaser `experimental.DefaultGOARM`.
@@ -157,8 +157,8 @@ Citations to enrich during inventory mapping (A1). Flag as `needs-citation` in t
 - B8 Artifact paths absolute — matches GoReleaser (no relative path normalization).
 
 ### Rust-additive candidates promoted from false-positive review
-These were filed as "GoReleaser doesn't do it either," but anodize claims superiority; these are opportunities, not bugs. Mapper records them as rust-additive rows.
-- HTTP upload retry for artifactory / fury / cloudsmith / custom-upload publishers. GoReleaser does NOT retry; anodize can, using the same retry/backoff infrastructure Docker V2 uses. Surface as `rust-additive` candidate; decide in a follow-up scope pass whether to implement.
+These were filed as "GoReleaser doesn't do it either," but anodizer claims superiority; these are opportunities, not bugs. Mapper records them as rust-additive rows.
+- HTTP upload retry for artifactory / fury / cloudsmith / custom-upload publishers. GoReleaser does NOT retry; anodizer can, using the same retry/backoff infrastructure Docker V2 uses. Surface as `rust-additive` candidate; decide in a follow-up scope pass whether to implement.
 
 ## Resolved
 

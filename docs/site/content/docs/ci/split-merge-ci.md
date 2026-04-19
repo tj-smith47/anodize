@@ -1,18 +1,18 @@
 +++
 title = "Standalone Pipeline Commands"
-description = "Run publish and announce as independent CI jobs with anodize publish and anodize announce"
+description = "Run publish and announce as independent CI jobs with anodizer publish and anodizer announce"
 weight = 32
 template = "docs.html"
 +++
 
-Anodize provides three commands — `anodize publish`, `anodize announce`, and
-`anodize continue --merge` — that let you break the release pipeline into
+Anodizer provides three commands — `anodizer publish`, `anodizer announce`, and
+`anodizer continue --merge` — that let you break the release pipeline into
 separate CI jobs. This gives you finer control over retries, secrets access,
 and job dependencies.
 
 ## Commands
 
-### `anodize publish`
+### `anodizer publish`
 
 Runs the publish stages (GitHub Release creation, package registry publishing,
 blob storage upload) against a `dist/` directory that already contains built
@@ -35,7 +35,7 @@ Use this command when:
 
 Global flags like `--config` / `-f` and `--verbose` also apply.
 
-### `anodize announce`
+### `anodizer announce`
 
 Runs only the announce stage against a `dist/` directory. All configured
 announcement providers (Slack, Discord, Twitter/X, Mastodon, etc.) are invoked.
@@ -55,7 +55,7 @@ Use this command when:
 | `--dist` | Custom dist directory (overrides config) |
 | `--skip` | Comma-separated list of providers to skip (e.g. `slack,twitter`) |
 
-### `anodize continue --merge`
+### `anodizer continue --merge`
 
 Merges artifacts produced by parallel split-build jobs and runs all
 post-build stages (archive, sign, changelog, release, publish, announce, etc.)
@@ -66,7 +66,7 @@ setting up a fan-out build.
 
 This workflow separates build, merge, publish, and announce into four jobs
 so each can carry its own secrets and retry independently. It uses
-[`tj-smith47/anodize-action`](@/docs/ci/anodize-action.md), whose built-in
+[`tj-smith47/anodizer-action`](@/docs/ci/anodizer-action.md), whose built-in
 `upload-dist` / `download-dist` inputs replace the manual
 upload-artifact/download-artifact plumbing.
 
@@ -92,7 +92,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: tj-smith47/anodize-action@v1
+      - uses: tj-smith47/anodizer-action@v1
         with:
           install-rust: true
           install: zig,cargo-zigbuild
@@ -110,7 +110,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: tj-smith47/anodize-action@v1
+      - uses: tj-smith47/anodizer-action@v1
         with:
           auto-install: true
           download-dist: true         # downloads + merges dist-* artifacts
@@ -131,7 +131,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: tj-smith47/anodize-action@v1
+      - uses: tj-smith47/anodizer-action@v1
         with:
           download-dist: true
           args: publish
@@ -148,7 +148,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: tj-smith47/anodize-action@v1
+      - uses: tj-smith47/anodizer-action@v1
         with:
           download-dist: true
           args: announce
@@ -175,7 +175,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: tj-smith47/anodize-action@v1
+      - uses: tj-smith47/anodizer-action@v1
         with:
           install-rust: true
           auto-install: true
@@ -192,7 +192,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: tj-smith47/anodize-action@v1
+      - uses: tj-smith47/anodizer-action@v1
         with:
           download-dist: true
           args: announce
@@ -203,9 +203,9 @@ jobs:
 
 ## Dry-run testing
 
-Both `anodize publish` and `anodize announce` support `--dry-run`. Use it in
+Both `anodizer publish` and `anodizer announce` support `--dry-run`. Use it in
 pull request workflows to verify configuration without sending real requests:
 
 ```yaml
-- run: anodize announce --dry-run
+- run: anodizer announce --dry-run
 ```

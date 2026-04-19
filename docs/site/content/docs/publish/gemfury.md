@@ -5,7 +5,7 @@ weight = 84
 template = "docs.html"
 +++
 
-Anodize can push deb, rpm, and apk packages to [Gemfury](https://fury.io/) repositories.
+Anodizer can push deb, rpm, and apk packages to [Gemfury](https://fury.io/) repositories.
 
 ## Minimal config
 

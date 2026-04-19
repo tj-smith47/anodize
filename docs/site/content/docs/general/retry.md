@@ -5,7 +5,7 @@ weight = 9
 template = "docs.html"
 +++
 
-Anodize automatically retries failed operations with exponential backoff. Retry behavior is built into upload and Docker stages.
+Anodizer automatically retries failed operations with exponential backoff. Retry behavior is built into upload and Docker stages.
 
 ## Release uploads
 

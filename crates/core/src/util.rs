@@ -434,7 +434,7 @@ mod tests {
 
     #[test]
     fn test_set_file_mtime_sets_both_atime_and_mtime() {
-        let dir = std::env::temp_dir().join("anodize_test_set_file_mtime");
+        let dir = std::env::temp_dir().join("anodizer_test_set_file_mtime");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -488,7 +488,7 @@ mod tests {
 
     #[test]
     fn test_apply_mod_timestamp_sets_mtime_on_regular_files() {
-        let dir = std::env::temp_dir().join("anodize_test_apply_mod_timestamp");
+        let dir = std::env::temp_dir().join("anodizer_test_apply_mod_timestamp");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
@@ -521,7 +521,7 @@ mod tests {
 
     #[test]
     fn test_apply_mod_timestamp_invalid_timestamp_errors() {
-        let dir = std::env::temp_dir().join("anodize_test_apply_mod_timestamp_invalid");
+        let dir = std::env::temp_dir().join("anodizer_test_apply_mod_timestamp_invalid");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 

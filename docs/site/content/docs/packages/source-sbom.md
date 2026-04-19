@@ -30,7 +30,7 @@ This produces a `tar.gz` archive named `<project>-<version>.tar.gz` containing a
 
 ### How it works
 
-1. Anodize runs `git archive` against the current commit (or HEAD) to create an archive of all tracked files.
+1. Anodizer runs `git archive` against the current commit (or HEAD) to create an archive of all tracked files.
 2. If `prefix_template` is set, all paths inside the archive are nested under that directory (e.g., `myapp-1.0.0/src/main.rs`).
 3. If extra `files` are specified, they are appended to the tar archive under the same prefix directory. For zip format, extra files are added via `git archive --add-file`.
 4. For `tar.gz` format with extra files, the archive is built as an uncompressed tar first, extra files are appended, then the result is gzip-compressed.
@@ -102,7 +102,7 @@ This produces `myapp-1.0.0-source.tar.gz` with all files nested under `myapp-1.0
 
 The SBOM (Software Bill of Materials) stage produces a machine-readable inventory of your project's dependencies. SBOMs are used for supply chain security, license compliance, and vulnerability tracking. The generated SBOM is attached as a release artifact.
 
-Anodize supports two modes:
+Anodizer supports two modes:
 
 1. **Built-in mode** -- parses your `Cargo.lock` file and generates a CycloneDX 1.5 or SPDX 2.3 JSON document. No external tools required.
 2. **External command mode** -- runs an external cataloging tool (default: [syft](https://github.com/anchore/syft)) against your artifacts. This works with any language ecosystem.
@@ -114,7 +114,7 @@ sbom:
   enabled: true
 ```
 
-When no `cmd` or `args` are specified, anodize uses built-in mode. It locates `Cargo.lock` by searching from the repository root upward, parses all package entries, and emits a CycloneDX 1.5 JSON file named `<project>-<version>.cdx.json`.
+When no `cmd` or `args` are specified, anodizer uses built-in mode. It locates `Cargo.lock` by searching from the repository root upward, parses all package entries, and emits a CycloneDX 1.5 JSON file named `<project>-<version>.cdx.json`.
 
 ### SBOM config fields
 
@@ -165,9 +165,9 @@ sboms:
 
 ### External command mode
 
-When `cmd` or `args` are specified, anodize runs an external tool against each matching artifact. This is useful for non-Rust projects or when you need richer SBOM output.
+When `cmd` or `args` are specified, anodizer runs an external tool against each matching artifact. This is useful for non-Rust projects or when you need richer SBOM output.
 
-The default external tool is [syft](https://github.com/anchore/syft). When using syft, anodize provides sensible default arguments and environment variables automatically:
+The default external tool is [syft](https://github.com/anchore/syft). When using syft, anodizer provides sensible default arguments and environment variables automatically:
 
 **Default syft args:**
 ```

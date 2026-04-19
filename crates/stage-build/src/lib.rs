@@ -5,16 +5,16 @@ use std::process::Command;
 
 use anyhow::{Context as _, Result};
 
-use anodize_core::artifact::{Artifact, ArtifactKind};
-use anodize_core::config::{
+use anodizer_core::artifact::{Artifact, ArtifactKind};
+use anodizer_core::config::{
     BuildConfig, BuildIgnore, BuildOverride, CrossStrategy, HookEntry, UniversalBinaryConfig,
 };
-use anodize_core::context::Context;
-use anodize_core::env_expand::expand_env as expand_env_vars;
-use anodize_core::hooks::run_hooks;
-use anodize_core::stage::Stage;
-use anodize_core::target::map_target;
-use anodize_core::util::find_binary;
+use anodizer_core::context::Context;
+use anodizer_core::env_expand::expand_env as expand_env_vars;
+use anodizer_core::hooks::run_hooks;
+use anodizer_core::stage::Stage;
+use anodizer_core::target::map_target;
+use anodizer_core::util::find_binary;
 
 pub mod binstall;
 pub mod version_sync;
@@ -68,7 +68,7 @@ pub(crate) fn detect_cross_strategy() -> CrossStrategy {
 /// Only fall back to the cross tooling when actually crossing OS boundaries
 /// (Linux → Windows, Linux → darwin, etc.).
 pub(crate) fn detect_cross_strategy_for_target(target: &str) -> CrossStrategy {
-    let host = anodize_core::partial::detect_host_target().unwrap_or_default();
+    let host = anodizer_core::partial::detect_host_target().unwrap_or_default();
 
     // Exact host match — always cargo.
     if !host.is_empty() && target == host {
@@ -526,8 +526,8 @@ fn build_universal_binary(
         && out_path.exists()
     {
         let rendered_ts = ctx.render_template(ts).unwrap_or_else(|_| ts.clone());
-        let mtime = anodize_core::util::parse_mod_timestamp(&rendered_ts)?;
-        anodize_core::util::set_file_mtime(&out_path, mtime)?;
+        let mtime = anodizer_core::util::parse_mod_timestamp(&rendered_ts)?;
+        anodizer_core::util::set_file_mtime(&out_path, mtime)?;
         log.verbose(&format!(
             "applied mod_timestamp={rendered_ts} to {}",
             out_path.display()
@@ -599,7 +599,7 @@ pub(crate) fn is_target_ignored(target: &str, ignores: &[BuildIgnore]) -> bool {
 pub(crate) fn find_matching_override<'a>(
     target: &str,
     overrides: &'a [BuildOverride],
-    log: &anodize_core::log::StageLogger,
+    log: &anodizer_core::log::StageLogger,
     strict: bool,
 ) -> anyhow::Result<Option<&'a BuildOverride>> {
     for ov in overrides {
@@ -1026,7 +1026,7 @@ fn cargo_target_dir(build_env: Option<&HashMap<String, String>>) -> PathBuf {
     PathBuf::from("target")
 }
 
-// run_hooks is imported from anodize_core::hooks
+// run_hooks is imported from anodizer_core::hooks
 
 // ---------------------------------------------------------------------------
 // resolve_reproducible_epoch — parse SOURCE_DATE_EPOCH with commit_timestamp fallback
@@ -1090,10 +1090,10 @@ fn resolve_copy_from(
 fn ensure_targets_installed(
     ctx: &Context,
     targets: &[String],
-    log: &anodize_core::log::StageLogger,
+    log: &anodizer_core::log::StageLogger,
     dry_run: bool,
 ) -> Result<()> {
-    let host = anodize_core::partial::detect_host_target().unwrap_or_default();
+    let host = anodizer_core::partial::detect_host_target().unwrap_or_default();
     for target in targets {
         if target == &host {
             continue;
@@ -2022,7 +2022,7 @@ impl Stage for BuildStage {
                 if job.reproducible && resolved_bin.exists() {
                     let epoch = resolve_reproducible_epoch(&commit_timestamp);
                     if epoch > 0 {
-                        anodize_core::util::set_file_mtime_epoch(&resolved_bin, epoch)?;
+                        anodizer_core::util::set_file_mtime_epoch(&resolved_bin, epoch)?;
                     }
                 }
 
@@ -2031,8 +2031,8 @@ impl Stage for BuildStage {
                     && resolved_bin.exists()
                 {
                     let rendered_ts = ctx.render_template(ts).unwrap_or_else(|_| ts.clone());
-                    let mtime = anodize_core::util::parse_mod_timestamp(&rendered_ts)?;
-                    anodize_core::util::set_file_mtime(&resolved_bin, mtime)?;
+                    let mtime = anodizer_core::util::parse_mod_timestamp(&rendered_ts)?;
+                    anodizer_core::util::set_file_mtime(&resolved_bin, mtime)?;
                     log.verbose(&format!(
                         "applied mod_timestamp={rendered_ts} to {}",
                         resolved_bin.display()
@@ -2127,7 +2127,7 @@ impl Stage for BuildStage {
                             let job_amd64_variant = job.amd64_variant.clone();
                             let thread_tvars = template_vars.clone();
                             // StageLogger is not Clone, so create a fresh one per thread
-                            let thread_log = anodize_core::log::StageLogger::new("build", log.verbosity());
+                            let thread_log = anodizer_core::log::StageLogger::new("build", log.verbosity());
 
                             s.spawn(move || -> Result<BuildResult> {
                                 let program = program.ok_or_else(|| anyhow::anyhow!(
@@ -2196,7 +2196,7 @@ impl Stage for BuildStage {
                                 if reproducible && bin_path.exists() {
                                     let epoch = resolve_reproducible_epoch(&commit_ts);
                                     if epoch > 0 {
-                                        anodize_core::util::set_file_mtime_epoch(&bin_path, epoch)?;
+                                        anodizer_core::util::set_file_mtime_epoch(&bin_path, epoch)?;
                                     }
                                 }
 
@@ -2206,10 +2206,10 @@ impl Stage for BuildStage {
                                 {
                                     // Thread context doesn't have ctx for template rendering,
                                     // so render using Tera directly with thread-local vars.
-                                    let rendered_ts = anodize_core::template::render(ts, &thread_tvars)
+                                    let rendered_ts = anodizer_core::template::render(ts, &thread_tvars)
                                         .unwrap_or_else(|_| ts.clone());
-                                    let mtime = anodize_core::util::parse_mod_timestamp(&rendered_ts)?;
-                                    anodize_core::util::set_file_mtime(&bin_path, mtime)?;
+                                    let mtime = anodizer_core::util::parse_mod_timestamp(&rendered_ts)?;
+                                    anodizer_core::util::set_file_mtime(&bin_path, mtime)?;
                                     thread_log.verbose(&format!(
                                         "applied mod_timestamp={rendered_ts} to {}",
                                         bin_path.display()
@@ -2308,7 +2308,7 @@ impl Stage for BuildStage {
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
-    use anodize_core::log::{StageLogger, Verbosity};
+    use anodizer_core::log::{StageLogger, Verbosity};
     use serial_test::serial;
 
     fn test_logger() -> StageLogger {
@@ -2465,8 +2465,8 @@ mod tests {
 
     #[test]
     fn test_build_stage_no_targets_skips_gracefully() {
-        use anodize_core::config::{BuildConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{BuildConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let mut config = Config::default();
         config.project_name = "test".to_string();
@@ -2494,7 +2494,7 @@ mod tests {
         // No artifacts should be registered
         let binaries = ctx
             .artifacts
-            .by_kind(anodize_core::artifact::ArtifactKind::Binary);
+            .by_kind(anodizer_core::artifact::ArtifactKind::Binary);
         assert!(binaries.is_empty());
     }
 
@@ -2502,10 +2502,10 @@ mod tests {
 
     #[test]
     fn test_copy_from_nonexistent_binary_errors_with_paths() {
-        use anodize_core::config::{BuildConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{BuildConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
-        let tmp_dir = std::env::temp_dir().join("anodize_build_test_copy_from");
+        let tmp_dir = std::env::temp_dir().join("anodizer_build_test_copy_from");
         let _ = std::fs::create_dir_all(&tmp_dir);
 
         let mut config = Config::default();
@@ -2544,10 +2544,10 @@ mod tests {
 
     #[test]
     fn test_build_failure_nonzero_exit_produces_clear_error() {
-        use anodize_core::config::{BuildConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{BuildConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
-        let tmp_dir = std::env::temp_dir().join("anodize_build_test_nonzero");
+        let tmp_dir = std::env::temp_dir().join("anodizer_build_test_nonzero");
         let _ = std::fs::create_dir_all(&tmp_dir);
         // Create a minimal project so cargo can find Cargo.toml but fail on build
         std::fs::write(
@@ -2774,8 +2774,8 @@ crate_type = ["dylib"]
 
     #[test]
     fn test_reproducible_build_sets_source_date_epoch_and_rustflags() {
-        use anodize_core::config::{BuildConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{BuildConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let mut config = Config::default();
         config.project_name = "test".to_string();
@@ -2812,8 +2812,8 @@ crate_type = ["dylib"]
         // remap-path-prefix flag is appended rather than replacing it.
         use std::collections::HashMap;
 
-        use anodize_core::config::{BuildConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{BuildConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let mut target_env: HashMap<String, HashMap<String, String>> = HashMap::new();
         let mut inner: HashMap<String, String> = HashMap::new();
@@ -2854,8 +2854,8 @@ crate_type = ["dylib"]
 
     #[test]
     fn test_reproducible_false_does_not_inject_env_vars() {
-        use anodize_core::config::{BuildConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{BuildConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let mut config = Config::default();
         config.project_name = "test".to_string();
@@ -2886,12 +2886,12 @@ crate_type = ["dylib"]
 
     /// Helper: register a fake Binary artifact directly in the context.
     fn register_binary(
-        ctx: &mut anodize_core::context::Context,
+        ctx: &mut anodizer_core::context::Context,
         crate_name: &str,
         target: &str,
         path: std::path::PathBuf,
     ) {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
         let mut meta = HashMap::new();
         meta.insert(
             "binary".to_string(),
@@ -2912,9 +2912,9 @@ crate_type = ["dylib"]
 
     #[test]
     fn test_universal_binary_dry_run_registers_artifact() {
-        use anodize_core::artifact::ArtifactKind;
-        use anodize_core::config::{Config, CrateConfig, UniversalBinaryConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::artifact::ArtifactKind;
+        use anodizer_core::config::{Config, CrateConfig, UniversalBinaryConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let mut config = Config::default();
         config.project_name = "test".to_string();
@@ -2988,11 +2988,11 @@ crate_type = ["dylib"]
 
     #[test]
     fn test_universal_binary_dry_run_uses_name_template() {
-        use anodize_core::artifact::ArtifactKind;
-        use anodize_core::config::UniversalBinaryConfig;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::artifact::ArtifactKind;
+        use anodizer_core::config::UniversalBinaryConfig;
+        use anodizer_core::context::{Context, ContextOptions};
 
-        let config = anodize_core::config::Config::default();
+        let config = anodizer_core::config::Config::default();
         let opts = ContextOptions {
             dry_run: true,
             ..Default::default()
@@ -3044,11 +3044,11 @@ crate_type = ["dylib"]
 
     #[test]
     fn test_universal_binary_skips_when_missing_arch() {
-        use anodize_core::artifact::ArtifactKind;
-        use anodize_core::config::UniversalBinaryConfig;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::artifact::ArtifactKind;
+        use anodizer_core::config::UniversalBinaryConfig;
+        use anodizer_core::context::{Context, ContextOptions};
 
-        let config = anodize_core::config::Config::default();
+        let config = anodizer_core::config::Config::default();
         let opts = ContextOptions {
             dry_run: true,
             ..Default::default()
@@ -3090,11 +3090,11 @@ crate_type = ["dylib"]
 
     #[test]
     fn test_universal_binary_skips_for_different_crate() {
-        use anodize_core::artifact::ArtifactKind;
-        use anodize_core::config::UniversalBinaryConfig;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::artifact::ArtifactKind;
+        use anodizer_core::config::UniversalBinaryConfig;
+        use anodizer_core::context::{Context, ContextOptions};
 
-        let config = anodize_core::config::Config::default();
+        let config = anodizer_core::config::Config::default();
         let opts = ContextOptions {
             dry_run: true,
             ..Default::default()
@@ -3142,11 +3142,11 @@ crate_type = ["dylib"]
 
     #[test]
     fn test_universal_binary_artifact_has_correct_metadata() {
-        use anodize_core::artifact::ArtifactKind;
-        use anodize_core::config::UniversalBinaryConfig;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::artifact::ArtifactKind;
+        use anodizer_core::config::UniversalBinaryConfig;
+        use anodizer_core::context::{Context, ContextOptions};
 
-        let mut config = anodize_core::config::Config::default();
+        let mut config = anodizer_core::config::Config::default();
         config.project_name = "myapp".to_string();
         let opts = ContextOptions {
             dry_run: true,
@@ -3203,11 +3203,11 @@ crate_type = ["dylib"]
     /// must produce `myapp_darwin_all/myapp`, not `myapp_darwin_all/myapp-bin`.
     #[test]
     fn test_universal_binary_default_name_uses_project_name() {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
-        use anodize_core::config::UniversalBinaryConfig;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::config::UniversalBinaryConfig;
+        use anodizer_core::context::{Context, ContextOptions};
 
-        let mut config = anodize_core::config::Config::default();
+        let mut config = anodizer_core::config::Config::default();
         config.project_name = "myapp".to_string();
         let opts = ContextOptions {
             dry_run: true,
@@ -3628,7 +3628,7 @@ crate_type = ["dylib"]
     fn test_resolve_build_program_auto_native_uses_cargo() {
         // Target == host should always resolve to cargo, even if
         // cargo-zigbuild/cross are installed.
-        let host = anodize_core::partial::detect_host_target().unwrap_or_default();
+        let host = anodizer_core::partial::detect_host_target().unwrap_or_default();
         if host.is_empty() {
             return;
         }
@@ -3765,7 +3765,7 @@ crate_type = ["dylib"]
 
     #[test]
     fn test_build_config_with_hooks() {
-        use anodize_core::config::Config;
+        use anodizer_core::config::Config;
 
         let yaml = r#"
 project_name: test
@@ -3894,8 +3894,8 @@ crates:
 
     #[test]
     fn test_duplicate_build_id_validation() {
-        use anodize_core::config::{BuildConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{BuildConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let mut config = Config::default();
         config.project_name = "test".to_string();
@@ -3937,8 +3937,8 @@ crates:
 
     #[test]
     fn test_invalid_target_errors() {
-        use anodize_core::config::{BuildConfig, Config, CrateConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{BuildConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let mut config = Config::default();
         config.project_name = "test".to_string();
@@ -3971,8 +3971,8 @@ crates:
 
     #[test]
     fn test_skip_build_with_string_or_bool() {
-        use anodize_core::config::{BuildConfig, Config, CrateConfig, StringOrBool};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{BuildConfig, Config, CrateConfig, StringOrBool};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let mut config = Config::default();
         config.project_name = "test".to_string();
@@ -4088,7 +4088,7 @@ crates:
 
     #[test]
     fn test_build_config_command_field_parses() {
-        use anodize_core::config::Config;
+        use anodizer_core::config::Config;
 
         let yaml = r#"
 project_name: test
@@ -4107,7 +4107,7 @@ crates:
 
     #[test]
     fn test_build_config_skip_string_or_bool_parses() {
-        use anodize_core::config::{Config, StringOrBool};
+        use anodizer_core::config::{Config, StringOrBool};
 
         let yaml = r#"
 project_name: test
@@ -4126,7 +4126,7 @@ crates:
 
     #[test]
     fn test_build_config_skip_template_parses() {
-        use anodize_core::config::{Config, StringOrBool};
+        use anodizer_core::config::{Config, StringOrBool};
 
         let yaml = r#"
 project_name: test
@@ -4150,7 +4150,7 @@ crates:
 
     #[test]
     fn test_build_config_no_unique_dist_dir_string_or_bool() {
-        use anodize_core::config::{Config, StringOrBool};
+        use anodizer_core::config::{Config, StringOrBool};
 
         let yaml = r#"
 project_name: test

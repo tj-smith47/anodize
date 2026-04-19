@@ -21,7 +21,7 @@ Every Missing and Partial item must be addressed. There is no "high priority" vs
 
 1. **Read GoReleaser source first.** Before implementing ANY feature, read the Go source at `/opt/repos/goreleaser/internal/pipe/{area}/` and its tests. List every config field, default, and behavior.
 2. **Config + wiring are ONE task, not two.** Adding a config struct/field without wiring it to behavioral code is NOT done. Every checklist item means: config parsing + behavioral wiring + tests proving the behavior works. A parsed-but-ignored field is Missing by definition. When reviewing, the spec reviewer MUST verify fields are wired by tracing from config through to the code that reads them.
-3. **Spec review = GoReleaser source comparison.** The spec reviewer must read the GoReleaser pipe source and compare behavior line-by-line. Checking that "the struct has the right fields" is not a spec review. The review must verify: Does anodize produce the same output as GoReleaser given the same input? Are defaults the same? Are error cases the same?
+3. **Spec review = GoReleaser source comparison.** The spec reviewer must read the GoReleaser pipe source and compare behavior line-by-line. Checking that "the struct has the right fields" is not a spec review. The review must verify: Does anodizer produce the same output as GoReleaser given the same input? Are defaults the same? Are error cases the same?
 4. **Spec + code quality review loop.** After implementing, run spec review then code quality review. Fix ALL findings of ANY severity. Re-review. Repeat until ZERO issues/suggestions remain. That's when the task is done.
 5. **Mark items done here.** Check the box in this file when an item is implemented to equal or better quality than GoReleaser.
 6. **Work on master directly.** No worktrees or branches for sequential work.
@@ -130,7 +130,7 @@ GoReleaser source: `internal/pipe/custompublishers/`, `cmd/`
 - [x] man command
 - N/A: --prepare (publish later) — zero matches in GoReleaser cmd/ directory
 - N/A: --check --soft — zero matches for "soft" in cmd/check.go
-- N/A: continue --merge, publish --merge, announce --merge — GoReleaser has no continue/publish/announce subcommands; anodize already has them
+- N/A: continue --merge, publish --merge, announce --merge — GoReleaser has no continue/publish/announce subcommands; anodizer already has them
 
 **Global hooks** (from parity-matrix s17)
 - N/A: if conditional on hooks — Before struct is Hooks []string, no conditional field (config.go:1187-1189)
@@ -213,14 +213,14 @@ GoReleaser source: `internal/pipe/release/`, `internal/pipe/publish/`
 ### Session G: Parity Audit Findings (from 2026-04-05 audit)
 
 **Pervasive: `goamd64`/`goarm` config fields across all publishers**
-GoReleaser source: every publisher pipe's `Default()` method sets `Goamd64 = "v1"` and uses it to filter amd64 microarchitecture variants. All 7 core publishers + Nix lack these fields in anodize. Requires adding `goamd64: Option<String>` and `goarm: Option<String>` to each publisher config, defaulting goamd64 to `"v1"`, and wiring the filter into `find_all_platform_artifacts_filtered()` in `util.rs`.
+GoReleaser source: every publisher pipe's `Default()` method sets `Goamd64 = "v1"` and uses it to filter amd64 microarchitecture variants. All 7 core publishers + Nix lack these fields in anodizer. Requires adding `goamd64: Option<String>` and `goarm: Option<String>` to each publisher config, defaulting goamd64 to `"v1"`, and wiring the filter into `find_all_platform_artifacts_filtered()` in `util.rs`.
 - [x] Add `goamd64` field to HomebrewConfig, ScoopConfig, ChocolateyConfig, WingetConfig, AurConfig, KrewConfig, NixConfig
 - [x] Add `goarm` field to HomebrewConfig, KrewConfig
 - [x] Wire goamd64/goarm into artifact filtering in `util.rs:find_all_platform_artifacts_filtered()`
 - [x] Default goamd64 to "v1" in each publisher's defaults path
 
 **Artifactory/Fury/CloudSmith: non-functional live mode**
-These publishers only have dry-run logging — no actual HTTP upload code. GoReleaser source: `internal/http/http.go` (shared upload module). Anodize files: `artifactory.rs`, `fury.rs`, `cloudsmith.rs` all have `"artifact registry not yet implemented"` placeholders. All config fields (ids, exts, mode, checksum, signature, meta, custom_artifact_name, custom_headers, extra_files, client_x509_cert/key) are declared but unwired.
+These publishers only have dry-run logging — no actual HTTP upload code. GoReleaser source: `internal/http/http.go` (shared upload module). Anodizer files: `artifactory.rs`, `fury.rs`, `cloudsmith.rs` all have `"artifact registry not yet implemented"` placeholders. All config fields (ids, exts, mode, checksum, signature, meta, custom_artifact_name, custom_headers, extra_files, client_x509_cert/key) are declared but unwired.
 - [x] Implement HTTP upload in `artifactory.rs` using reqwest: artifact iteration, per-artifact URL template rendering, Basic Auth, checksum header, TLS client certs, custom headers
 - [x] Implement Fury push in `fury.rs`: HTTP PUT to `https://push.fury.io/v1/` with token auth
 - [x] Implement CloudSmith push in `cloudsmith.rs`: HTTP upload to CloudSmith API
@@ -235,7 +235,7 @@ GoReleaser source: `internal/pipe/notary/macos.go:144` calls `binaries.Refresh()
 - [x] Default notarize IDs to project name when empty (match GoReleaser)
 
 **UPX/Notarize: missing UniversalBinary artifact filter**
-GoReleaser source: `upx.go:119` filters `ByTypes(Binary, UniversalBinary)`. `macos.go:79` same. Anodize only matches `ArtifactKind::Binary`. macOS universal/fat binaries are silently skipped.
+GoReleaser source: `upx.go:119` filters `ByTypes(Binary, UniversalBinary)`. `macos.go:79` same. Anodizer only matches `ArtifactKind::Binary`. macOS universal/fat binaries are silently skipped.
 - [x] Add `ArtifactKind::UniversalBinary` to UPX binary filter in `stage-upx/src/lib.rs:117`
 - [x] Add `ArtifactKind::UniversalBinary` to notarize binary filter in `stage-notarize/src/lib.rs:197`
 
@@ -249,7 +249,7 @@ GoReleaser uses Go text/template `{{ if }}/{{ end }}/{{ range }}` block syntax. 
 - [x] Convert `{{ $var := expr }}` → `{% set var = expr %}`
 
 **Homebrew Cask: incomplete as child config**
-GoReleaser source: `internal/pipe/cask/` — Cask is a top-level config section (`homebrew_casks []HomebrewCask`) with its own repository, commit_author, directory, skip_upload, hooks, dependencies, conflicts, manpages, completions, service, structured uninstall/zap, and structured URL config. Anodize nests cask as a child of HomebrewConfig with ~15 missing fields.
+GoReleaser source: `internal/pipe/cask/` — Cask is a top-level config section (`homebrew_casks []HomebrewCask`) with its own repository, commit_author, directory, skip_upload, hooks, dependencies, conflicts, manpages, completions, service, structured uninstall/zap, and structured URL config. Anodizer nests cask as a child of HomebrewConfig with ~15 missing fields.
 - [x] Promote `HomebrewCaskConfig` to top-level config (Vec in Config struct)
 - [x] Add missing fields: repository, commit_author, commit_msg_template, directory, skip_upload, custom_block, ids, service, manpages, completions, dependencies, conflicts, hooks, generate_completions_from_executable
 - [x] Add structured `HomebrewCaskURL` (verified, using, cookies, referer, headers, user_agent, data)
@@ -272,59 +272,59 @@ GoReleaser source: `winget.go:115-134` templates 18 fields; `chocolatey.go:218-2
 ### Session H: Release & Changelog Behavioral Gaps (from 2026-04-06 audit)
 
 **GitHub Enterprise: download URL not wired to artifact metadata**
-GoReleaser's `ReleaseURLTemplate()` uses `GitHubURLs.Download` to construct artifact download URLs stored in artifact metadata. Publishers (homebrew, scoop, krew, nix, chocolatey, winget, cask) read `artifact.metadata["url"]` for download links. Anodize reads `github_urls.download` but never stores it in artifact metadata — publishers only work if `url_template` is explicitly set.
+GoReleaser's `ReleaseURLTemplate()` uses `GitHubURLs.Download` to construct artifact download URLs stored in artifact metadata. Publishers (homebrew, scoop, krew, nix, chocolatey, winget, cask) read `artifact.metadata["url"]` for download links. Anodizer reads `github_urls.download` but never stores it in artifact metadata — publishers only work if `url_template` is explicitly set.
 - [x] After GitHub release asset upload, populate `artifact.metadata["url"]` using download URL + owner/name/tag/artifact pattern
 - [x] Set default `github_urls.download` to `"https://github.com"` when not specified
 - [x] Wire `ReleaseURLTemplate` for GitHub (matching `{download}/{owner}/{name}/releases/download/{tag}/{artifact}`)
 - [x] Verify all 7 publishers + cask read artifact URL metadata correctly when `url_template` is not set
 
 **GitLab/Gitea: upload retry with exponential backoff**
-GoReleaser wraps all upload errors in `RetriableError{}` and retries up to 10 times with 50ms base delay. Anodize has single-retry on link conflict (400/422) for GitLab, zero retry for Gitea uploads.
+GoReleaser wraps all upload errors in `RetriableError{}` and retries up to 10 times with 50ms base delay. Anodizer has single-retry on link conflict (400/422) for GitLab, zero retry for Gitea uploads.
 - [x] Add configurable retry wrapper for GitLab `upload_via_package_registry()` and `upload_via_project_uploads()`
 - [x] Add retry wrapper for Gitea `gitea_upload_asset()`
 - [x] Match GoReleaser: 10 attempts, 50ms base delay, exponential backoff
 - [x] Wrap transient HTTP errors (5xx, timeouts) in retriable error type
 
 **GitLab: version detection API fallback**
-GoReleaser checks `CI_SERVER_VERSION` env, then falls back to `/api/v4/version` API call. Anodize only checks env, defaults to v17+ when absent.
+GoReleaser checks `CI_SERVER_VERSION` env, then falls back to `/api/v4/version` API call. Anodizer only checks env, defaults to v17+ when absent.
 - [x] Add API call fallback to `/api/v4/version` when `CI_SERVER_VERSION` not set
 - [x] Parse version response and compare against v17.0.0
 
 **Changelog: co-author extraction from commit trailers**
-GoReleaser's `changelog.ExtractCoAuthors()` parses `Co-Authored-By:` trailers from commit message bodies for all three backends (GitHub, GitLab, Gitea). Anodize has zero co-author extraction.
+GoReleaser's `changelog.ExtractCoAuthors()` parses `Co-Authored-By:` trailers from commit message bodies for all three backends (GitHub, GitLab, Gitea). Anodizer has zero co-author extraction.
 - [x] Implement `extract_co_authors()` parser for `Co-Authored-By:` trailer format
 - [x] Wire into all three SCM changelog backends (github, gitlab, gitea)
 - [x] Include co-authors in `CommitInfo.logins` aggregation
 
 **Changelog: GitLab/Gitea markdown newline handling**
-GoReleaser uses `"   \n"` (3 spaces + newline) for GitLab/Gitea changelog entries to force markdown line breaks. Anodize uses plain `"\n"`.
+GoReleaser uses `"   \n"` (3 spaces + newline) for GitLab/Gitea changelog entries to force markdown line breaks. Anodizer uses plain `"\n"`.
 - [x] Detect token type and use 3-space newline for GitLab/Gitea changelog formatting
 - [x] Apply in changelog entry joining (between bullet items)
 
 **Release: body truncation**
-GoReleaser truncates release body to `maxReleaseBodyLength = 125000` characters (client.go:19). Anodize has no truncation.
+GoReleaser truncates release body to `maxReleaseBodyLength = 125000` characters (client.go:19). Anodizer has no truncation.
 - [x] Add body length check before release creation
 - [x] Truncate with warning when body exceeds 125,000 characters (GitHub limit)
 
 ### Session I: Archive & Source Behavioral Gaps (from 2026-04-06 audit)
 
 **Archive: glob file resolution must preserve directory structure**
-GoReleaser's `archivefiles.go` computes longest common prefix when `destination` is set, preserving relative directory structure. Anodize flattens all resolved files to root — `docs/README.md` becomes just `README.md`.
+GoReleaser's `archivefiles.go` computes longest common prefix when `destination` is set, preserving relative directory structure. Anodizer flattens all resolved files to root — `docs/README.md` becomes just `README.md`.
 - [x] Implement longest-common-prefix logic for glob resolution when `dst` is set
 - [x] Preserve relative directory structure under destination prefix
 - [x] Add tests comparing archive contents with GoReleaser output
 
 **Archive: duplicate destination path detection**
-GoReleaser's `unique()` function warns when same destination path would be overwritten. Anodize has no duplicate detection.
+GoReleaser's `unique()` function warns when same destination path would be overwritten. Anodizer has no duplicate detection.
 - [x] Add duplicate destination path detection in `resolve_file_specs()`
 - [x] Emit warning when duplicate destinations found
 
 **Archive: file sorting for reproducibility**
-GoReleaser sorts resolved file list by destination path. Anodize does not sort.
+GoReleaser sorts resolved file list by destination path. Anodizer does not sort.
 - [x] Sort resolved files by destination path before archiving
 
 **Archive: template rendering for FileInfo fields**
-GoReleaser templates `owner`, `group`, `mtime` fields in FileInfo via `tmplInfo()`. Anodize uses raw config values.
+GoReleaser templates `owner`, `group`, `mtime` fields in FileInfo via `tmplInfo()`. Anodizer uses raw config values.
 - [x] Template-render `owner`, `group`, `mtime` in FileInfo before applying to archive entries
 
 **Archive: `binaries` filter field parsed but not wired**
@@ -332,11 +332,11 @@ GoReleaser templates `owner`, `group`, `mtime` fields in FileInfo via `tmplInfo(
 - [x] Wire `binaries` field to filter binary artifacts by name in archive stage
 
 **Archive: Amd64 version suffix in default template**
-GoReleaser's default archive name template includes `{{ if not (eq .Amd64 "v1") }}{{ .Amd64 }}{{ end }}`. Anodize's default omits this.
+GoReleaser's default archive name template includes `{{ if not (eq .Amd64 "v1") }}{{ .Amd64 }}{{ end }}`. Anodizer's default omits this.
 - [x] Add Amd64 suffix to default archive name template
 
 **Archive: support archiving UniversalBinary/Header/CArchive/CShared artifact types**
-GoReleaser archives Binary, UniversalBinary, Header, CArchive, CShared. Anodize only archives Binary.
+GoReleaser archives Binary, UniversalBinary, Header, CArchive, CShared. Anodizer only archives Binary.
 - [x] Add UniversalBinary to archive artifact type filter
 - [x] Add Header, CArchive, CShared to archive artifact type filter (for C library builds)
 
@@ -351,20 +351,20 @@ Config fields `SourceFileInfo` (owner, group, mode, mtime) exist but stage logs 
 ### Session J: Sign & Docker Behavioral Gaps (from 2026-04-06 audit)
 
 **Sign: binary_signs default signature template missing architecture**
-GoReleaser binary_signs use `${artifact}_{{ .Os }}_{{ .Arch }}{{ with .Arm }}v{{ . }}{{ end }}...` for signature naming. Anodize defaults to `{artifact}.sig` with no architecture info.
+GoReleaser binary_signs use `${artifact}_{{ .Os }}_{{ .Arch }}{{ with .Arm }}v{{ . }}{{ end }}...` for signature naming. Anodizer defaults to `{artifact}.sig` with no architecture info.
 - [x] Implement architecture-aware default signature template for binary_signs
 - [x] Include Os, Arch, Arm, Amd64 variant suffixes matching GoReleaser
 
 **Sign: IDs warning when used with checksum/source artifacts**
-GoReleaser warns when `ids` filter is set with `artifacts: "checksum"` or `"source"` (ids has no effect). Anodize is silent.
+GoReleaser warns when `ids` filter is set with `artifacts: "checksum"` or `"source"` (ids has no effect). Anodizer is silent.
 - [x] Add warning log when `ids` is set with checksum or source artifact filter
 
 **Sign: DockerImageV2 handling in docker_signs**
-GoReleaser includes `DockerImageV2` in both "images" and "manifests" filters. Anodize only handles `DockerImage` and `DockerManifest`.
+GoReleaser includes `DockerImageV2` in both "images" and "manifests" filters. Anodizer only handles `DockerImage` and `DockerManifest`.
 - [x] Add `DockerImageV2` to docker_signs image and manifest filters
 
 **Sign: artifact refresh after signing**
-GoReleaser calls `ctx.Artifacts.Refresh()` after all signing. Anodize does not refresh.
+GoReleaser calls `ctx.Artifacts.Refresh()` after all signing. Anodizer does not refresh.
 - [x] Call artifact refresh equivalent after signing stage completes
 
 **Docker: DockerV2 missing defaults**
@@ -372,32 +372,32 @@ GoReleaser sets defaults for DockerV2: ID=ProjectName, Dockerfile="Dockerfile", 
 - [x] Set default ID, Dockerfile, Tags, Platforms, SBOM, Retry for DockerV2 configs
 
 **Docker: platform tag suffix for snapshot builds**
-GoReleaser v2 adds platform suffix to tags during snapshot builds (e.g., "latest-amd64"). Anodize does not.
+GoReleaser v2 adds platform suffix to tags during snapshot builds (e.g., "latest-amd64"). Anodizer does not.
 - [x] Add platform suffix to tags during snapshot builds for DockerV2
 
 **Docker: SBOM attestation format**
-GoReleaser uses `--attest=type=sbom` for proper OCI attestation. Anodize uses `--sbom=true`.
+GoReleaser uses `--attest=type=sbom` for proper OCI attestation. Anodizer uses `--sbom=true`.
 - [x] Change SBOM flag from `--sbom=true` to `--attest=type=sbom` for buildx
 
 **Docker: buildx driver validation**
-GoReleaser v2 checks buildx driver is "docker-container" or "docker". Anodize has no validation.
+GoReleaser v2 checks buildx driver is "docker-container" or "docker". Anodizer has no validation.
 - [x] Validate buildx driver type and warn if non-standard
 
 **Docker: Dockerfile path template rendering**
-GoReleaser templates the `Dockerfile` field path. Anodize treats it as literal.
+GoReleaser templates the `Dockerfile` field path. Anodizer treats it as literal.
 - [x] Template-render the Dockerfile path field before use
 
 **Docker: index annotation prefix for multi-platform**
-GoReleaser v2 adds "index:" prefix to annotations for multi-platform builds. Anodize does not.
+GoReleaser v2 adds "index:" prefix to annotations for multi-platform builds. Anodizer does not.
 - [x] Add "index:" annotation prefix for multi-platform Docker builds
 
 **Docker (deep audit): V2 snapshot/publish split**
-GoReleaser V2 has separate Snapshot.Run() (per-platform --load, no push, no SBOM) and Publish.Publish() (--push). Anodize had a single path.
+GoReleaser V2 has separate Snapshot.Run() (per-platform --load, no push, no SBOM) and Publish.Publish() (--push). Anodizer had a single path.
 - [x] Split V2 snapshot into per-platform --load builds (no push, no SBOM)
 - [x] Remove auto --provenance=false and --sbom=false from V2 (only legacy does this)
 
 **Docker (deep audit): V2 staging layout and artifact types**
-GoReleaser V2 stages to os/arch/name and stages Binary, LinuxPackage, CArchive, CShared, PyWheel. Anodize used binaries/arch and only Binary.
+GoReleaser V2 stages to os/arch/name and stages Binary, LinuxPackage, CArchive, CShared, PyWheel. Anodizer used binaries/arch and only Binary.
 - [x] Implement stage_artifacts_v2() with GoReleaser layout (os/arch/name)
 - [x] Stage Binary, LinuxPackage, CArchive, CShared, PyWheel artifacts
 - [x] Handle "all" goos artifacts (copied to every platform dir)
@@ -428,28 +428,28 @@ GoReleaser captures sha256 digest from docker manifest push stdout.
 - [x] Capture digest from manifest push output and store in artifact metadata
 
 **Docker (deep audit): SkipPush template support**
-GoReleaser's skip_push accepts template strings (e.g., "{{ if .IsSnapshot }}true{{ end }}"). Anodize only accepts "auto" or bool.
+GoReleaser's skip_push accepts template strings (e.g., "{{ if .IsSnapshot }}true{{ end }}"). Anodizer only accepts "auto" or bool.
 - [x] Add Template(String) variant to SkipPushConfig
 - [x] Wire Template variant through resolve_skip_push
 
 **Docker (deep audit): DockerSignConfig.env type mismatch**
-GoReleaser uses []string ("KEY=VAL" list) for docker_signs env. Anodize uses HashMap. YAML input from GoReleaser configs won't deserialize.
+GoReleaser uses []string ("KEY=VAL" list) for docker_signs env. Anodizer uses HashMap. YAML input from GoReleaser configs won't deserialize.
 - [x] Add custom deserializer that accepts both map and list-of-strings formats
 
 **Docker (deep audit): DockerSignConfig.output type**
-GoReleaser accepts string-or-bool for docker_signs output. Anodize only accepts bool.
+GoReleaser accepts string-or-bool for docker_signs output. Anodizer only accepts bool.
 - [x] Change DockerSignConfig.output from Option<bool> to Option<StringOrBool>
 
 **Docker (deep audit): Environment variable passthrough**
-GoReleaser passes ctx.Env.Strings() to docker commands. Anodize inherits process env but doesn't inject context env vars.
+GoReleaser passes ctx.Env.Strings() to docker commands. Anodizer inherits process env but doesn't inject context env vars.
 - [x] Merge context env vars into docker command environment
 
 **Docker (deep audit): Output secret redaction**
-GoReleaser pipes docker command output through redact.Writer to strip secrets. Anodize writes raw output.
+GoReleaser pipes docker command output through redact.Writer to strip secrets. Anodizer writes raw output.
 - [x] Implement output redaction for docker command stdout/stderr
 
 **Docker (deep audit): UX diagnostics**
-GoReleaser has several diagnostic helpers that Anodize lacks.
+GoReleaser has several diagnostic helpers that Anodizer lacks.
 - [x] Zero-artifact warning when no matching binaries found for platform
 - [x] File-not-found diagnostic (detect COPY/ADD failures, show staging dir contents)
 - [x] Buildx context error diagnostic (suggest "docker context use default")
@@ -458,15 +458,15 @@ GoReleaser has several diagnostic helpers that Anodize lacks.
 - [x] Docker daemon availability check before snapshot builds
 
 **Docker (deep audit): ID uniqueness validation**
-GoReleaser validates docker V2 config IDs are unique. Anodize allows duplicates silently.
+GoReleaser validates docker V2 config IDs are unique. Anodizer allows duplicates silently.
 - [x] Validate ID uniqueness for docker V2 and manifest configs
 
 **Docker (deep audit): Image tag deduplication and sorting**
-GoReleaser deduplicates and sorts image:tag lists. Anodize does neither.
+GoReleaser deduplicates and sorts image:tag lists. Anodizer does neither.
 - [x] Deduplicate and sort generated image:tag combinations
 
 **Docker (deep audit): Missing config fields on legacy Docker**
-GoReleaser legacy Docker has goos, goarch, goarm, goamd64 fields for artifact filtering. Anodize uses platforms instead.
+GoReleaser legacy Docker has goos, goarch, goarm, goamd64 fields for artifact filtering. Anodizer uses platforms instead.
 - N/A: goos/goarch/goarm/goamd64 are Go-specific; Rust uses `platforms` (OCI-standard format) which already provides equivalent cross-platform Docker support
 
 **Docker (deep audit): Missing DockerDigest config type**
@@ -487,7 +487,7 @@ Config validation lists "ipk" but no underlying config struct or YAML generation
 - [x] Add IPK-specific test cases
 
 **nFPM: template rendering for 8 missing field groups**
-GoReleaser templates these fields; anodize passes raw values:
+GoReleaser templates these fields; anodizer passes raw values:
 - [x] Template-render `bindir` field
 - [x] Template-render `mtime` field
 - [x] Template-render script paths (preinstall, postinstall, preremove, postremove)
@@ -497,25 +497,25 @@ GoReleaser templates these fields; anodize passes raw values:
 - [x] Template-render content file_info.mtime
 
 **Chocolatey: skip_publish type and phase mismatch**
-GoReleaser's `SkipPublish` is a boolean checked in `Publish()`. Anodize uses `StringOrBool` checked inconsistently.
+GoReleaser's `SkipPublish` is a boolean checked in `Publish()`. Anodizer uses `StringOrBool` checked inconsistently.
 - [x] Change chocolatey `skip_publish` from StringOrBool to boolean (match GoReleaser)
 - [x] Move skip_publish check to correct execution phase
 
 **Nix: license validation missing**
-GoReleaser validates license against a Nix-compatible allowlist. Anodize has no validation.
+GoReleaser validates license against a Nix-compatible allowlist. Anodizer has no validation.
 - [x] Add Nix license allowlist validation in nix publisher defaults (already implemented)
 
 **Publisher repository field templating**
-GoReleaser applies `TemplateRef()` to repository fields for Krew and Nix. Anodize does not template repository fields.
+GoReleaser applies `TemplateRef()` to repository fields for Krew and Nix. Anodizer does not template repository fields.
 - [x] Template repository owner/name fields for Krew publisher
 - [x] Template repository owner/name fields for Nix publisher
 
 **Scoop: missing default commit message template**
-GoReleaser sets a default `CommitMessageTemplate` in `Default()`. Anodize does not.
+GoReleaser sets a default `CommitMessageTemplate` in `Default()`. Anodizer does not.
 - [x] Set default commit_msg_template for Scoop publisher
 
 **Cask: directory field not templated + missing binary inference**
-GoReleaser templates directory and infers binaries from name when empty. Anodize does neither.
+GoReleaser templates directory and infers binaries from name when empty. Anodizer does neither.
 - [x] Template-render directory field for Cask publisher
 - [x] Infer binary list from cask name when `binaries` is empty (already implemented)
 
@@ -525,7 +525,7 @@ GoReleaser adds PackageIdentifier to commit message template context and falls b
 - [x] Implement PackageName fallback to Name when empty
 
 **AUR: directory field not templated**
-GoReleaser templates the `directory` field. Anodize does not.
+GoReleaser templates the `directory` field. Anodizer does not.
 - [x] Template-render directory field for AUR publisher
 
 ### Session L: Config/Defaults & Announce Gaps (from 2026-04-06 audit) — DONE
@@ -541,13 +541,13 @@ GoReleaser templates the `directory` field. Anodize does not.
 - [x] Set default token file paths in env_files when not configured (with ~ expansion)
 
 **force_token environment variable override**
-- [x] Read `ANODIZE_FORCE_TOKEN` (primary) and `GORELEASER_FORCE_TOKEN` (compat) env vars as fallback (6 new tests)
+- [x] Read `ANODIZER_FORCE_TOKEN` (primary) and `GORELEASER_FORCE_TOKEN` (compat) env vars as fallback (6 new tests)
 
 **Announce: missing default values for providers**
-- [x] Slack: default username to "anodize"
-- [x] Discord: default author to "anodize", default color to 3888754
-- [x] Teams: default icon_url — GoReleaser uses their avatar; documented why anodize omits (no hosted avatar exists)
-- [x] Mattermost: default username "anodize"
+- [x] Slack: default username to "anodizer"
+- [x] Discord: default author to "anodizer", default color to 3888754
+- [x] Teams: default icon_url — GoReleaser uses their avatar; documented why anodizer omits (no hosted avatar exists)
+- [x] Mattermost: default username "anodizer"
 
 **Announce: webhook Content-Type charset**
 - [x] Default to `"application/json; charset=utf-8"` (with starts_with JSON detection fix)
@@ -558,7 +558,7 @@ GoReleaser templates the `directory` field. Anodize does not.
 ### Session M: Missing Stages & Cross-Cutting (from 2026-04-06 audit) — DONE
 
 **Makeself: self-extracting archives (new stage)**
-GoReleaser has full makeself support (338 lines): `.run` self-extracting shell archives with embedded binaries, compression options, LSM metadata, per-platform packaging. Anodize has `ArtifactKind::Makeself` defined but zero implementation.
+GoReleaser has full makeself support (338 lines): `.run` self-extracting shell archives with embedded binaries, compression options, LSM metadata, per-platform packaging. Anodizer has `ArtifactKind::Makeself` defined but zero implementation.
 - [x] Create `stage-makeself` crate
 - [x] Implement MakeselfConfig: id, ids, name_template, scripts, extra_files, compression (gzip/bzip2/xz/lzo/none), lsm_file, disable
 - [x] Subprocess: `makeself --{compression} [--lsm] <archive_dir> <output.run> <label> [startup_script]`
@@ -572,7 +572,7 @@ GoReleaser has source RPM support (248 lines): `.src.rpm` from spec templates, s
 - [x] Subprocess: `rpmbuild -bs <spec>` with rpmbuild directory structure
 
 **Milestone closing**
-GoReleaser closes GitHub/GitLab/Gitea milestones after release (93 lines). Anodize has no milestone support.
+GoReleaser closes GitHub/GitLab/Gitea milestones after release (93 lines). Anodizer has no milestone support.
 - [x] Add MilestoneConfig: close (bool), fail_on_error (bool), name_template (default "{{ Tag }}")
 - [x] GitHub REST API milestone close with pagination and provider detection
 - [x] Execute after release stage, before after-hooks
@@ -583,26 +583,26 @@ GoReleaser has generic HTTP upload to arbitrary endpoints (42 lines in pipe, del
 - [x] Implement generic HTTP upload reusing Artifactory's reqwest infrastructure (mTLS, mode filtering)
 
 **AUR source packages**
-GoReleaser's `aursources` pipe generates source-only PKGBUILD (not `-bin`). Anodize has AUR binary packages but not source variant.
+GoReleaser's `aursources` pipe generates source-only PKGBUILD (not `-bin`). Anodizer has AUR binary packages but not source variant.
 - [x] Implement AUR source package generation (PKGBUILD with cargo build, .SRCINFO, git push)
 - [x] Wire separate AurSourceConfig in PublishConfig alongside existing binary AUR publisher
 
 **Snapcraft: plugs structure (dict vs list)**
-GoReleaser uses `Plugs map[string]any` (structured plug definitions). Anodize uses `Vec<String>` (list only).
+GoReleaser uses `Plugs map[string]any` (structured plug definitions). Anodizer uses `Vec<String>` (list only).
 - [x] Change snapcraft plugs from `Vec<String>` to `HashMap<String, serde_json::Value>` (interface + attributes)
 - [x] Update snap.yaml generation to output structured plug definitions
 
 **Snapcraft: default grade and channel templates**
-GoReleaser defaults grade to "stable" and auto-populates channel_templates based on grade. Anodize does neither.
+GoReleaser defaults grade to "stable" and auto-populates channel_templates based on grade. Anodizer does neither.
 - [x] Default snapcraft grade to "stable"
 - [x] Auto-populate channel_templates via resolve_effective_channels() (stable→[edge,beta,candidate,stable]; devel→[edge,beta])
 
 **Custom publishers: OS/Arch template variables**
-GoReleaser exposes per-artifact `.OS`, `.Arch`, `.Target` variables. Anodize exposes `ArtifactPath`, `ArtifactName`, `ArtifactKind` but not OS/Arch.
+GoReleaser exposes per-artifact `.OS`, `.Arch`, `.Target` variables. Anodizer exposes `ArtifactPath`, `ArtifactName`, `ArtifactKind` but not OS/Arch.
 - [x] Add `Os`, `Arch`, `Target` template variables to custom publisher per-artifact context
 
 **Custom publishers: system environment passthrough**
-GoReleaser explicitly passes HOME, USER, PATH, TMPDIR, etc. Anodize only passes publisher-configured env.
+GoReleaser explicitly passes HOME, USER, PATH, TMPDIR, etc. Anodizer only passes publisher-configured env.
 - [x] System env inherited by default (Rust Command behavior, no env_clear). Documented.
 
 ### Session N: Deep Parity Audit (2026-04-07)
@@ -654,7 +654,7 @@ GoReleaser explicitly passes HOME, USER, PATH, TMPDIR, etc. Anodize only passes 
 **Publishers**
 - [x] Homebrew Cask: nested cask config (under `homebrew`) ignores all extended fields — wired custom_block, service, license, manpages, completions, dependencies, conflicts, hooks from HomebrewCaskConfig
 - [x] Homebrew Cask: no `#{version}` URL interpolation for Homebrew auto-update mechanism — URL version replaced with `#{version}` for auto-update
-- [x] Nix: hash format differs — anodize uses SRI (`sha256-...`), GoReleaser uses nix-native base32 — implemented `nix_base32_encode()` matching Nix's `printHash32()`
+- [x] Nix: hash format differs — anodizer uses SRI (`sha256-...`), GoReleaser uses nix-native base32 — implemented `nix_base32_encode()` matching Nix's `printHash32()`
 - [x] Krew: missing required field validation (description, short_description) and binary count enforcement — added hard errors for missing required fields
 - [x] All publishers: commit message defaults differ from GoReleaser templates — updated all 6 publisher kinds to match GoReleaser defaults
 - [x] AUR Source: missing `.install` file support (`Install` field) — already implemented: install file written to disk, PKGBUILD includes `install=` line
@@ -830,14 +830,14 @@ Items identified by the deep audit that are intentional architectural difference
 
 ### Post-Release: Developer Experience / Infrastructure
 
-- [x] JSON Schema generation: `anodize jsonschema` CLI command using schemars-derived schema
+- [x] JSON Schema generation: `anodizer jsonschema` CLI command using schemars-derived schema
 - [x] Config reference auto-generated from JSON Schema (xtask gen-docs)
 - [x] Publish JSON Schema to docs site URL (`docs/site/static/schema.json`, generated in docs workflow)
-- [x] `# yaml-language-server: $schema=...` inline comment — added to `.anodize.yaml`
+- [x] `# yaml-language-server: $schema=...` inline comment — added to `.anodizer.yaml`
 
 ### Pre-Release: Documentation Site Parity
 
-26 doc pages exist on goreleaser.com for features Anodize has implemented but has no corresponding doc page. Each page must be written by reading the stage source code and the GoReleaser doc page side-by-side.
+26 doc pages exist on goreleaser.com for features Anodizer has implemented but has no corresponding doc page. Each page must be written by reading the stage source code and the GoReleaser doc page side-by-side.
 
 **General:**
 - [x] `general/artifacts` — artifact types reference

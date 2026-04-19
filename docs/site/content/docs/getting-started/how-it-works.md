@@ -1,11 +1,11 @@
 +++
 title = "How It Works"
-description = "The anodize release pipeline explained"
+description = "The anodizer release pipeline explained"
 weight = 4
 template = "docs.html"
 +++
 
-When you run `anodize release`, the following stages execute in order:
+When you run `anodizer release`, the following stages execute in order:
 
 ## Pipeline stages
 
@@ -17,7 +17,7 @@ Each stage is independent — if you skip a stage with `--skip`, downstream stag
 
 ### 1. Build
 
-Compiles your Rust binary for each configured target triple. Anodize auto-detects the best cross-compilation strategy:
+Compiles your Rust binary for each configured target triple. Anodizer auto-detects the best cross-compilation strategy:
 
 - **cargo** — native compilation (same-platform targets only)
 - **cargo-zigbuild** — cross-compilation via Zig's linker
@@ -70,11 +70,11 @@ Every stage registers its outputs as **artifacts**. Later stages can reference a
 
 ## Config resolution
 
-Anodize searches for config files in this order:
+Anodizer searches for config files in this order:
 1. Path specified by `--config` / `-f` flag
-2. `.anodize.yaml` in the current directory
-3. `.anodize.yml` in the current directory
-4. `.anodize.toml` in the current directory
-5. `anodize.yaml` in the current directory
-6. `anodize.yml` in the current directory
-7. `anodize.toml` in the current directory
+2. `.anodizer.yaml` in the current directory
+3. `.anodizer.yml` in the current directory
+4. `.anodizer.toml` in the current directory
+5. `anodizer.yaml` in the current directory
+6. `anodizer.yml` in the current directory
+7. `anodizer.toml` in the current directory

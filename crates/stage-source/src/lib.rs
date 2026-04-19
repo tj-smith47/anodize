@@ -4,10 +4,10 @@ use std::process::Command;
 
 use anyhow::{Context as _, Result, bail};
 
-use anodize_core::artifact::{Artifact, ArtifactKind, matches_id_filter};
-use anodize_core::config::{SbomConfig, SourceFileEntry};
-use anodize_core::context::Context;
-use anodize_core::stage::Stage;
+use anodizer_core::artifact::{Artifact, ArtifactKind, matches_id_filter};
+use anodizer_core::config::{SbomConfig, SourceFileEntry};
+use anodizer_core::context::Context;
+use anodizer_core::stage::Stage;
 
 // ---------------------------------------------------------------------------
 // Source archive generation
@@ -30,7 +30,7 @@ fn create_source_archive(
     extra_files: &[SourceFileEntry],
     repo_root: &Path,
     commit: &str,
-    log: &anodize_core::log::StageLogger,
+    log: &anodizer_core::log::StageLogger,
     strict: bool,
 ) -> Result<PathBuf> {
     let (git_format, extension) = match format {
@@ -438,8 +438,8 @@ pub fn generate_cyclonedx(
                 "components": [
                     {
                         "type": "application",
-                        "name": "anodize",
-                        "publisher": "anodize",
+                        "name": "anodizer",
+                        "publisher": "anodizer",
                     }
                 ]
             }
@@ -524,7 +524,7 @@ pub fn generate_spdx(
         ),
         "creationInfo": {
             "created": timestamp,
-            "creators": ["Tool: anodize"],
+            "creators": ["Tool: anodizer"],
         },
         "packages": spdx_packages,
         "relationships": relationships,
@@ -761,7 +761,7 @@ impl SourceStage {
 
     // SBOM generation has been extracted to the standalone stage-sbom crate.
     // Kept as dead code temporarily for reference; the run_sbom method is now
-    // implemented in anodize_stage_sbom::SbomStage.
+    // implemented in anodizer_stage_sbom::SbomStage.
     #[allow(dead_code)]
     fn run_sbom(&self, ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()> {
         let log = ctx.logger("source");
@@ -922,7 +922,7 @@ impl SourceStage {
             ctx.template_vars_mut().set("ArtifactName", artifact_name);
             ctx.template_vars_mut().set(
                 "ArtifactExt",
-                anodize_core::template::extract_artifact_ext(artifact_name),
+                anodizer_core::template::extract_artifact_ext(artifact_name),
             );
             // Set ArtifactID from artifact metadata "id" key (Pro addition)
             ctx.template_vars_mut().set(
@@ -932,12 +932,12 @@ impl SourceStage {
 
             // If artifact has target info, set Os/Arch/Target
             if let Some(target) = artifact_target {
-                let (os, arch) = anodize_core::target::map_target(target);
+                let (os, arch) = anodizer_core::target::map_target(target);
                 ctx.template_vars_mut().set("Os", &os);
                 ctx.template_vars_mut().set("Arch", &arch);
                 ctx.template_vars_mut().set("Target", target);
             } else if let Some(target) = artifact_meta.get("target") {
-                let (os, arch) = anodize_core::target::map_target(target);
+                let (os, arch) = anodizer_core::target::map_target(target);
                 ctx.template_vars_mut().set("Os", &os);
                 ctx.template_vars_mut().set("Arch", &arch);
                 ctx.template_vars_mut().set("Target", target);
@@ -1182,7 +1182,7 @@ fn find_cargo_lock(start_dir: &Path) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anodize_core::test_helpers::TestContextBuilder;
+    use anodizer_core::test_helpers::TestContextBuilder;
     use tempfile::TempDir;
 
     // -----------------------------------------------------------------------
@@ -1442,7 +1442,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 
     #[test]
     fn test_source_config_defaults() {
-        use anodize_core::config::SourceConfig;
+        use anodizer_core::config::SourceConfig;
         let cfg = SourceConfig::default();
         assert!(!cfg.is_enabled());
         assert_eq!(cfg.archive_format(), "tar.gz");
@@ -1450,7 +1450,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 
     #[test]
     fn test_source_config_enabled() {
-        use anodize_core::config::{SourceConfig, SourceFileEntry};
+        use anodizer_core::config::{SourceConfig, SourceFileEntry};
         let cfg = SourceConfig {
             enabled: Some(true),
             format: Some("zip".to_string()),
@@ -1467,7 +1467,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 
     #[test]
     fn test_sbom_config_defaults() {
-        use anodize_core::config::SbomConfig;
+        use anodizer_core::config::SbomConfig;
         let cfg = SbomConfig::default();
         // All fields are None by default
         assert!(cfg.cmd.is_none());
@@ -1488,7 +1488,7 @@ sbom:
   cmd: syft
   artifacts: archive
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(config.source.is_some());
         let source = config.source.as_ref().unwrap();
         assert!(source.is_enabled());
@@ -1507,7 +1507,7 @@ sbom:
 project_name: minimal
 crates: []
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(config.source.is_none());
         assert!(config.sboms.is_empty());
     }
@@ -1518,7 +1518,7 @@ crates: []
 
     #[test]
     fn test_source_archive_with_git_repo() {
-        use anodize_core::test_helpers::{create_test_project, init_git_repo};
+        use anodizer_core::test_helpers::{create_test_project, init_git_repo};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -1558,7 +1558,7 @@ crates: []
 
     #[test]
     fn test_source_archive_zip_format_with_git_repo() {
-        use anodize_core::test_helpers::{create_test_project, init_git_repo};
+        use anodizer_core::test_helpers::{create_test_project, init_git_repo};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -1683,7 +1683,7 @@ dependencies = [
 
     #[test]
     fn test_stage_dry_run_does_not_create_files() {
-        use anodize_core::config::{SbomConfig, SourceConfig};
+        use anodizer_core::config::{SbomConfig, SourceConfig};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -1733,7 +1733,7 @@ dependencies = [
 
     #[test]
     fn test_stage_skips_when_disabled() {
-        use anodize_core::config::SourceConfig;
+        use anodizer_core::config::SourceConfig;
 
         let mut ctx = TestContextBuilder::new().build();
         ctx.config.source = Some(SourceConfig {
@@ -1873,9 +1873,9 @@ dependencies = [
 
     #[test]
     fn test_source_stage_run_creates_archive_in_git_repo() {
-        use anodize_core::config::SourceConfig;
-        use anodize_core::stage::Stage;
-        use anodize_core::test_helpers::{create_test_project, init_git_repo};
+        use anodizer_core::config::SourceConfig;
+        use anodizer_core::stage::Stage;
+        use anodizer_core::test_helpers::{create_test_project, init_git_repo};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -1946,8 +1946,8 @@ dependencies = [
 
     #[test]
     fn test_source_archive_strip_parent_flattens_nested_file() {
-        use anodize_core::config::SourceFileEntry;
-        use anodize_core::test_helpers::{create_test_project, init_git_repo};
+        use anodizer_core::config::SourceFileEntry;
+        use anodizer_core::test_helpers::{create_test_project, init_git_repo};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -1967,7 +1967,7 @@ dependencies = [
         .unwrap();
 
         let log =
-            anodize_core::log::StageLogger::new("source", anodize_core::log::Verbosity::Quiet);
+            anodizer_core::log::StageLogger::new("source", anodizer_core::log::Verbosity::Quiet);
 
         let extra_files = vec![SourceFileEntry {
             src: nested_dir.join("config.toml").to_string_lossy().to_string(),
@@ -2028,8 +2028,8 @@ dependencies = [
 
     #[test]
     fn test_source_archive_strip_parent_with_dst() {
-        use anodize_core::config::SourceFileEntry;
-        use anodize_core::test_helpers::{create_test_project, init_git_repo};
+        use anodizer_core::config::SourceFileEntry;
+        use anodizer_core::test_helpers::{create_test_project, init_git_repo};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -2044,7 +2044,7 @@ dependencies = [
         std::fs::write(nested_dir.join("app.conf"), "port = 8080\n").unwrap();
 
         let log =
-            anodize_core::log::StageLogger::new("source", anodize_core::log::Verbosity::Quiet);
+            anodizer_core::log::StageLogger::new("source", anodizer_core::log::Verbosity::Quiet);
 
         // strip_parent=true + dst="etc" => file should appear as prefix/etc/app.conf
         let extra_files = vec![SourceFileEntry {
@@ -2094,8 +2094,8 @@ dependencies = [
 
     #[test]
     fn test_source_archive_no_strip_parent_dst_is_literal_rename() {
-        use anodize_core::config::SourceFileEntry;
-        use anodize_core::test_helpers::{create_test_project, init_git_repo};
+        use anodizer_core::config::SourceFileEntry;
+        use anodizer_core::test_helpers::{create_test_project, init_git_repo};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -2109,7 +2109,7 @@ dependencies = [
         std::fs::write(&extra_file, "# Hello\n").unwrap();
 
         let log =
-            anodize_core::log::StageLogger::new("source", anodize_core::log::Verbosity::Quiet);
+            anodizer_core::log::StageLogger::new("source", anodizer_core::log::Verbosity::Quiet);
 
         // strip_parent=false (default) + dst="docs/README.txt" => literal rename
         let extra_files = vec![SourceFileEntry {
@@ -2159,8 +2159,8 @@ dependencies = [
 
     #[test]
     fn test_source_extra_files_with_info() {
-        use anodize_core::config::{SourceFileEntry, SourceFileInfo};
-        use anodize_core::test_helpers::{create_test_project, init_git_repo};
+        use anodizer_core::config::{SourceFileEntry, SourceFileInfo};
+        use anodizer_core::test_helpers::{create_test_project, init_git_repo};
 
         let tmp = TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -2174,7 +2174,7 @@ dependencies = [
         std::fs::write(&extra_file, b"[settings]\nfoo = true").unwrap();
 
         let log =
-            anodize_core::log::StageLogger::new("source", anodize_core::log::Verbosity::Quiet);
+            anodizer_core::log::StageLogger::new("source", anodizer_core::log::Verbosity::Quiet);
 
         let extra_files = vec![SourceFileEntry {
             src: extra_file.to_string_lossy().to_string(),

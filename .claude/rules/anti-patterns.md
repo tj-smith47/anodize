@@ -1,7 +1,7 @@
 ---
 paths: ["**/*.rs"]
 ---
-# anodize anti-patterns (hook-enforced)
+# anodizer anti-patterns (hook-enforced)
 
 The project-level `post-edit.sh` hook enforces these. Fix violations immediately —
 the hook blocks the next turn until you do.

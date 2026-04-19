@@ -5,7 +5,7 @@ weight = 69
 template = "docs.html"
 +++
 
-After pushing Docker images, Anodize captures the image digest (sha256 hash) and writes it to artifact files. Digests provide immutable references to images, useful for signing and pinning.
+After pushing Docker images, Anodizer captures the image digest (sha256 hash) and writes it to artifact files. Digests provide immutable references to images, useful for signing and pinning.
 
 ## Minimal config
 

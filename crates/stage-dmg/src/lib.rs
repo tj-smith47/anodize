@@ -5,9 +5,9 @@ use std::process::Command;
 
 use anyhow::{Context as _, Result};
 
-use anodize_core::artifact::{Artifact, ArtifactKind};
-use anodize_core::context::Context;
-use anodize_core::stage::Stage;
+use anodizer_core::artifact::{Artifact, ArtifactKind};
+use anodizer_core::context::Context;
+use anodizer_core::stage::Stage;
 
 // ---------------------------------------------------------------------------
 // DmgTool detection
@@ -29,11 +29,11 @@ pub enum DmgTool {
 /// Preference order: hdiutil (macOS native) > genisoimage > mkisofs.
 /// Returns `None` if no suitable tool is found.
 pub fn dmg_tool() -> Option<DmgTool> {
-    if anodize_core::util::find_binary("hdiutil") {
+    if anodizer_core::util::find_binary("hdiutil") {
         Some(DmgTool::Hdiutil)
-    } else if anodize_core::util::find_binary("genisoimage") {
+    } else if anodizer_core::util::find_binary("genisoimage") {
         Some(DmgTool::Genisoimage)
-    } else if anodize_core::util::find_binary("mkisofs") {
+    } else if anodizer_core::util::find_binary("mkisofs") {
         Some(DmgTool::Mkisofs)
     } else {
         None
@@ -105,7 +105,7 @@ pub struct DmgStage;
 /// Parse Os and Arch from a Rust target triple using the shared mapping.
 fn os_arch_from_target(target: Option<&str>) -> (String, String) {
     target
-        .map(anodize_core::target::map_target)
+        .map(anodizer_core::target::map_target)
         .unwrap_or_else(|| ("darwin".to_string(), "amd64".to_string()))
 }
 
@@ -213,7 +213,7 @@ impl Stage for DmgStage {
                         .filter(|b| {
                             b.target
                                 .as_deref()
-                                .map(anodize_core::target::is_darwin)
+                                .map(anodizer_core::target::is_darwin)
                                 .unwrap_or(false)
                         })
                         .cloned()
@@ -333,7 +333,7 @@ impl Stage for DmgStage {
                         });
 
                         // If replace is set, mark archives for this crate+target for removal
-                        archives_to_remove.extend(anodize_core::util::collect_if_replace(
+                        archives_to_remove.extend(anodizer_core::util::collect_if_replace(
                             dmg_cfg.replace,
                             &ctx.artifacts,
                             &krate.name,
@@ -403,7 +403,7 @@ impl Stage for DmgStage {
                     if let Some(ref tpl_specs) = dmg_cfg.templated_extra_files
                         && !tpl_specs.is_empty()
                     {
-                        anodize_core::templated_files::process_templated_extra_files(
+                        anodizer_core::templated_files::process_templated_extra_files(
                             tpl_specs,
                             ctx,
                             staging_dir,
@@ -413,7 +413,7 @@ impl Stage for DmgStage {
 
                     // Apply mod_timestamp if set
                     if let Some(ts) = &dmg_cfg.mod_timestamp {
-                        anodize_core::util::apply_mod_timestamp(staging_dir, ts, &log)?;
+                        anodizer_core::util::apply_mod_timestamp(staging_dir, ts, &log)?;
                     }
 
                     // Build and run the command
@@ -454,7 +454,7 @@ impl Stage for DmgStage {
                     });
 
                     // If replace is set, mark archives for this crate+target for removal
-                    archives_to_remove.extend(anodize_core::util::collect_if_replace(
+                    archives_to_remove.extend(anodizer_core::util::collect_if_replace(
                         dmg_cfg.replace,
                         &ctx.artifacts,
                         &krate.name,
@@ -464,7 +464,7 @@ impl Stage for DmgStage {
             }
         }
 
-        anodize_core::template::clear_per_target_vars(ctx.template_vars_mut());
+        anodizer_core::template::clear_per_target_vars(ctx.template_vars_mut());
 
         // Remove replaced archives
         if !archives_to_remove.is_empty() {
@@ -569,8 +569,8 @@ mod tests {
 
     #[test]
     fn test_stage_skips_when_no_dmg_config() {
-        use anodize_core::config::Config;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
 
         // DmgStage should be a no-op when crates have no dmg block
         let config = Config::default();
@@ -582,8 +582,8 @@ mod tests {
 
     #[test]
     fn test_stage_skips_when_disabled() {
-        use anodize_core::config::{Config, CrateConfig, DmgConfig, StringOrBool};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, DmgConfig, StringOrBool};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let dmg_cfg = DmgConfig {
             disable: Some(StringOrBool::Bool(true)),
@@ -632,8 +632,8 @@ mod tests {
 
     #[test]
     fn test_stage_dry_run_registers_artifacts() {
-        use anodize_core::config::{Config, CrateConfig, DmgConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, DmgConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -702,8 +702,8 @@ mod tests {
 
     #[test]
     fn test_stage_dry_run_with_name_template() {
-        use anodize_core::config::{Config, CrateConfig, DmgConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, DmgConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -759,8 +759,8 @@ mod tests {
 
     #[test]
     fn test_stage_dry_run_replace_removes_archives() {
-        use anodize_core::config::{Config, CrateConfig, DmgConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, DmgConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -851,7 +851,7 @@ crates:
     dmgs:
       - name: "{{ ProjectName }}_{{ Version }}_{{ Arch }}.dmg"
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let dmgs = config.crates[0].dmgs.as_ref().unwrap();
         assert_eq!(dmgs.len(), 1);
         assert_eq!(
@@ -883,7 +883,7 @@ crates:
         mod_timestamp: "{{ .CommitTimestamp }}"
         disable: false
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let dmgs = config.crates[0].dmgs.as_ref().unwrap();
         assert_eq!(dmgs.len(), 1);
 
@@ -908,14 +908,14 @@ crates:
         assert_eq!(dmg.mod_timestamp.as_deref(), Some("{{ .CommitTimestamp }}"));
         assert_eq!(
             dmg.disable,
-            Some(anodize_core::config::StringOrBool::Bool(false))
+            Some(anodizer_core::config::StringOrBool::Bool(false))
         );
     }
 
     #[test]
     fn test_invalid_name_template_errors() {
-        use anodize_core::config::{Config, CrateConfig, DmgConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, DmgConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -973,8 +973,8 @@ crates:
 
     #[test]
     fn test_extra_files_copied_to_staging() {
-        use anodize_core::config::{Config, CrateConfig, DmgConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, DmgConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -986,7 +986,7 @@ crates:
         fs::write(&extra_path, b"readme content").unwrap();
 
         let dmg_cfg = DmgConfig {
-            extra_files: Some(vec![anodize_core::config::ExtraFileSpec::Glob(
+            extra_files: Some(vec![anodizer_core::config::ExtraFileSpec::Glob(
                 extra_path.to_string_lossy().into_owned(),
             )]),
             ..Default::default()
@@ -1060,8 +1060,8 @@ crates:
 
     #[test]
     fn test_stage_dry_run_multiple_configs() {
-        use anodize_core::config::{Config, CrateConfig, DmgConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, DmgConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -1144,8 +1144,8 @@ crates:
 
     #[test]
     fn test_ids_filtering() {
-        use anodize_core::config::{Config, CrateConfig, DmgConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, DmgConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -1217,8 +1217,8 @@ crates:
 
     #[test]
     fn test_use_appbundle_selects_installer_artifacts() {
-        use anodize_core::config::{Config, CrateConfig, DmgConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, DmgConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -1282,8 +1282,8 @@ crates:
 
     #[test]
     fn test_use_binary_selects_darwin_binaries() {
-        use anodize_core::config::{Config, CrateConfig, DmgConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, DmgConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -1348,8 +1348,8 @@ crates:
 
     #[test]
     fn test_use_default_selects_darwin_binaries() {
-        use anodize_core::config::{Config, CrateConfig, DmgConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, DmgConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -1401,8 +1401,8 @@ crates:
 
     #[test]
     fn test_invalid_use_value_errors() {
-        use anodize_core::config::{Config, CrateConfig, DmgConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, DmgConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -1456,8 +1456,8 @@ crates:
 
     #[test]
     fn test_disable_string_or_bool_true() {
-        use anodize_core::config::{Config, CrateConfig, DmgConfig, StringOrBool};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, DmgConfig, StringOrBool};
+        use anodizer_core::context::{Context, ContextOptions};
 
         // Test with StringOrBool::String("true")
         let dmg_cfg = DmgConfig {
@@ -1505,8 +1505,8 @@ crates:
 
     #[test]
     fn test_disable_string_or_bool_false() {
-        use anodize_core::config::{Config, CrateConfig, DmgConfig, StringOrBool};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, DmgConfig, StringOrBool};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -1561,8 +1561,8 @@ crates:
 
     #[test]
     fn test_disable_template_string() {
-        use anodize_core::config::{Config, CrateConfig, DmgConfig, StringOrBool};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, DmgConfig, StringOrBool};
+        use anodizer_core::context::{Context, ContextOptions};
 
         // Template that evaluates to "true" when IsSnapshot is truthy
         let dmg_cfg = DmgConfig {
@@ -1626,7 +1626,7 @@ crates:
       - name: "{{ ProjectName }}_{{ Version }}_{{ Arch }}.dmg"
         use: appbundle
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let dmgs = config.crates[0].dmgs.as_ref().unwrap();
         assert_eq!(dmgs.len(), 1);
         assert_eq!(dmgs[0].use_.as_deref(), Some("appbundle"));
@@ -1643,11 +1643,11 @@ crates:
     dmgs:
       - disable: "{% if IsSnapshot %}true{% endif %}"
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         let dmgs = config.crates[0].dmgs.as_ref().unwrap();
         assert_eq!(
             dmgs[0].disable,
-            Some(anodize_core::config::StringOrBool::String(
+            Some(anodizer_core::config::StringOrBool::String(
                 "{% if IsSnapshot %}true{% endif %}".to_string()
             ))
         );
@@ -1655,8 +1655,8 @@ crates:
 
     #[test]
     fn test_use_appbundle_skips_when_no_appbundles() {
-        use anodize_core::config::{Config, CrateConfig, DmgConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, DmgConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -1711,9 +1711,9 @@ crates:
 
     // --- `dmg.if` template-conditional (GoReleaser Pro) ---
 
-    fn dmg_if_test_ctx(if_expr: Option<&str>) -> anodize_core::context::Context {
-        use anodize_core::config::{Config, CrateConfig, DmgConfig};
-        use anodize_core::context::{Context, ContextOptions};
+    fn dmg_if_test_ctx(if_expr: Option<&str>) -> anodizer_core::context::Context {
+        use anodizer_core::config::{Config, CrateConfig, DmgConfig};
+        use anodizer_core::context::{Context, ContextOptions};
         let tmp = tempfile::TempDir::new().unwrap();
         let mut config = Config::default();
         config.project_name = "myapp".to_string();

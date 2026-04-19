@@ -1,18 +1,18 @@
 [package]
-name = "anodize-stage-msi"
+name = "anodizer-stage-msi"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "Windows MSI installer stage for anodize release automation"
+description = "Windows MSI installer stage for anodizer release automation"
 
 [dependencies]
-anodize-core.workspace = true
+anodizer-core.workspace = true
 anyhow.workspace = true
 tempfile.workspace = true
 
 [dev-dependencies]
-anodize-core = { workspace = true, features = ["test-helpers"] }
+anodizer-core = { workspace = true, features = ["test-helpers"] }
 tempfile.workspace = true
 serde_yaml_ng.workspace = true

@@ -1,6 +1,6 @@
 # Configuration Reference
 
-Anodize uses `.anodize.yaml` (or `.anodize.toml`) in your project root. Both formats use the same schema via serde.
+Anodizer uses `.anodizer.yaml` (or `.anodizer.toml`) in your project root. Both formats use the same schema via serde.
 
 ## CLI Flags
 
@@ -8,7 +8,7 @@ Anodize uses `.anodize.yaml` (or `.anodize.toml`) in your project root. Both for
 
 | Flag | Short | Applies to | Default | Description |
 |------|-------|-----------|---------|-------------|
-| `--config` | `-f` | All commands | `.anodize.yaml` | Path to config file (overrides auto-detection) |
+| `--config` | `-f` | All commands | `.anodizer.yaml` | Path to config file (overrides auto-detection) |
 | `--verbose` | -- | All commands | `false` | Enable verbose output |
 | `--debug` | -- | All commands | `false` | Enable debug output |
 
@@ -49,15 +49,15 @@ Anodize uses `.anodize.yaml` (or `.anodize.toml`) in your project root. Both for
 
 | Command | Description |
 |---------|-------------|
-| `anodize check` | Validate configuration file |
-| `anodize init` | Generate a starter config from your Cargo workspace |
-| `anodize changelog` | Generate changelog only |
-| `anodize completion <shell>` | Generate shell completions (`bash`, `zsh`, `fish`, `powershell`) |
-| `anodize healthcheck` | Check availability of required external tools |
+| `anodizer check` | Validate configuration file |
+| `anodizer init` | Generate a starter config from your Cargo workspace |
+| `anodizer changelog` | Generate changelog only |
+| `anodizer completion <shell>` | Generate shell completions (`bash`, `zsh`, `fish`, `powershell`) |
+| `anodizer healthcheck` | Check availability of required external tools |
 
 ## Auto-detection
 
-When `release.github.owner` and `release.github.name` are omitted from the config, anodize will attempt to auto-detect them from the git remote URL (supports both HTTPS and SSH remote formats). You can still set them explicitly to override auto-detection.
+When `release.github.owner` and `release.github.name` are omitted from the config, anodizer will attempt to auto-detect them from the git remote URL (supports both HTTPS and SSH remote formats). You can still set them explicitly to override auto-detection.
 
 ## Full Example
 
@@ -538,7 +538,7 @@ format_overrides:
 | `filters.include` | string[] | -- | Regex patterns to include commits (if set, only matching commits are included) |
 | `groups` | array | -- | Commit groups with `title`, `regexp`, `order`. Groups are sorted by `order` (lower numbers first); groups without `order` appear after ordered groups |
 
-When `use: github-native` is set, anodize delegates changelog generation to the GitHub API (`generate_release_notes`). The `filters`, `groups`, `sort`, and `abbrev` fields are ignored in this mode.
+When `use: github-native` is set, anodizer delegates changelog generation to the GitHub API (`generate_release_notes`). The `filters`, `groups`, `sort`, and `abbrev` fields are ignored in this mode.
 
 ### `signs[]`
 

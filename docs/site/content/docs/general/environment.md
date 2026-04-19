@@ -36,11 +36,11 @@ crates:
 
 ## Standard environment variables
 
-Anodize respects these environment variables:
+Anodizer respects these environment variables:
 
 | Variable | Description |
 |----------|-------------|
-| `ANODIZE_GITHUB_TOKEN` | GitHub API token (takes precedence over `GITHUB_TOKEN`) |
+| `ANODIZER_GITHUB_TOKEN` | GitHub API token (takes precedence over `GITHUB_TOKEN`) |
 | `GITHUB_TOKEN` | GitHub API token for releases and publishing |
 | `CARGO_REGISTRY_TOKEN` | Token for crates.io publishing |
 | `DOCKER_USERNAME` / `DOCKER_PASSWORD` | Docker registry credentials |

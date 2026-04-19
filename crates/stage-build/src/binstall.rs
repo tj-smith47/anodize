@@ -2,8 +2,8 @@ use std::path::Path;
 
 use anyhow::{Context as _, Result};
 
-use anodize_core::config::BinstallConfig;
-use anodize_core::context::Context;
+use anodizer_core::config::BinstallConfig;
+use anodizer_core::context::Context;
 
 /// Generate or update `[package.metadata.binstall]` in a crate's Cargo.toml
 /// based on the provided BinstallConfig.  The `pkg_url` field is rendered
@@ -91,8 +91,8 @@ pub fn generate_binstall_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anodize_core::config::{BinstallConfig, Config};
-    use anodize_core::context::{Context, ContextOptions};
+    use anodizer_core::config::{BinstallConfig, Config};
+    use anodizer_core::context::{Context, ContextOptions};
 
     fn make_ctx() -> Context {
         let config = Config {

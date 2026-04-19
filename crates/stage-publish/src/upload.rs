@@ -1,5 +1,5 @@
-use anodize_core::context::Context;
-use anodize_core::log::StageLogger;
+use anodizer_core::context::Context;
+use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result, bail};
 use std::collections::HashMap;
 
@@ -46,7 +46,7 @@ pub fn publish_to_upload(ctx: &Context, log: &StageLogger) -> Result<()> {
         // Username: config → UPLOAD_{NAME}_USERNAME
         // Password: UPLOAD_{NAME}_SECRET → config
         let name_upper = name.to_uppercase().replace('-', "_");
-        // Resolve UPLOAD_<NAME>_USERNAME / _SECRET via the anodize ctx env map
+        // Resolve UPLOAD_<NAME>_USERNAME / _SECRET via the anodizer ctx env map
         // (matches GoReleaser internal/http/http.go:163-164,176-177) so project
         // `env:` / `env_files:` values are visible to the upload publisher.
         let env_map = ctx.template_vars().all_env();
@@ -138,16 +138,16 @@ pub fn publish_to_upload(ctx: &Context, log: &StageLogger) -> Result<()> {
             vars.set("ArtifactName", &artifact.name);
             vars.set(
                 "ArtifactExt",
-                anodize_core::template::extract_artifact_ext(&artifact.name),
+                anodizer_core::template::extract_artifact_ext(&artifact.name),
             );
             if let Some(ref target) = artifact.target {
-                let (os, arch) = anodize_core::target::map_target(target);
+                let (os, arch) = anodizer_core::target::map_target(target);
                 vars.set("Os", &os);
                 vars.set("Arch", &arch);
                 vars.set("Target", target);
             }
 
-            let rendered_target = anodize_core::template::render(target_template, &vars)
+            let rendered_target = anodizer_core::template::render(target_template, &vars)
                 .with_context(|| {
                     format!("upload: render target URL for artifact '{}'", artifact.name)
                 })?;
@@ -191,7 +191,7 @@ pub fn publish_to_upload(ctx: &Context, log: &StageLogger) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use anodize_core::config::Config;
+    use anodizer_core::config::Config;
 
     #[test]
     fn test_upload_config_parsing() {

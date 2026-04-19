@@ -5,8 +5,8 @@ edition = "2024"
 publish = false
 
 [dependencies]
-anodize = { path = "../cli" }
-anodize-core.workspace = true
+anodizer = { path = "../cli" }
+anodizer-core.workspace = true
 clap = { version = "4", features = ["derive"] }
 schemars.workspace = true
 serde = { version = "1", features = ["derive"] }

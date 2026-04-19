@@ -10,7 +10,7 @@ Nightly builds create date-stamped versions and maintain a rolling `nightly` rel
 ## Usage
 
 ```bash
-anodize release --nightly
+anodizer release --nightly
 ```
 
 ## Behavior
@@ -45,7 +45,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: tj-smith47/anodize-action@v1
+      - uses: tj-smith47/anodizer-action@v1
         with:
           install-rust: true
           auto-install: true

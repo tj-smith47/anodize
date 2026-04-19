@@ -1,4 +1,4 @@
-//! SBOM (Software Bill of Materials) generation stage for anodize.
+//! SBOM (Software Bill of Materials) generation stage for anodizer.
 //!
 //! Supports two modes:
 //! 1. **Built-in**: Parses `Cargo.lock` to generate CycloneDX 1.5 or SPDX 2.3 JSON.
@@ -12,10 +12,10 @@ use std::process::Command;
 
 use anyhow::{Context as _, Result, bail};
 
-use anodize_core::artifact::{Artifact, ArtifactKind, matches_id_filter};
-use anodize_core::config::SbomConfig;
-use anodize_core::context::Context;
-use anodize_core::stage::Stage;
+use anodizer_core::artifact::{Artifact, ArtifactKind, matches_id_filter};
+use anodizer_core::config::SbomConfig;
+use anodizer_core::context::Context;
+use anodizer_core::stage::Stage;
 
 // ---------------------------------------------------------------------------
 // Built-in SBOM generation (Rust-specific)
@@ -106,8 +106,8 @@ pub fn generate_cyclonedx(
                 "components": [
                     {
                         "type": "application",
-                        "name": "anodize",
-                        "publisher": "anodize",
+                        "name": "anodizer",
+                        "publisher": "anodizer",
                     }
                 ]
             }
@@ -191,7 +191,7 @@ pub fn generate_spdx(
         ),
         "creationInfo": {
             "created": timestamp,
-            "creators": ["Tool: anodize"],
+            "creators": ["Tool: anodizer"],
         },
         "packages": spdx_packages,
         "relationships": relationships,
@@ -523,7 +523,7 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
         ctx.template_vars_mut().set("ArtifactName", artifact_name);
         ctx.template_vars_mut().set(
             "ArtifactExt",
-            anodize_core::template::extract_artifact_ext(artifact_name),
+            anodizer_core::template::extract_artifact_ext(artifact_name),
         );
         ctx.template_vars_mut().set(
             "ArtifactID",
@@ -531,12 +531,12 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
         );
 
         if let Some(target) = artifact_target {
-            let (os, arch) = anodize_core::target::map_target(target);
+            let (os, arch) = anodizer_core::target::map_target(target);
             ctx.template_vars_mut().set("Os", &os);
             ctx.template_vars_mut().set("Arch", &arch);
             ctx.template_vars_mut().set("Target", target);
         } else if let Some(target) = artifact_meta.get("target") {
-            let (os, arch) = anodize_core::target::map_target(target);
+            let (os, arch) = anodizer_core::target::map_target(target);
             ctx.template_vars_mut().set("Os", &os);
             ctx.template_vars_mut().set("Arch", &arch);
             ctx.template_vars_mut().set("Target", target);

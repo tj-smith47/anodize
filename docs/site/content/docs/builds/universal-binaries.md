@@ -7,7 +7,7 @@ template = "docs.html"
 
 macOS universal binaries (also called "fat binaries") combine native code for both `x86_64` (Intel) and `aarch64` (Apple Silicon) into a single executable. A universal binary runs natively on both architectures without Rosetta translation, giving users a single download that works on any Mac.
 
-Anodize creates universal binaries by running Apple's `lipo` tool after both architecture-specific builds have completed.
+Anodizer creates universal binaries by running Apple's `lipo` tool after both architecture-specific builds have completed.
 
 ## Config
 
@@ -113,18 +113,18 @@ crates:
 
 ## How it works
 
-1. Anodize builds both `x86_64-apple-darwin` and `aarch64-apple-darwin` targets as normal build artifacts.
-2. After all builds complete, anodize iterates over each crate's `universal_binaries` entries.
+1. Anodizer builds both `x86_64-apple-darwin` and `aarch64-apple-darwin` targets as normal build artifacts.
+2. After all builds complete, anodizer iterates over each crate's `universal_binaries` entries.
 3. For each entry, it locates the matching `aarch64-apple-darwin` and `x86_64-apple-darwin` binary artifacts. If the `ids` filter is set, only binaries whose name appears in the list are considered.
-4. If both architecture binaries are found, anodize runs `lipo -create -output <output> <arm64> <x86_64>`.
+4. If both architecture binaries are found, anodizer runs `lipo -create -output <output> <arm64> <x86_64>`.
 5. The universal binary is placed in `dist/<crate_name>_darwin_all/` and registered as an artifact with kind `UniversalBinary` and target `darwin-universal`.
 6. When `replace: true`, the individual per-architecture artifacts are removed from the registry so downstream stages (archives, checksums, release uploads, package publishers) only see the universal binary.
 
-If either architecture binary is missing, anodize logs a warning and skips universal binary creation for that crate rather than failing the build.
+If either architecture binary is missing, anodizer logs a warning and skips universal binary creation for that crate rather than failing the build.
 
 ## Limitations
 
 - **macOS only.** Universal binaries are an Apple concept. The `lipo` tool is required and is only available on macOS (ships with Xcode Command Line Tools).
 - **Requires both architectures.** Both `x86_64-apple-darwin` and `aarch64-apple-darwin` must be listed in `targets` and must build successfully. If either is missing, the universal binary step is skipped with a warning.
-- **lipo must be on PATH.** If `lipo` is not found and `universal_binaries` is configured, anodize will fail with an error. Install Xcode Command Line Tools (`xcode-select --install`) to get `lipo`.
+- **lipo must be on PATH.** If `lipo` is not found and `universal_binaries` is configured, anodizer will fail with an error. Install Xcode Command Line Tools (`xcode-select --install`) to get `lipo`.
 - **CI considerations.** GitHub Actions macOS runners include `lipo`. If you cross-compile macOS targets on Linux, you will need to transfer the binaries to a macOS runner (or use a macOS cross-lipo tool) for the universal binary step.

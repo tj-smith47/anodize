@@ -5,7 +5,7 @@ weight = 5
 template = "docs.html"
 +++
 
-Anodize generates Chocolatey `.nuspec` manifests and `chocolateyInstall.ps1` PowerShell scripts, packs them into `.nupkg` files, and pushes them to the [Chocolatey](https://chocolatey.org/) community repository (or a custom source). Chocolatey is the leading package manager for Windows, letting users install your tool with `choco install myapp`.
+Anodizer generates Chocolatey `.nuspec` manifests and `chocolateyInstall.ps1` PowerShell scripts, packs them into `.nupkg` files, and pushes them to the [Chocolatey](https://chocolatey.org/) community repository (or a custom source). Chocolatey is the leading package manager for Windows, letting users install your tool with `choco install myapp`.
 
 ## Minimal config
 
@@ -65,7 +65,7 @@ Each entry in the `dependencies` array has:
 
 ## API key setup
 
-Anodize needs a Chocolatey API key to push packages. You can provide it in two ways:
+Anodizer needs a Chocolatey API key to push packages. You can provide it in two ways:
 
 1. **Environment variable** (recommended for CI): set `CHOCOLATEY_API_KEY`.
 2. **Config field**: set `api_key` in the chocolatey config. This field supports template rendering, so you can reference environment variables or other context values.
@@ -74,7 +74,7 @@ The environment variable is used as a fallback when `api_key` is not set in the 
 
 ## How nuspec and nupkg files are generated
 
-When the publish stage runs for Chocolatey, Anodize:
+When the publish stage runs for Chocolatey, Anodizer:
 
 1. **Finds Windows artifacts** from the build stage, filtering by `ids` and `goamd64` if configured. It looks for both 32-bit (i686/i386/x86) and 64-bit artifacts.
 2. **Generates a `.nuspec` XML manifest** containing all package metadata (name, version, authors, description, license, tags, dependencies, etc.). All XML special characters are properly escaped.
@@ -82,13 +82,13 @@ When the publish stage runs for Chocolatey, Anodize:
 4. **Runs `choco pack`** to create the `.nupkg` file from the nuspec and tools directory.
 5. **Runs `choco push`** to upload the `.nupkg` to the configured source repository (defaults to `https://push.chocolatey.org/`).
 
-If no Windows artifacts are found, Anodize falls back to a placeholder GitHub release download URL and logs a warning.
+If no Windows artifacts are found, Anodizer falls back to a placeholder GitHub release download URL and logs a warning.
 
 ## skip_publish behavior
 
-When `skip_publish: true` is set, Anodize skips the entire publish function early -- no nuspec is generated, no `choco pack` is run, and no push occurs. This is useful when you want to define the Chocolatey config for future use without actually publishing, or when another system handles the push step.
+When `skip_publish: true` is set, Anodizer skips the entire publish function early -- no nuspec is generated, no `choco pack` is run, and no push occurs. This is useful when you want to define the Chocolatey config for future use without actually publishing, or when another system handles the push step.
 
-In dry-run mode (`--dry-run`), Anodize logs what it would do without generating any files or running any commands.
+In dry-run mode (`--dry-run`), Anodizer logs what it would do without generating any files or running any commands.
 
 ## Full example
 

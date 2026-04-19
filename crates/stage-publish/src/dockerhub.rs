@@ -1,6 +1,6 @@
-use anodize_core::config::DockerHubFullDescription;
-use anodize_core::context::Context;
-use anodize_core::log::StageLogger;
+use anodizer_core::config::DockerHubFullDescription;
+use anodizer_core::context::Context;
+use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result, anyhow, bail};
 
 // ---------------------------------------------------------------------------
@@ -234,11 +234,11 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
-    use anodize_core::config::{
+    use anodizer_core::config::{
         Config, DockerHubConfig, DockerHubFromFile, DockerHubFromUrl, DockerHubFullDescription,
         StringOrBool,
     };
-    use anodize_core::context::{Context, ContextOptions};
+    use anodizer_core::context::{Context, ContextOptions};
 
     fn dry_run_ctx(config: Config) -> Context {
         Context::new(

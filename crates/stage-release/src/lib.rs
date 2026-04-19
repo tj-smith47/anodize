@@ -1,14 +1,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use anodize_core::artifact::{ArtifactKind, matches_id_filter};
-use anodize_core::config::{
+use anodizer_core::artifact::{ArtifactKind, matches_id_filter};
+use anodizer_core::config::{
     ContentSource, ExtraFileSpec, GitHubUrlsConfig, MakeLatestConfig, PrereleaseConfig,
 };
-use anodize_core::context::Context;
-use anodize_core::git;
-use anodize_core::scm::ScmTokenType;
-use anodize_core::stage::Stage;
+use anodizer_core::context::Context;
+use anodizer_core::git;
+use anodizer_core::scm::ScmTokenType;
+use anodizer_core::stage::Stage;
 use anyhow::{Context as _, Result, bail};
 use http::header::HeaderValue;
 use octocrab::service::middleware::auth_header::AuthHeaderLayer;
@@ -50,7 +50,7 @@ async fn check_github_rate_limit(client: &reqwest::Client, token: &str, threshol
         .get(url)
         .header("Authorization", format!("Bearer {}", token))
         .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", anodize_core::http::USER_AGENT)
+        .header("User-Agent", anodizer_core::http::USER_AGENT)
         .send()
         .await
     {
@@ -114,7 +114,7 @@ async fn check_github_search_rate_limit(
         .get(url)
         .header("Authorization", format!("Bearer {}", token))
         .header("Accept", "application/vnd.github+json")
-        .header("User-Agent", anodize_core::http::USER_AGENT)
+        .header("User-Agent", anodizer_core::http::USER_AGENT)
         .send()
         .await
     {
@@ -350,7 +350,7 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<()>>,
 {
-    use anodize_core::retry::{RetryPolicy, retry_async};
+    use anodizer_core::retry::{RetryPolicy, retry_async};
     use std::ops::ControlFlow;
     retry_async(&RetryPolicy::UPLOAD, |_attempt| {
         let fut = f();
@@ -383,7 +383,7 @@ fn populate_artifact_download_urls(
     tag: &str,
 ) {
     let dl_base = download_base.trim_end_matches('/');
-    let url_tag = anodize_core::url::percent_encode_path_segment(tag);
+    let url_tag = anodizer_core::url::percent_encode_path_segment(tag);
     let url_prefix = match token_type {
         ScmTokenType::GitLab => {
             if owner.is_empty() {
@@ -398,7 +398,7 @@ fn populate_artifact_download_urls(
     };
     for artifact in ctx.artifacts.all_mut() {
         if artifact.crate_name == crate_name && !artifact.name.is_empty() {
-            let encoded_name = anodize_core::url::percent_encode_path_segment(&artifact.name);
+            let encoded_name = anodizer_core::url::percent_encode_path_segment(&artifact.name);
             artifact
                 .metadata
                 .insert("url".to_string(), format!("{url_prefix}/{encoded_name}"));
@@ -511,9 +511,9 @@ pub(crate) fn collect_extra_files(
                             vars.set("ArtifactName", &filename);
                             vars.set(
                                 "ArtifactExt",
-                                anodize_core::template::extract_artifact_ext(&filename),
+                                anodizer_core::template::extract_artifact_ext(&filename),
                             );
-                            anodize_core::template::render(tmpl, &vars).ok()
+                            anodizer_core::template::render(tmpl, &vars).ok()
                         });
                         results.push((entry, name));
                     }
@@ -610,7 +610,7 @@ pub(crate) fn resolve_release_mode(mode: Option<&str>) -> Result<String> {
 /// template-rendered.
 pub(crate) fn resolve_content_source(
     source: &ContentSource,
-    ctx: &anodize_core::context::Context,
+    ctx: &anodizer_core::context::Context,
 ) -> Result<String> {
     match source {
         ContentSource::Inline(s) => Ok(s.clone()),
@@ -655,11 +655,11 @@ pub(crate) fn resolve_content_source(
                 }
             }
 
-            let client = anodize_core::http::blocking_client(std::time::Duration::from_secs(30))?;
+            let client = anodizer_core::http::blocking_client(std::time::Duration::from_secs(30))?;
 
             // Retry: 3 attempts, 500ms base, 2s cap. Retry on request errors +
             // 5xx; bail immediately on 4xx via ControlFlow::Break.
-            use anodize_core::retry::{RetryPolicy, retry_sync};
+            use anodizer_core::retry::{RetryPolicy, retry_sync};
             use std::ops::ControlFlow;
             const POLICY: RetryPolicy = RetryPolicy {
                 max_attempts: 3,
@@ -1276,7 +1276,7 @@ impl Stage for ReleaseStage {
             // When `IncludeMeta` is true the Metadata kind is appended, per
             // `release.go:160-167`.
             let mut upload_kinds: Vec<ArtifactKind> =
-                anodize_core::artifact::release_uploadable_kinds().to_vec();
+                anodizer_core::artifact::release_uploadable_kinds().to_vec();
             if include_meta {
                 upload_kinds.push(ArtifactKind::Metadata);
             }
@@ -1312,7 +1312,7 @@ impl Stage for ReleaseStage {
             // GoReleaser release.go:121 — refresh combined checksum files
             // before upload so they include signatures/artifacts added after
             // the checksum stage ran. Mirrors GoReleaser's ExtraRefresh hook.
-            anodize_stage_checksum::refresh_combined_checksums(ctx, dry_run)?;
+            anodizer_stage_checksum::refresh_combined_checksums(ctx, dry_run)?;
 
             // Collect extra files from glob patterns (with optional name_template).
             if let Some(extra_specs) = &release_cfg.extra_files {
@@ -1328,7 +1328,7 @@ impl Stage for ReleaseStage {
                 && !tpl_specs.is_empty()
             {
                 let dist_dir = &ctx.config.dist;
-                let rendered = anodize_core::templated_files::process_templated_extra_files(
+                let rendered = anodizer_core::templated_files::process_templated_extra_files(
                     tpl_specs, ctx, dist_dir, "release",
                 )?;
                 for (path, dst_name) in rendered {
@@ -1943,7 +1943,7 @@ impl Stage for ReleaseStage {
                         Some(t) => t.clone(),
                         None => {
                             anyhow::bail!(
-                                "release: no GitHub token available (set GITHUB_TOKEN or ANODIZE_GITHUB_TOKEN, or pass --token)"
+                                "release: no GitHub token available (set GITHUB_TOKEN or ANODIZER_GITHUB_TOKEN, or pass --token)"
                             );
                         }
                     };
@@ -2530,11 +2530,11 @@ impl Stage for ReleaseStage {
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
-    use anodize_core::config::{
+    use anodizer_core::config::{
         ContentSource, CrateConfig, ExtraFileSpec, MakeLatestConfig, PrereleaseConfig,
         ReleaseConfig, StringOrBool,
     };
-    use anodize_core::test_helpers::TestContextBuilder;
+    use anodizer_core::test_helpers::TestContextBuilder;
 
     #[test]
     fn test_is_prerelease_auto_with_rc() {
@@ -2585,7 +2585,7 @@ mod tests {
 
     #[test]
     fn test_populate_artifact_download_urls_github() {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
 
         let mut ctx = TestContextBuilder::new().build();
         ctx.artifacts.add(Artifact {
@@ -2641,7 +2641,7 @@ mod tests {
 
     #[test]
     fn test_populate_artifact_download_urls_github_enterprise() {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
 
         let mut ctx = TestContextBuilder::new().build();
         ctx.artifacts.add(Artifact {
@@ -2678,7 +2678,7 @@ mod tests {
 
     #[test]
     fn test_populate_artifact_download_urls_gitlab() {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
 
         let mut ctx = TestContextBuilder::new().build();
         ctx.artifacts.add(Artifact {
@@ -2715,7 +2715,7 @@ mod tests {
 
     #[test]
     fn test_populate_artifact_download_urls_gitea() {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
 
         let mut ctx = TestContextBuilder::new().build();
         ctx.artifacts.add(Artifact {
@@ -2752,7 +2752,7 @@ mod tests {
 
     #[test]
     fn test_populate_artifact_download_urls_encodes_special_chars() {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
 
         let mut ctx = TestContextBuilder::new().build();
         ctx.artifacts.add(Artifact {
@@ -2786,7 +2786,7 @@ mod tests {
 
     #[test]
     fn test_populate_artifact_download_urls_skips_other_crates() {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
 
         let mut ctx = TestContextBuilder::new().build();
         ctx.artifacts.add(Artifact {
@@ -2870,11 +2870,11 @@ mod tests {
         let body = build_release_body(
             "## Changes\n- Fixed a bug",
             Some("# Release v1.0"),
-            Some("---\nPowered by anodize"),
+            Some("---\nPowered by anodizer"),
         );
         assert_eq!(
             body,
-            "# Release v1.0\n## Changes\n- Fixed a bug\n---\nPowered by anodize\n"
+            "# Release v1.0\n## Changes\n- Fixed a bug\n---\nPowered by anodizer\n"
         );
     }
 
@@ -2930,7 +2930,7 @@ mod tests {
         // a glob that matches nothing is a hard error.
         let result = collect_extra_files(
             &[ExtraFileSpec::Glob(
-                "/tmp/anodize_test_nonexistent_dir_12345/*.xyz".to_string(),
+                "/tmp/anodizer_test_nonexistent_dir_12345/*.xyz".to_string(),
             )],
             &ctx,
         );
@@ -2941,7 +2941,7 @@ mod tests {
     fn test_collect_extra_files_with_real_file() {
         let ctx = TestContextBuilder::new().build();
         // Create a temp file and collect it
-        let dir = std::env::temp_dir().join("anodize_extra_files_test");
+        let dir = std::env::temp_dir().join("anodizer_extra_files_test");
         let _ = std::fs::create_dir_all(&dir);
         let test_file = dir.join("test_extra.txt");
         std::fs::write(&test_file, "extra file content").unwrap();
@@ -2961,7 +2961,7 @@ mod tests {
     #[test]
     fn test_collect_extra_files_skips_directories() {
         let ctx = TestContextBuilder::new().build();
-        let dir = std::env::temp_dir().join("anodize_extra_files_dir_test");
+        let dir = std::env::temp_dir().join("anodizer_extra_files_dir_test");
         let _ = std::fs::create_dir_all(dir.join("subdir"));
         let test_file = dir.join("file.txt");
         std::fs::write(&test_file, "content").unwrap();
@@ -2978,7 +2978,7 @@ mod tests {
     #[test]
     fn test_collect_extra_files_detailed_spec() {
         let ctx = TestContextBuilder::new().build();
-        let dir = std::env::temp_dir().join("anodize_extra_files_detailed_test");
+        let dir = std::env::temp_dir().join("anodizer_extra_files_detailed_test");
         let _ = std::fs::create_dir_all(&dir);
         let test_file = dir.join("artifact.sig");
         std::fs::write(&test_file, "signature").unwrap();
@@ -3120,7 +3120,7 @@ mod tests {
     fn test_dry_run_with_extra_files() {
         // extra_files globs that match nothing are hard
         // errors. Create a real file so the stage completes successfully.
-        let tmp = std::env::temp_dir().join("anodize_test_dry_extra_files");
+        let tmp = std::env::temp_dir().join("anodizer_test_dry_extra_files");
         let _ = std::fs::create_dir_all(&tmp);
         let file = tmp.join("artifact.sig");
         std::fs::write(&file, "sig").unwrap();
@@ -3242,7 +3242,7 @@ mod tests {
 
     #[test]
     fn test_release_missing_token_errors() {
-        use anodize_core::config::GitHubConfig;
+        use anodizer_core::config::GitHubConfig;
 
         let mut ctx = TestContextBuilder::new()
             .project_name("test")
@@ -3265,17 +3265,17 @@ mod tests {
         let stage = ReleaseStage;
         let result = stage.run(&mut ctx);
 
-        // If GITHUB_TOKEN / ANODIZE_GITHUB_TOKEN happens to be set in the
+        // If GITHUB_TOKEN / ANODIZER_GITHUB_TOKEN happens to be set in the
         // environment (e.g., CI), the stage would proceed past token resolution
         // and fail on the API call instead. Either way, it should error.
         assert!(result.is_err(), "release without token should fail");
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("GITHUB_TOKEN")
-                || err.contains("ANODIZE_GITHUB_TOKEN")
+                || err.contains("ANODIZER_GITHUB_TOKEN")
                 || err.contains("--token")
                 || err.contains("release"),
-            "error should mention GITHUB_TOKEN, ANODIZE_GITHUB_TOKEN, --token, or release failure, got: {err}"
+            "error should mention GITHUB_TOKEN, ANODIZER_GITHUB_TOKEN, --token, or release failure, got: {err}"
         );
     }
 
@@ -3336,7 +3336,7 @@ mod tests {
 
     #[test]
     fn test_release_pipeline_with_mock_github_client() {
-        use anodize_core::github_client::{
+        use anodizer_core::github_client::{
             AssetInfo, CreateReleaseParams, GitHubClient, MockGitHubClient, ReleaseInfo,
             UploadAssetParams,
         };
@@ -3427,7 +3427,7 @@ mod tests {
     fn test_extra_files_collected_with_glob() {
         let ctx = TestContextBuilder::new().build();
         // Create temp files and verify glob collection works
-        let dir = std::env::temp_dir().join("anodize_release_extra_test");
+        let dir = std::env::temp_dir().join("anodizer_release_extra_test");
         let _ = std::fs::create_dir_all(&dir);
         let f1 = dir.join("artifact1.sig");
         let f2 = dir.join("artifact2.sig");
@@ -3494,7 +3494,7 @@ mod tests {
         // Verify the rendered release name matches expected template output.
         // We simulate the same resolution logic the stage uses: render
         // name_template via ctx.render_template and check the result.
-        use anodize_core::github_client::{
+        use anodizer_core::github_client::{
             CreateReleaseParams, GitHubClient, MockGitHubClient, ReleaseInfo,
         };
 
@@ -3565,7 +3565,7 @@ mod tests {
     #[test]
     fn test_draft_release_flag() {
         // Verify draft=true propagates through to the GitHub API parameters.
-        use anodize_core::github_client::{
+        use anodizer_core::github_client::{
             CreateReleaseParams, GitHubClient, MockGitHubClient, ReleaseInfo,
         };
 
@@ -3644,7 +3644,7 @@ mod tests {
         // The release stage requires a GitHub token for non-dry-run.
         // test_release_missing_token_errors already covers this,
         // but we verify the error message is actionable (tells user what to do).
-        use anodize_core::config::GitHubConfig;
+        use anodizer_core::config::GitHubConfig;
 
         let mut ctx = TestContextBuilder::new()
             .project_name("test")
@@ -3667,7 +3667,7 @@ mod tests {
         let stage = ReleaseStage;
         let result = stage.run(&mut ctx);
 
-        // If GITHUB_TOKEN / ANODIZE_GITHUB_TOKEN is in the environment, the
+        // If GITHUB_TOKEN / ANODIZER_GITHUB_TOKEN is in the environment, the
         // stage proceeds past token resolution and fails on the API call
         // instead. Either way the error should be informative.
         assert!(
@@ -3677,17 +3677,17 @@ mod tests {
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("GITHUB_TOKEN")
-                || err.contains("ANODIZE_GITHUB_TOKEN")
+                || err.contains("ANODIZER_GITHUB_TOKEN")
                 || err.contains("--token")
                 || err.contains("release")
                 || err.contains("GitHub"),
-            "error should mention GITHUB_TOKEN, ANODIZE_GITHUB_TOKEN, --token, or release context, got: {err}"
+            "error should mention GITHUB_TOKEN, ANODIZER_GITHUB_TOKEN, --token, or release context, got: {err}"
         );
     }
 
     #[test]
     fn test_mock_github_api_401_error() {
-        use anodize_core::github_client::{CreateReleaseParams, GitHubClient, MockGitHubClient};
+        use anodizer_core::github_client::{CreateReleaseParams, GitHubClient, MockGitHubClient};
 
         let mock = MockGitHubClient::new();
         mock.set_create_release_response(Err("401 Unauthorized: Bad credentials".to_string()));
@@ -3715,7 +3715,7 @@ mod tests {
 
     #[test]
     fn test_mock_github_api_403_error() {
-        use anodize_core::github_client::{CreateReleaseParams, GitHubClient, MockGitHubClient};
+        use anodizer_core::github_client::{CreateReleaseParams, GitHubClient, MockGitHubClient};
 
         let mock = MockGitHubClient::new();
         mock.set_create_release_response(Err(
@@ -3741,7 +3741,7 @@ mod tests {
 
     #[test]
     fn test_mock_github_api_404_error() {
-        use anodize_core::github_client::{CreateReleaseParams, GitHubClient, MockGitHubClient};
+        use anodizer_core::github_client::{CreateReleaseParams, GitHubClient, MockGitHubClient};
 
         let mock = MockGitHubClient::new();
         mock.set_create_release_response(Err("404 Not Found: repository not found".to_string()));
@@ -3769,7 +3769,7 @@ mod tests {
 
     #[test]
     fn test_mock_github_api_422_error() {
-        use anodize_core::github_client::{CreateReleaseParams, GitHubClient, MockGitHubClient};
+        use anodizer_core::github_client::{CreateReleaseParams, GitHubClient, MockGitHubClient};
 
         let mock = MockGitHubClient::new();
         mock.set_create_release_response(Err(
@@ -3799,7 +3799,7 @@ mod tests {
 
     #[test]
     fn test_mock_upload_failure() {
-        use anodize_core::github_client::{GitHubClient, MockGitHubClient, UploadAssetParams};
+        use anodizer_core::github_client::{GitHubClient, MockGitHubClient, UploadAssetParams};
 
         let mock = MockGitHubClient::new();
         mock.set_upload_asset_response(Err(
@@ -4144,7 +4144,7 @@ draft: true
 
     #[test]
     fn test_ids_filter_includes_matching_artifacts() {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
         use std::collections::HashMap;
         use std::path::PathBuf;
 
@@ -4192,7 +4192,7 @@ draft: true
 
     #[test]
     fn test_ids_filter_none_includes_all_artifacts() {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
         use std::collections::HashMap;
         use std::path::PathBuf;
 
@@ -4237,7 +4237,7 @@ draft: true
 
     #[test]
     fn test_ids_filter_unit_logic() {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
         use std::collections::HashMap;
         use std::path::PathBuf;
 
@@ -4284,7 +4284,7 @@ draft: true
 
         let filtered: Vec<_> = artifacts
             .iter()
-            .filter(|a| anodize_core::artifact::matches_id_filter(a, Some(&ids)))
+            .filter(|a| anodizer_core::artifact::matches_id_filter(a, Some(&ids)))
             .collect();
 
         assert_eq!(
@@ -4300,7 +4300,7 @@ draft: true
     #[test]
     fn test_ids_filter_no_id_metadata_excluded() {
         // Artifacts without "id" metadata should be excluded when ids filter is set
-        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
         use std::collections::HashMap;
         use std::path::PathBuf;
 
@@ -4316,7 +4316,7 @@ draft: true
             size: None,
         };
 
-        let matches = anodize_core::artifact::matches_id_filter(&artifact_no_id, Some(&ids));
+        let matches = anodizer_core::artifact::matches_id_filter(&artifact_no_id, Some(&ids));
         assert!(
             !matches,
             "Archive artifact without id metadata should not match ids filter"
@@ -4349,7 +4349,7 @@ draft: true
 
     #[test]
     fn test_ids_and_mode_combined_dry_run() {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
         use std::collections::HashMap;
         use std::path::PathBuf;
 
@@ -4397,7 +4397,7 @@ draft: true
 
     #[test]
     fn test_release_collects_all_uploadable_artifact_kinds() {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
         use std::path::PathBuf;
 
         let mut ctx = TestContextBuilder::new()
@@ -4580,9 +4580,9 @@ draft: true
 
     // ---- resolve_content_source tests ----
 
-    fn content_source_test_ctx() -> anodize_core::context::Context {
-        use anodize_core::config::Config;
-        use anodize_core::context::{Context, ContextOptions};
+    fn content_source_test_ctx() -> anodizer_core::context::Context {
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
         let mut config = Config::default();
         config.project_name = "test".to_string();
         Context::new(config, ContextOptions::default())
@@ -4616,7 +4616,7 @@ draft: true
     fn test_resolve_content_source_from_file_not_found() {
         let ctx = content_source_test_ctx();
         let source = ContentSource::FromFile {
-            from_file: "/tmp/anodize_nonexistent_file_12345.md".to_string(),
+            from_file: "/tmp/anodizer_nonexistent_file_12345.md".to_string(),
         };
         let result = resolve_content_source(&source, &ctx);
         assert!(result.is_err());
@@ -4645,7 +4645,7 @@ draft: true
     #[test]
     fn test_content_source_from_url_with_headers_parses() {
         // Schema: new `headers` map on FromUrl variant (GoReleaser Pro parity).
-        use anodize_core::config::ContentSource;
+        use anodizer_core::config::ContentSource;
         let yaml = r#"
 from_url: https://example.com/h.md
 headers:
@@ -4670,7 +4670,7 @@ headers:
     #[test]
     fn test_content_source_from_url_without_headers_parses() {
         // Backwards compat — old config with just `from_url:` still works.
-        use anodize_core::config::ContentSource;
+        use anodizer_core::config::ContentSource;
         let yaml = r#"
 from_url: https://example.com/h.md
 "#;
@@ -4864,7 +4864,7 @@ draft: true
     #[test]
     fn test_dry_run_with_all_new_fields() {
         // extra_files globs must match at least one file.
-        let tmp = std::env::temp_dir().join("anodize_test_dry_all_fields");
+        let tmp = std::env::temp_dir().join("anodizer_test_dry_all_fields");
         let _ = std::fs::create_dir_all(&tmp);
         let file = tmp.join("extra.sig");
         std::fs::write(&file, "sig").unwrap();
@@ -5074,7 +5074,7 @@ draft: true
 
     #[test]
     fn test_dry_run_with_templated_extra_files() {
-        use anodize_core::config::TemplatedExtraFile;
+        use anodizer_core::config::TemplatedExtraFile;
 
         let tmp = tempfile::TempDir::new().unwrap();
         let dist = tmp.path().join("dist");
@@ -5284,8 +5284,8 @@ draft: true
 
     #[test]
     fn test_dry_run_gitlab_token_type_shows_gitlab_release() {
-        use anodize_core::config::ScmRepoConfig;
-        use anodize_core::scm::ScmTokenType;
+        use anodizer_core::config::ScmRepoConfig;
+        use anodizer_core::scm::ScmTokenType;
 
         let mut ctx = TestContextBuilder::new()
             .project_name("test")
@@ -5313,8 +5313,8 @@ draft: true
 
     #[test]
     fn test_dry_run_gitlab_with_custom_urls() {
-        use anodize_core::config::{GitLabUrlsConfig, ScmRepoConfig};
-        use anodize_core::scm::ScmTokenType;
+        use anodizer_core::config::{GitLabUrlsConfig, ScmRepoConfig};
+        use anodizer_core::scm::ScmTokenType;
 
         let mut ctx = TestContextBuilder::new()
             .project_name("test")
@@ -5349,7 +5349,7 @@ draft: true
 
     #[test]
     fn test_gitlab_backend_skips_when_no_gitlab_config() {
-        use anodize_core::scm::ScmTokenType;
+        use anodizer_core::scm::ScmTokenType;
 
         let mut ctx = TestContextBuilder::new()
             .project_name("test")
@@ -5374,8 +5374,8 @@ draft: true
 
     #[test]
     fn test_gitlab_backend_falls_back_to_github_config() {
-        use anodize_core::config::ScmRepoConfig;
-        use anodize_core::scm::ScmTokenType;
+        use anodizer_core::config::ScmRepoConfig;
+        use anodizer_core::scm::ScmTokenType;
 
         let mut ctx = TestContextBuilder::new()
             .project_name("test")
@@ -5406,8 +5406,8 @@ draft: true
 
     #[test]
     fn test_gitea_dry_run_with_gitea_config() {
-        use anodize_core::config::ScmRepoConfig;
-        use anodize_core::scm::ScmTokenType;
+        use anodizer_core::config::ScmRepoConfig;
+        use anodizer_core::scm::ScmTokenType;
 
         let mut ctx = TestContextBuilder::new()
             .project_name("test")
@@ -5435,7 +5435,7 @@ draft: true
 
     #[test]
     fn test_gitea_backend_skips_when_no_gitea_config() {
-        use anodize_core::scm::ScmTokenType;
+        use anodizer_core::scm::ScmTokenType;
 
         let mut ctx = TestContextBuilder::new()
             .project_name("test")
@@ -5460,8 +5460,8 @@ draft: true
 
     #[test]
     fn test_gitea_backend_falls_back_to_github_config() {
-        use anodize_core::config::ScmRepoConfig;
-        use anodize_core::scm::ScmTokenType;
+        use anodizer_core::config::ScmRepoConfig;
+        use anodizer_core::scm::ScmTokenType;
 
         let mut ctx = TestContextBuilder::new()
             .project_name("test")
@@ -5490,8 +5490,8 @@ draft: true
 
     #[test]
     fn test_gitea_missing_token_errors() {
-        use anodize_core::config::ScmRepoConfig;
-        use anodize_core::scm::ScmTokenType;
+        use anodizer_core::config::ScmRepoConfig;
+        use anodizer_core::scm::ScmTokenType;
 
         let mut ctx = TestContextBuilder::new()
             .project_name("test")

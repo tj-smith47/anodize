@@ -5,10 +5,10 @@ weight = 3
 template = "docs.html"
 +++
 
-## 1. Install anodize
+## 1. Install anodizer
 
 ```bash
-cargo install anodize
+cargo install anodizer
 ```
 
 ## 2. Generate a config
@@ -16,7 +16,7 @@ cargo install anodize
 In your project root (where `Cargo.toml` lives):
 
 ```bash
-anodize init > .anodize.yaml
+anodizer init > .anodizer.yaml
 ```
 
 This reads your `Cargo.toml` and generates a starter config with sensible defaults. It discovers all binary crates in your workspace automatically.
@@ -24,15 +24,15 @@ This reads your `Cargo.toml` and generates a starter config with sensible defaul
 ## 3. Validate the config
 
 ```bash
-anodize check
+anodizer check
 ```
 
-This validates your `.anodize.yaml` against the schema — checks for missing fields, invalid target triples, dependency cycles, and more.
+This validates your `.anodizer.yaml` against the schema — checks for missing fields, invalid target triples, dependency cycles, and more.
 
 ## 4. Do a dry run
 
 ```bash
-anodize release --dry-run
+anodizer release --dry-run
 ```
 
 This runs the full pipeline without any side effects — no GitHub release created, no packages published, no images pushed. You'll see exactly what would happen.
@@ -40,7 +40,7 @@ This runs the full pipeline without any side effects — no GitHub release creat
 ## 5. Do a snapshot build
 
 ```bash
-anodize release --snapshot
+anodizer release --snapshot
 ```
 
 This builds everything locally but skips all publishing stages. Useful for testing your archive formats and verifying binaries compile for all targets.
@@ -49,7 +49,7 @@ This builds everything locally but skips all publishing stages. Useful for testi
 
 ```bash
 export GITHUB_TOKEN="ghp_..."
-anodize release --crate myapp
+anodizer release --crate myapp
 ```
 
 This runs the full pipeline: build, archive, checksum, changelog, GitHub release with asset uploads, and any configured publishers.

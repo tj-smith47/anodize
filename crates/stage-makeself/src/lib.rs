@@ -5,9 +5,9 @@ use std::process::Command;
 
 use anyhow::{Context as _, Result};
 
-use anodize_core::artifact::{Artifact, ArtifactKind, matches_id_filter};
-use anodize_core::context::Context;
-use anodize_core::stage::Stage;
+use anodizer_core::artifact::{Artifact, ArtifactKind, matches_id_filter};
+use anodizer_core::context::Context;
+use anodizer_core::stage::Stage;
 
 // ---------------------------------------------------------------------------
 // LSM (Linux Software Map) metadata
@@ -92,7 +92,7 @@ fn group_by_platform(artifacts: &[Artifact]) -> HashMap<String, Vec<&Artifact>> 
     for a in artifacts {
         let platform = match &a.target {
             Some(t) => {
-                let (os, arch) = anodize_core::target::map_target(t);
+                let (os, arch) = anodizer_core::target::map_target(t);
                 format!("{}_{}", os, arch)
             }
             None => "unknown".to_string(),
@@ -189,7 +189,7 @@ impl Stage for MakeselfStage {
             //   {{ with .Arm }}v{{ . }}{{ end }}
             //   {{ with .Mips }}_{{ . }}{{ end }}
             //   {{ if not (eq .Amd64 "v1") }}{{ .Amd64 }}{{ end }}.run
-            // Rendered here using the Tera-style syntax anodize exposes.
+            // Rendered here using the Tera-style syntax anodizer exposes.
             let default_name_template = concat!(
                 "{{ ProjectName }}_{{ Version }}_{{ Os }}_{{ Arch }}",
                 "{% if Arm %}v{{ Arm }}{% endif %}",
@@ -231,7 +231,7 @@ impl Stage for MakeselfStage {
                 .filter(|a| {
                     // Filter by goos
                     if let Some(ref target) = a.target {
-                        let (os, _) = anodize_core::target::map_target(target);
+                        let (os, _) = anodizer_core::target::map_target(target);
                         goos_filter.iter().any(|g| g == &os)
                     } else {
                         false
@@ -241,7 +241,7 @@ impl Stage for MakeselfStage {
                     // Filter by goarch if configured
                     if let Some(ref goarch) = cfg.goarch {
                         if let Some(ref target) = a.target {
-                            let (_, arch) = anodize_core::target::map_target(target);
+                            let (_, arch) = anodizer_core::target::map_target(target);
                             goarch.iter().any(|g| g == &arch)
                         } else {
                             false
@@ -268,7 +268,7 @@ impl Stage for MakeselfStage {
                 let (os, arch) = primary
                     .target
                     .as_deref()
-                    .map(anodize_core::target::map_target)
+                    .map(anodizer_core::target::map_target)
                     .unwrap_or_else(|| ("unknown".to_string(), "unknown".to_string()));
 
                 // Render templates
@@ -489,7 +489,7 @@ impl Stage for MakeselfStage {
         // register them serially in ctx.artifacts.
         // ----------------------------------------------------------------
         let run_job = |job: &MakeselfJob| -> Result<Artifact> {
-            let thread_log = anodize_core::log::StageLogger::new("makeself", log.verbosity());
+            let thread_log = anodizer_core::log::StageLogger::new("makeself", log.verbosity());
 
             fs::create_dir_all(&job.work_dir)
                 .with_context(|| format!("makeself: create dir {}", job.work_dir.display()))?;
@@ -592,7 +592,7 @@ impl Stage for MakeselfStage {
         };
 
         let built_artifacts =
-            anodize_core::parallel::run_parallel_chunks(&jobs, parallelism, "makeself", run_job)?;
+            anodizer_core::parallel::run_parallel_chunks(&jobs, parallelism, "makeself", run_job)?;
 
         // ----------------------------------------------------------------
         // Phase 3 (serial): register artifacts in ctx. Serial because
@@ -606,7 +606,7 @@ impl Stage for MakeselfStage {
         // downstream stages (announce, publish) don't render with a stale
         // `Os=linux` / `Arch=arm64` left over from the last packaging
         // iteration.
-        anodize_core::template::clear_per_target_vars(ctx.template_vars_mut());
+        anodizer_core::template::clear_per_target_vars(ctx.template_vars_mut());
 
         Ok(())
     }
@@ -619,7 +619,7 @@ impl Stage for MakeselfStage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anodize_core::config::MakeselfConfig;
+    use anodizer_core::config::MakeselfConfig;
     use std::path::PathBuf;
 
     #[test]
@@ -705,8 +705,8 @@ mod tests {
     #[test]
     fn test_makeself_stage_skips_empty_configs() {
         let mut ctx = Context::new(
-            anodize_core::config::Config::default(),
-            anodize_core::context::ContextOptions::default(),
+            anodizer_core::config::Config::default(),
+            anodizer_core::context::ContextOptions::default(),
         );
         let stage = MakeselfStage;
         // No makeself configs → no-op
@@ -715,7 +715,7 @@ mod tests {
 
     #[test]
     fn test_makeself_config_parsing() {
-        use anodize_core::config::Config;
+        use anodizer_core::config::Config;
 
         let yaml = r#"
 project_name: test
@@ -745,7 +745,7 @@ crates:
 
     #[test]
     fn test_makeself_config_single_object() {
-        use anodize_core::config::Config;
+        use anodizer_core::config::Config;
 
         let yaml = r#"
 project_name: test
@@ -764,8 +764,8 @@ crates:
     #[test]
     fn test_makeself_requires_script() {
         let mut ctx = Context::new(
-            anodize_core::config::Config::default(),
-            anodize_core::context::ContextOptions::default(),
+            anodizer_core::config::Config::default(),
+            anodizer_core::context::ContextOptions::default(),
         );
         ctx.config.makeselfs = vec![MakeselfConfig {
             id: Some("test".to_string()),

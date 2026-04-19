@@ -1,9 +1,9 @@
 # GoReleaser Complete Feature Inventory
 
-> **Authoritative parity reference** for anodize v0.x ↔ GoReleaser.
+> **Authoritative parity reference** for anodizer v0.x ↔ GoReleaser.
 > Source: `/opt/repos/goreleaser/` (OSS, at HEAD — last sync commit `f7e73e3`, fetched 2026-04-16).
 > Pro: `https://goreleaser.com/pro/` + `https://goreleaser.com/customization/*` — fetched 2026-04-16.
-> Anodize ground truth: `/opt/repos/anodize/crates/` (grepped for `implemented` status).
+> Anodizer ground truth: `/opt/repos/anodizer/crates/` (grepped for `implemented` status).
 >
 > **How to read this file.** The Parity Row Matrix (Section 2) is the audit-driving surface. One row per feature/feature-group. Columns:
 > - `name` — feature identifier (config key or conceptual name)
@@ -22,7 +22,7 @@
 
 ## 1. Parity Definition
 
-Parity = equal or superior implementation per GoReleaser feature: config field, behavior, wiring, error, auth, default. Parsed-but-ignored fields are `partial`. Fields with different semantics are `partial` unless anodize's divergence is an intentional, documented superiority.
+Parity = equal or superior implementation per GoReleaser feature: config field, behavior, wiring, error, auth, default. Parsed-but-ignored fields are `partial`. Fields with different semantics are `partial` unless anodizer's divergence is an intentional, documented superiority.
 
 ---
 
@@ -33,25 +33,25 @@ Parity = equal or superior implementation per GoReleaser feature: config field, 
 | name | category | tier | scope | ecosystem_relevance | parity_status | disposition | source_ref | notes |
 |------|----------|------|-------|---------------------|---------------|-------------|------------|-------|
 | builder: go | build | OSS | go-specific | not-applicable | n-a | — | internal/builders/golang/ | Go toolchain builder; Rust uses cargo, not portable. |
-| builder: rust | build | OSS | portable | required | implemented | — | internal/builders/rust/build.go | anodize is the native Rust releaser — cargo/cross/zigbuild via `stage-build`. |
+| builder: rust | build | OSS | portable | required | implemented | — | internal/builders/rust/build.go | anodizer is the native Rust releaser — cargo/cross/zigbuild via `stage-build`. |
 | builder: zig | build | OSS | rust-additive | niche | n-a | — | internal/builders/zig/ | Out of scope for Rust; cargo-zigbuild covers zig-as-linker for Rust targets. |
 | builder: bun | build | OSS | not-applicable | not-applicable | n-a | — | internal/builders/bun/ | JS/TS runtime builder; no Rust analogue. |
 | builder: deno | build | OSS | not-applicable | not-applicable | n-a | — | internal/builders/deno/ | JS/TS runtime builder; no Rust analogue. |
 | builder: python-uv | build | OSS | not-applicable | not-applicable | n-a | — | internal/builders/uv/ | Python packaging builder; no Rust analogue. |
 | builder: python-poetry | build | OSS | not-applicable | not-applicable | n-a | — | internal/builders/poetry/ | Python packaging builder; no Rust analogue. |
-| builder: prebuilt | build | OSS | portable | strongly-suggested | implemented | — | internal/builders/base/ | anodize `copy_from` + `import` equivalents in `crates/stage-build/src/lib.rs`. |
+| builder: prebuilt | build | OSS | portable | strongly-suggested | implemented | — | internal/builders/base/ | anodizer `copy_from` + `import` equivalents in `crates/stage-build/src/lib.rs`. |
 | build.id | build | OSS | portable | required | implemented | — | internal/config/config.go | `CrateConfig.id` (core/config.rs:738). |
 | build.binary | build | OSS | portable | required | implemented | — | internal/config/config.go | `BuildConfig.binary`. |
 | build.main | build | OSS | go-specific | not-applicable | n-a | — | internal/builders/golang/build.go | Go entrypoint path; Rust uses `--bin`/`Cargo.toml`. |
 | build.dir | build | OSS | portable | required | implemented | — | internal/builders/base/ | `BuildConfig.dir`. |
-| build.command | build | OSS | portable | strongly-suggested | implemented | — | internal/builders/base/ | anodize uses `cargo <command>` — defaults `build`/`zigbuild`. |
+| build.command | build | OSS | portable | strongly-suggested | implemented | — | internal/builders/base/ | anodizer uses `cargo <command>` — defaults `build`/`zigbuild`. |
 | build.flags | build | OSS | portable | required | implemented | — | internal/builders/base/ | `BuildConfig.flags` (default `--release`). |
 | build.ldflags | build | OSS | go-specific | not-applicable | n-a | — | internal/builders/golang/build.go | Go linker flags; Rust uses `RUSTFLAGS`+`build.rs`. |
 | build.asmflags | build | OSS | go-specific | not-applicable | n-a | — | internal/builders/golang/build.go | Go asm flags; no Rust analogue. |
 | build.gcflags | build | OSS | go-specific | not-applicable | n-a | — | internal/builders/golang/build.go | Go compiler flags; Rust uses `[profile.*]` in Cargo.toml. |
 | build.tags | build | OSS | go-specific | not-applicable | n-a | — | internal/builders/golang/build.go | Go build tags; Rust uses `--features`. |
 | build.env | build | OSS | portable | required | implemented | — | internal/builders/base/ | `BuildConfig.env` templated. |
-| build.tool | build | OSS | portable | required | implemented | — | internal/builders/rust/build.go | anodize resolves `cargo`/`cross` via `CrossStrategy`. |
+| build.tool | build | OSS | portable | required | implemented | — | internal/builders/rust/build.go | anodizer resolves `cargo`/`cross` via `CrossStrategy`. |
 | build.goos / goarch / goarm / goamd64 / goarm64 / gomips / go386 / goppc64 / goriscv64 | build | OSS | go-specific | not-applicable | n-a | — | internal/builders/golang/build.go | Go matrix metadata; Rust uses target triples via `targets`. |
 | build.targets | build | OSS | portable | required | implemented | — | internal/builders/rust/build.go:20 | Rust target triples in `CrateConfig.targets` + `Defaults.targets`. |
 | build.ignore | build | OSS | go-specific | not-applicable | n-a | — | internal/builders/base/ | Go goos/goarch exclusions; Rust uses explicit target list. |
@@ -67,7 +67,7 @@ Parity = equal or superior implementation per GoReleaser feature: config field, 
 | universal_binaries (macOS) | build | OSS | portable | strongly-suggested | implemented | — | internal/pipe/universalbinary/ | `UniversalBinaryConfig` wired via `lipo` subprocess in stage-build. |
 | upx | build | OSS | portable | niche | implemented | — | internal/pipe/upx/upx.go | `stage-upx/src/lib.rs`; uses Rust target-triple globs (not goos/goarch). |
 | partial builds (`--single-target`) | build | OSS | portable | strongly-suggested | implemented | — | internal/pipe/partial/partial.go | `cli --single-target` flag in `commands/build.rs`. |
-| prebuild pipe | build | OSS | portable | niche | implemented | — | internal/pipe/prebuild/prebuild.go | Pre-build validation + prepare hooks; folded into anodize build stage. |
+| prebuild pipe | build | OSS | portable | niche | implemented | — | internal/pipe/prebuild/prebuild.go | Pre-build validation + prepare hooks; folded into anodizer build stage. |
 | reportsizes | build | OSS | portable | strongly-suggested | implemented | — | internal/pipe/reportsizes/reportsizes.go | Binary-size reporter after build. |
 
 ### 2.2 Archives
@@ -75,7 +75,7 @@ Parity = equal or superior implementation per GoReleaser feature: config field, 
 | name | category | tier | scope | ecosystem_relevance | parity_status | disposition | source_ref | notes |
 |------|----------|------|-------|---------------------|---------------|-------------|------------|-------|
 | archives[].id / ids | archive | OSS | portable | required | implemented | — | internal/pipe/archive/archive.go | `ArchiveConfig.id`/`ids`. |
-| archives[].format (singular, deprecated) | archive | OSS | portable | required | implemented | — | internal/pipe/archive/archive.go | Legacy field; anodize accepts both. |
+| archives[].format (singular, deprecated) | archive | OSS | portable | required | implemented | — | internal/pipe/archive/archive.go | Legacy field; anodizer accepts both. |
 | archives[].formats (plural) | archive | OSS | portable | required | implemented | — | internal/pipe/archive/archive.go | v2.6+ plural forms list. |
 | archives[].meta (manifest-only) | archive | OSS | portable | niche | implemented | — | internal/pipe/archive/archive.go | `ArchiveConfig.meta`. |
 | archives[].name_template | archive | OSS | portable | required | implemented | — | internal/pipe/archive/archive.go | Full Tera-backed template. |
@@ -85,7 +85,7 @@ Parity = equal or superior implementation per GoReleaser feature: config field, 
 | archives[].files (string/object) | archive | OSS | portable | required | implemented | — | internal/pipe/archive/archive.go | `ArchiveFileSpec` enum parses both shapes. |
 | archives[].builds_info | archive | OSS | portable | strongly-suggested | implemented | — | internal/pipe/archive/archive.go | File mode/owner/group/mtime on built binaries. |
 | archives[].format_overrides | archive | OSS | portable | strongly-suggested | implemented | — | internal/pipe/archive/archive.go | Plural `formats` + `goos` override key. |
-| archives[].binaries (anodize-only) | archive | — | portable | niche | implemented | — | — | Anodize extension, no GoReleaser equivalent. Filters which build binaries enter this archive by file-name match. Silently **intersects** with `ids:` when both are set — configure only one. Prefer `ids:` for parity with GoReleaser. |
+| archives[].binaries (anodizer-only) | archive | — | portable | niche | implemented | — | — | Anodizer extension, no GoReleaser equivalent. Filters which build binaries enter this archive by file-name match. Silently **intersects** with `ids:` when both are set — configure only one. Prefer `ids:` for parity with GoReleaser. |
 | archives[].hooks.before/after | archive | Pro | portable | strongly-suggested | implemented | — | docs: /customization/archive/ (fetched 2026-04-16) | `BuildHooksConfig.pre`/`post` with `#[serde(alias="before")]`/`alias="after"` (config.rs:979,982). Verified 2026-04-18. |
 | archives[].templated_files | archive | Pro | portable | niche | implemented | — | docs: /customization/archive/ (fetched 2026-04-16) | `templated_files` via `TemplatedExtraFile`. |
 | formats: tar.gz / tgz | archive | OSS | portable | required | implemented | — | internal/pipe/archive/archive.go | `stage-archive`. |
@@ -191,7 +191,7 @@ Parity = equal or superior implementation per GoReleaser feature: config field, 
 | docker.templated_dockerfile | docker | Pro | portable | niche | implemented | — | docs: /customization/docker/ (fetched 2026-04-16) | Wired. |
 | docker.extra_files | docker | OSS | portable | strongly-suggested | implemented | — | internal/pipe/docker/docker.go | Wired. |
 | docker.templated_extra_files | docker | Pro | portable | niche | implemented | — | docs: /customization/docker/ | Wired. |
-| docker.use (docker/buildx/podman) | docker | OSS | portable | strongly-suggested | implemented (superset) | — | internal/pipe/docker/ | Wired. **`podman` is an anodize superset** — GoReleaser's OSS validator rejects `use: podman` with "invalid use: podman, valid options are [buildx docker]" (upstream docker_test.go:1501). Anodize accepts it as a first-class backend for rootless CI contexts. |
+| docker.use (docker/buildx/podman) | docker | OSS | portable | strongly-suggested | implemented (superset) | — | internal/pipe/docker/ | Wired. **`podman` is an anodizer superset** — GoReleaser's OSS validator rejects `use: podman` with "invalid use: podman, valid options are [buildx docker]" (upstream docker_test.go:1501). Anodizer accepts it as a first-class backend for rootless CI contexts. |
 | docker.build_flag_templates | docker | OSS | portable | strongly-suggested | implemented | — | internal/pipe/docker/docker.go | Wired. |
 | docker.skip_build | docker | Pro | portable | niche | implemented | — | docs: /customization/docker/ | Wired. |
 | docker.skip_push (bool / auto) | docker | OSS | portable | required | implemented | — | internal/pipe/docker/docker.go | `SkipPushConfig`. |
@@ -253,7 +253,7 @@ Parity = equal or superior implementation per GoReleaser feature: config field, 
 | homebrew.conflicts | publish-homebrew | OSS | portable | strongly-suggested | implemented | — | internal/pipe/brew/brew.go | Wired. |
 | homebrew.service / plist | publish-homebrew | OSS | portable | niche | implemented | — | internal/pipe/brew/brew.go | Wired. |
 | homebrew.commit_msg_template / directory | publish-homebrew | OSS | portable | strongly-suggested | implemented | — | internal/pipe/brew/brew.go | Wired. |
-| homebrew.skip_upload | publish-homebrew | OSS | portable | strongly-suggested | implemented (superset) | — | internal/pipe/brew/brew.go | Wired. **Anodize additionally logs a warning on unrecognised `skip_upload` values** (not just `"true"` / `"auto"`) to catch typos early — GoReleaser accepts silently. Benign divergence. |
+| homebrew.skip_upload | publish-homebrew | OSS | portable | strongly-suggested | implemented (superset) | — | internal/pipe/brew/brew.go | Wired. **Anodizer additionally logs a warning on unrecognised `skip_upload` values** (not just `"true"` / `"auto"`) to catch typos early — GoReleaser accepts silently. Benign divergence. |
 | homebrew.repository.* | publish-homebrew | OSS | portable | required | implemented | — | internal/pipe/brew/brew.go | `RepositoryConfig`. |
 | homebrew.repository.pull_request.* | publish-homebrew | OSS | portable | strongly-suggested | implemented | — | internal/pipe/brew/brew.go | PR-based tap updates. |
 | homebrew.repository.pull_request.check_boxes | publish-homebrew | Pro | portable | niche | implemented | — | docs: /customization/homebrew/ (fetched 2026-04-16) | Pro-only. |
@@ -352,7 +352,7 @@ Parity = equal or superior implementation per GoReleaser feature: config field, 
 | snap fields (grade/confinement/base/plugs/slots/layout/apps/assumes/hooks/extra_files) | publish-snap | OSS | portable | niche | implemented | — | internal/pipe/snapcraft/ | Wired. |
 | flatpaks[] | publish-flatpak | OSS | portable | niche | implemented | — | internal/pipe/flatpak/ | `FlatpakConfig` + `stage-flatpak`. |
 | flatpak fields (app_id/runtime/sdk/command/finish_args) | publish-flatpak | OSS | portable | niche | implemented | — | internal/pipe/flatpak/ | Wired. |
-| dmgs[] (macOS disk image) | dmg | Pro | portable | strongly-suggested | implemented | — | docs: /customization/dmg/ (fetched 2026-04-16) | `DmgConfig.if_condition` (config.rs:3521); gate in stage-dmg/src/lib.rs:156. Verified 2026-04-18. **`dmgs.use:` accepts only `binary` or `appbundle`** (not `archive`) — intentional narrowness: anodize expects either a raw built binary or a bundled .app, not an already-archived tarball. Users who need DMG from archive contents should extract into an appbundle first. |
+| dmgs[] (macOS disk image) | dmg | Pro | portable | strongly-suggested | implemented | — | docs: /customization/dmg/ (fetched 2026-04-16) | `DmgConfig.if_condition` (config.rs:3521); gate in stage-dmg/src/lib.rs:156. Verified 2026-04-18. **`dmgs.use:` accepts only `binary` or `appbundle`** (not `archive`) — intentional narrowness: anodizer expects either a raw built binary or a bundled .app, not an already-archived tarball. Users who need DMG from archive contents should extract into an appbundle first. |
 | msis[] (Wix/wixl) | msi | Pro | portable | strongly-suggested | implemented (superset) | — | docs: /customization/msi/ (fetched 2026-04-16) | `MsiConfig.if_condition` + `.hooks: BuildHooksConfig` (config.rs:3555,3560); gate in stage-msi/src/lib.rs:291. `extra_files: Vec<String>` matches docs (WiX context filenames only). `goamd64` is Go-specific (n-a for Rust target triples). **Behavioral superset**: in v3 mode `extensions` are passed to BOTH `candle` and `light` (upstream docs pass only to `candle`) to avoid link-time ExtensionRequired errors from transform-bearing extensions. Verified 2026-04-18. |
 | pkgs[] (macOS .pkg) | pkg | Pro | portable | strongly-suggested | implemented | — | docs: /customization/pkg/ (fetched 2026-04-16) | `PkgConfig.if_condition` (config.rs:3597); gate in stage-pkg/src/lib.rs:116. Verified 2026-04-18. |
 | nsis[] (Windows installer) | nsis | Pro | portable | strongly-suggested | implemented | — | docs: /customization/nsis/ (fetched 2026-04-16) | `NsisConfig.if_condition` (config.rs:3631); gate in stage-nsis/src/lib.rs:124. `goamd64` is Go-specific (n-a for Rust target triples). Verified 2026-04-18. |
@@ -375,7 +375,7 @@ Parity = equal or superior implementation per GoReleaser feature: config field, 
 | includes[].from_file / from_url | misc | Pro | portable | niche | implemented | — | docs: /customization/includes/ (fetched 2026-04-16) | `IncludeSpec` enum. |
 | metadata.mod_timestamp / maintainers / license / homepage / description | metadata | Pro | portable | strongly-suggested | implemented | — | docs: /customization/metadata/ (fetched 2026-04-16) | `MetadataConfig` with `full_description: ContentSource` + `commit_author: CommitAuthorConfig` (config.rs:4497,4501). Verified 2026-04-18. |
 | metadata.full_description.from_url | metadata | Pro | portable | niche | partial | — | docs: /customization/metadata/ (fetched 2026-04-16) | `ContentSource::FromUrl` variant parses, but core/src/context.rs:754 errors "`from_url` is not yet supported at metadata context time". Inline + FromFile work. |
-| mcp registry (MCP server manifest publish) | publish-mcp | OSS | portable | niche | missing | — | internal/pipe/mcp/mcp.go | New GoReleaser pipe (2026-03+): publishes MCP server manifests to registry. MCP ecosystem still forming; no Rust analogue in anodize yet. |
+| mcp registry (MCP server manifest publish) | publish-mcp | OSS | portable | niche | missing | — | internal/pipe/mcp/mcp.go | New GoReleaser pipe (2026-03+): publishes MCP server manifests to registry. MCP ecosystem still forming; no Rust analogue in anodizer yet. |
 | env (global env list) | misc | OSS | portable | required | implemented | — | internal/pipe/env/ | Wired. |
 | env_files.github_token / gitlab_token / gitea_token | misc | OSS | portable | strongly-suggested | implemented | — | internal/pipe/env/ | `EnvFilesConfig`. |
 | template_files[] | misc | Pro | portable | niche | implemented | — | docs: /customization/template_files/ (fetched 2026-04-16) | `TemplateFileConfig` + `stage-templatefiles`. |
@@ -383,7 +383,7 @@ Parity = equal or superior implementation per GoReleaser feature: config field, 
 | snapshot.name_template | misc | OSS | portable | required | implemented | — | internal/pipe/snapshot/ | `SnapshotConfig`. |
 | nightly (Pro) | misc | Pro | portable | niche | implemented | — | docs: /pro/ (fetched 2026-04-16) | `NightlyConfig`. |
 | partial builds (--split/--merge) | partial | Pro | portable | strongly-suggested | implemented | — | internal/pipe/partial/ | `PartialConfig` + `commands/continue_cmd.rs`. |
-| Split/merge GGOOS/GGOARCH | partial | Pro | go-specific | not-applicable | n-a | — | internal/pipe/partial/ | Rust-native replacement: `ANODIZE_SPLIT_TARGET`. |
+| Split/merge GGOOS/GGOARCH | partial | Pro | go-specific | not-applicable | n-a | — | internal/pipe/partial/ | Rust-native replacement: `ANODIZER_SPLIT_TARGET`. |
 | CLI: release | cli | OSS | portable | required | implemented | — | cmd/release.go | `commands/release/mod.rs`. |
 | CLI: build | cli | OSS | portable | required | implemented | — | cmd/build.go | `commands/build.rs` (build parity 2026-04-16). |
 | CLI: check | cli | OSS | portable | required | implemented | — | cmd/check.go | `commands/check.rs`. |
@@ -393,14 +393,14 @@ Parity = equal or superior implementation per GoReleaser feature: config field, 
 | CLI: jsonschema | cli | OSS | portable | niche | implemented | — | cmd/jsonschema.go | `commands/jsonschema.rs`. |
 | CLI: changelog preview | cli | Pro | portable | niche | implemented | — | docs: /pro/ (fetched 2026-04-16) | `commands/changelog.rs`. |
 | CLI: continue / publish / announce (--merge) | cli | Pro | portable | strongly-suggested | implemented | — | cmd/continue.go | `commands/continue_cmd.rs` + `publish_cmd.rs` + `announce_cmd.rs`. |
-| CLI: man pages | cli | OSS | portable | niche | missing | — | cmd/mangen.go | `goreleaser man` generates man pages; anodize has no `man` subcommand. |
+| CLI: man pages | cli | OSS | portable | niche | missing | — | cmd/mangen.go | `goreleaser man` generates man pages; anodizer has no `man` subcommand. |
 | Flag: --auto-snapshot | cli | OSS | portable | strongly-suggested | implemented | — | cmd/release.go | Wired. |
 | Flag: --clean | cli | OSS | portable | required | implemented | — | cmd/release.go | Wired. |
 | Flag: --config | cli | OSS | portable | required | implemented | — | cmd/release.go | Wired. |
 | Flag: --draft | cli | OSS | portable | required | implemented | — | cmd/release.go | Wired. |
 | Flag: --fail-fast | cli | OSS | portable | strongly-suggested | implemented | — | cmd/release.go | Wired. |
 | Flag: --id (Pro) | cli | Pro | portable | strongly-suggested | implemented | — | cmd/release.go | `--crate` filter. |
-| Flag: --key (Pro license) | cli | Pro | not-applicable | not-applicable | n-a | — | cmd/release.go | Pro licensing; anodize is OSS, no analogue needed. |
+| Flag: --key (Pro license) | cli | Pro | not-applicable | not-applicable | n-a | — | cmd/release.go | Pro licensing; anodizer is OSS, no analogue needed. |
 | Flag: --nightly (Pro) | cli | Pro | portable | niche | implemented | — | cmd/release.go | Wired via `NightlyConfig`. |
 | Flag: --parallelism | cli | OSS | portable | strongly-suggested | implemented | — | cmd/release.go | Bounded concurrency across stages. |
 | Flag: --prepare (Pro) | cli | Pro | portable | strongly-suggested | implemented | — | cmd/release.go | `prepare: bool` flag on `ReleaseOpts` (commands/release/mod.rs:48); `apply_prepare_mode_to_skip` adds release/publish/announce to skip list. Verified 2026-04-18. |
@@ -410,13 +410,13 @@ Parity = equal or superior implementation per GoReleaser feature: config field, 
 | Flag: --split (Pro) | cli | Pro | portable | strongly-suggested | implemented | — | cmd/release.go | Wired via `PartialConfig`. |
 | Flag: --timeout | cli | OSS | portable | strongly-suggested | implemented | — | cmd/release.go | Wired. |
 | Flag: --single-target (build) | cli | OSS | portable | strongly-suggested | implemented | — | cmd/build.go | Wired. |
-| Flag: --soft (Pro, check only) | cli | Pro | portable | niche | missing | — | cmd/check.go | Non-fatal validation mode; anodize `check` is strict by default. |
+| Flag: --soft (Pro, check only) | cli | Pro | portable | niche | missing | — | cmd/check.go | Non-fatal validation mode; anodizer `check` is strict by default. |
 
 ### 2.16 Template helpers
 
 | name | category | tier | scope | ecosystem_relevance | parity_status | disposition | source_ref | notes |
 |------|----------|------|-------|---------------------|---------------|-------------|------------|-------|
-| Tera-native templating | template-helpers | — | rust-native-replacement | required | implemented | — | — | anodize uses Tera; GoReleaser uses Go text/template. Pre-processor bridges Go syntax. |
+| Tera-native templating | template-helpers | — | rust-native-replacement | required | implemented | — | — | anodizer uses Tera; GoReleaser uses Go text/template. Pre-processor bridges Go syntax. |
 | String helpers (replace/split/tolower/toupper/trim/trimprefix/trimsuffix/contains/title) | template-helpers | OSS | portable | required | implemented | — | internal/tmpl/ | Wired in `core/src/template.rs`. |
 | Path helpers (dir/base/abs) | template-helpers | OSS | portable | strongly-suggested | implemented | — | internal/tmpl/ | Wired. |
 | Filter helpers (filter/reverseFilter) | template-helpers | OSS | portable | strongly-suggested | implemented | — | internal/tmpl/ | Uses Rust `regex` not POSIX ERE — intentional. |
@@ -443,16 +443,16 @@ Parity = equal or superior implementation per GoReleaser feature: config field, 
 | GITHUB_TOKEN / GITLAB_TOKEN / GITEA_TOKEN | misc | OSS | portable | required | implemented | — | internal/client/ | Wired. |
 | GORELEASER_FORCE_TOKEN | misc | OSS | portable | niche | implemented | — | internal/client/ | `ForceTokenKind` enum. |
 | Announcer provider secret env vars | announce-* | OSS | portable | required | implemented | — | — | All listed env vars wired in their stage-announce modules. |
-| continue-on-error | misc | OSS | portable | niche | missing | — | internal/pipe/ | GoReleaser permits stages to log-and-continue via `continue_on_error` on certain pipes (e.g. docker skip on cert error); anodize default is fail-fast. |
-| version_sync (Pro? — anodize-additive) | misc | — | rust-additive | strongly-suggested | implemented | — | — | `VersionSyncConfig` enforces `Cargo.toml` ↔ tag alignment; GoReleaser has no equivalent. |
+| continue-on-error | misc | OSS | portable | niche | missing | — | internal/pipe/ | GoReleaser permits stages to log-and-continue via `continue_on_error` on certain pipes (e.g. docker skip on cert error); anodizer default is fail-fast. |
+| version_sync (Pro? — anodizer-additive) | misc | — | rust-additive | strongly-suggested | implemented | — | — | `VersionSyncConfig` enforces `Cargo.toml` ↔ tag alignment; GoReleaser has no equivalent. |
 | binstall metadata | misc | — | rust-additive | strongly-suggested | implemented | — | — | `BinstallConfig` emits `cargo-binstall` hints in release metadata. |
-| skip memento (operator-visible skip summary) | misc | — | rust-additive | strongly-suggested | implemented | — | — | `anodize_core::pipe_skip::SkipMemento`; end-of-pipeline report of intentional skips. |
+| skip memento (operator-visible skip summary) | misc | — | rust-additive | strongly-suggested | implemented | — | — | `anodizer_core::pipe_skip::SkipMemento`; end-of-pipeline report of intentional skips. |
 
 ---
 
 ## 3. Rust-additive features (beyond GoReleaser)
 
-Features anodize added beyond what GoReleaser provides. Not parity gaps — these are dogfooding-matrix rows.
+Features anodizer added beyond what GoReleaser provides. Not parity gaps — these are dogfooding-matrix rows.
 
 | name | category | source_ref | value |
 |------|----------|------------|-------|
@@ -463,10 +463,10 @@ Features anodize added beyond what GoReleaser provides. Not parity gaps — thes
 | SkipMemento | misc | `crates/core/src/pipe_skip.rs` | Operator-visible intentional-skip summary at end of pipeline. |
 | ConventionalFileName per-packager | publish-nfpm | `crates/stage-nfpm/src/filename.rs` | nfpm v2.44 per-format filename logic (deb/rpm/apk/archlinux/ipk/termux.deb). |
 | Parallelism helper (`run_parallel_chunks`) | misc | `crates/core/src/parallel.rs` | Bounded concurrency + submission-order + fail-fast + panic attribution across 10 stages. |
-| Retry for uploads (HTTP/publishers) | publish-* | (candidate, see known-bugs pre-seed) | GoReleaser does not retry for artifactory/fury/cloudsmith/custom; anodize could reuse Docker V2's retry/backoff. |
-| `targets --json` subcommand | cli | `crates/cli/src/commands/targets.rs` | JSON matrix for GH Actions `strategy.matrix`, used by anodize-action. |
+| Retry for uploads (HTTP/publishers) | publish-* | (candidate, see known-bugs pre-seed) | GoReleaser does not retry for artifactory/fury/cloudsmith/custom; anodizer could reuse Docker V2's retry/backoff. |
+| `targets --json` subcommand | cli | `crates/cli/src/commands/targets.rs` | JSON matrix for GH Actions `strategy.matrix`, used by anodizer-action. |
 | `resolve-tag` subcommand | cli | `crates/cli/src/commands/resolve_tag.rs` | Tag → crate path resolution for monorepos. |
-| ANODIZE_CURRENT_TAG / ANODIZE_PREVIOUS_TAG env | misc | `crates/core/src/git.rs` | Operator tag override that still runs upstream HEAD validation. |
+| ANODIZER_CURRENT_TAG / ANODIZER_PREVIOUS_TAG env | misc | `crates/core/src/git.rs` | Operator tag override that still runs upstream HEAD validation. |
 | Tag hooks (`tag_pre_hooks` / `tag_post_hooks`) | hooks | `crates/cli/src/commands/tag.rs` | Tag-subcommand-scoped hooks with templated vars. |
 | UPX target-triple glob | build | `crates/stage-upx/src/lib.rs` | Uses Rust target triples (more precise than goos/goarch). |
 
@@ -486,8 +486,8 @@ Durable decisions — never re-adjudicated. Each row has a short durable justifi
 | Zig / Bun / Deno / Python-uv / Python-poetry builders | Non-Rust language runtimes; no Rust analogue (zig-as-linker is covered via cargo-zigbuild under `tool`). | 2026-04-16 |
 | ko (Go-source-to-container) | Go-source container image; `docker` + `docker_v2` cover the Rust case. | 2026-04-16 |
 | npm publish | JS/TS runtime registry; no canonical Rust parallel. Project-specific JS wrappers remain opt-in. | 2026-04-16 |
-| Pro license flag (`--key`) | Pro licensing mechanism; anodize is OSS, no analogue. | 2026-04-16 |
-| GGOOS / GGOARCH (split filter) | Go matrix axes; Rust-native replacement is target-triple filtering via `ANODIZE_SPLIT_TARGET`. | 2026-04-16 |
+| Pro license flag (`--key`) | Pro licensing mechanism; anodizer is OSS, no analogue. | 2026-04-16 |
+| GGOOS / GGOARCH (split filter) | Go matrix axes; Rust-native replacement is target-triple filtering via `ANODIZER_SPLIT_TARGET`. | 2026-04-16 |
 
 ---
 
@@ -502,14 +502,14 @@ Durable decisions — never re-adjudicated. Each row has a short durable justifi
 | name | status | ecosystem | gap |
 |------|--------|-----------|-----|
 | `goreleaser man` (man page generation) | missing | niche | Not a blocker. `clap_mangen` would be the implementation path. |
-| `--soft` flag on check | missing | niche | Pro feature; anodize check is strict. |
-| `continue_on_error` per-stage | missing | niche | Anodize is fail-fast. |
+| `--soft` flag on check | missing | niche | Pro feature; anodizer check is strict. |
+| `continue_on_error` per-stage | missing | niche | Anodizer is fail-fast. |
 | `metadata.full_description.from_url` | partial | niche | Parse works; `from_url` resolution deferred — `FromFile` + `Inline` cover the common cases. core/src/context.rs:754 returns an explicit error on `FromUrl`. |
 | `mcp registry` (MCP server manifest publish) | missing | niche | New 2026-03+ GoReleaser pipe; MCP ecosystem still forming. No Rust consumer demand surfaced yet. |
 
 ### Bloat candidates (implemented ∧ not-applicable)
 
-No rows qualify. Every `not-applicable` row is `parity_status=n-a`, meaning anodize does **not** implement it. There is no bloat to disposition.
+No rows qualify. Every `not-applicable` row is `parity_status=n-a`, meaning anodizer does **not** implement it. There is no bloat to disposition.
 
 ### 5.closures — A1-rev remediation evidence (2026-04-16 → 2026-04-18)
 
@@ -542,7 +542,7 @@ These tables remain for auditor reference — fields, defaults, env vars, CLI fl
 ### 6.1 Builder Types
 - **Go** (default) · **Rust** (`builder: rust`) · **Zig** · **Bun** · **Deno** · **Python** (coming soon) · **UV** · **Poetry** · **Pre-built/Import** (`builder: prebuilt`)
 
-### 6.2 Rust Builder Fields (anodize native)
+### 6.2 Rust Builder Fields (anodizer native)
 `id`, `builder: rust`, `binary`, `targets[]`, `dir`, `tool (cargo/cross)`, `command (build/zigbuild)`, `flags[] (template)`, `env[] (template)`, `hooks.pre/post[]`, `skip`. Rust defaults: `x86_64-unknown-linux-gnu`, `x86_64-apple-darwin`, `x86_64-pc-windows-gnu`, `aarch64-unknown-linux-gnu`, `aarch64-apple-darwin`. Default flags: `--release`.
 
 ### 6.3 Archive formats
@@ -570,7 +570,7 @@ Publishers: `FURY_TOKEN`, `CLOUDSMITH_TOKEN`, `DOCKER_PASSWORD`, `KO_DOCKER_REPO
 nFPM: `NFPM_*_PASSPHRASE`.
 
 ### 6.10 CLI commands
-`release`, `build`, `check`, `healthcheck`, `init`, `completion`, `jsonschema`, `changelog` (Pro), `continue` (Pro), `publish` (Pro), `announce` (Pro), `man` (missing in anodize, niche).
+`release`, `build`, `check`, `healthcheck`, `init`, `completion`, `jsonschema`, `changelog` (Pro), `continue` (Pro), `publish` (Pro), `announce` (Pro), `man` (missing in anodizer, niche).
 
 ### 6.11 Pro-only features (full list, docs-backed)
 
@@ -579,7 +579,7 @@ nFPM: `NFPM_*_PASSPHRASE`.
 ### 6.12 Decision rule for ecosystem_relevance
 
 Applied at row-write time (2026-04-16):
-1. *Would a reasonable Rust CLI/library author expect anodize to support this?* If no → `not-applicable`.
+1. *Would a reasonable Rust CLI/library author expect anodizer to support this?* If no → `not-applicable`.
 2. *Among Rust tools with first-class release tooling (ripgrep, bat, fd, starship, uv, ruff, biome, sea-orm, tauri, cargo-dist), how many support this channel?*
    - 0–1 → `niche`; 2–5 → `strongly-suggested`; 6+ or universal → `required`.
 
@@ -595,11 +595,11 @@ Head-count sources: community READMEs (fetched 2026-04-16 via prior sessions; no
 - Rows with `ecosystem_relevance = strongly-suggested`: 128
 - Rows with `ecosystem_relevance = niche`: 99
 - Rows with `ecosystem_relevance = not-applicable`: 20
-- anodize implemented (required): 89/89
-- anodize implemented (strongly-suggested): 128/128 — **no partials or missings among required+strongly-suggested**
+- anodizer implemented (required): 89/89
+- anodizer implemented (strongly-suggested): 128/128 — **no partials or missings among required+strongly-suggested**
 - niche missings/partials: 5 (`goreleaser man`, `--soft`, `continue_on_error`, `metadata.full_description.from_url`, `mcp registry`) — all explicitly deferred-or-niche; not audit-driving
 - Completion achieved: **yes**
-- Reasoning: All 11 rows flagged by the 2026-04-16 A5 pro-features-skeptic countersign are closed (see §5.closures). Every `required` + `strongly-suggested` row now has field-level evidence in anodize source with file:line citations. The remaining gaps are 3 pre-existing niche items (`man`, `--soft`, `continue_on_error`), 1 new niche partial (`metadata.full_description.from_url` — FromUrl variant deferred; inline + from_file work), and 1 new niche missing (`mcp registry` — new upstream pipe for an ecosystem still forming). No blocker carries into A2/A3/A4/A5.
+- Reasoning: All 11 rows flagged by the 2026-04-16 A5 pro-features-skeptic countersign are closed (see §5.closures). Every `required` + `strongly-suggested` row now has field-level evidence in anodizer source with file:line citations. The remaining gaps are 3 pre-existing niche items (`man`, `--soft`, `continue_on_error`), 1 new niche partial (`metadata.full_description.from_url` — FromUrl variant deferred; inline + from_file work), and 1 new niche missing (`mcp registry` — new upstream pipe for an ecosystem still forming). No blocker carries into A2/A3/A4/A5.
 
 ## Completion statement (generated)
 
@@ -619,6 +619,6 @@ Parity target: GoReleaser HEAD (commit `f7e73e3`, refreshed 2026-04-18).
 
 Completion achieved: **yes**
 
-Every Rust-appropriate GoReleaser feature is implemented in anodize with equal or superior behavior; every already-added inappropriate feature has been dispositioned and resolved (none present — bloat set is empty); rust-additive features extend beyond parity where they add real UX value (crates.io publish, cargo-binstall metadata, workspace monorepo, version_sync, SkipMemento, ConventionalFileName per-packager, parallel helper, targets JSON, resolve-tag, ANODIZE_CURRENT_TAG, tag hooks, UPX target-triple globs).
+Every Rust-appropriate GoReleaser feature is implemented in anodizer with equal or superior behavior; every already-added inappropriate feature has been dispositioned and resolved (none present — bloat set is empty); rust-additive features extend beyond parity where they add real UX value (crates.io publish, cargo-binstall metadata, workspace monorepo, version_sync, SkipMemento, ConventionalFileName per-packager, parallel helper, targets JSON, resolve-tag, ANODIZER_CURRENT_TAG, tag hooks, UPX target-triple globs).
 
 **Auditor note.** A2/A3/A4/A5 should now run parity audits with this inventory as the baseline; any behavioral divergence found in stage wiring should be logged in their respective audit files and consolidated into known-bugs.md by A10 — the A1 inventory no longer blocks completion.

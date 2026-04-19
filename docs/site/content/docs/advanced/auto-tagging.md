@@ -5,14 +5,14 @@ weight = 1
 template = "docs.html"
 +++
 
-The `anodize tag` command reads commit messages for bump directives, finds the latest semver tag, bumps the version, and creates a new tag.
+The `anodizer tag` command reads commit messages for bump directives, finds the latest semver tag, bumps the version, and creates a new tag.
 
 ## Usage
 
 ```bash
-anodize tag                    # create and push tag
-anodize tag --dry-run          # show what would happen
-anodize tag --custom-tag v2.0  # override with specific tag
+anodizer tag                    # create and push tag
+anodizer tag --dry-run          # show what would happen
+anodizer tag --custom-tag v2.0  # override with specific tag
 ```
 
 ## Commit message directives
@@ -79,7 +79,7 @@ from being downgraded to `v1.1.0`.
 Tag individual crates in a workspace:
 
 ```bash
-anodize tag --crate my-crate
+anodizer tag --crate my-crate
 ```
 
 Each crate has its own `tag_template` (e.g., `my-crate-v{{ Version }}`) used
@@ -95,7 +95,7 @@ version` dependency specs that reference it), commits the change with
 ## GitHub Actions: single-crate repo
 
 ```yaml
-- uses: tj-smith47/anodize-action@v1
+- uses: tj-smith47/anodizer-action@v1
   with:
     args: tag
   env:
@@ -112,7 +112,7 @@ For multi-crate workspaces, tag each crate independently so each gets its
 own `release.yml` run:
 
 ```yaml
-- uses: tj-smith47/anodize-action@v1
+- uses: tj-smith47/anodizer-action@v1
   with:
     install-only: true
 
@@ -122,7 +122,7 @@ own `release.yml` run:
   run: |
     for crate in my-core my-cli my-operator my-plugin; do
       echo "--- tagging $crate ---"
-      if anodize tag --crate "$crate"; then
+      if anodizer tag --crate "$crate"; then
         echo "::notice::$crate: tagged"
       else
         echo "::warning::$crate: skipped or failed"
@@ -141,13 +141,13 @@ See [GitHub Actions](@/docs/ci/github-actions.md) for the surrounding workflow.
 Preview what would happen without actually tagging:
 
 ```bash
-anodize tag --dry-run                      # single-crate repo
-anodize tag --crate my-core --dry-run      # specific crate in a workspace
+anodizer tag --dry-run                      # single-crate repo
+anodizer tag --crate my-core --dry-run      # specific crate in a workspace
 ```
 
 ## Override the bump
 
 ```bash
-anodize tag --default-bump minor           # override config default
-anodize tag --custom-tag v2.0.0            # skip bump logic entirely
+anodizer tag --default-bump minor           # override config default
+anodizer tag --custom-tag v2.0.0            # skip bump logic entirely
 ```

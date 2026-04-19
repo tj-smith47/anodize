@@ -1,15 +1,15 @@
 +++
 title = "From cargo-dist"
-description = "Migrate from cargo-dist to anodize"
+description = "Migrate from cargo-dist to anodizer"
 weight = 2
 template = "docs.html"
 +++
 
-[cargo-dist](https://opensource.axo.dev/cargo-dist/) focuses on binary distribution — building and packaging pre-built binaries with generated installers. Anodize is a full release pipeline that includes distribution but also covers changelog, GitHub releases, package manager publishing, Docker, signing, and announcements.
+[cargo-dist](https://opensource.axo.dev/cargo-dist/) focuses on binary distribution — building and packaging pre-built binaries with generated installers. Anodizer is a full release pipeline that includes distribution but also covers changelog, GitHub releases, package manager publishing, Docker, signing, and announcements.
 
 ## When to switch
 
-Consider anodize if you need:
+Consider anodizer if you need:
 - Publishing to Homebrew, Scoop, crates.io, or AUR
 - Docker image builds as part of the release
 - Changelog generation from conventional commits
@@ -19,12 +19,12 @@ Consider anodize if you need:
 
 ## Migration steps
 
-1. Install anodize: `cargo install anodize`
-2. Run `anodize init` to generate a config from your workspace
+1. Install anodizer: `cargo install anodizer`
+2. Run `anodizer init` to generate a config from your workspace
 3. Add your desired publishing targets (Homebrew, Scoop, etc.)
 4. Remove cargo-dist config from your `Cargo.toml` (`[workspace.metadata.dist]`)
-5. Replace the cargo-dist GitHub Actions workflow with an anodize workflow — the [`tj-smith47/anodize-action`](@/docs/ci/anodize-action.md) is the direct counterpart to cargo-dist's generated workflow
-6. Run `anodize release --dry-run` to verify
+5. Replace the cargo-dist GitHub Actions workflow with an anodizer workflow — the [`tj-smith47/anodizer-action`](@/docs/ci/anodizer-action.md) is the direct counterpart to cargo-dist's generated workflow
+6. Run `anodizer release --dry-run` to verify
 
 ## Replacement GitHub Actions workflow
 
@@ -47,7 +47,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: tj-smith47/anodize-action@v1
+      - uses: tj-smith47/anodizer-action@v1
         with:
           auto-install: true
           args: release --clean

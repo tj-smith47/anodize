@@ -1,11 +1,11 @@
-//! `anodize announce` command.
+//! `anodizer announce` command.
 //! Runs only the announce stage from a completed dist/.
 //! Equivalent to GoReleaser Pro's `goreleaser announce`.
 
 use super::helpers;
 use crate::pipeline;
-use anodize_core::context::{Context, ContextOptions};
-use anodize_core::log::{StageLogger, Verbosity};
+use anodizer_core::context::{Context, ContextOptions};
+use anodizer_core::log::{StageLogger, Verbosity};
 use anyhow::Result;
 use std::path::PathBuf;
 

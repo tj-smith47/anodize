@@ -1,4 +1,4 @@
-# Anodize Documentation Site — Design Spec
+# Anodizer Documentation Site — Design Spec
 
 **Date:** 2026-03-27
 **Status:** Approved
@@ -8,18 +8,18 @@
 
 ## Overview
 
-A Zola-powered documentation site for anodize that closely mirrors GoReleaser's site structure and navigation. Custom theme with a copper/rust visual identity. A `crates/xtask/` crate auto-generates CLI and configuration reference pages from the actual Rust types. Deployed to GitHub Pages.
+A Zola-powered documentation site for anodizer that closely mirrors GoReleaser's site structure and navigation. Custom theme with a copper/rust visual identity. A `crates/xtask/` crate auto-generates CLI and configuration reference pages from the actual Rust types. Deployed to GitHub Pages.
 
 ## Decisions
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Static site generator | Zola | Hugo equivalent written in Rust. Same mental model (content dir, TOML config, markdown + frontmatter). Uses Tera — same template engine anodize ships. |
+| Static site generator | Zola | Hugo equivalent written in Rust. Same mental model (content dir, TOML config, markdown + frontmatter). Uses Tera — same template engine anodizer ships. |
 | Theme | Custom (from scratch) | No existing Zola theme matches a GoReleaser-style marketing landing page + sidebar docs. The ~5 templates needed are simple to build; fighting an existing theme would be worse. |
 | Landing page layout | Centered hero + terminal demo + feature grid (option C) | Shows the 3-command workflow front and center, followed by feature cards. Can be swapped to split hero (option B) later — the difference is just centering vs flex split. |
 | Doc generation | `crates/xtask/` Rust crate | Imports clap command tree and config structs directly. More robust than parsing CLI help output with shell scripts. Uses Tera for rendering. Idiomatic Rust ecosystem pattern (`cargo xtask`). |
 | Generation scope | CLI reference + config reference only | These are the two pages that must stay in sync with code (tables of flags, fields, types, defaults). All other content is narrative, better written by hand. |
-| Color palette | Copper/rust on dark (CSS variables) | Leans into the "anodize" metallurgy metaphor. Trivially swappable via CSS custom properties. |
+| Color palette | Copper/rust on dark (CSS variables) | Leans into the "anodizer" metallurgy metaphor. Trivially swappable via CSS custom properties. |
 | Deployment | GitHub Pages via `gh-pages` branch | GitHub Actions workflow: install Zola, build, deploy on push to main. |
 
 ## Directory Structure
@@ -187,9 +187,9 @@ Layout: **Centered hero + terminal demo + feature grid**
 ### Terminal Demo
 Immediately below the hero, a styled code block showing:
 ```
-$ cargo install anodize
-$ anodize init          # generates .anodize.yaml from Cargo.toml
-$ anodize release       # build → archive → checksum → release → publish
+$ cargo install anodizer
+$ anodizer init          # generates .anodizer.yaml from Cargo.toml
+$ anodizer release       # build → archive → checksum → release → publish
 ```
 
 ### Feature Grid
@@ -239,8 +239,8 @@ edition = "2024"
 publish = false
 
 [dependencies]
-anodize = { path = "../cli" }       # package name is "anodize"; lib target is "anodize_cli"
-anodize-core = { path = "../core" } # for config types
+anodizer = { path = "../cli" }       # package name is "anodizer"; lib target is "anodizer_cli"
+anodizer-core = { path = "../core" } # for config types
 clap = { version = "4", features = ["derive"] }
 tera.workspace = true               # must add tera to [workspace.dependencies] in root Cargo.toml
 ```
@@ -342,7 +342,7 @@ jobs:
 
 ```toml
 # docs/site/config.toml
-base_url = "https://tj-smith47.github.io/anodize"
+base_url = "https://tj-smith47.github.io/anodizer"
 ```
 
 ## What This Spec Does NOT Cover

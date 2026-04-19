@@ -6,7 +6,7 @@
 
 **Architecture:** Each provider is a standalone module in `crates/stage-announce/src/` with a config struct in `crates/core/src/config.rs`, a payload builder + send function, and wiring in `crates/stage-announce/src/lib.rs`. All HTTP providers use `reqwest::blocking::Client`. SMTP uses the `lettre` crate. Auth credentials come from environment variables matching GoReleaser's names.
 
-**Tech Stack:** Rust, reqwest (HTTP), lettre (SMTP), serde_json (payloads), anodize-core (templates/context)
+**Tech Stack:** Rust, reqwest (HTTP), lettre (SMTP), serde_json (payloads), anodizer-core (templates/context)
 
 ---
 
@@ -106,7 +106,7 @@ fn test_announce_skip_template_evaluated() {
 
 - [ ] **Step 3: Run tests to verify they fail**
 
-Run: `cargo test -p anodize-stage-announce test_announce_skip -- --nocapture`
+Run: `cargo test -p anodizer-stage-announce test_announce_skip -- --nocapture`
 Expected: Compilation error (skip field doesn't exist yet) or test failure.
 
 - [ ] **Step 4: Implement skip evaluation in AnnounceStage::run**
@@ -138,7 +138,7 @@ fn run(&self, ctx: &mut Context) -> Result<()> {
 
 - [ ] **Step 5: Run tests to verify they pass**
 
-Run: `cargo test -p anodize-stage-announce -- --nocapture`
+Run: `cargo test -p anodizer-stage-announce -- --nocapture`
 Expected: All tests pass, including the 3 new skip tests.
 
 - [ ] **Step 6: Commit**
@@ -203,7 +203,7 @@ fn test_teams_payload_with_icon_url() {
 
 - [ ] **Step 3: Run test to verify it fails**
 
-Run: `cargo test -p anodize-stage-announce test_teams_payload_with_icon_url -- --nocapture`
+Run: `cargo test -p anodizer-stage-announce test_teams_payload_with_icon_url -- --nocapture`
 Expected: Compilation error (icon_url not in TeamsOptions).
 
 - [ ] **Step 4: Add icon_url to TeamsOptions and update payload builder**
@@ -320,7 +320,7 @@ let opts = teams::TeamsOptions {
 
 - [ ] **Step 6: Run all tests**
 
-Run: `cargo test -p anodize-stage-announce -- --nocapture`
+Run: `cargo test -p anodizer-stage-announce -- --nocapture`
 Expected: All tests pass.
 
 - [ ] **Step 7: Commit**
@@ -385,7 +385,7 @@ fn test_mattermost_payload_with_title() {
 
 - [ ] **Step 3: Run test to verify it fails**
 
-Run: `cargo test -p anodize-stage-announce test_mattermost_payload_with_title -- --nocapture`
+Run: `cargo test -p anodizer-stage-announce test_mattermost_payload_with_title -- --nocapture`
 Expected: Compilation error (title not in MattermostOptions).
 
 - [ ] **Step 4: Add title to MattermostOptions and payload builder**
@@ -439,7 +439,7 @@ let opts = mattermost::MattermostOptions {
 
 - [ ] **Step 6: Run all tests**
 
-Run: `cargo test -p anodize-stage-announce -- --nocapture`
+Run: `cargo test -p anodizer-stage-announce -- --nocapture`
 Expected: All tests pass.
 
 - [ ] **Step 7: Commit**
@@ -503,7 +503,7 @@ fn test_default_expected_status_codes() {
 
 - [ ] **Step 3: Run test to verify it fails**
 
-Run: `cargo test -p anodize-stage-announce test_send_webhook_validates -- --nocapture`
+Run: `cargo test -p anodizer-stage-announce test_send_webhook_validates -- --nocapture`
 Expected: Compilation error (function doesn't exist).
 
 - [ ] **Step 4: Implement status validation in webhook.rs**
@@ -574,7 +574,7 @@ dispatch(ctx, "webhook", &message, || {
 
 - [ ] **Step 6: Run all tests**
 
-Run: `cargo test -p anodize-stage-announce -- --nocapture`
+Run: `cargo test -p anodizer-stage-announce -- --nocapture`
 Expected: All tests pass.
 
 - [ ] **Step 7: Commit**
@@ -657,7 +657,7 @@ let attachments = match &cfg.attachments {
 
 - [ ] **Step 3: Run all tests**
 
-Run: `cargo test -p anodize-stage-announce -- --nocapture`
+Run: `cargo test -p anodizer-stage-announce -- --nocapture`
 Expected: All tests pass.
 
 - [ ] **Step 4: Commit**
@@ -804,7 +804,7 @@ mod tests {
 Rewrite `crates/stage-announce/src/email.rs`:
 
 ```rust
-use anodize_core::template::{self, TemplateVars};
+use anodizer_core::template::{self, TemplateVars};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use lettre::message::header::ContentType;
@@ -949,7 +949,7 @@ pub fn send_sendmail(params: &EmailParams<'_>) -> Result<()> {
 }
 
 fn which_exists(program: &str) -> bool {
-    anodize_core::util::find_binary(program)
+    anodizer_core::util::find_binary(program)
 }
 ```
 
@@ -1043,7 +1043,7 @@ let smtp_username = cfg
 
 - [ ] **Step 6: Run all tests**
 
-Run: `cargo test -p anodize-stage-announce -- --nocapture`
+Run: `cargo test -p anodizer-stage-announce -- --nocapture`
 Expected: All tests pass. Existing email dry-run tests still work because they don't hit the SMTP path.
 
 - [ ] **Step 7: Commit**
@@ -1114,7 +1114,7 @@ pub fn send_reddit(
     url: &str,
 ) -> Result<()> {
     let client = reqwest::blocking::Client::builder()
-        .user_agent("anodize/1.0")
+        .user_agent("anodizer/1.0")
         .build()?;
 
     // Step 1: Get OAuth token
@@ -1260,7 +1260,7 @@ Add `RedditAnnounce` to the test imports.
 
 - [ ] **Step 5: Run all tests**
 
-Run: `cargo test -p anodize-stage-announce -- --nocapture`
+Run: `cargo test -p anodizer-stage-announce -- --nocapture`
 Expected: All tests pass.
 
 - [ ] **Step 6: Commit**
@@ -1559,7 +1559,7 @@ Add `TwitterAnnounce` to test imports.
 
 - [ ] **Step 5: Run all tests**
 
-Run: `cargo test -p anodize-stage-announce -- --nocapture`
+Run: `cargo test -p anodizer-stage-announce -- --nocapture`
 Expected: All tests pass.
 
 - [ ] **Step 6: Commit**
@@ -1716,7 +1716,7 @@ Add `MastodonAnnounce` to test imports.
 
 - [ ] **Step 5: Run all tests and commit**
 
-Run: `cargo test -p anodize-stage-announce -- --nocapture`
+Run: `cargo test -p anodizer-stage-announce -- --nocapture`
 
 ```bash
 git add crates/core/src/config.rs crates/stage-announce/src/mastodon.rs crates/stage-announce/src/lib.rs
@@ -1773,7 +1773,7 @@ pub fn send_bluesky(
     release_url: Option<&str>,
 ) -> Result<()> {
     let client = Client::builder()
-        .user_agent("anodize/1.0")
+        .user_agent("anodizer/1.0")
         .build()?;
 
     // Step 1: Create session
@@ -1925,7 +1925,7 @@ Add `BlueskyAnnounce` to test imports.
 
 - [ ] **Step 5: Run all tests and commit**
 
-Run: `cargo test -p anodize-stage-announce -- --nocapture`
+Run: `cargo test -p anodizer-stage-announce -- --nocapture`
 
 ```bash
 git add crates/core/src/config.rs crates/stage-announce/src/bluesky.rs crates/stage-announce/src/lib.rs
@@ -2108,7 +2108,7 @@ Add `LinkedInAnnounce` to test imports.
 
 - [ ] **Step 5: Run all tests and commit**
 
-Run: `cargo test -p anodize-stage-announce -- --nocapture`
+Run: `cargo test -p anodizer-stage-announce -- --nocapture`
 
 ```bash
 git add crates/core/src/config.rs crates/stage-announce/src/linkedin.rs crates/stage-announce/src/lib.rs
@@ -2336,7 +2336,7 @@ Add `OpenCollectiveAnnounce` to test imports.
 
 - [ ] **Step 5: Run all tests and commit**
 
-Run: `cargo test -p anodize-stage-announce -- --nocapture`
+Run: `cargo test -p anodizer-stage-announce -- --nocapture`
 
 ```bash
 git add crates/core/src/config.rs crates/stage-announce/src/opencollective.rs crates/stage-announce/src/lib.rs
@@ -2410,7 +2410,7 @@ pub fn send_discourse(
         .header("Api-Key", api_key)
         .header("Api-Username", username)
         .header("Content-Type", "application/json")
-        .header("User-Agent", "anodize/1.0")
+        .header("User-Agent", "anodizer/1.0")
         .body(body.to_string())
         .send()?;
 
@@ -2571,7 +2571,7 @@ Add `DiscourseAnnounce` to test imports.
 
 - [ ] **Step 5: Run all tests and commit**
 
-Run: `cargo test -p anodize-stage-announce -- --nocapture`
+Run: `cargo test -p anodizer-stage-announce -- --nocapture`
 
 ```bash
 git add crates/core/src/config.rs crates/stage-announce/src/discourse.rs crates/stage-announce/src/lib.rs

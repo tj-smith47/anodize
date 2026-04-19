@@ -15,8 +15,8 @@ release:
   only:
     - tags
   script:
-    - cargo install anodize
-    - anodize release
+    - cargo install anodizer
+    - anodizer release
   variables:
     GITHUB_TOKEN: $GITHUB_TOKEN
 ```

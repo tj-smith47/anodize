@@ -4,13 +4,13 @@ use std::process::{Command, Stdio};
 
 use anyhow::{Context as _, Result};
 
-use anodize_core::artifact::ArtifactKind;
-use anodize_core::config::SignConfig;
-use anodize_core::context::Context;
-use anodize_core::env_expand::expand_with_preserve;
-use anodize_core::log::StageLogger;
-use anodize_core::stage::Stage;
-use anodize_core::target::map_target;
+use anodizer_core::artifact::ArtifactKind;
+use anodizer_core::config::SignConfig;
+use anodizer_core::context::Context;
+use anodizer_core::env_expand::expand_with_preserve;
+use anodizer_core::log::StageLogger;
+use anodizer_core::stage::Stage;
+use anodizer_core::target::map_target;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -72,7 +72,7 @@ pub(crate) fn should_sign_artifact(kind: ArtifactKind, filter: &str) -> Result<b
 /// Returns `true` if the given artifact kind is in the shared release-uploadable
 /// list — i.e. the kinds that GoReleaser's `artifacts: all` sign filter selects.
 ///
-/// Delegates to `anodize_core::artifact::release_uploadable_kinds()` so the
+/// Delegates to `anodizer_core::artifact::release_uploadable_kinds()` so the
 /// stage-sign and stage-release paths stay in lockstep and match GoReleaser's
 /// `internal/pipe/sign/sign.go:103-104` (`ByTypes(ReleaseUploadableTypes()...)`).
 /// Kinds not in that list (Snap, Installer, DiskImage, MacOsPackage, Header,
@@ -80,7 +80,7 @@ pub(crate) fn should_sign_artifact(kind: ArtifactKind, filter: &str) -> Result<b
 /// dedicated filter value (`installer`, `diskimage`, `snap`, `macos_package`,
 /// `binary`) instead of `all`.
 fn is_release_uploadable(kind: ArtifactKind) -> bool {
-    anodize_core::artifact::release_uploadable_kinds().contains(&kind)
+    anodizer_core::artifact::release_uploadable_kinds().contains(&kind)
 }
 
 /// Resolve the signature output path from a `SignConfig::signature` template
@@ -155,7 +155,7 @@ fn default_sign_cmd() -> String {
 /// Expand shell-style variable references (`$var` and `${var}`) in a string
 /// against the signing-arg variable map.
 ///
-/// Delegates to `anodize_core::env_expand::expand_with_preserve` for
+/// Delegates to `anodizer_core::env_expand::expand_with_preserve` for
 /// consistent `$VAR`/`${VAR}` parsing (shell-identifier rules). Unmatched
 /// names are preserved literally so paths containing unrelated `$TOKEN`
 /// values survive this pass unchanged.
@@ -226,7 +226,7 @@ struct SignJob {
     /// Whether to capture and log the command's stdout/stderr.
     output_flag: bool,
     /// Artifact registrations to add after signing (signature + optional certificate).
-    new_artifacts: Vec<anodize_core::artifact::Artifact>,
+    new_artifacts: Vec<anodizer_core::artifact::Artifact>,
 }
 
 /// Execute a single prepared sign job, returning `Ok(())` on success.
@@ -296,8 +296,8 @@ fn execute_sign_job(job: &SignJob, log: &StageLogger) -> Result<()> {
     let stdout_raw = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr_raw = String::from_utf8_lossy(&output.stderr).to_string();
 
-    let stdout_str = anodize_core::redact::redact_string(&stdout_raw, &env_pairs);
-    let stderr_str = anodize_core::redact::redact_string(&stderr_raw, &env_pairs);
+    let stdout_str = anodizer_core::redact::redact_string(&stdout_raw, &env_pairs);
+    let stderr_str = anodizer_core::redact::redact_string(&stderr_raw, &env_pairs);
 
     if job.output_flag {
         if !stdout_str.is_empty() {
@@ -642,7 +642,7 @@ fn process_sign_configs(
                 .and_then(|n| n.to_str())
                 .unwrap_or("")
                 .to_string();
-            let mut job_artifacts = vec![anodize_core::artifact::Artifact {
+            let mut job_artifacts = vec![anodizer_core::artifact::Artifact {
                 kind: ArtifactKind::Signature,
                 name: sig_name,
                 path: sig_path,
@@ -666,7 +666,7 @@ fn process_sign_configs(
                     .to_string();
                 let mut cert_metadata = std::collections::HashMap::new();
                 cert_metadata.insert("type".to_string(), "Certificate".to_string());
-                job_artifacts.push(anodize_core::artifact::Artifact {
+                job_artifacts.push(anodizer_core::artifact::Artifact {
                     kind: ArtifactKind::Certificate,
                     name: cert_name,
                     path: cert_path,
@@ -769,7 +769,7 @@ fn process_sign_configs(
         }
 
         // Collect all new artifacts from jobs to register after execution.
-        let mut all_new_artifacts: Vec<anodize_core::artifact::Artifact> = Vec::new();
+        let mut all_new_artifacts: Vec<anodizer_core::artifact::Artifact> = Vec::new();
 
         let static_label = label_to_static(label);
         let verbosity = log.verbosity();
@@ -777,8 +777,8 @@ fn process_sign_configs(
             "binary-sign" => "binary-sign",
             _ => "sign",
         };
-        anodize_core::parallel::run_parallel_chunks(&sign_jobs, parallelism, stage_name, |job| {
-            let thread_log = anodize_core::log::StageLogger::new(static_label, verbosity);
+        anodizer_core::parallel::run_parallel_chunks(&sign_jobs, parallelism, stage_name, |job| {
+            let thread_log = anodizer_core::log::StageLogger::new(static_label, verbosity);
             execute_sign_job(job, &thread_log)
         })?;
 
@@ -826,11 +826,11 @@ fn label_to_static(label: &str) -> &'static str {
 /// and certificate artifacts are visible to downstream stages.
 pub struct SignStage;
 
-/// Binary-only signing stage used by `anodize build`. Mirrors GoReleaser's
+/// Binary-only signing stage used by `anodizer build`. Mirrors GoReleaser's
 /// `sign.BinaryPipe` — runs the `binary_signs` loop but skips the generic
 /// `signs` loop, which at build-time would see only binaries anyway but
 /// with the wrong semantics (a user with `signs: [{artifacts: all}]`
-/// doesn't expect signing to happen during `anodize build`).
+/// doesn't expect signing to happen during `anodizer build`).
 pub struct BinarySignStage;
 
 impl Stage for BinarySignStage {
@@ -1191,9 +1191,9 @@ impl Stage for DockerSignStage {
                     let stderr_raw = String::from_utf8_lossy(&output.stderr).to_string();
 
                     let stdout_str =
-                        anodize_core::redact::redact_string(&stdout_raw, &docker_env_pairs);
+                        anodizer_core::redact::redact_string(&stdout_raw, &docker_env_pairs);
                     let stderr_str =
-                        anodize_core::redact::redact_string(&stderr_raw, &docker_env_pairs);
+                        anodizer_core::redact::redact_string(&stderr_raw, &docker_env_pairs);
 
                     let show_output = docker_sign_cfg
                         .output
@@ -1244,7 +1244,7 @@ impl Stage for DockerSignStage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anodize_core::test_helpers::TestContextBuilder;
+    use anodizer_core::test_helpers::TestContextBuilder;
 
     /// Return a shell command + args that writes `content_expr` to `dest_file`.
     /// On Unix: sh -c "echo $VAR > file"
@@ -1324,7 +1324,7 @@ mod tests {
 
     #[test]
     fn test_filter_artifacts_all() {
-        // "all" matches anodize_core::artifact::release_uploadable_kinds()
+        // "all" matches anodizer_core::artifact::release_uploadable_kinds()
         // which mirrors GoReleaser ReleaseUploadableTypes (sign.go:103-104).
         assert!(should_sign_artifact(ArtifactKind::Checksum, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::Archive, "all").unwrap());
@@ -1337,7 +1337,7 @@ mod tests {
         assert!(should_sign_artifact(ArtifactKind::SourceRpm, "all").unwrap());
         assert!(should_sign_artifact(ArtifactKind::UploadableFile, "all").unwrap());
 
-        // GoReleaser includes Signature + Certificate in the "all" list — anodize
+        // GoReleaser includes Signature + Certificate in the "all" list — anodizer
         // matches that for parity. (On a fresh run there are no prior Signature /
         // Certificate artifacts, so this does not cause recursive signing.)
         assert!(should_sign_artifact(ArtifactKind::Signature, "all").unwrap());
@@ -1471,7 +1471,7 @@ mod tests {
 
     #[test]
     fn test_multiple_sign_configs_run_independently() {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
 
         // Two sign configs targeting different artifact types
         let signs = vec![
@@ -1610,7 +1610,7 @@ mod tests {
     fn test_ids_filter_restricts_signed_artifacts() {
         // Verify the ids filter logic directly by testing should_sign_artifact
         // combined with the ids-based metadata check that the stage performs.
-        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
 
         let sign_cfg = SignConfig {
             id: Some("gpg".to_string()),
@@ -1742,7 +1742,7 @@ mod tests {
         // The critical assertion: a nonexistent binary in dry-run mode must NOT
         // cause an error. If the stage tried to actually execute the binary,
         // it would fail because /nonexistent/gpg does not exist.
-        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
 
         let signs = vec![SignConfig {
             id: Some("gpg".to_string()),
@@ -1833,7 +1833,7 @@ mod tests {
 
     #[test]
     fn test_sign_none_filter_skips_entirely() {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
 
         let signs = vec![SignConfig {
             id: Some("skip".to_string()),
@@ -1943,7 +1943,7 @@ mod tests {
 
     #[test]
     fn test_missing_signing_binary_errors_with_command_name() {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
 
         let signs = vec![SignConfig {
             id: Some("test".to_string()),
@@ -1992,7 +1992,7 @@ mod tests {
 
     #[test]
     fn test_signing_command_nonzero_exit_errors_with_details() {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
 
         let signs = vec![SignConfig {
             id: Some("test".to_string()),
@@ -2124,7 +2124,7 @@ ids:
   - "my-docker-image"
   - "another-image"
 "#;
-        let cfg: anodize_core::config::DockerSignConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::DockerSignConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let ids = cfg.ids.unwrap();
         assert_eq!(ids, vec!["my-docker-image", "another-image"]);
     }
@@ -2135,7 +2135,7 @@ ids:
 cmd: "cosign"
 stdin: "my-password"
 "#;
-        let cfg: anodize_core::config::DockerSignConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::DockerSignConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.stdin.as_deref(), Some("my-password"));
     }
 
@@ -2145,7 +2145,7 @@ stdin: "my-password"
 cmd: "cosign"
 stdin_file: "/path/to/password"
 "#;
-        let cfg: anodize_core::config::DockerSignConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::DockerSignConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.stdin_file.as_deref(), Some("/path/to/password"));
     }
 
@@ -2153,7 +2153,7 @@ stdin_file: "/path/to/password"
     fn test_sign_env_vars_passed_to_command() {
         // Verify that custom env vars reach the signing command.
         // Use `sh -c` to write the env var value to a file so we can verify it.
-        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
 
         let tmp = tempfile::TempDir::new().unwrap();
         let marker_path = tmp.path().join("env_check.txt");
@@ -2161,11 +2161,11 @@ stdin_file: "/path/to/password"
 
         let mut env_map = std::collections::HashMap::new();
         env_map.insert(
-            "ANODIZE_TEST_SIGN_ENV".to_string(),
+            "ANODIZER_TEST_SIGN_ENV".to_string(),
             "hello_from_sign".to_string(),
         );
 
-        let (cmd, args) = shell_echo_to_file("ANODIZE_TEST_SIGN_ENV", &marker_str);
+        let (cmd, args) = shell_echo_to_file("ANODIZER_TEST_SIGN_ENV", &marker_str);
         let signs = vec![SignConfig {
             id: Some("test-env".to_string()),
             cmd: Some(cmd),
@@ -2215,14 +2215,14 @@ stdin_file: "/path/to/password"
         assert_eq!(
             env_output.trim(),
             "hello_from_sign",
-            "ANODIZE_TEST_SIGN_ENV should have been passed to the signing command"
+            "ANODIZER_TEST_SIGN_ENV should have been passed to the signing command"
         );
     }
 
     #[test]
     fn test_docker_sign_ids_filter() {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
-        use anodize_core::config::DockerSignConfig;
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::config::DockerSignConfig;
 
         let docker_signs = vec![DockerSignConfig {
             cmd: Some("echo".to_string()),
@@ -2308,7 +2308,7 @@ stdin_file: "/path/to/password"
 
     #[test]
     fn test_sign_with_certificate_dry_run() {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
 
         let signs = vec![SignConfig {
             id: Some("cosign".to_string()),
@@ -2372,7 +2372,7 @@ stdin_file: "/path/to/password"
 
     #[test]
     fn test_sign_stage_registers_signature_artifacts_dry_run() {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
 
         let signs = vec![SignConfig {
             id: Some("gpg".to_string()),
@@ -2423,7 +2423,7 @@ stdin_file: "/path/to/password"
 
     #[test]
     fn test_sign_stage_registers_certificate_artifacts_dry_run() {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
 
         let signs = vec![SignConfig {
             id: Some("cosign".to_string()),
@@ -2476,7 +2476,7 @@ stdin_file: "/path/to/password"
 id: "my-docker-signer"
 cmd: "cosign"
 "#;
-        let cfg: anodize_core::config::DockerSignConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::DockerSignConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.id.as_deref(), Some("my-docker-signer"));
     }
 
@@ -2488,7 +2488,7 @@ env:
   COSIGN_EXPERIMENTAL: "1"
   REGISTRY_TOKEN: "secret"
 "#;
-        let cfg: anodize_core::config::DockerSignConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        let cfg: anodizer_core::config::DockerSignConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let env = cfg.env.unwrap();
         assert_eq!(env.get("COSIGN_EXPERIMENTAL").unwrap(), "1");
         assert_eq!(env.get("REGISTRY_TOKEN").unwrap(), "secret");
@@ -2497,8 +2497,8 @@ env:
     #[test]
     fn test_docker_sign_env_vars_passed_to_command() {
         // Verify that custom env vars reach the docker signing command.
-        use anodize_core::artifact::{Artifact, ArtifactKind};
-        use anodize_core::config::DockerSignConfig;
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::config::DockerSignConfig;
 
         let tmp = tempfile::TempDir::new().unwrap();
         let marker_path = tmp.path().join("docker_env_check.txt");
@@ -2506,11 +2506,11 @@ env:
 
         let mut env_map = std::collections::HashMap::new();
         env_map.insert(
-            "ANODIZE_TEST_DOCKER_ENV".to_string(),
+            "ANODIZER_TEST_DOCKER_ENV".to_string(),
             "docker_hello".to_string(),
         );
 
-        let (cmd, args) = shell_echo_to_file("ANODIZE_TEST_DOCKER_ENV", &marker_str);
+        let (cmd, args) = shell_echo_to_file("ANODIZER_TEST_DOCKER_ENV", &marker_str);
         let docker_signs = vec![DockerSignConfig {
             id: Some("test-env".to_string()),
             cmd: Some(cmd),
@@ -2546,7 +2546,7 @@ env:
         assert_eq!(
             env_output.trim(),
             "docker_hello",
-            "ANODIZE_TEST_DOCKER_ENV should have been passed to the docker signing command"
+            "ANODIZER_TEST_DOCKER_ENV should have been passed to the docker signing command"
         );
     }
 
@@ -2607,7 +2607,7 @@ binary_signs:
       - sign-blob
 crates: []
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.binary_signs.len(), 2);
         assert_eq!(config.binary_signs[0].cmd.as_deref(), Some("gpg"));
         assert_eq!(config.binary_signs[1].cmd.as_deref(), Some("cosign"));
@@ -2622,7 +2622,7 @@ binary_sign:
   artifacts: all
 crates: []
 "#;
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.binary_signs.len(), 1);
         assert_eq!(config.binary_signs[0].cmd.as_deref(), Some("gpg"));
     }
@@ -2630,13 +2630,13 @@ crates: []
     #[test]
     fn test_binary_signs_defaults_to_empty() {
         let yaml = "project_name: test\ncrates: []";
-        let config: anodize_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(config.binary_signs.is_empty());
     }
 
     #[test]
     fn test_if_condition_false_skips_sign() {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
 
         // Sign config with if: "false" — should be skipped entirely.
         // If not skipped, the nonexistent binary would cause an error.
@@ -2679,7 +2679,7 @@ crates: []
 
     #[test]
     fn test_if_condition_true_proceeds() {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
 
         // Sign config with if: "true" — should proceed normally.
         // Uses "echo" which always succeeds.
@@ -2726,7 +2726,7 @@ crates: []
 
     #[test]
     fn test_if_condition_empty_skips_sign() {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
 
         // A template that renders to empty should skip the config.
         // "{{ IsSnapshot }}" is "false" in non-snapshot mode, but let's test
@@ -2771,7 +2771,7 @@ crates: []
 
     #[test]
     fn test_if_condition_snapshot_template() {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
 
         // When snapshot mode is active, IsSnapshot = "true".
         // This sign config with if: "{{ IsSnapshot }}" should only run
@@ -2841,7 +2841,7 @@ crates: []
 
     #[test]
     fn test_binary_signs_only_signs_binaries() {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
 
         let binary_signs = vec![SignConfig {
             id: Some("binary-gpg".to_string()),
@@ -2907,7 +2907,7 @@ crates: []
 
     #[test]
     fn test_binary_signs_if_condition_works() {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
 
         // binary_signs with if: "false" should be skipped
         let binary_signs = vec![SignConfig {
@@ -2949,8 +2949,8 @@ crates: []
 
     #[test]
     fn test_docker_sign_digest_and_artifact_id_template_vars() {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
-        use anodize_core::config::DockerSignConfig;
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::config::DockerSignConfig;
 
         let tmp = tempfile::TempDir::new().unwrap();
         let marker_path = tmp.path().join("docker_vars.txt");
@@ -3012,8 +3012,8 @@ crates: []
 
     #[test]
     fn test_docker_sign_without_digest_metadata_still_works() {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
-        use anodize_core::config::DockerSignConfig;
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::config::DockerSignConfig;
 
         // Docker image without digest/id metadata — should still work
         let docker_signs = vec![DockerSignConfig {
@@ -3053,7 +3053,7 @@ crates: []
 
     #[test]
     fn test_output_capture_with_real_command() {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
 
         // Use echo to produce stdout; with output: true it should be captured
         let (cmd, mut base_args) = echo_command();
@@ -3069,7 +3069,7 @@ crates: []
             stdin_file: None,
             env: None,
             certificate: None,
-            output: Some(anodize_core::config::StringOrBool::Bool(true)),
+            output: Some(anodizer_core::config::StringOrBool::Bool(true)),
             if_condition: None,
         }];
 
@@ -3263,7 +3263,7 @@ crates: []
     fn test_docker_signs_default_filter_selects_v2() {
         // When docker_signs artifacts is "" (default), only DockerImageV2 should match.
         // This verifies the code path — full integration tested via stage.run() above.
-        use anodize_core::artifact::Artifact;
+        use anodizer_core::artifact::Artifact;
 
         let mut ctx = TestContextBuilder::new().dry_run(true).build();
         ctx.artifacts.add(Artifact {
@@ -3302,7 +3302,7 @@ crates: []
 
     #[test]
     fn test_binary_signs_sets_os_arch_from_target_triple() {
-        use anodize_core::artifact::Artifact;
+        use anodizer_core::artifact::Artifact;
 
         let binary_sign_cfg = SignConfig {
             id: None,
@@ -3364,7 +3364,7 @@ crates: []
 
     #[test]
     fn test_binary_signs_arm_target_splits_arch_correctly() {
-        use anodize_core::artifact::Artifact;
+        use anodizer_core::artifact::Artifact;
 
         let binary_sign_cfg = SignConfig {
             id: None,
@@ -3427,8 +3427,8 @@ crates: []
 
     #[test]
     fn test_docker_sign_id_defaults_to_default() {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
-        use anodize_core::config::DockerSignConfig;
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::config::DockerSignConfig;
 
         // Config with no explicit id — should default to "default".
         let docker_signs = vec![DockerSignConfig {
@@ -3467,7 +3467,7 @@ crates: []
 
     #[test]
     fn test_docker_sign_explicit_id_preserved() {
-        use anodize_core::config::DockerSignConfig;
+        use anodizer_core::config::DockerSignConfig;
 
         let cfg = DockerSignConfig {
             id: Some("my-signer".to_string()),
@@ -3490,7 +3490,7 @@ crates: []
 
     #[test]
     fn test_docker_sign_none_id_defaults() {
-        use anodize_core::config::DockerSignConfig;
+        use anodizer_core::config::DockerSignConfig;
 
         let cfg = DockerSignConfig {
             id: None,
@@ -3534,7 +3534,7 @@ crates: []
 
     #[test]
     fn test_all_filter_includes_release_uploadable_types() {
-        // "all" = anodize_core::artifact::release_uploadable_kinds(), which
+        // "all" = anodizer_core::artifact::release_uploadable_kinds(), which
         // mirrors GoReleaser's ReleaseUploadableTypes list exactly
         // (sign.go:103-104). Narrower than the full set of uploadable kinds:
         // Binary, UniversalBinary, Snap, Installer, DiskImage, MacOsPackage,
@@ -3568,7 +3568,7 @@ crates: []
 
     #[test]
     fn test_docker_sign_duplicate_ids_rejected() {
-        use anodize_core::config::DockerSignConfig;
+        use anodizer_core::config::DockerSignConfig;
 
         let docker_signs = vec![
             DockerSignConfig {
@@ -3619,7 +3619,7 @@ crates: []
 
     #[test]
     fn test_docker_sign_duplicate_default_ids_rejected() {
-        use anodize_core::config::DockerSignConfig;
+        use anodizer_core::config::DockerSignConfig;
 
         // Two configs with no explicit id — both default to "default"
         let docker_signs = vec![
@@ -3675,8 +3675,8 @@ crates: []
 
     #[test]
     fn test_docker_sign_digest_go_compat_syntax() {
-        use anodize_core::artifact::{Artifact, ArtifactKind};
-        use anodize_core::config::DockerSignConfig;
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::config::DockerSignConfig;
 
         let tmp = tempfile::TempDir::new().unwrap();
         let marker_path = tmp.path().join("docker_digest_case.txt");

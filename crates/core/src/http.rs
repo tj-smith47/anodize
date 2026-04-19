@@ -1,6 +1,6 @@
 //! HTTP client helpers shared by every stage that talks to a remote.
 //!
-//! All anodize HTTP traffic should go through `blocking_client(...)` so that
+//! All anodizer HTTP traffic should go through `blocking_client(...)` so that
 //! the `User-Agent`, default-roots, and timeout policy stay consistent across
 //! publishers, announcers, and the release backends.
 
@@ -8,11 +8,11 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 
-/// Canonical user-agent string sent with every anodize HTTP request.
+/// Canonical user-agent string sent with every anodizer HTTP request.
 ///
 /// Versioning the UA matters for upstream services that rate-limit or
 /// fingerprint by client identity (Discourse, Reddit, GitHub, etc.).
-pub const USER_AGENT: &str = concat!("anodize/", env!("CARGO_PKG_VERSION"));
+pub const USER_AGENT: &str = concat!("anodizer/", env!("CARGO_PKG_VERSION"));
 
 /// Build a blocking `reqwest::Client` configured with the canonical UA,
 /// the requested per-request timeout, and the platform's built-in roots.

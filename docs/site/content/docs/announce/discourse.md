@@ -35,7 +35,7 @@ announce:
 
 ## How it works
 
-Anodize posts to `{server}/posts.json` using Discourse's API key authentication
+Anodizer posts to `{server}/posts.json` using Discourse's API key authentication
 (`Api-Key` and `Api-Username` headers). The post is created with `kind: topic`,
 placing it in the specified category. Trailing slashes on `server` are
 automatically stripped.

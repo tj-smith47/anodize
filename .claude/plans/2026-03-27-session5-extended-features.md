@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Implement all extended features that round out anodize as a complete Rust release tool — Rust-specific features, auto-tagging, nightly builds, config includes, reproducible builds, macOS universal binaries, monorepo support, new publishers (Chocolatey, Winget, AUR, Krew), source archives, SBOM, UPX, new announce providers, CLI additions, maintenance, and documentation site.
+**Goal:** Implement all extended features that round out anodizer as a complete Rust release tool — Rust-specific features, auto-tagging, nightly builds, config includes, reproducible builds, macOS universal binaries, monorepo support, new publishers (Chocolatey, Winget, AUR, Krew), source archives, SBOM, UPX, new announce providers, CLI additions, maintenance, and documentation site.
 
 **Architecture:** Each task is independent and touches distinct files/modules. Config additions go in `crates/core/src/config.rs`. New stages/publishers get their own modules in existing crates. New CLI commands go in `crates/cli/src/main.rs`. All follow existing patterns: `Stage` trait, `Context` passing, template rendering, dry-run safety.
 
@@ -117,7 +117,7 @@ Run: `cargo test --workspace 2>&1 | tail -5`
 
 - [ ] **Step 6: Add `toml_edit` dependency**
 
-Run: `cd /opt/repos/anodize && cargo add toml_edit --package anodize-stage-build`
+Run: `cd /opt/repos/anodizer && cargo add toml_edit --package anodizer-stage-build`
 
 - [ ] **Step 7: Create `crates/stage-build/src/version_sync.rs`**
 
@@ -234,7 +234,7 @@ edition = "2024"
 - [ ] **Step 10: Create `crates/stage-build/src/binstall.rs`**
 
 ```rust
-use anodize_core::context::Context as AnodizeContext;
+use anodizer_core::context::Context as AnodizeContext;
 use anyhow::{Context, Result};
 use std::path::Path;
 
@@ -242,7 +242,7 @@ use std::path::Path;
 /// This enables `cargo binstall <crate>` to find pre-built binaries.
 pub fn generate_binstall_metadata(
     crate_path: &Path,
-    config: &anodize_core::config::BinstallConfig,
+    config: &anodizer_core::config::BinstallConfig,
     ctx: &AnodizeContext,
     dry_run: bool,
 ) -> Result<()> {
@@ -351,7 +351,7 @@ version = "0.1.0"
 edition = "2024"
 "#).unwrap();
 
-    let config = anodize_core::config::BinstallConfig {
+    let config = anodizer_core::config::BinstallConfig {
         enabled: Some(true),
         pkg_url: Some("https://example.com/{ name }-{ version }-{ target }.{ archive-format }".to_string()),
         bin_dir: Some("{ bin }{ binary-ext }".to_string()),
@@ -359,9 +359,9 @@ edition = "2024"
     };
 
     // Create a minimal context for template rendering
-    let mut cfg = anodize_core::config::Config::default();
+    let mut cfg = anodizer_core::config::Config::default();
     cfg.project_name = "test".to_string();
-    let ctx = anodize_core::context::Context::new(cfg, Default::default());
+    let ctx = anodizer_core::context::Context::new(cfg, Default::default());
 
     binstall::generate_binstall_metadata(dir.path(), &config, &ctx, false).unwrap();
 
@@ -394,7 +394,7 @@ git add -A && git commit -m "feat: add Rust-specific features — cargo-binstall
 
 ---
 
-## Task 5B: Built-in Auto-Tagging (`anodize tag` command)
+## Task 5B: Built-in Auto-Tagging (`anodizer tag` command)
 
 **Files:**
 - Modify: `crates/cli/src/main.rs` — add `Tag` command variant
@@ -612,8 +612,8 @@ pub fn get_current_branch() -> Result<String> {
 - [ ] **Step 4: Create `crates/cli/src/commands/tag.rs`**
 
 ```rust
-use anodize_core::config::TagConfig;
-use anodize_core::git;
+use anodizer_core::config::TagConfig;
+use anodizer_core::git;
 use anyhow::{Context, Result};
 use regex::Regex;
 
@@ -631,7 +631,7 @@ pub struct TagResult {
     pub part: String, // "major", "minor", "patch", "none"
 }
 
-pub fn run(config: &anodize_core::config::Config, opts: TagOpts) -> Result<TagResult> {
+pub fn run(config: &anodizer_core::config::Config, opts: TagOpts) -> Result<TagResult> {
     let tag_config = config.tag.clone().unwrap_or_default();
 
     // Resolve settings with CLI overrides
@@ -883,7 +883,7 @@ Create tests in `crates/cli/tests/integration.rs`:
 ```rust
 #[test]
 fn test_tag_help_output() {
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args(["tag", "--help"])
         .output()
         .unwrap();
@@ -936,7 +936,7 @@ mod tests {
 Run: `cargo test --workspace && cargo clippy --workspace -- -D warnings`
 
 ```bash
-git add -A && git commit -m "feat: add anodize tag command with full anothrNick/github-tag-action parity"
+git add -A && git commit -m "feat: add anodizer tag command with full anothrNick/github-tag-action parity"
 ```
 
 ---
@@ -1026,7 +1026,7 @@ CLI integration test:
 ```rust
 #[test]
 fn test_release_help_shows_nightly_flag() {
-    let output = Command::new(env!("CARGO_BIN_EXE_anodize"))
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args(["release", "--help"])
         .output()
         .unwrap();
@@ -1129,7 +1129,7 @@ fn test_config_includes_merge() {
     let dir = tempfile::tempdir().unwrap();
 
     // Base config
-    std::fs::write(dir.path().join(".anodize.yaml"), r#"
+    std::fs::write(dir.path().join(".anodizer.yaml"), r#"
 project_name: test
 includes:
   - extra.yaml
@@ -1148,7 +1148,7 @@ changelog:
       - "^docs:"
 "#).unwrap();
 
-    let config = load_config(&dir.path().join(".anodize.yaml")).unwrap();
+    let config = load_config(&dir.path().join(".anodizer.yaml")).unwrap();
     assert_eq!(config.project_name, "test");
     assert!(config.changelog.is_some());
     assert_eq!(config.changelog.as_ref().unwrap().sort.as_deref(), Some("asc"));
@@ -1523,9 +1523,9 @@ pub struct WingetConfig {
 - [ ] **Step 2: Create `crates/stage-publish/src/chocolatey.rs`**
 
 ```rust
-use anodize_core::artifact::ArtifactKind;
-use anodize_core::config::ChocolateyConfig;
-use anodize_core::context::Context;
+use anodizer_core::artifact::ArtifactKind;
+use anodizer_core::config::ChocolateyConfig;
+use anodizer_core::context::Context;
 use anyhow::{Context as _, Result};
 use std::path::Path;
 
@@ -1643,9 +1643,9 @@ Install-ChocoBinaries -PackageName $packageName -Url $url -UnzipLocation $toolsD
 - [ ] **Step 3: Create `crates/stage-publish/src/winget.rs`**
 
 ```rust
-use anodize_core::artifact::ArtifactKind;
-use anodize_core::config::WingetConfig;
-use anodize_core::context::Context;
+use anodizer_core::artifact::ArtifactKind;
+use anodizer_core::config::WingetConfig;
+use anodizer_core::context::Context;
 use anyhow::{Context as _, Result};
 
 pub fn publish_to_winget(ctx: &mut Context, crate_name: &str) -> Result<()> {
@@ -1696,7 +1696,7 @@ fn generate_winget_manifest(
     pkg_id: &str,
     version: &str,
     config: &WingetConfig,
-    _archives: &[&anodize_core::artifact::Artifact],
+    _archives: &[&anodizer_core::artifact::Artifact],
     ctx: &Context,
 ) -> Result<String> {
     let mut yaml = format!("PackageIdentifier: {}\nPackageVersion: {}\n", pkg_id, version);
@@ -1758,7 +1758,7 @@ In `crates/stage-publish/src/chocolatey.rs`:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anodize_core::config::*;
+    use anodizer_core::config::*;
 
     #[test]
     fn test_generate_nuspec() {
@@ -1785,7 +1785,7 @@ In `crates/stage-publish/src/winget.rs`:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anodize_core::config::*;
+    use anodizer_core::config::*;
 
     #[test]
     fn test_generate_winget_manifest() {
@@ -1875,7 +1875,7 @@ pub struct KrewIndexConfig {
 
 Generate a PKGBUILD file:
 ```rust
-use anodize_core::context::Context;
+use anodizer_core::context::Context;
 use anyhow::Result;
 
 pub fn publish_to_aur(ctx: &mut Context, crate_name: &str) -> Result<()> {
@@ -1914,7 +1914,7 @@ pub fn publish_to_aur(ctx: &mut Context, crate_name: &str) -> Result<()> {
 fn generate_pkgbuild(
     name: &str,
     version: &str,
-    config: &anodize_core::config::AurConfig,
+    config: &anodizer_core::config::AurConfig,
     ctx: &Context,
 ) -> Result<String> {
     let tag = ctx.template_vars().get("Tag").unwrap_or_default();
@@ -1962,7 +1962,7 @@ package() {{
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anodize_core::config::*;
+    use anodizer_core::config::*;
 
     #[test]
     fn test_generate_pkgbuild() {
@@ -1974,7 +1974,7 @@ mod tests {
         };
         let mut cfg = Config::default();
         cfg.project_name = "myapp".to_string();
-        let mut ctx = anodize_core::context::Context::new(cfg, Default::default());
+        let mut ctx = anodizer_core::context::Context::new(cfg, Default::default());
         ctx.template_vars_mut().set("RawVersion", "1.0.0");
         ctx.template_vars_mut().set("Tag", "v1.0.0");
         ctx.template_vars_mut().set("GitHubOwner", "myorg");
@@ -1989,9 +1989,9 @@ mod tests {
 - [ ] **Step 3: Create `crates/stage-publish/src/krew.rs`**
 
 ```rust
-use anodize_core::artifact::ArtifactKind;
-use anodize_core::config::KrewConfig;
-use anodize_core::context::Context;
+use anodizer_core::artifact::ArtifactKind;
+use anodizer_core::config::KrewConfig;
+use anodizer_core::context::Context;
 use anyhow::Result;
 
 pub fn publish_to_krew(ctx: &mut Context, crate_name: &str) -> Result<()> {
@@ -2034,8 +2034,8 @@ fn generate_krew_manifest(
     name: &str,
     version: &str,
     config: &KrewConfig,
-    _archives: &[&anodize_core::artifact::Artifact],
-    _checksums: &[&anodize_core::artifact::Artifact],
+    _archives: &[&anodizer_core::artifact::Artifact],
+    _checksums: &[&anodizer_core::artifact::Artifact],
     _ctx: &Context,
 ) -> Result<String> {
     let mut yaml = format!(r#"apiVersion: krew.googlecontainertools.github.com/v1alpha2
@@ -2065,7 +2065,7 @@ spec:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anodize_core::config::*;
+    use anodizer_core::config::*;
 
     #[test]
     fn test_generate_krew_manifest() {
@@ -2077,7 +2077,7 @@ mod tests {
         };
         let mut cfg = Config::default();
         cfg.project_name = "kubectl-myapp".to_string();
-        let ctx = anodize_core::context::Context::new(cfg, Default::default());
+        let ctx = anodizer_core::context::Context::new(cfg, Default::default());
         let manifest = generate_krew_manifest("myapp", "1.0.0", &config, &[], &[], &ctx).unwrap();
         assert!(manifest.contains("name: myapp"));
         assert!(manifest.contains("version: v1.0.0"));
@@ -2143,8 +2143,8 @@ Sbom,
 
 Generate source archive from git working tree:
 ```rust
-use anodize_core::artifact::{Artifact, ArtifactKind};
-use anodize_core::context::Context;
+use anodizer_core::artifact::{Artifact, ArtifactKind};
+use anodizer_core::context::Context;
 use anyhow::{Context as _, Result};
 
 pub fn create_source_archive(ctx: &mut Context) -> Result<()> {
@@ -2213,8 +2213,8 @@ pub fn create_source_archive(ctx: &mut Context) -> Result<()> {
 
 Generate CycloneDX SBOM from Cargo.lock:
 ```rust
-use anodize_core::artifact::{Artifact, ArtifactKind};
-use anodize_core::context::Context;
+use anodizer_core::artifact::{Artifact, ArtifactKind};
+use anodizer_core::context::Context;
 use anyhow::{Context as _, Result};
 use serde_json::json;
 
@@ -2655,7 +2655,7 @@ git add -A && git commit -m "feat: add Telegram, Teams, Mattermost, and email an
 
 - [ ] **Step 1: Add `Jsonschema` command**
 
-Add `schemars` dependency: `cargo add schemars --package anodize-core`
+Add `schemars` dependency: `cargo add schemars --package anodizer-core`
 
 Derive `JsonSchema` on all config structs (add `#[derive(schemars::JsonSchema)]` alongside existing derives).
 
@@ -2668,7 +2668,7 @@ Jsonschema,
 Handler:
 ```rust
 Commands::Jsonschema => {
-    let schema = schemars::schema_for!(anodize_core::config::Config);
+    let schema = schemars::schema_for!(anodizer_core::config::Config);
     println!("{}", serde_json::to_string_pretty(&schema).unwrap());
 }
 ```
@@ -2865,7 +2865,7 @@ git add -A && git commit -m "feat: add jsonschema command, .env loading, config 
 - Modify: `Cargo.toml` (workspace) — replace `serde_yaml` with `serde_yml`
 - Modify: all `Cargo.toml` files referencing `serde_yaml`
 - Modify: all `.rs` files using `serde_yaml` — update import paths
-- Modify: `.anodize.yaml` — exercise new features
+- Modify: `.anodizer.yaml` — exercise new features
 
 - [ ] **Step 1: Check serde_yaml status and decide on replacement**
 
@@ -2910,7 +2910,7 @@ cargo test --workspace && cargo clippy --workspace -- -D warnings && cargo fmt -
 
 - [ ] **Step 5: Update dogfood config**
 
-Update `.anodize.yaml` to exercise at least one new Session 5 feature (e.g., source archive, SBOM, env_files).
+Update `.anodizer.yaml` to exercise at least one new Session 5 feature (e.g., source archive, SBOM, env_files).
 
 - [ ] **Step 6: Commit**
 
@@ -2939,7 +2939,7 @@ cargo install mdbook 2>/dev/null || true
 Create `docs/book/book.toml`:
 ```toml
 [book]
-title = "Anodize Documentation"
+title = "Anodizer Documentation"
 authors = ["tj-smith47"]
 language = "en"
 multilingual = false
@@ -2950,7 +2950,7 @@ build-dir = "../../dist/docs"
 
 [output.html]
 default-theme = "rust"
-git-repository-url = "https://github.com/tj-smith47/anodize"
+git-repository-url = "https://github.com/tj-smith47/anodizer"
 ```
 
 Create `docs/book/src/SUMMARY.md`:
@@ -3009,9 +3009,9 @@ Create `docs/book/src/SUMMARY.md`:
 
 Create each `.md` file with content drawn from existing `docs/configuration.md`, `docs/templates.md`, and the design spec. Key chapters:
 
-`src/introduction.md` — What is anodize, why use it, quick feature overview.
+`src/introduction.md` — What is anodizer, why use it, quick feature overview.
 
-`src/getting-started.md` — Install, `anodize init`, first release.
+`src/getting-started.md` — Install, `anodizer init`, first release.
 
 `src/configuration.md` — Full config reference (copy from existing docs/configuration.md and expand).
 
@@ -3024,7 +3024,7 @@ Stage chapters — one per stage, explaining config fields and examples.
 - [ ] **Step 4: Build and verify**
 
 ```bash
-cd /opt/repos/anodize/docs/book && mdbook build
+cd /opt/repos/anodizer/docs/book && mdbook build
 ```
 
 Verify the output exists at `dist/docs/index.html`.

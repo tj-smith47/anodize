@@ -1,6 +1,6 @@
 [package]
-name = "anodize-stage-build"
-description = "Build stage for the anodize release tool — compiles Rust binaries for target triples"
+name = "anodizer-stage-build"
+description = "Build stage for the anodizer release tool — compiles Rust binaries for target triples"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -10,7 +10,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
-anodize-core.workspace = true
+anodizer-core.workspace = true
 anyhow.workspace = true
 glob.workspace = true
 toml_edit.workspace = true

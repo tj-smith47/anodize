@@ -1,8 +1,8 @@
-//! End-to-end tests for `anodize bump`.
+//! End-to-end tests for `anodizer bump`.
 //!
 //! Each test builds a minimal cargo workspace inside a `TempDir`, initializes
-//! a git repo, and shells out to the compiled `anodize` binary via
-//! `CARGO_BIN_EXE_anodize`. Workspaces only contain manifests (no sources) —
+//! a git repo, and shells out to the compiled `anodizer` binary via
+//! `CARGO_BIN_EXE_anodizer`. Workspaces only contain manifests (no sources) —
 //! `bump` never invokes cargo, it only reads/writes `Cargo.toml`.
 
 use std::fs;
@@ -10,8 +10,8 @@ use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
 
-fn anodize() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_anodize"))
+fn anodizer() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_anodizer"))
 }
 
 fn run_git(dir: &Path, args: &[&str]) {
@@ -202,7 +202,7 @@ fn patch_bumps_single_crate() {
     git_init(tmp.path());
     git_add_commit(tmp.path(), "initial");
 
-    let out = anodize()
+    let out = anodizer()
         .current_dir(tmp.path())
         .args(["bump", "patch", "-y"])
         .output()
@@ -222,14 +222,14 @@ fn minor_explicit_then_major() {
     git_init(tmp.path());
     git_add_commit(tmp.path(), "initial");
 
-    anodize()
+    anodizer()
         .current_dir(tmp.path())
         .args(["bump", "minor", "-y"])
         .status()
         .unwrap();
     assert_eq!(read_version(&tmp.path().join("Cargo.toml")), "0.2.0");
     // Tree is now dirty from the first bump; second bump must pass --allow-dirty.
-    anodize()
+    anodizer()
         .current_dir(tmp.path())
         .args(["bump", "major", "-y", "--allow-dirty"])
         .status()
@@ -245,7 +245,7 @@ fn dry_run_writes_nothing() {
     git_add_commit(tmp.path(), "initial");
 
     let before = fs::read_to_string(tmp.path().join("Cargo.toml")).unwrap();
-    let out = anodize()
+    let out = anodizer()
         .current_dir(tmp.path())
         .args(["bump", "minor", "--dry-run"])
         .output()
@@ -266,7 +266,7 @@ fn dry_run_json_is_parseable() {
     git_init(tmp.path());
     git_add_commit(tmp.path(), "initial");
 
-    let out = anodize()
+    let out = anodizer()
         .current_dir(tmp.path())
         .args(["bump", "minor", "--dry-run", "--output", "json"])
         .output()
@@ -295,7 +295,7 @@ fn dirty_tree_refused_without_allow_dirty() {
     // Introduce a dirty change.
     fs::write(tmp.path().join("dirty.txt"), "hello").unwrap();
 
-    let out = anodize()
+    let out = anodizer()
         .current_dir(tmp.path())
         .args(["bump", "patch", "-y"])
         .output()
@@ -319,7 +319,7 @@ fn publish_false_skipped_from_workspace() {
     git_init(tmp.path());
     git_add_commit(tmp.path(), "initial");
 
-    let out = anodize()
+    let out = anodizer()
         .current_dir(tmp.path())
         .args(["bump", "patch", "--workspace", "-y"])
         .output()
@@ -347,7 +347,7 @@ fn workspace_package_inheritance_bumps_root_only() {
     git_init(tmp.path());
     git_add_commit(tmp.path(), "initial");
 
-    let out = anodize()
+    let out = anodizer()
         .current_dir(tmp.path())
         .args(["bump", "minor", "--workspace", "-y"])
         .output()
@@ -375,7 +375,7 @@ fn exact_skips_dep_propagation() {
     git_init(tmp.path());
     git_add_commit(tmp.path(), "initial");
 
-    let out = anodize()
+    let out = anodizer()
         .current_dir(tmp.path())
         .args(["bump", "patch", "-p", "core", "--exact", "-y"])
         .output()
@@ -405,7 +405,7 @@ fn propagation_rewrites_sibling_dep() {
     git_init(tmp.path());
     git_add_commit(tmp.path(), "initial");
 
-    let out = anodize()
+    let out = anodizer()
         .current_dir(tmp.path())
         .args(["bump", "patch", "-p", "core", "-y"])
         .output()
@@ -450,7 +450,7 @@ fn commit_flag_creates_single_commit() {
         .parse()
         .unwrap();
 
-    let out = anodize()
+    let out = anodizer()
         .current_dir(tmp.path())
         .args(["bump", "patch", "--commit", "-y"])
         .output()
@@ -514,7 +514,7 @@ fn infer_picks_per_crate_level_from_commits() {
         "fix(cli): correct bug",
     );
 
-    let out = anodize()
+    let out = anodizer()
         .current_dir(tmp.path())
         .args(["bump", "--workspace", "--dry-run", "--output", "json"])
         .output()
@@ -543,7 +543,7 @@ fn multi_crate_without_selection_errors() {
     git_init(tmp.path());
     git_add_commit(tmp.path(), "initial");
 
-    let out = anodize()
+    let out = anodizer()
         .current_dir(tmp.path())
         .args(["bump", "patch", "-y"])
         .output()
@@ -574,7 +574,7 @@ edition = "2024"
     git_init(tmp.path());
     git_add_commit(tmp.path(), "initial");
 
-    let out = anodize()
+    let out = anodizer()
         .current_dir(tmp.path())
         .args(["bump", "release", "-y"])
         .output()
@@ -594,7 +594,7 @@ fn pre_appends_prerelease() {
     git_init(tmp.path());
     git_add_commit(tmp.path(), "initial");
 
-    let out = anodize()
+    let out = anodizer()
         .current_dir(tmp.path())
         .args(["bump", "minor", "--pre", "rc.1", "-y"])
         .output()
@@ -620,7 +620,7 @@ fn commit_bundles_changelog_when_configured() {
     let tmp = TempDir::new().unwrap();
     single_crate_workspace(tmp.path());
     fs::write(
-        tmp.path().join(".anodize.yaml"),
+        tmp.path().join(".anodizer.yaml"),
         r#"version: 2
 project_name: demo
 crates:
@@ -662,7 +662,7 @@ changelog:
         .parse()
         .unwrap();
 
-    let out = anodize()
+    let out = anodizer()
         .current_dir(tmp.path())
         .args(["bump", "patch", "--commit", "-y"])
         .output()
@@ -719,15 +719,15 @@ changelog:
 // ---------------------------------------------------------------------------
 
 #[test]
-fn inference_respects_tag_template_from_anodize_yaml() {
+fn inference_respects_tag_template_from_anodizer_yaml() {
     let tmp = TempDir::new().unwrap();
     two_crate_workspace(tmp.path());
-    // .anodize.yaml gives `core` a custom `core-v` prefix and `cli` the bare
+    // .anodizer.yaml gives `core` a custom `core-v` prefix and `cli` the bare
     // `v` prefix (the cfgd top-crate convention). Without the tag-template
     // wiring, bump's inference would fall back to `core-v` and `cli-v` and
     // miss the actual tags below.
     fs::write(
-        tmp.path().join(".anodize.yaml"),
+        tmp.path().join(".anodizer.yaml"),
         r#"version: 2
 project_name: tag-template-fixture
 crates:
@@ -759,7 +759,7 @@ crates:
         "chore(cli): housekeeping",
     );
 
-    let out = anodize()
+    let out = anodizer()
         .current_dir(tmp.path())
         .args(["bump", "--workspace", "--dry-run", "--output", "json"])
         .output()
@@ -776,7 +776,7 @@ crates:
         .iter()
         .map(|r| (r["crate"].as_str().unwrap(), r))
         .collect();
-    // `cli`'s tag prefix is bare `v` per .anodize.yaml; the v0.1.0 tag must
+    // `cli`'s tag prefix is bare `v` per .anodizer.yaml; the v0.1.0 tag must
     // be discovered and the only post-tag commit is a chore → skip. With
     // the fallback `<name>-v` prefix this row would scan all-of-history,
     // see the chore, classify it as skip ANYWAY, but the reason string would
@@ -806,7 +806,7 @@ crates:
 // Strict-mode version-pin enforcement
 // ---------------------------------------------------------------------------
 
-/// Two-crate workspace with `core` pinned to `0.1.0` in `.anodize.yaml`. The
+/// Two-crate workspace with `core` pinned to `0.1.0` in `.anodizer.yaml`. The
 /// `cli` crate is unpinned.
 fn pinned_two_crate_workspace(tmp: &Path, pin_core: bool) {
     two_crate_workspace(tmp);
@@ -828,7 +828,7 @@ crates:
 "#,
         core_pin = core_pin,
     );
-    fs::write(tmp.join(".anodize.yaml"), yaml).unwrap();
+    fs::write(tmp.join(".anodizer.yaml"), yaml).unwrap();
 }
 
 #[test]
@@ -838,7 +838,7 @@ fn strict_refuses_bump_when_version_pinned() {
     git_init(tmp.path());
     git_add_commit(tmp.path(), "initial");
 
-    let out = anodize()
+    let out = anodizer()
         .current_dir(tmp.path())
         .args(["--strict", "bump", "minor", "-p", "core", "-y"])
         .output()
@@ -872,7 +872,7 @@ fn strict_allows_bump_when_no_pin() {
     git_init(tmp.path());
     git_add_commit(tmp.path(), "initial");
 
-    let out = anodize()
+    let out = anodizer()
         .current_dir(tmp.path())
         .args(["--strict", "bump", "minor", "-p", "core", "-y"])
         .output()
@@ -895,7 +895,7 @@ fn non_strict_warns_but_proceeds() {
     git_init(tmp.path());
     git_add_commit(tmp.path(), "initial");
 
-    let out = anodize()
+    let out = anodizer()
         .current_dir(tmp.path())
         .args(["bump", "minor", "-p", "core", "-y"])
         .output()

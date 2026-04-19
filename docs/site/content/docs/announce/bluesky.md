@@ -29,7 +29,7 @@ announce:
 
 ## Authentication and AT Protocol
 
-Anodize uses the AT Protocol (`com.atproto`) to post to Bluesky. Each run
+Anodizer uses the AT Protocol (`com.atproto`) to post to Bluesky. Each run
 performs a two-step flow against `https://bsky.social`:
 
 1. Creates a session via `POST /xrpc/com.atproto.server.createSession` using
@@ -40,7 +40,7 @@ performs a two-step flow against `https://bsky.social`:
 
 ## Automatic link facets
 
-If `{{ .ReleaseURL }}` is present in the rendered message, anodize
+If `{{ .ReleaseURL }}` is present in the rendered message, anodizer
 automatically adds a rich-text facet marking the URL as a clickable link.
 Bluesky requires explicit facet annotations for links to be rendered as
 hyperlinks rather than plain text, so this happens without any extra
@@ -52,7 +52,7 @@ App passwords are separate credentials scoped to specific apps. They are
 recommended over your main account password:
 
 1. Go to **Settings → Privacy and Security → App Passwords**.
-2. Click **Add App Password**, give it a name (e.g. `anodize`).
+2. Click **Add App Password**, give it a name (e.g. `anodizer`).
 3. Copy the generated password into `BLUESKY_APP_PASSWORD`.
 
 ## Example

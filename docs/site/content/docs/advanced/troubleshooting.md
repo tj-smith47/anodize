@@ -1,13 +1,13 @@
 +++
 title = "Troubleshooting"
-description = "Diagnose and fix common anodize issues"
+description = "Diagnose and fix common anodizer issues"
 weight = 10
 template = "docs.html"
 +++
 
 # Troubleshooting
 
-When something goes wrong during a release, anodize provides several flags to help you understand what happened and why.
+When something goes wrong during a release, anodizer provides several flags to help you understand what happened and why.
 
 ## Verbosity Flags
 
@@ -16,7 +16,7 @@ When something goes wrong during a release, anodize provides several flags to he
 Suppress all non-error output. Useful in CI pipelines where you only want to see failures:
 
 ```bash
-anodize release --quiet
+anodizer release --quiet
 ```
 
 Only error messages will be printed to stderr. Stdout remains clean for machine-parseable output.
@@ -31,7 +31,7 @@ Show detailed output from all stages, including:
 - File paths being created, copied, or archived
 
 ```bash
-anodize release --verbose
+anodizer release --verbose
 ```
 
 ### `--debug`
@@ -43,19 +43,19 @@ Maximum detail. Includes everything from `--verbose`, plus:
 - Artifact registry contents at each pipeline stage boundary
 
 ```bash
-anodize release --debug
+anodizer release --debug
 ```
 
 ## Common Issues
 
 ### Build failures
 
-When an external command (cargo, cross, zigbuild) fails, anodize captures and displays the full stderr output. Look for compiler errors in the output.
+When an external command (cargo, cross, zigbuild) fails, anodizer captures and displays the full stderr output. Look for compiler errors in the output.
 
 If you only see an exit code, run with `--verbose` to see the full command output:
 
 ```bash
-anodize release --verbose 2>&1 | less
+anodizer release --verbose 2>&1 | less
 ```
 
 ### Missing GitHub token
@@ -63,11 +63,11 @@ anodize release --verbose 2>&1 | less
 If you see an error about a missing `GITHUB_TOKEN`, either:
 
 1. Set the environment variable: `export GITHUB_TOKEN=ghp_...`
-2. Pass it via CLI: `anodize release --token ghp_...`
+2. Pass it via CLI: `anodizer release --token ghp_...`
 
 ### API errors
 
-When a GitHub API call fails, anodize displays the HTTP status code and response body. Common causes:
+When a GitHub API call fails, anodizer displays the HTTP status code and response body. Common causes:
 
 - **401 Unauthorized**: Token is invalid or expired
 - **403 Forbidden**: Token lacks required permissions (needs `repo` scope)
@@ -78,10 +78,10 @@ Run with `--debug` to see the full HTTP request and response headers.
 
 ### Config validation errors
 
-Run `anodize check` to validate your configuration without running a release:
+Run `anodizer check` to validate your configuration without running a release:
 
 ```bash
-anodize check --verbose
+anodizer check --verbose
 ```
 
 This catches issues like:
@@ -95,7 +95,7 @@ This catches issues like:
 The default pipeline timeout is 60 minutes. If your release consistently times out:
 
 ```bash
-anodize release --timeout 1h
+anodizer release --timeout 1h
 ```
 
 ### Dry-run mode
@@ -103,13 +103,13 @@ anodize release --timeout 1h
 Always test with `--dry-run` before a real release:
 
 ```bash
-anodize release --dry-run --verbose
+anodizer release --dry-run --verbose
 ```
 
 This runs the full pipeline without creating releases, pushing tags, or publishing packages. Combined with `--verbose`, you can see exactly what would happen.
 
 ## Getting Help
 
-- [GitHub Issues](https://github.com/tj-smith47/anodize/issues) -- report bugs or request features
-- `anodize --help` -- full CLI reference
-- `anodize check` -- validate your configuration
+- [GitHub Issues](https://github.com/tj-smith47/anodizer/issues) -- report bugs or request features
+- `anodizer --help` -- full CLI reference
+- `anodizer check` -- validate your configuration

@@ -2,7 +2,7 @@ use std::path::Path;
 
 use anyhow::{Context as _, Result};
 
-use anodize_core::log::StageLogger;
+use anodizer_core::log::StageLogger;
 
 /// Synchronize the `[package].version` field in a crate's Cargo.toml to the
 /// given version string.  Skips writing if the version already matches.
@@ -183,7 +183,7 @@ pub fn sync_workspace_deps(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anodize_core::log::Verbosity;
+    use anodizer_core::log::Verbosity;
 
     fn test_logger() -> StageLogger {
         StageLogger::new("build", Verbosity::Normal)

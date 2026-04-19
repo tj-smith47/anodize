@@ -1,6 +1,6 @@
-use anodize_core::artifact::ArtifactKind;
-use anodize_core::context::Context;
-use anodize_core::log::StageLogger;
+use anodizer_core::artifact::ArtifactKind;
+use anodizer_core::context::Context;
+use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result, bail};
 use std::collections::HashMap;
 
@@ -195,7 +195,7 @@ pub fn publish_to_cloudsmith(ctx: &Context, log: &StageLogger) -> Result<()> {
             continue;
         }
 
-        let client = anodize_core::http::blocking_client(std::time::Duration::from_secs(60))
+        let client = anodizer_core::http::blocking_client(std::time::Duration::from_secs(60))
             .context("cloudsmith: failed to build HTTP client")?;
 
         log.status(&format!(
@@ -293,9 +293,9 @@ pub fn publish_to_cloudsmith(ctx: &Context, log: &StageLogger) -> Result<()> {
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
-    use anodize_core::artifact::Artifact;
-    use anodize_core::config::{CloudSmithConfig, Config, StringOrBool};
-    use anodize_core::context::{Context, ContextOptions};
+    use anodizer_core::artifact::Artifact;
+    use anodizer_core::config::{CloudSmithConfig, Config, StringOrBool};
+    use anodizer_core::context::{Context, ContextOptions};
     use std::path::PathBuf;
 
     fn dry_run_ctx(config: Config) -> Context {

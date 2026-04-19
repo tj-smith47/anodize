@@ -134,7 +134,7 @@ release:
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cargo test --lib -p anodize-core test_github_urls_config_parse test_gitlab_urls_config_parse test_gitea_urls_config_parse test_force_token_config_parse test_release_gitlab_gitea_config_parse 2>&1 | tail -20`
+Run: `cargo test --lib -p anodizer-core test_github_urls_config_parse test_gitlab_urls_config_parse test_gitea_urls_config_parse test_force_token_config_parse test_release_gitlab_gitea_config_parse 2>&1 | tail -20`
 Expected: compilation errors — structs don't exist yet
 
 - [ ] **Step 3: Implement config structs**
@@ -213,7 +213,7 @@ Add to `Config`:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cargo test --lib -p anodize-core test_github_urls_config_parse test_gitlab_urls_config_parse test_gitea_urls_config_parse test_force_token_config_parse test_release_gitlab_gitea_config_parse 2>&1 | tail -20`
+Run: `cargo test --lib -p anodizer-core test_github_urls_config_parse test_gitlab_urls_config_parse test_gitea_urls_config_parse test_force_token_config_parse test_release_gitlab_gitea_config_parse 2>&1 | tail -20`
 Expected: all pass
 
 - [ ] **Step 5: Commit**
@@ -305,7 +305,7 @@ mod tests {
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `cargo test --lib -p anodize-core scm::tests 2>&1 | tail -20`
+Run: `cargo test --lib -p anodizer-core scm::tests 2>&1 | tail -20`
 Expected: module doesn't exist yet
 
 - [ ] **Step 3: Implement SCM module**
@@ -419,7 +419,7 @@ Initialize it in `Context::new()`:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cargo test --lib -p anodize-core scm::tests 2>&1 | tail -20`
+Run: `cargo test --lib -p anodizer-core scm::tests 2>&1 | tail -20`
 Expected: all pass
 
 - [ ] **Step 5: Commit**
@@ -470,7 +470,7 @@ let env_hint = if std::env::var("GITLAB_TOKEN").is_ok() {
 } else {
     None
 };
-ctx.token_type = anodize_core::scm::resolve_token_type(
+ctx.token_type = anodizer_core::scm::resolve_token_type(
     ctx.config.force_token.as_deref(),
     env_hint,
 );
@@ -478,14 +478,14 @@ ctx.token_type = anodize_core::scm::resolve_token_type(
 // Resolve the token value from the appropriate env var
 if ctx.options.token.is_none() {
     ctx.options.token = match ctx.token_type {
-        anodize_core::scm::ScmTokenType::GitLab => {
+        anodizer_core::scm::ScmTokenType::GitLab => {
             std::env::var("GITLAB_TOKEN").ok()
         }
-        anodize_core::scm::ScmTokenType::Gitea => {
+        anodizer_core::scm::ScmTokenType::Gitea => {
             std::env::var("GITEA_TOKEN").ok()
         }
-        anodize_core::scm::ScmTokenType::GitHub => {
-            std::env::var("ANODIZE_GITHUB_TOKEN").ok()
+        anodizer_core::scm::ScmTokenType::GitHub => {
+            std::env::var("ANODIZER_GITHUB_TOKEN").ok()
                 .or_else(|| std::env::var("GITHUB_TOKEN").ok())
         }
     };
@@ -516,8 +516,8 @@ git commit -m "feat(cli): wire token type resolution from config/env into Contex
 ```rust
 #[test]
 fn test_release_uses_github_enterprise_urls() {
-    use anodize_core::config::{Config, CrateConfig, GitHubUrlsConfig, ReleaseConfig, GitHubConfig};
-    use anodize_core::context::{Context, ContextOptions};
+    use anodizer_core::config::{Config, CrateConfig, GitHubUrlsConfig, ReleaseConfig, GitHubConfig};
+    use anodizer_core::context::{Context, ContextOptions};
 
     let mut config = Config::default();
     config.project_name = "test".to_string();
@@ -725,7 +725,7 @@ fn test_config_parse_use_source_gitlab() {
     let yaml = r#"
 use: gitlab
 "#;
-    let cfg: anodize_core::config::ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
+    let cfg: anodizer_core::config::ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(cfg.use_source.as_deref(), Some("gitlab"));
 }
 
@@ -734,7 +734,7 @@ fn test_config_parse_use_source_gitea() {
     let yaml = r#"
 use: gitea
 "#;
-    let cfg: anodize_core::config::ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
+    let cfg: anodizer_core::config::ChangelogConfig = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(cfg.use_source.as_deref(), Some("gitea"));
 }
 
@@ -742,8 +742,8 @@ use: gitea
 fn test_changelog_gitlab_backend_valid_use() {
     // Verify that "gitlab" is accepted as a valid use source
     // (doesn't bail with "unsupported use source")
-    use anodize_core::config::{ChangelogConfig, Config, CrateConfig};
-    use anodize_core::context::{Context, ContextOptions};
+    use anodizer_core::config::{ChangelogConfig, Config, CrateConfig};
+    use anodizer_core::context::{Context, ContextOptions};
 
     let mut config = Config::default();
     config.project_name = "test".to_string();
@@ -759,7 +759,7 @@ fn test_changelog_gitlab_backend_valid_use() {
     }];
 
     let mut ctx = Context::new(config, ContextOptions::default());
-    ctx.token_type = anodize_core::scm::ScmTokenType::GitLab;
+    ctx.token_type = anodizer_core::scm::ScmTokenType::GitLab;
     let stage = ChangelogStage;
     // Should not bail — gitlab is a valid use source
     // (will fall back to git if API unavailable, matching GoReleaser behavior)
@@ -1122,7 +1122,7 @@ Add to `Config` struct:
 
 - [ ] **Step 3: Run tests**
 
-Run: `cargo test --lib -p anodize-core test_dockerhub test_artifactory test_fury test_cloudsmith test_npm 2>&1 | tail -20`
+Run: `cargo test --lib -p anodizer-core test_dockerhub test_artifactory test_fury test_cloudsmith test_npm 2>&1 | tail -20`
 Expected: all pass
 
 - [ ] **Step 4: Commit**

@@ -27,7 +27,7 @@ publish:
 
 ## Workspace ordering
 
-When publishing multiple workspace crates, anodize resolves dependency order using topological sorting. If crate `B` depends on crate `A`, `A` is published first and anodize waits for the crates.io index to update before publishing `B`.
+When publishing multiple workspace crates, anodizer resolves dependency order using topological sorting. If crate `B` depends on crate `A`, `A` is published first and anodizer waits for the crates.io index to update before publishing `B`.
 
 ## Authentication
 
@@ -35,5 +35,5 @@ Set `CARGO_REGISTRY_TOKEN`:
 
 ```bash
 export CARGO_REGISTRY_TOKEN="cio_..."
-anodize release
+anodizer release
 ```

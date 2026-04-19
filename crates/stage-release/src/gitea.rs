@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use anodize_core::url::percent_encode_path_segment as encode_segment;
+use anodizer_core::url::percent_encode_path_segment as encode_segment;
 use anyhow::{Context as _, Result, bail};
 use reqwest::Client;
 

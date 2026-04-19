@@ -5,7 +5,7 @@ weight = 65
 template = "docs.html"
 +++
 
-Anodize can build Flatpak bundles from your compiled Linux binaries using `flatpak-builder`.
+Anodizer can build Flatpak bundles from your compiled Linux binaries using `flatpak-builder`.
 
 ## Minimal config
 

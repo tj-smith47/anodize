@@ -9,14 +9,14 @@ Reproducible builds ensure that building the same source at the same commit alwa
 identical artifacts. This matters for supply-chain security (auditors can verify that a
 published binary matches the source) and for caching (identical inputs yield identical outputs).
 
-Anodize provides several mechanisms to eliminate non-determinism: the `reproducible` flag on
+Anodizer provides several mechanisms to eliminate non-determinism: the `reproducible` flag on
 build configs, the `mod_timestamp` field on builds and packaging stages, deterministic archive
 ordering, and the `CommitTimestamp` template variable.
 
 ## The `reproducible` flag
 
 Set `reproducible: true` on a build config to enable automatic determinism for Rust
-compilation. When enabled, anodize does three things:
+compilation. When enabled, anodizer does three things:
 
 1. **Sets `SOURCE_DATE_EPOCH`** in the build environment to the commit timestamp, giving
    `rustc` and any build scripts a stable reference time.
@@ -39,12 +39,12 @@ crates:
           - aarch64-unknown-linux-gnu
 ```
 
-If `SOURCE_DATE_EPOCH` is already set in the environment (e.g., by your CI system), anodize
+If `SOURCE_DATE_EPOCH` is already set in the environment (e.g., by your CI system), anodizer
 preserves the existing value rather than overwriting it. The `--remap-path-prefix` flag is
 appended to any existing `RUSTFLAGS` rather than replacing them.
 
 When neither `SOURCE_DATE_EPOCH` nor `CommitTimestamp` can be resolved to a valid epoch,
-anodize prints a warning and skips the mtime step.
+anodizer prints a warning and skips the mtime step.
 
 ## The `mod_timestamp` field
 
@@ -164,7 +164,7 @@ naturally excludes build artifacts and untracked files. The timestamps in a `git
 output are determined by git itself (using the commit tree timestamps), so source archives
 are inherently more reproducible than binary archives.
 
-Anodize does not currently apply `mod_timestamp` to source archives -- the `git archive`
+Anodizer does not currently apply `mod_timestamp` to source archives -- the `git archive`
 output is used as-is.
 
 ## Full example
@@ -207,7 +207,7 @@ archives:
   systems via pre/post hooks, you may need to handle those separately.
 
 - **Compression non-determinism.** Some compression libraries (notably gzip) embed
-  timestamps or OS identifiers in the compressed stream header. Anodize uses libraries
+  timestamps or OS identifiers in the compressed stream header. Anodizer uses libraries
   that produce deterministic output, but if you shell out to external compression tools,
   verify they do the same.
 

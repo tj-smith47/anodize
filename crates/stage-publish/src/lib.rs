@@ -13,9 +13,9 @@ pub mod upload;
 pub(crate) mod util;
 pub mod winget;
 
-use anodize_core::config::PublishConfig;
-use anodize_core::context::Context;
-use anodize_core::stage::Stage;
+use anodizer_core::config::PublishConfig;
+use anodizer_core::context::Context;
+use anodizer_core::stage::Stage;
 use anyhow::Result;
 
 use artifactory::publish_to_artifactory;
@@ -192,12 +192,12 @@ impl Stage for PublishStage {
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
-    use anodize_core::config::{
+    use anodizer_core::config::{
         AurConfig, BucketConfig, ChocolateyConfig, ChocolateyRepoConfig, Config, CrateConfig,
         CratesPublishConfig, HomebrewConfig, KrewConfig, KrewManifestsRepoConfig, PublishConfig,
         ScoopConfig, TapConfig, WingetConfig, WingetManifestsRepoConfig,
     };
-    use anodize_core::context::{Context, ContextOptions};
+    use anodizer_core::context::{Context, ContextOptions};
 
     fn dry_run_ctx(config: Config) -> Context {
         Context::new(
@@ -440,7 +440,7 @@ mod tests {
     /// updated to verify that skipping occurs.
     #[test]
     fn test_publish_prerelease_version_proceeds_without_skip() {
-        use anodize_core::context::ContextOptions;
+        use anodizer_core::context::ContextOptions;
 
         let mut config = Config::default();
         config.crates = vec![CrateConfig {
@@ -793,7 +793,7 @@ mod tests {
 
     #[test]
     fn test_run_dry_run_top_level_aur_sources() {
-        use anodize_core::config::AurSourceConfig;
+        use anodizer_core::config::AurSourceConfig;
 
         let mut config = Config::default();
         config.aur_sources = Some(vec![AurSourceConfig {
@@ -848,7 +848,7 @@ mod tests {
 
     #[test]
     fn test_run_dry_run_nix() {
-        use anodize_core::config::{NixConfig, RepositoryConfig};
+        use anodizer_core::config::{NixConfig, RepositoryConfig};
 
         let mut config = Config::default();
         config.crates = vec![CrateConfig {

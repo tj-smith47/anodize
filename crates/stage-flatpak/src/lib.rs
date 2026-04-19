@@ -6,9 +6,9 @@ use std::process::Command;
 use anyhow::{Context as _, Result};
 use serde::Serialize;
 
-use anodize_core::artifact::{Artifact, ArtifactKind};
-use anodize_core::context::Context;
-use anodize_core::stage::Stage;
+use anodizer_core::artifact::{Artifact, ArtifactKind};
+use anodizer_core::context::Context;
+use anodizer_core::stage::Stage;
 
 // ---------------------------------------------------------------------------
 // Architecture mapping
@@ -75,7 +75,7 @@ pub struct FlatpakStage;
 /// Parse Os and Arch from a Rust target triple using the shared mapping.
 fn os_arch_from_target(target: Option<&str>) -> (String, String) {
     target
-        .map(anodize_core::target::map_target)
+        .map(anodizer_core::target::map_target)
         .unwrap_or_else(|| ("linux".to_string(), "amd64".to_string()))
 }
 
@@ -143,12 +143,12 @@ impl Stage for FlatpakStage {
 
         // Check tool availability once for the entire stage
         if !dry_run {
-            if !anodize_core::util::find_binary("flatpak-builder") {
+            if !anodizer_core::util::find_binary("flatpak-builder") {
                 anyhow::bail!(
                     "flatpak-builder not found on PATH; install Flatpak to create Flatpak bundles"
                 );
             }
-            if !anodize_core::util::find_binary("flatpak") {
+            if !anodizer_core::util::find_binary("flatpak") {
                 anyhow::bail!(
                     "flatpak not found on PATH; install Flatpak to create Flatpak bundles"
                 );
@@ -184,7 +184,7 @@ impl Stage for FlatpakStage {
                 .filter(|b| {
                     b.target
                         .as_deref()
-                        .map(anodize_core::target::is_linux)
+                        .map(anodizer_core::target::is_linux)
                         .unwrap_or(false)
                 })
                 .cloned()
@@ -438,7 +438,7 @@ impl Stage for FlatpakStage {
                         });
 
                         // If replace is set, mark archives for this crate+target for removal
-                        archives_to_remove.extend(anodize_core::util::collect_if_replace(
+                        archives_to_remove.extend(anodizer_core::util::collect_if_replace(
                             flatpak_cfg.replace,
                             &ctx.artifacts,
                             &krate.name,
@@ -532,8 +532,8 @@ impl Stage for FlatpakStage {
                             let ts = ctx
                                 .render_template(ts_tmpl)
                                 .with_context(|| "flatpak: render mod_timestamp template")?;
-                            anodize_core::util::apply_mod_timestamp(&work_dir, &ts, &log)?;
-                            let mtime = anodize_core::util::parse_mod_timestamp(&ts)?;
+                            anodizer_core::util::apply_mod_timestamp(&work_dir, &ts, &log)?;
+                            let mtime = anodizer_core::util::parse_mod_timestamp(&ts)?;
                             (Some(mtime), Some(ts))
                         } else {
                             (None, None)
@@ -563,7 +563,7 @@ impl Stage for FlatpakStage {
                     // If replace is set, mark archives for this crate+target
                     // for removal — do it now while ctx.artifacts is
                     // accessible. Phase 2 workers never touch ctx.
-                    archives_to_remove.extend(anodize_core::util::collect_if_replace(
+                    archives_to_remove.extend(anodizer_core::util::collect_if_replace(
                         flatpak_cfg.replace,
                         &ctx.artifacts,
                         &krate.name,
@@ -586,7 +586,7 @@ impl Stage for FlatpakStage {
             }
         }
 
-        anodize_core::template::clear_per_target_vars(ctx.template_vars_mut());
+        anodizer_core::template::clear_per_target_vars(ctx.template_vars_mut());
 
         // ----------------------------------------------------------------
         // Phase 2 (parallel): run flatpak-builder + flatpak build-bundle
@@ -594,7 +594,7 @@ impl Stage for FlatpakStage {
         // ----------------------------------------------------------------
         if !jobs.is_empty() {
             let run_job = |job: &FlatpakJob| -> Result<Artifact> {
-                let thread_log = anodize_core::log::StageLogger::new("flatpak", log.verbosity());
+                let thread_log = anodizer_core::log::StageLogger::new("flatpak", log.verbosity());
 
                 thread_log.status(&format!("running: {}", job.builder_args.join(" ")));
                 let output = Command::new(&job.builder_args[0])
@@ -626,7 +626,7 @@ impl Stage for FlatpakStage {
                     (job.output_mtime, job.output_mtime_repr.as_deref())
                     && job.output_path.exists()
                 {
-                    anodize_core::util::set_file_mtime(&job.output_path, mtime)?;
+                    anodizer_core::util::set_file_mtime(&job.output_path, mtime)?;
                     thread_log.status(&format!(
                         "applied mod_timestamp={repr} to {}",
                         job.output_path.display()
@@ -653,7 +653,7 @@ impl Stage for FlatpakStage {
                 })
             };
 
-            let results = anodize_core::parallel::run_parallel_chunks(
+            let results = anodizer_core::parallel::run_parallel_chunks(
                 &jobs,
                 parallelism,
                 "flatpak",
@@ -781,7 +781,7 @@ mod tests {
 
     #[test]
     fn test_flatpak_config_deserialize() {
-        use anodize_core::config::FlatpakConfig;
+        use anodizer_core::config::FlatpakConfig;
 
         let yaml = r#"
 app_id: org.example.MyApp
@@ -819,7 +819,7 @@ finish_args:
 
     #[test]
     fn test_flatpak_config_defaults() {
-        use anodize_core::config::FlatpakConfig;
+        use anodizer_core::config::FlatpakConfig;
 
         let config: FlatpakConfig = serde_yaml_ng::from_str("{}").unwrap();
         assert!(config.app_id.is_none());
@@ -843,8 +843,8 @@ finish_args:
 
     #[test]
     fn test_flatpak_config_required_field_validation() {
-        use anodize_core::config::{Config, CrateConfig, FlatpakConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, FlatpakConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -1044,8 +1044,8 @@ finish_args:
 
     #[test]
     fn test_flatpak_config_disable_bool_and_template() {
-        use anodize_core::config::{Config, CrateConfig, FlatpakConfig, StringOrBool};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, FlatpakConfig, StringOrBool};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -1151,8 +1151,8 @@ finish_args:
 
     #[test]
     fn test_flatpak_stage_skips_non_linux() {
-        use anodize_core::config::{Config, CrateConfig, FlatpakConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, FlatpakConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -1216,8 +1216,8 @@ finish_args:
 
     #[test]
     fn test_flatpak_stage_skips_unsupported_arch() {
-        use anodize_core::config::{Config, CrateConfig, FlatpakConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, FlatpakConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -1287,8 +1287,8 @@ finish_args:
 
     #[test]
     fn test_stage_skips_when_no_flatpak_config() {
-        use anodize_core::config::Config;
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
 
         let config = Config::default();
         let mut ctx = Context::new(config, ContextOptions::default());
@@ -1303,8 +1303,8 @@ finish_args:
 
     #[test]
     fn test_flatpak_dry_run_produces_artifact() {
-        use anodize_core::config::{Config, CrateConfig, FlatpakConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, FlatpakConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -1379,8 +1379,8 @@ finish_args:
 
     #[test]
     fn test_flatpak_dry_run_multiple_arches() {
-        use anodize_core::config::{Config, CrateConfig, FlatpakConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, FlatpakConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -1445,8 +1445,8 @@ finish_args:
 
     #[test]
     fn test_flatpak_dry_run_custom_name_template() {
-        use anodize_core::config::{Config, CrateConfig, FlatpakConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, FlatpakConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -1515,8 +1515,8 @@ finish_args:
 
     #[test]
     fn test_flatpak_dry_run_replace_removes_archives() {
-        use anodize_core::config::{Config, CrateConfig, FlatpakConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, FlatpakConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
@@ -1592,8 +1592,8 @@ finish_args:
 
     #[test]
     fn test_flatpak_dry_run_mod_timestamp() {
-        use anodize_core::config::{Config, CrateConfig, FlatpakConfig};
-        use anodize_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{Config, CrateConfig, FlatpakConfig};
+        use anodizer_core::context::{Context, ContextOptions};
 
         let tmp = tempfile::TempDir::new().unwrap();
 
