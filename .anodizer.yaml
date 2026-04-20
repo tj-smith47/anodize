@@ -627,7 +627,7 @@ announce:
     message_template: "{{ ProjectName }} {{ Tag }} released! {{ ReleaseURL }}"
   webhook:
     enabled: true
-    endpoint_url: "https://jarvispro.io/webhooks/anodizer"
+    endpoint_url: "https://tj.jarvispro.io/webhooks/anodizer"
     content_type: application/json
     message_template: '{"project":"{{ ProjectName }}","tag":"{{ Tag }}","url":"{{ ReleaseURL }}"}'
   telegram:
