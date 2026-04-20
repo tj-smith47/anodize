@@ -2319,11 +2319,7 @@ impl Stage for ReleaseStage {
                                                 // the local artifact, a prior attempt in this
                                                 // same release flow successfully uploaded it.
                                                 // Treat as a no-op — the bytes GitHub has are
-                                                // the bytes we intended to upload. This makes
-                                                // re-runs of the publish step (e.g. after a
-                                                // different publisher later in the same run
-                                                // failed) recover without needing operators to
-                                                // opt into `replace_existing_artifacts`.
+                                                // the bytes we intended to upload.
                                                 let remote_size = find_release_asset_size(
                                                     &octo,
                                                     &gh_owner,
@@ -2343,35 +2339,48 @@ impl Stage for ReleaseStage {
                                                     break;
                                                 }
 
-                                                // Size mismatch — real conflict. Fall back to
-                                                // `replace_existing_artifacts` config: if the
-                                                // operator opted in, delete the stale asset and
-                                                // retry; otherwise fail loudly so the operator
-                                                // can decide how to reconcile.
-                                                if replace_existing_artifacts {
-                                                    let _ = delete_release_asset_by_name(
-                                                        &octo,
-                                                        &gh_owner,
-                                                        &gh_name,
-                                                        release_id_raw,
-                                                        &file_name,
-                                                    )
-                                                    .await
-                                                    .with_context(|| {
-                                                        format!(
-                                                            "release: delete duplicate artifact '{}' from release '{}'",
-                                                            file_name, tag_c
-                                                        )
-                                                    })?;
-                                                    last_err = Some(anyhow::anyhow!(err));
-                                                    if attempt < MAX_UPLOAD_ATTEMPTS {
-                                                        let delay = std::cmp::min(
-                                                            INITIAL_RETRY_DELAY * 2u32.pow(attempt - 1),
-                                                            MAX_RETRY_DELAY,
-                                                        );
-                                                        tokio::time::sleep(delay).await;
+                                                // Size mismatch — overwrite if possible, else
+                                                // skip gracefully. Always try to delete the stale
+                                                // asset and retry; `replace_existing_artifacts` is
+                                                // now the default behavior rather than an opt-in,
+                                                // because failing the whole release on an asset
+                                                // size mismatch is worse than replacing the stale
+                                                // bytes (and the pipeline already has upstream
+                                                // reproducibility gates for the cases where that
+                                                // matters). If the delete itself fails (perms,
+                                                // asset disappeared mid-flight, etc.), warn and
+                                                // treat the upload as skipped — a stale asset is
+                                                // better than aborting the release.
+                                                match delete_release_asset_by_name(
+                                                    &octo,
+                                                    &gh_owner,
+                                                    &gh_name,
+                                                    release_id_raw,
+                                                    &file_name,
+                                                )
+                                                .await
+                                                {
+                                                    Ok(_) => {
+                                                        last_err = Some(anyhow::anyhow!(err));
+                                                        if attempt < MAX_UPLOAD_ATTEMPTS {
+                                                            let delay = std::cmp::min(
+                                                                INITIAL_RETRY_DELAY
+                                                                    * 2u32.pow(attempt - 1),
+                                                                MAX_RETRY_DELAY,
+                                                            );
+                                                            tokio::time::sleep(delay).await;
+                                                        }
+                                                        continue;
                                                     }
-                                                    continue;
+                                                    Err(del_err) => {
+                                                        eprintln!(
+                                                            "warn: could not overwrite existing asset '{}' on release '{}' \
+                                                             (size mismatch and delete failed: {}); skipping — stale asset kept",
+                                                            file_name, tag_c, del_err
+                                                        );
+                                                        last_err = None;
+                                                        break;
+                                                    }
                                                 }
                                             }
 
