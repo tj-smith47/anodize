@@ -77,12 +77,16 @@ fn sparse_index_url(crate_name: &str) -> String {
     }
 }
 
-/// Check whether `crate_name` at `version` is already published on crates.io.
+/// Check whether `crate_name` at `version` is already published on crates.io,
+/// and if so, return the index-recorded sha256 cksum so callers can detect
+/// drift between the local .crate and what's already on the registry.
 ///
-/// Returns `Ok(true)` if the index has the version, `Ok(false)` if the crate
-/// doesn't exist or the specific version isn't there, `Err` on transport errors.
-/// Used to make publishes idempotent across retries.
-fn is_already_published(crate_name: &str, version: &str) -> Result<bool> {
+/// Returns `Ok(Some(cksum_hex))` if the index has this version (cksum may be
+/// an empty string if the index entry is malformed), `Ok(None)` if the crate
+/// or version isn't present, `Err` on transport errors. Used to make publishes
+/// idempotent across retries while surfacing same-version drift instead of
+/// silently skipping a re-release that would install stale content.
+fn is_already_published(crate_name: &str, version: &str) -> Result<Option<String>> {
     use std::time::Duration;
 
     let url = sparse_index_url(crate_name);
@@ -96,7 +100,7 @@ fn is_already_published(crate_name: &str, version: &str) -> Result<bool> {
 
     // 404 = crate has never been published — not already published.
     if resp.status().as_u16() == 404 {
-        return Ok(false);
+        return Ok(None);
     }
     if !resp.status().is_success() {
         anyhow::bail!(
@@ -107,13 +111,57 @@ fn is_already_published(crate_name: &str, version: &str) -> Result<bool> {
     }
 
     let body = resp.text().unwrap_or_default();
-    let found = body.lines().any(|line| {
-        serde_json::from_str::<serde_json::Value>(line)
-            .ok()
-            .and_then(|v| v.get("vers")?.as_str().map(|s| s == version))
-            .unwrap_or(false)
+    let cksum = body.lines().find_map(|line| {
+        let v = serde_json::from_str::<serde_json::Value>(line).ok()?;
+        if v.get("vers")?.as_str()? != version {
+            return None;
+        }
+        Some(
+            v.get("cksum")
+                .and_then(|c| c.as_str())
+                .unwrap_or("")
+                .to_string(),
+        )
     });
-    Ok(found)
+    Ok(cksum)
+}
+
+/// Package the crate locally (`cargo package -p <name>`) and return the
+/// sha256 hex cksum of the resulting .crate file — the same digest crates.io
+/// records in the sparse index `cksum` field. Used to detect drift when a
+/// version is already published.
+fn compute_local_crate_cksum(crate_name: &str, version: &str) -> Result<String> {
+    use sha2::Digest as _;
+
+    // Ensure the .crate file exists locally. `cargo package` is idempotent
+    // when inputs haven't changed, so this is cheap on warm builds.
+    let output = Command::new("cargo")
+        .args([
+            "package",
+            "-p",
+            crate_name,
+            "--allow-dirty",
+            "--no-verify",
+            "--quiet",
+        ])
+        .output()
+        .with_context(|| format!("publish: spawn `cargo package -p {}`", crate_name))?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "publish: `cargo package -p {}` failed: {}",
+            crate_name,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+
+    let target_dir = std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "target".to_string());
+    let crate_path = std::path::PathBuf::from(&target_dir)
+        .join("package")
+        .join(format!("{}-{}.crate", crate_name, version));
+    let bytes = std::fs::read(&crate_path)
+        .with_context(|| format!("publish: read packaged crate {}", crate_path.display()))?;
+    let digest = sha2::Sha256::digest(&bytes);
+    Ok(digest.iter().map(|b| format!("{:02x}", b)).collect())
 }
 
 /// Poll the crates.io sparse index until `crate_name` at `version` appears or
@@ -337,30 +385,70 @@ pub fn publish_to_crates_io(
             .and_then(|path| read_cargo_toml_version(path))
             .unwrap_or_else(|| version.clone());
 
-        // Idempotency: skip if this version is already on crates.io.  Lets the
-        // publish stage tolerate retries after a partial run (e.g. crates.io
-        // new-crate rate-limit) without failing on the first already-published
-        // crate.  Index check failures are non-fatal — we still try to publish.
-        let already = if crate_version.is_empty() {
-            false
+        // Idempotency with drift detection: if this version is already on
+        // crates.io, only skip when the local .crate matches the index cksum.
+        // crates.io versions are immutable once published — if the local
+        // bytes differ (typically because the same tag was re-cut against a
+        // different commit), the cached crates.io content is stale and
+        // silently skipping would leave users on `cargo install` getting
+        // content that doesn't match the git tag. Bail with explicit "bump
+        // version" guidance instead.
+        //
+        // Index check failures are non-fatal — we still try to publish and
+        // let cargo's server-side guard (409 Conflict) catch real drift.
+        let published_cksum = if crate_version.is_empty() {
+            None
         } else {
             match is_already_published(name, &crate_version) {
-                Ok(found) => found,
+                Ok(c) => c,
                 Err(e) => {
                     log.warn(&format!(
                         "could not check crates.io index for '{}-{}' ({}); attempting publish anyway",
                         name, crate_version, e
                     ));
-                    false
+                    None
                 }
             }
         };
-        if already {
-            log.status(&format!(
-                "skipping '{}-{}' — already published on crates.io",
-                name, crate_version
-            ));
-            continue;
+        if let Some(index_cksum) = published_cksum {
+            if index_cksum.is_empty() {
+                // Index entry exists but has no cksum we can read. Fall back
+                // to the historical skip behaviour rather than error, since
+                // we can't verify drift.
+                log.status(&format!(
+                    "skipping '{}-{}' — already published on crates.io (index cksum unavailable, not verifying)",
+                    name, crate_version
+                ));
+                continue;
+            }
+            match compute_local_crate_cksum(name, &crate_version) {
+                Ok(local_cksum) if local_cksum == index_cksum => {
+                    log.status(&format!(
+                        "skipping '{}-{}' — already published on crates.io (cksum match)",
+                        name, crate_version
+                    ));
+                    continue;
+                }
+                Ok(local_cksum) => {
+                    anyhow::bail!(
+                        "crates.io: '{}-{}' is already published but the local .crate differs \
+                         (index sha256={}, local sha256={}). crates.io versions are immutable \
+                         once published — bump the version before re-releasing.",
+                        name,
+                        crate_version,
+                        index_cksum,
+                        local_cksum
+                    );
+                }
+                Err(e) => {
+                    log.warn(&format!(
+                        "could not compute local .crate cksum for '{}-{}' ({}); \
+                         skipping re-publish of the already-published version",
+                        name, crate_version, e
+                    ));
+                    continue;
+                }
+            }
         }
 
         let cmd = publish_command(name);

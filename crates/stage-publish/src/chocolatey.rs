@@ -575,15 +575,53 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
         .as_deref()
         .unwrap_or("https://push.chocolatey.org/");
 
-    // Graceful idempotency: skip the push if this version is already on the
-    // feed (including pending-moderation). Re-pushing a version in moderation
-    // returns 403 from Chocolatey.
-    if package_exists(source, pkg_name, &version) {
-        log.status(&format!(
-            "chocolatey: skipping '{}-{}' — already on feed",
-            pkg_name, version
-        ));
-        return Ok(());
+    // Idempotency with drift detection: Chocolatey package versions are
+    // immutable once submitted, so re-pushing returns 403. We treat a
+    // version-already-on-feed as a skip ONLY when the feed's recorded package
+    // hash matches our local nupkg hash. If they differ, our local nupkg has
+    // diverged from what the feed has — typically because the same git tag
+    // was re-released with different artifact bytes — and silently skipping
+    // would publish an install script that points at an archive whose sha
+    // no longer matches (Chocolatey's verifier then rejects the package).
+    // In that case we fail loudly and tell the user to bump the version.
+    match package_feed_hash(source, pkg_name, &version) {
+        FeedHashResult::Present { hash, algorithm } => {
+            let local = compute_nupkg_hash(&nupkg_path, &algorithm)?;
+            if local == hash {
+                log.status(&format!(
+                    "chocolatey: skipping '{}-{}' — already on feed (hash match)",
+                    pkg_name, version
+                ));
+                return Ok(());
+            }
+            anyhow::bail!(
+                "chocolatey: '{}-{}' is already on the feed but the local nupkg \
+                 differs (feed {}={}, local {}={}). Chocolatey package versions \
+                 are immutable once submitted — bump the version before re-releasing.",
+                pkg_name,
+                version,
+                algorithm,
+                hash,
+                algorithm,
+                local
+            );
+        }
+        FeedHashResult::PresentNoHash => {
+            // Feed reports the version exists but didn't expose a hash we
+            // could parse. Be conservative: don't silently skip without
+            // verification — this is the scenario that bit us before. Log
+            // the situation and let the push attempt proceed; Chocolatey
+            // will return 403 with a recognizable message if it truly is
+            // immutable, and that surfaces as a real error.
+            log.warn(&format!(
+                "chocolatey: '{}-{}' exists on feed but hash was unavailable; \
+                 attempting push so any conflict surfaces as a real error",
+                pkg_name, version
+            ));
+        }
+        FeedHashResult::Absent => {
+            // Not on feed — push normally.
+        }
     }
 
     // Push via NuGet V2 API — same protocol as `choco push`.
@@ -708,17 +746,25 @@ fn walkdir(dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>> {
     Ok(files)
 }
 
-/// Check whether a package version already exists on the NuGet V2 feed.
+/// Outcome of checking the NuGet V2 feed for an existing package version.
+#[derive(Debug, PartialEq, Eq)]
+enum FeedHashResult {
+    /// Feed has this version and we parsed the package hash + algorithm.
+    Present { hash: String, algorithm: String },
+    /// Feed has this version but we could not parse a hash for it.
+    PresentNoHash,
+    /// Feed does not have this version (or we couldn't reach the feed).
+    Absent,
+}
+
+/// Query the NuGet V2 OData feed for a package version and extract its
+/// recorded hash so callers can detect drift between the local nupkg and
+/// what's already published.
 ///
 /// Chocolatey's community feed lives at `community.chocolatey.org`, but
 /// pushes go to `push.chocolatey.org`. Map push URLs to the query feed so
-/// the existence check works for either form.
-///
-/// Returns `true` when the feed responds with an OData entry for the given
-/// id+version. Returns `false` on any error (network, parse, 404) — the
-/// caller then proceeds with a push attempt, matching how `cargo publish`
-/// and `choco push` treat unknown states.
-fn package_exists(push_source: &str, name: &str, version: &str) -> bool {
+/// the hash lookup works for either form.
+fn package_feed_hash(push_source: &str, name: &str, version: &str) -> FeedHashResult {
     let query_base = if push_source.contains("push.chocolatey.org") {
         "https://community.chocolatey.org"
     } else {
@@ -738,21 +784,86 @@ fn package_exists(push_source: &str, name: &str, version: &str) -> bool {
 
     let client = match anodizer_core::http::blocking_client(std::time::Duration::from_secs(30)) {
         Ok(c) => c,
-        Err(_) => return false,
+        Err(_) => return FeedHashResult::Absent,
     };
 
-    match client.get(&url).send() {
-        Ok(resp) if resp.status().is_success() => {
-            // OData returns a <m:properties> entry when the package exists,
-            // or an empty <feed>/<entry> skeleton when it doesn't. Presence
-            // of the id tag in the body means the version is registered.
-            let body = resp.text().unwrap_or_default();
-            body.contains("<id>")
-                && (body.contains(&format!(",Version='{}'", version))
-                    || body.contains(&format!("Version='{}'", version)))
-        }
-        _ => false,
+    let body = match client.get(&url).send() {
+        Ok(resp) if resp.status().is_success() => resp.text().unwrap_or_default(),
+        _ => return FeedHashResult::Absent,
+    };
+
+    // Presence check: the OData feed returns a populated <entry> with
+    // <id> and the version marker when the version is registered, and an
+    // empty <feed> skeleton otherwise.
+    let present = body.contains("<id>")
+        && (body.contains(&format!(",Version='{}'", version))
+            || body.contains(&format!("Version='{}'", version)));
+    if !present {
+        return FeedHashResult::Absent;
     }
+
+    let hash = parse_xml_element(&body, "PackageHash");
+    let algorithm = parse_xml_element(&body, "PackageHashAlgorithm");
+    match (hash, algorithm) {
+        (Some(h), Some(a)) if !h.is_empty() && !a.is_empty() => FeedHashResult::Present {
+            hash: h,
+            algorithm: a,
+        },
+        _ => FeedHashResult::PresentNoHash,
+    }
+}
+
+/// Extract the inner text of an OData property element. The feed uses
+/// namespaced tag names like `<d:PackageHash>...</d:PackageHash>`; match
+/// on the local part so the parse works regardless of the chosen prefix.
+fn parse_xml_element(body: &str, local_name: &str) -> Option<String> {
+    // Find a tag whose local name matches (after any ':' prefix separator).
+    let needle = format!("{}>", local_name);
+    let mut search_from = 0;
+    while let Some(tag_start) = body[search_from..].find(&needle) {
+        let abs_tag_start = search_from + tag_start;
+        // Make sure this is the opening tag — the char before must be '<'
+        // or the local-name prefix boundary (':').
+        let before = body[..abs_tag_start].chars().last();
+        if !matches!(before, Some('<') | Some(':')) {
+            search_from = abs_tag_start + needle.len();
+            continue;
+        }
+        let value_start = abs_tag_start + needle.len();
+        // Closing tag: look for "</..LocalName>".
+        let closing_marker = format!("{}>", local_name);
+        let rest = &body[value_start..];
+        let close_idx = rest.find("</")?;
+        let close_tag = &rest[close_idx..];
+        if close_tag.contains(&closing_marker) {
+            return Some(rest[..close_idx].trim().to_string());
+        }
+        search_from = abs_tag_start + needle.len();
+    }
+    None
+}
+
+/// Compute a base64-encoded hash of the nupkg at `path` using the algorithm
+/// named by the NuGet feed (`SHA512`, `SHA256`, `MD5`). Chocolatey's
+/// community feed records SHA512; support the other common values so the
+/// check isn't brittle if the algorithm changes.
+fn compute_nupkg_hash(path: &std::path::Path, algorithm: &str) -> Result<String> {
+    use base64::Engine as _;
+    use sha2::Digest as _;
+
+    let bytes = std::fs::read(path)
+        .with_context(|| format!("chocolatey: read nupkg {}", path.display()))?;
+
+    let digest: Vec<u8> = match algorithm.to_ascii_uppercase().as_str() {
+        "SHA512" => sha2::Sha512::digest(&bytes).to_vec(),
+        "SHA256" => sha2::Sha256::digest(&bytes).to_vec(),
+        "MD5" => md5::Md5::digest(&bytes).to_vec(),
+        other => anyhow::bail!(
+            "chocolatey: unsupported feed hash algorithm '{}' (expected SHA512, SHA256, or MD5)",
+            other
+        ),
+    };
+    Ok(base64::engine::general_purpose::STANDARD.encode(&digest))
 }
 
 /// Push a .nupkg to a NuGet V2 API endpoint (Chocolatey, NuGet.org, etc.).
