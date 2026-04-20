@@ -320,6 +320,7 @@ dependencies = [
  "anyhow",
  "base64",
  "glob",
+ "md-5",
  "regex",
  "reqwest",
  "serde",

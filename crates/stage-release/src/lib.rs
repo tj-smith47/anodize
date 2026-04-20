@@ -2447,7 +2447,21 @@ impl Stage for ReleaseStage {
                                             } else if is_server_error
                                                 || matches!(&err, octocrab::Error::Hyper { .. })
                                                 || matches!(&err, octocrab::Error::Http { .. })
+                                                || matches!(&err, octocrab::Error::Service { .. })
+                                                || matches!(&err, octocrab::Error::Other { .. })
+                                                || matches!(&err, octocrab::Error::Serde { .. })
+                                                || matches!(&err, octocrab::Error::Json { .. })
                                             {
+                                                // Transient transport / proxy issues during upload.
+                                                // Serde / Json here means GitHub returned a non-JSON
+                                                // body (typically an nginx/HAProxy 502/503 HTML page)
+                                                // while our error-mapping expected JSON — always
+                                                // transient, safe to retry. Log the variant so
+                                                // future diagnostics don't have to guess.
+                                                eprintln!(
+                                                    "warn: transient upload error on '{}' attempt {}/{}: {:?}",
+                                                    file_name, attempt, MAX_UPLOAD_ATTEMPTS, err
+                                                );
                                                 last_err = Some(anyhow::anyhow!(err));
                                                 if attempt < MAX_UPLOAD_ATTEMPTS {
                                                     let delay = std::cmp::min(

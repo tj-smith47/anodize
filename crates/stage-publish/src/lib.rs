@@ -80,8 +80,14 @@ impl Stage for PublishStage {
         macro_rules! try_publish {
             ($label:expr, $expr:expr) => {
                 if let Err(e) = $expr {
-                    log.warn(&format!("{}: {}", $label, e));
-                    errors.push(format!("{}: {}", $label, e));
+                    // `{:#}` renders the full anyhow error chain on one line
+                    // (e.g. "top: middle: root cause"). `{}` shows only the
+                    // top context, which discards the actual root cause —
+                    // hiding details like reqwest transport errors, HTTP
+                    // status codes, or response bodies that operators need
+                    // to diagnose a failing publisher.
+                    log.warn(&format!("{}: {:#}", $label, e));
+                    errors.push(format!("{}: {:#}", $label, e));
                 }
             };
         }

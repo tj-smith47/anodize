@@ -18,11 +18,18 @@ pub fn cloudsmith_format_matches(filename: &str, formats: &[impl AsRef<str>]) ->
     crate::util::format_matches(filename, formats)
 }
 
+/// Cloudsmith API base URL (used for files/create and packages/upload/*).
+const CLOUDSMITH_API_BASE: &str = "https://api.cloudsmith.io/v1";
+
 /// Build the CloudSmith upload URL for the given org, repo, format, and distribution.
+///
+/// Retained for dry-run logging parity with prior versions. The live code
+/// path uses the canonical 3-step API flow (files/create → S3 presigned
+/// upload → packages/upload/{format}/) rather than this URL directly.
 pub fn cloudsmith_upload_url(org: &str, repo: &str, format: &str, distribution: &str) -> String {
     format!(
-        "https://upload.cloudsmith.io/{}/{}/{}/{}",
-        org, repo, format, distribution
+        "{}/packages/{}/{}/upload/{}/ (distribution={})",
+        CLOUDSMITH_API_BASE, org, repo, format, distribution
     )
 }
 
@@ -37,6 +44,17 @@ fn detect_format(filename: &str) -> &str {
     } else {
         "raw"
     }
+}
+
+/// Lowercase hex encoding used for the md5 checksum Cloudsmith's
+/// files/create API expects.
+fn hex_lower(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        use std::fmt::Write as _;
+        let _ = write!(out, "{:02x}", b);
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -214,66 +232,231 @@ pub fn publish_to_cloudsmith(ctx: &Context, log: &StageLogger) -> Result<()> {
             let art_name = artifact.name();
             let fmt = detect_format(art_name);
 
-            // Look up distribution for this format
+            // Look up distribution for this format. Cloudsmith accepts an
+            // `any-distro/any-version` pseudo-entry for repos that aren't
+            // distro-pinned, so an empty value is valid input and treated
+            // as "no distribution override".
             let distro = distributions
                 .get(fmt)
                 .or_else(|| distributions.get(art_name))
                 .cloned()
                 .unwrap_or_default();
 
-            // Build multipart form
             let file_bytes = std::fs::read(path)
                 .with_context(|| format!("cloudsmith: failed to read '{}'", path.display()))?;
+            let size_bytes = file_bytes.len();
 
+            // Cloudsmith's files/create API wants a hex-lowercase md5 of
+            // the raw bytes.
+            let md5_hex = {
+                use md5::Digest as _;
+                let mut hasher = md5::Md5::new();
+                hasher.update(&file_bytes);
+                hex_lower(&hasher.finalize())
+            };
+
+            log.status(&format!(
+                "uploading {} ({}, {} bytes, md5={}) -> org '{}' repo '{}'{}",
+                art_name,
+                fmt,
+                size_bytes,
+                md5_hex,
+                organization,
+                repository,
+                if distro.is_empty() {
+                    String::new()
+                } else {
+                    format!(" distro='{}'", distro)
+                },
+            ));
+
+            // --- Step 1/3: request a files/create slot ---
+            //
+            // POST /v1/files/{org}/{repo}/ with the filename + md5 returns
+            // a short-lived S3 presigned upload URL plus the fields the
+            // upload POST must include. This matches what the official
+            // Cloudsmith CLI's `request_file_upload` helper does.
+            let files_create_url = format!(
+                "{}/files/{}/{}/",
+                CLOUDSMITH_API_BASE, organization, repository
+            );
+            let files_create_body = serde_json::json!({
+                "filename": art_name,
+                "md5_checksum": md5_hex,
+                "method": "post",
+            });
+
+            log.verbose(&format!("[step 1/3] POST {}", files_create_url));
+            let create_resp = client
+                .post(&files_create_url)
+                .header("Authorization", format!("token {}", token))
+                .header("Accept", "application/json")
+                .json(&files_create_body)
+                .send()
+                .with_context(|| {
+                    format!(
+                        "cloudsmith files/create transport error for '{}' at {}",
+                        art_name, files_create_url
+                    )
+                })?;
+            let create_status = create_resp.status();
+            let create_body = create_resp
+                .text()
+                .unwrap_or_else(|e| format!("<failed to read body: {}>", e));
+            if !create_status.is_success() {
+                bail!(
+                    "cloudsmith files/create for '{}' returned HTTP {}: {}",
+                    art_name,
+                    create_status,
+                    create_body.trim()
+                );
+            }
+            let create_json: serde_json::Value =
+                serde_json::from_str(&create_body).with_context(|| {
+                    format!(
+                        "cloudsmith files/create for '{}' returned non-JSON body: {}",
+                        art_name,
+                        create_body.trim()
+                    )
+                })?;
+            let identifier = create_json
+                .get("identifier")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "cloudsmith files/create response missing 'identifier' for '{}': {}",
+                        art_name,
+                        create_body.trim()
+                    )
+                })?
+                .to_string();
+            let presigned_url = create_json
+                .get("upload_url")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "cloudsmith files/create response missing 'upload_url' for '{}'",
+                        art_name
+                    )
+                })?
+                .to_string();
+            let upload_fields = create_json
+                .get("upload_fields")
+                .and_then(|v| v.as_object())
+                .cloned()
+                .unwrap_or_default();
+
+            // --- Step 2/3: upload bytes to the presigned S3 URL ---
+            //
+            // The presigned URL is AWS S3 POST form — no Cloudsmith auth
+            // header is added here. The fields returned in step 1 (policy,
+            // signature, key, ...) MUST be included as multipart form text
+            // parts exactly as given, and the actual file goes under the
+            // `file` key (not `package_file`).
+            log.verbose(&format!("[step 2/3] POST {} (presigned)", presigned_url));
+            let mut form = reqwest::blocking::multipart::Form::new();
+            for (k, v) in &upload_fields {
+                let val = v
+                    .as_str()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| v.to_string());
+                form = form.text(k.clone(), val);
+            }
             let file_part = reqwest::blocking::multipart::Part::bytes(file_bytes)
                 .file_name(art_name.to_string())
                 .mime_str("application/octet-stream")
-                .context("cloudsmith: failed to build multipart")?;
+                .context("cloudsmith: failed to build multipart file part")?;
+            form = form.part("file", file_part);
 
-            let mut form =
-                reqwest::blocking::multipart::Form::new().part("package_file", file_part);
-
-            if !distro.is_empty() {
-                form = form.text("distribution", distro.clone());
-            }
-            if let Some(ref comp) = component {
-                form = form.text("component", comp.clone());
-            }
-            if republish {
-                form = form.text("republish", "true".to_string());
-            }
-
-            let upload_url = format!(
-                "https://upload.cloudsmith.io/{}/{}/",
-                organization, repository
-            );
-
-            log.status(&format!(
-                "uploading {} ({}) to {}",
-                art_name, fmt, upload_url
-            ));
-
-            let resp = client
-                .post(&upload_url)
-                .header("X-Api-Key", &token)
+            let upload_resp = client
+                .post(&presigned_url)
                 .multipart(form)
                 .send()
-                .with_context(|| format!("cloudsmith: HTTP request failed for '{}'", art_name))?;
-
-            let status = resp.status();
-            if !status.is_success() {
-                let resp_body = resp.text().unwrap_or_default();
+                .with_context(|| {
+                    format!(
+                        "cloudsmith presigned upload transport error for '{}'",
+                        art_name
+                    )
+                })?;
+            let upload_status = upload_resp.status();
+            if !upload_status.is_success() {
+                let upload_body = upload_resp
+                    .text()
+                    .unwrap_or_else(|e| format!("<failed to read body: {}>", e));
                 bail!(
-                    "cloudsmith: upload of '{}' to org '{}' repo '{}' failed: {} — {}",
+                    "cloudsmith presigned upload for '{}' returned HTTP {}: {}",
                     art_name,
-                    organization,
-                    repository,
-                    status,
-                    resp_body
+                    upload_status,
+                    upload_body.trim()
                 );
             }
 
-            log.status(&format!("uploaded {} ({})", art_name, status));
+            // --- Step 3/3: create the package record in the repo ---
+            //
+            // POST /v1/packages/{org}/{repo}/upload/{format}/ with the
+            // identifier + distribution tells Cloudsmith to take the
+            // uploaded raw file and register it as a deb/rpm/alpine
+            // package. Without this step the bytes are dangling.
+            let package_upload_url = format!(
+                "{}/packages/{}/{}/upload/{}/",
+                CLOUDSMITH_API_BASE, organization, repository, fmt
+            );
+            let mut package_body = serde_json::json!({
+                "package_file": identifier,
+            });
+            if !distro.is_empty() {
+                package_body["distribution"] = serde_json::Value::String(distro.clone());
+            }
+            if let Some(ref comp) = component {
+                package_body["component"] = serde_json::Value::String(comp.clone());
+            }
+            if republish {
+                package_body["republish"] = serde_json::Value::Bool(true);
+            }
+
+            log.verbose(&format!(
+                "[step 3/3] POST {} (identifier={})",
+                package_upload_url, identifier
+            ));
+            let pkg_resp = client
+                .post(&package_upload_url)
+                .header("Authorization", format!("token {}", token))
+                .header("Accept", "application/json")
+                .json(&package_body)
+                .send()
+                .with_context(|| {
+                    format!(
+                        "cloudsmith packages/upload/{} transport error for '{}' at {}",
+                        fmt, art_name, package_upload_url
+                    )
+                })?;
+            let pkg_status = pkg_resp.status();
+            let pkg_body = pkg_resp
+                .text()
+                .unwrap_or_else(|e| format!("<failed to read body: {}>", e));
+            if !pkg_status.is_success() {
+                bail!(
+                    "cloudsmith packages/upload/{} for '{}' returned HTTP {}: {}",
+                    fmt,
+                    art_name,
+                    pkg_status,
+                    pkg_body.trim()
+                );
+            }
+
+            let slug = serde_json::from_str::<serde_json::Value>(&pkg_body)
+                .ok()
+                .and_then(|v| {
+                    v.get("slug_perm")
+                        .or_else(|| v.get("slug"))
+                        .and_then(|s| s.as_str())
+                        .map(|s| s.to_string())
+                });
+            if let Some(s) = slug {
+                log.status(&format!("uploaded {} (slug={})", art_name, s));
+            } else {
+                log.status(&format!("uploaded {} (HTTP {})", art_name, pkg_status));
+            }
         }
 
         log.status(&format!(
@@ -423,10 +606,15 @@ mod tests {
 
     #[test]
     fn test_cloudsmith_upload_url() {
+        // Display-only helper (dry-run logs). Live code uses the 3-step API
+        // flow against api.cloudsmith.io, not a single upload URL.
         let url = cloudsmith_upload_url("myorg", "myrepo", "deb", "ubuntu/focal");
         assert_eq!(
             url,
-            "https://upload.cloudsmith.io/myorg/myrepo/deb/ubuntu/focal"
+            format!(
+                "{}/packages/myorg/myrepo/upload/deb/ (distribution=ubuntu/focal)",
+                CLOUDSMITH_API_BASE
+            )
         );
     }
 
