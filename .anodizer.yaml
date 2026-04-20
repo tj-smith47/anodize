@@ -312,12 +312,18 @@ crates:
           bin.install "anodizer"
         test: |
           system "#{bin}/anodizer", "--version"
+        commit_author:
+          name: TJ Smith
+          email: tj@jarvispro.io
       scoop:
         bucket:
           owner: tj-smith47
           name: scoop-bucket
         description: "A Rust-native release automation tool"
         license: MIT
+        commit_author:
+          name: TJ Smith
+          email: tj@jarvispro.io
       chocolatey:
         project_repo:
           owner: tj-smith47
@@ -328,6 +334,9 @@ crates:
           - release
           - automation
           - rust
+        commit_author:
+          name: TJ Smith
+          email: tj@jarvispro.io
       winget:
         manifests_repo:
           owner: tj-smith47
@@ -336,6 +345,9 @@ crates:
         license: MIT
         package_identifier: "TJSmith.Anodizer"
         publisher: "TJ Smith"
+        commit_author:
+          name: TJ Smith
+          email: tj@jarvispro.io
       aur:
         disable: true  # no AUR account registered yet
         git_url: "ssh://aur@aur.archlinux.org/anodizer-bin.git"
@@ -344,6 +356,9 @@ crates:
         license: MIT
         depends:
           - glibc
+        commit_author:
+          name: TJ Smith
+          email: tj@jarvispro.io
       nix:
         name: anodizer
         repository:
@@ -353,12 +368,18 @@ crates:
         description: "A Rust-native release automation tool"
         license: mit
         skip_upload: false
+        commit_author:
+          name: TJ Smith
+          email: tj@jarvispro.io
       krew:
         manifests_repo:
           owner: tj-smith47
           name: krew-index
         short_description: "A Rust-native release automation tool"
         homepage: "https://github.com/tj-smith47/anodizer"
+        commit_author:
+          name: TJ Smith
+          email: tj@jarvispro.io
     nfpm:
       - package_name: anodizer
         formats:
@@ -557,7 +578,7 @@ artifactories:
 
 # CloudSmith publisher
 cloudsmiths:
-  - organization: tj-smith47
+  - organization: jarvispro
     repository: anodizer
     formats: [deb, rpm, alpine]
     distributions:
