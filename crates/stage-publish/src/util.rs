@@ -1123,6 +1123,13 @@ pub(crate) struct OsArtifact {
     /// ARM version (e.g. "6", "7").
     /// Populated from artifact metadata when present.
     pub arm_variant: Option<String>,
+    /// In-archive binary filename for archive artifacts (first entry of
+    /// `extra_binaries`), or the binary name for `UploadableBinary`
+    /// artifacts. None when neither is present. Krew/Scoop/etc. publishers
+    /// rely on this to point `bin:` at the actual file inside the archive,
+    /// which can differ from the crate name (e.g. crate `my-tool` ships
+    /// binary `mytool`) and ends in `.exe` on Windows.
+    pub binary: Option<String>,
 }
 
 /// Convert a single `Artifact` reference into an `OsArtifact`, using the
@@ -1141,6 +1148,14 @@ fn artifact_to_os_artifact(a: &Artifact, os_fallback: &str) -> OsArtifact {
     let amd64_variant = a.metadata.get("amd64_variant").cloned();
     let arm_variant = a.metadata.get("arm_variant").cloned();
     let target = a.target.as_deref().unwrap_or("");
+    // Prefer archive's first extra_binaries entry; fall back to the artifact's
+    // own `binary` metadata (set on UploadableBinary). None when this artifact
+    // has no associated binary name (caller may substitute crate_name).
+    let binary = a
+        .extra_binaries()
+        .into_iter()
+        .next()
+        .or_else(|| a.metadata.get("binary").cloned());
     OsArtifact {
         url,
         sha256,
@@ -1149,6 +1164,7 @@ fn artifact_to_os_artifact(a: &Artifact, os_fallback: &str) -> OsArtifact {
         id,
         amd64_variant,
         arm_variant,
+        binary,
     }
 }
 
@@ -1679,6 +1695,7 @@ mod tests {
                 id: Some("a".to_string()),
                 amd64_variant: None,
                 arm_variant: None,
+                binary: None,
             },
             OsArtifact {
                 url: "u2".to_string(),
@@ -1688,6 +1705,7 @@ mod tests {
                 id: Some("b".to_string()),
                 amd64_variant: None,
                 arm_variant: None,
+                binary: None,
             },
         ];
         let result = filter_os_artifacts_by_ids(artifacts, None);
@@ -1705,6 +1723,7 @@ mod tests {
                 id: Some("keep-me".to_string()),
                 amd64_variant: None,
                 arm_variant: None,
+                binary: None,
             },
             OsArtifact {
                 url: "u2".to_string(),
@@ -1714,6 +1733,7 @@ mod tests {
                 id: Some("drop-me".to_string()),
                 amd64_variant: None,
                 arm_variant: None,
+                binary: None,
             },
             OsArtifact {
                 url: "u3".to_string(),
@@ -1723,6 +1743,7 @@ mod tests {
                 id: None,
                 amd64_variant: None,
                 arm_variant: None,
+                binary: None,
             },
         ];
         let ids = vec!["keep-me".to_string()];
@@ -1741,6 +1762,7 @@ mod tests {
             id: Some("a".to_string()),
             amd64_variant: None,
             arm_variant: None,
+            binary: None,
         }];
         let ids: Vec<String> = vec![];
         let result = filter_os_artifacts_by_ids(artifacts, Some(&ids));
@@ -1831,6 +1853,7 @@ mod tests {
                 id: None,
                 amd64_variant: Some("v1".into()),
                 arm_variant: None,
+                binary: None,
             },
             OsArtifact {
                 url: "u2".into(),
@@ -1840,6 +1863,7 @@ mod tests {
                 id: None,
                 amd64_variant: Some("v3".into()),
                 arm_variant: None,
+                binary: None,
             },
         ];
         let result = filter_by_variant(artifacts, None, None);
@@ -1857,6 +1881,7 @@ mod tests {
                 id: None,
                 amd64_variant: Some("v1".into()),
                 arm_variant: None,
+                binary: None,
             },
             OsArtifact {
                 url: "v3".into(),
@@ -1866,6 +1891,7 @@ mod tests {
                 id: None,
                 amd64_variant: Some("v3".into()),
                 arm_variant: None,
+                binary: None,
             },
             OsArtifact {
                 url: "arm64".into(),
@@ -1875,6 +1901,7 @@ mod tests {
                 id: None,
                 amd64_variant: None,
                 arm_variant: None,
+                binary: None,
             },
         ];
         let result = filter_by_variant(artifacts, Some("v1"), None);
@@ -1894,6 +1921,7 @@ mod tests {
             id: None,
             amd64_variant: None,
             arm_variant: None,
+            binary: None,
         }];
         let result = filter_by_variant(artifacts, Some("v1"), None);
         assert_eq!(result.len(), 1);
@@ -1910,6 +1938,7 @@ mod tests {
                 id: None,
                 amd64_variant: None,
                 arm_variant: Some("6".into()),
+                binary: None,
             },
             OsArtifact {
                 url: "arm7".into(),
@@ -1919,6 +1948,7 @@ mod tests {
                 id: None,
                 amd64_variant: None,
                 arm_variant: Some("7".into()),
+                binary: None,
             },
         ];
         let result = filter_by_variant(artifacts, None, Some("7"));
@@ -1937,6 +1967,7 @@ mod tests {
                 id: None,
                 amd64_variant: Some("v1".into()),
                 arm_variant: None,
+                binary: None,
             },
             OsArtifact {
                 url: "amd64-v3".into(),
@@ -1946,6 +1977,7 @@ mod tests {
                 id: None,
                 amd64_variant: Some("v3".into()),
                 arm_variant: None,
+                binary: None,
             },
             OsArtifact {
                 url: "arm6".into(),
@@ -1955,6 +1987,7 @@ mod tests {
                 id: None,
                 amd64_variant: None,
                 arm_variant: Some("6".into()),
+                binary: None,
             },
             OsArtifact {
                 url: "arm7".into(),
@@ -1964,6 +1997,7 @@ mod tests {
                 id: None,
                 amd64_variant: None,
                 arm_variant: Some("7".into()),
+                binary: None,
             },
         ];
         let result = filter_by_variant(artifacts, Some("v1"), Some("7"));

@@ -179,9 +179,35 @@ fn krew_os(os: &str) -> &str {
 
 /// Convert `OsArtifact`s into `KrewPlatform`s.
 ///
-/// when an artifact has arch "all", it is expanded into
-/// platform entries for both amd64 and arm64.
-fn artifacts_to_platforms(artifacts: &[OsArtifact], binary_name: &str) -> Vec<KrewPlatform> {
+/// When an artifact has arch "all", it is expanded into platform entries
+/// for both amd64 and arm64.
+///
+/// `bin:` resolution per platform:
+/// 1. Use the artifact's in-archive binary name when known
+///    (`OsArtifact.binary`, populated from `extra_binaries[0]` for archives
+///    or the `binary` metadata for uploadable binaries).
+/// 2. Fall back to `default_binary_name` (the crate name) when the artifact
+///    didn't carry a binary name.
+/// 3. Append `.exe` for Windows targets when the resolved name doesn't
+///    already end in `.exe`. Krew takes `bin:` literally — it does NOT
+///    add `.exe` itself — so a Windows entry without the suffix fails to
+///    install (krew validator: "source binary cannot be found in extracted
+///    archive"). GoReleaser produces `.exe` naturally because its Go
+///    builder appends it to `binary.Name`; anodizer's archive metadata
+///    stores the suffix-less name, so we normalize here.
+fn artifacts_to_platforms(
+    artifacts: &[OsArtifact],
+    default_binary_name: &str,
+) -> Vec<KrewPlatform> {
+    fn resolve_bin(a: &OsArtifact, default: &str, target_os: &str) -> String {
+        let base = a.binary.clone().unwrap_or_else(|| default.to_string());
+        if target_os == "windows" && !base.to_ascii_lowercase().ends_with(".exe") {
+            format!("{}.exe", base)
+        } else {
+            base
+        }
+    }
+
     let mut platforms = Vec::new();
     for a in artifacts {
         let os = krew_os(&a.os).to_string();
@@ -193,16 +219,16 @@ fn artifacts_to_platforms(artifacts: &[OsArtifact], binary_name: &str) -> Vec<Kr
                     arch: expanded_arch.to_string(),
                     url: a.url.clone(),
                     sha256: a.sha256.clone(),
-                    bin: binary_name.to_string(),
+                    bin: resolve_bin(a, default_binary_name, &os),
                 });
             }
         } else {
             platforms.push(KrewPlatform {
-                os,
                 arch: krew_arch(&a.arch).to_string(),
                 url: a.url.clone(),
                 sha256: a.sha256.clone(),
-                bin: binary_name.to_string(),
+                bin: resolve_bin(a, default_binary_name, &os),
+                os,
             });
         }
     }
@@ -310,7 +336,12 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
     let homepage = ctx
         .render_template(&homepage_raw)
         .unwrap_or_else(|_| homepage_raw.clone());
-    let caveats = krew_cfg.caveats.clone().unwrap_or_default();
+    // GoReleaser krew.go:154-160 templates Caveats alongside the other
+    // narrative fields; anodizer was passing it through verbatim.
+    let caveats_raw = krew_cfg.caveats.clone().unwrap_or_default();
+    let caveats = ctx
+        .render_template(&caveats_raw)
+        .unwrap_or_else(|_| caveats_raw.clone());
 
     // Find artifacts across all platforms, applying IDs + amd64_variant/arm_variant filter.
     let ids_filter = krew_cfg.ids.as_deref();
@@ -354,22 +385,19 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
 
     let url_template = krew_cfg.url_template.as_deref();
 
-    let platforms = if all_artifacts.is_empty() {
-        log.warn(&format!(
-            "krew: no artifacts found for '{}', using placeholder URLs",
+    if all_artifacts.is_empty() {
+        // GR krew.go:115-117 returns ErrNoArchivesFound — a krew manifest
+        // with no real artifacts is unusable (the placeholder URL was a
+        // fabricated guess that produced 404s on install). Fail loudly.
+        anyhow::bail!(
+            "krew: no archive artifacts found for '{}'. The krew publisher \
+             needs at least one platform archive to construct the manifest. \
+             Either add Windows/Linux/macOS targets for this crate or remove \
+             the krew publisher config.",
             crate_name
-        ));
-        vec![KrewPlatform {
-            os: "linux".to_string(),
-            arch: "amd64".to_string(),
-            url: format!(
-                "https://github.com/{0}/{1}/releases/download/v{2}/{1}-{2}-linux-amd64.tar.gz",
-                repo_owner, crate_name, version
-            ),
-            sha256: String::new(),
-            bin: crate_name.to_string(),
-        }]
-    } else {
+        );
+    }
+    let platforms = {
         let mut plats = artifacts_to_platforms(&all_artifacts, crate_name);
         if let Some(tmpl) = url_template {
             for p in &mut plats {
@@ -834,5 +862,74 @@ mod tests {
         let log = StageLogger::new("publish", Verbosity::Normal);
 
         assert!(publish_to_krew(&ctx, "mytool", &log).is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // artifacts_to_platforms .exe / binary-name-resolution tests
+    // -----------------------------------------------------------------------
+
+    fn make_os_artifact(os: &str, arch: &str, binary: Option<&str>) -> OsArtifact {
+        OsArtifact {
+            url: format!("https://example.com/{}-{}.tar.gz", os, arch),
+            sha256: "deadbeef".into(),
+            os: os.into(),
+            arch: arch.into(),
+            id: None,
+            amd64_variant: None,
+            arm_variant: None,
+            binary: binary.map(|s| s.to_string()),
+        }
+    }
+
+    #[test]
+    fn test_artifacts_to_platforms_appends_exe_for_windows() {
+        let arts = vec![
+            make_os_artifact("linux", "amd64", Some("cfgd")),
+            make_os_artifact("windows", "amd64", Some("cfgd")),
+            make_os_artifact("darwin", "arm64", Some("cfgd")),
+        ];
+        let plats = artifacts_to_platforms(&arts, "cfgd");
+        let by_os = |os: &str| plats.iter().find(|p| p.os == os).expect("missing platform");
+        assert_eq!(by_os("linux").bin, "cfgd");
+        assert_eq!(by_os("windows").bin, "cfgd.exe");
+        assert_eq!(by_os("darwin").bin, "cfgd");
+    }
+
+    #[test]
+    fn test_artifacts_to_platforms_does_not_double_suffix_exe() {
+        let arts = vec![make_os_artifact("windows", "amd64", Some("cfgd.exe"))];
+        let plats = artifacts_to_platforms(&arts, "cfgd");
+        assert_eq!(plats[0].bin, "cfgd.exe");
+    }
+
+    #[test]
+    fn test_artifacts_to_platforms_uses_archive_binary_name_over_default() {
+        // Crate is `kubectl-cfgd` but ships binary `cfgd` — the manifest
+        // must point at the in-archive name, not the crate name.
+        let arts = vec![make_os_artifact("linux", "amd64", Some("cfgd"))];
+        let plats = artifacts_to_platforms(&arts, "kubectl-cfgd");
+        assert_eq!(plats[0].bin, "cfgd");
+    }
+
+    #[test]
+    fn test_artifacts_to_platforms_falls_back_to_default_when_binary_unset() {
+        let arts = vec![make_os_artifact("linux", "amd64", None)];
+        let plats = artifacts_to_platforms(&arts, "cfgd");
+        assert_eq!(plats[0].bin, "cfgd");
+    }
+
+    #[test]
+    fn test_artifacts_to_platforms_arch_all_expands_with_correct_bin() {
+        // arch=all should expand to amd64+arm64 with the same bin name on
+        // both. Not a Windows test (krew doesn't use arch=all on windows
+        // in practice) — just confirms the expansion path also flows
+        // through resolve_bin.
+        let arts = vec![make_os_artifact("darwin", "all", Some("cfgd"))];
+        let plats = artifacts_to_platforms(&arts, "cfgd");
+        assert_eq!(plats.len(), 2);
+        assert!(plats.iter().all(|p| p.bin == "cfgd"));
+        let arches: Vec<_> = plats.iter().map(|p| p.arch.as_str()).collect();
+        assert!(arches.contains(&"amd64"));
+        assert!(arches.contains(&"arm64"));
     }
 }
