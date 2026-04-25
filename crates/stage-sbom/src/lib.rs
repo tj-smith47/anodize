@@ -327,9 +327,12 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
 
     let id = sbom_cfg.id.as_deref().unwrap_or("default");
 
-    // Evaluate disable — supports bool or template string
+    // Evaluate disable — supports bool or template string. Use
+    // try_is_disabled so a malformed disable: template surfaces as Err
+    // instead of silently evaluating false.
     if let Some(ref d) = sbom_cfg.disable
-        && d.is_disabled(|s| ctx.render_template(s))
+        && d.try_is_disabled(|s| ctx.render_template(s))
+            .with_context(|| format!("sbom[{}]: evaluate disable expression", id))?
     {
         log.status(&format!("sbom[{}]: disabled, skipping", id));
         return Ok(());
