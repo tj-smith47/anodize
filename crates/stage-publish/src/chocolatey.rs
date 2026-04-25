@@ -433,18 +433,20 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
             }
         }
         (None, None) => {
-            log.warn(&format!(
-                "chocolatey: no windows artifact found for '{}', using placeholder URL",
+            // No Windows artifact = no install script that can possibly
+            // verify or download the binary. Pushing a nupkg with an empty
+            // checksum and a fabricated GitHub URL is what trips moderator
+            // rejection (broken install script). GoReleaser fails this case
+            // loudly (errNoWindowsArchive at chocolatey.go:21,120); we now
+            // match that behavior.
+            anyhow::bail!(
+                "chocolatey: no windows artifact found for '{}'. Chocolatey \
+                 requires a Windows archive (or msi/nsis when configured via \
+                 `use:`) to construct a working install script. Either build \
+                 a Windows target for this crate or remove the chocolatey \
+                 publisher config.",
                 crate_name
-            ));
-            InstallMode::Single {
-                url: format!(
-                    "https://github.com/{0}/{1}/releases/download/v{2}/{1}-{2}-windows-amd64.zip",
-                    project_repo.owner, crate_name, version
-                ),
-                hash: String::new(),
-                is_32bit: false,
-            }
+            );
         }
     };
 
@@ -578,11 +580,45 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
     // no longer matches (Chocolatey's verifier then rejects the package).
     // In that case we fail loudly and tell the user to bump the version.
     match package_feed_hash(source, pkg_name, &version) {
-        FeedHashResult::Present { hash, algorithm } => {
+        FeedHashResult::Present {
+            hash,
+            algorithm,
+            status,
+            listed,
+            published,
+        } => {
+            // A version stuck in the community moderation queue (Listed=false,
+            // status=Submitted/Unknown/Rejected/Exempted) MUST NOT be re-pushed
+            // — Chocolatey rejects re-pushes of submitted versions, and the
+            // hash-match check below would otherwise silently no-op every CI
+            // run while the gallery shows nothing. Surface the queue state
+            // explicitly so the operator knows to wait or contact moderators.
+            if listed == Some(false) {
+                let status_label = status.as_deref().unwrap_or("Unknown");
+                let published_label = published.as_deref().unwrap_or("");
+                if status_label.eq_ignore_ascii_case("Rejected") {
+                    anyhow::bail!(
+                        "chocolatey: '{}-{}' was REJECTED by the community moderators \
+                         (PackageStatus=Rejected, Published={}). Address the rejection \
+                         reason on the gallery and bump the version before re-pushing.",
+                        pkg_name,
+                        version,
+                        published_label
+                    );
+                }
+                log.status(&format!(
+                    "chocolatey: '{}-{}' is in the community moderation queue \
+                     (PackageStatus={}, Published={}); not re-pushing — waiting on \
+                     moderator approval. The gallery will not list the package until \
+                     it transitions to Listed=true.",
+                    pkg_name, version, status_label, published_label
+                ));
+                return Ok(());
+            }
             let local = compute_nupkg_hash(&nupkg_path, &algorithm)?;
             if local == hash {
                 log.status(&format!(
-                    "chocolatey: skipping '{}-{}' — already on feed (hash match)",
+                    "chocolatey: skipping '{}-{}' — already published (hash match)",
                     pkg_name, version
                 ));
                 return Ok(());
@@ -742,8 +778,24 @@ fn walkdir(dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>> {
 /// Outcome of checking the NuGet V2 feed for an existing package version.
 #[derive(Debug, PartialEq, Eq)]
 enum FeedHashResult {
-    /// Feed has this version and we parsed the package hash + algorithm.
-    Present { hash: String, algorithm: String },
+    /// Feed has this version. `listed` and `status` distinguish a published
+    /// (Listed=true) version from one stuck in the community moderation
+    /// queue (Listed=false, status=Submitted/Unknown/Rejected/Exempted).
+    Present {
+        hash: String,
+        algorithm: String,
+        /// `<d:PackageStatus>`: "Submitted" / "Listed" / "Rejected" /
+        /// "Exempted" / "Unknown". Absent on feeds that don't expose the
+        /// field.
+        status: Option<String>,
+        /// `<d:Listed>` boolean. `Some(false)` for moderation-queue
+        /// entries; `Some(true)` once a moderator approves; `None` when
+        /// the feed didn't expose the field.
+        listed: Option<bool>,
+        /// `<d:Published>` ISO-8601. The string "1900-01-01T00:00:00" is
+        /// Chocolatey's unlisted sentinel (matches Listed=false).
+        published: Option<String>,
+    },
     /// Feed has this version but we could not parse a hash for it.
     PresentNoHash,
     /// Feed does not have this version (or we couldn't reach the feed).
@@ -797,10 +849,16 @@ fn package_feed_hash(push_source: &str, name: &str, version: &str) -> FeedHashRe
 
     let hash = parse_xml_element(&body, "PackageHash");
     let algorithm = parse_xml_element(&body, "PackageHashAlgorithm");
+    let status = parse_xml_element(&body, "PackageStatus");
+    let listed = parse_xml_element(&body, "Listed").and_then(|v| v.parse::<bool>().ok());
+    let published = parse_xml_element(&body, "Published");
     match (hash, algorithm) {
         (Some(h), Some(a)) if !h.is_empty() && !a.is_empty() => FeedHashResult::Present {
             hash: h,
             algorithm: a,
+            status,
+            listed,
+            published,
         },
         _ => FeedHashResult::PresentNoHash,
     }
@@ -891,35 +949,80 @@ fn push_nupkg(
 
     log.status(&format!("pushing nupkg to {}", push_url));
 
-    let form_file = reqwest::blocking::multipart::Part::bytes(nupkg_data)
-        .file_name(filename)
-        .mime_str("application/octet-stream")
-        .context("chocolatey: build multipart part")?;
-    let form = reqwest::blocking::multipart::Form::new().part("package", form_file);
-
     let client = reqwest::blocking::Client::builder()
         .user_agent("NuGet Command Line/6.10.0 (anodizer)")
         .timeout(std::time::Duration::from_secs(300))
         .build()
         .context("chocolatey: build http client")?;
-    let response = client
-        .put(&push_url)
-        .header("X-NuGet-ApiKey", api_key)
-        .header("X-NuGet-Client-Version", "6.10.0")
-        .header("X-NuGet-Protocol-Version", "4.1.0")
-        .multipart(form)
-        .send()
-        .with_context(|| format!("chocolatey: push to {}", push_url))?;
 
-    let status = response.status();
-    if status.is_success() || status.as_u16() == 201 {
-        Ok(())
-    } else {
+    // push.chocolatey.org is fronted by Cloudflare/IIS, which intermittently
+    // returns 403 (and occasionally 503) with an HTML challenge body even for
+    // valid NuGet PUTs. Treat those as transient and retry once before
+    // surfacing the failure — otherwise CI flake masks real pushes.
+    const MAX_ATTEMPTS: u32 = 3;
+    let mut attempt: u32 = 0;
+    loop {
+        attempt += 1;
+
+        let form_file = reqwest::blocking::multipart::Part::bytes(nupkg_data.clone())
+            .file_name(filename.clone())
+            .mime_str("application/octet-stream")
+            .context("chocolatey: build multipart part")?;
+        let form = reqwest::blocking::multipart::Form::new().part("package", form_file);
+
+        let response = client
+            .put(&push_url)
+            .header("X-NuGet-ApiKey", api_key)
+            .header("X-NuGet-Client-Version", "6.10.0")
+            .header("X-NuGet-Protocol-Version", "4.1.0")
+            .multipart(form)
+            .send()
+            .with_context(|| format!("chocolatey: push to {}", push_url))?;
+
+        let status = response.status();
+        if status.is_success() || status.as_u16() == 201 {
+            return Ok(());
+        }
+
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_ascii_lowercase();
         let body = response.text().unwrap_or_default();
+        let body_looks_html =
+            content_type.contains("text/html") || body.trim_start().starts_with('<');
+        let edge_transient = matches!(status.as_u16(), 403 | 502 | 503 | 504) && body_looks_html;
+
+        if edge_transient && attempt < MAX_ATTEMPTS {
+            let backoff = std::time::Duration::from_secs(2u64.pow(attempt));
+            log.warn(&format!(
+                "chocolatey: edge returned HTTP {} with HTML body (attempt {}/{}); \
+                 retrying in {}s — likely a Cloudflare/IIS challenge, not a real \
+                 rejection",
+                status,
+                attempt,
+                MAX_ATTEMPTS,
+                backoff.as_secs()
+            ));
+            std::thread::sleep(backoff);
+            continue;
+        }
+
+        let hint = if edge_transient {
+            "; this looked like a Cloudflare/IIS edge challenge that did not clear \
+             after retry — try again later or contact Chocolatey support if it \
+             persists"
+        } else {
+            ""
+        };
         anyhow::bail!(
-            "chocolatey: push failed with HTTP {} to {}: {}",
+            "chocolatey: push failed with HTTP {} to {} after {} attempt(s){}: {}",
             status,
             push_url,
+            attempt,
+            hint,
             body
         )
     }
@@ -1431,5 +1534,91 @@ crates:
         let ns = read_entry(&mut archive, "mytool.nuspec");
         assert!(ns.contains("<id>mytool</id>"));
         assert!(ns.contains("<version>1.0.0</version>"));
+    }
+
+    // -----------------------------------------------------------------
+    // OData feed parsing (FeedHashResult variant matrix)
+    // -----------------------------------------------------------------
+
+    /// OData skeleton mirroring community.chocolatey.org's
+    /// `Packages(Id='X',Version='Y')` response. Only the fields we parse
+    /// are populated; everything else is omitted to keep the fixture
+    /// readable.
+    fn odata_response(
+        version: &str,
+        hash: Option<&str>,
+        algorithm: Option<&str>,
+        status: Option<&str>,
+        listed: Option<bool>,
+        published: Option<&str>,
+    ) -> String {
+        let mut props = String::new();
+        if let Some(h) = hash {
+            props.push_str(&format!("<d:PackageHash>{}</d:PackageHash>", h));
+        }
+        if let Some(a) = algorithm {
+            props.push_str(&format!(
+                "<d:PackageHashAlgorithm>{}</d:PackageHashAlgorithm>",
+                a
+            ));
+        }
+        if let Some(s) = status {
+            props.push_str(&format!("<d:PackageStatus>{}</d:PackageStatus>", s));
+        }
+        if let Some(l) = listed {
+            props.push_str(&format!("<d:Listed>{}</d:Listed>", l));
+        }
+        if let Some(p) = published {
+            props.push_str(&format!("<d:Published>{}</d:Published>", p));
+        }
+        format!(
+            r#"<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<entry>
+  <id>https://community.chocolatey.org/api/v2/Packages(Id='cfgd',Version='{}')</id>
+  <m:properties>{}</m:properties>
+</entry>"#,
+            version, props
+        )
+    }
+
+    #[test]
+    fn test_parse_xml_element_handles_namespaced_tags() {
+        let body = r#"<m:properties><d:PackageHash>abc</d:PackageHash><d:PackageHashAlgorithm>SHA512</d:PackageHashAlgorithm></m:properties>"#;
+        assert_eq!(
+            parse_xml_element(body, "PackageHash").as_deref(),
+            Some("abc")
+        );
+        assert_eq!(
+            parse_xml_element(body, "PackageHashAlgorithm").as_deref(),
+            Some("SHA512")
+        );
+    }
+
+    #[test]
+    fn test_parse_xml_element_handles_listed_and_published() {
+        let body = odata_response(
+            "0.3.5",
+            Some("XYZ"),
+            Some("SHA512"),
+            Some("Submitted"),
+            Some(false),
+            Some("1900-01-01T00:00:00"),
+        );
+        assert_eq!(
+            parse_xml_element(&body, "PackageStatus").as_deref(),
+            Some("Submitted")
+        );
+        assert_eq!(parse_xml_element(&body, "Listed").as_deref(), Some("false"));
+        assert_eq!(
+            parse_xml_element(&body, "Published").as_deref(),
+            Some("1900-01-01T00:00:00")
+        );
+    }
+
+    #[test]
+    fn test_parse_xml_element_returns_none_when_absent() {
+        let body = r#"<m:properties><d:PackageHash>abc</d:PackageHash></m:properties>"#;
+        assert!(parse_xml_element(body, "PackageStatus").is_none());
+        assert!(parse_xml_element(body, "Listed").is_none());
     }
 }
