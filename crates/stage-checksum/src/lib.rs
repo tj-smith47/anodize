@@ -218,7 +218,7 @@ impl Stage for ChecksumStage {
             .and_then(|d| d.checksum.as_ref());
 
         let global_disable = global_cksum.and_then(|c| c.disable.clone());
-        if ctx.is_disabled_with_log(&global_disable, &log, "checksum globally") {
+        if ctx.is_disabled_with_log(&global_disable, &log, "checksum globally")? {
             return Ok(());
         }
 
@@ -268,7 +268,7 @@ impl Stage for ChecksumStage {
                 &crate_disable,
                 &log,
                 &format!("checksum for crate {crate_name}"),
-            ) {
+            )? {
                 continue;
             }
 

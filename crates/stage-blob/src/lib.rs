@@ -728,7 +728,7 @@ impl Stage for BlobStage {
                     &blob_cfg.disable,
                     &log,
                     &format!("blob config for crate {}", krate.name),
-                ) {
+                )? {
                     continue;
                 }
 
@@ -1104,39 +1104,55 @@ mod tests {
 
     #[test]
     fn test_is_disabled_none() {
-        assert!(!make_ctx().is_disabled_with_log(&None, &test_log(), "t"));
+        assert!(
+            !make_ctx()
+                .is_disabled_with_log(&None, &test_log(), "t")
+                .unwrap()
+        );
     }
 
     #[test]
     fn test_is_disabled_bool_true() {
-        assert!(make_ctx().is_disabled_with_log(&Some(StringOrBool::Bool(true)), &test_log(), "t"));
+        assert!(
+            make_ctx()
+                .is_disabled_with_log(&Some(StringOrBool::Bool(true)), &test_log(), "t")
+                .unwrap()
+        );
     }
 
     #[test]
     fn test_is_disabled_bool_false() {
-        assert!(!make_ctx().is_disabled_with_log(
-            &Some(StringOrBool::Bool(false)),
-            &test_log(),
-            "t"
-        ));
+        assert!(
+            !make_ctx()
+                .is_disabled_with_log(&Some(StringOrBool::Bool(false)), &test_log(), "t")
+                .unwrap()
+        );
     }
 
     #[test]
     fn test_is_disabled_string_true() {
-        assert!(make_ctx().is_disabled_with_log(
-            &Some(StringOrBool::String("true".to_string())),
-            &test_log(),
-            "t"
-        ));
+        assert!(
+            make_ctx()
+                .is_disabled_with_log(
+                    &Some(StringOrBool::String("true".to_string())),
+                    &test_log(),
+                    "t"
+                )
+                .unwrap()
+        );
     }
 
     #[test]
     fn test_is_disabled_string_false() {
-        assert!(!make_ctx().is_disabled_with_log(
-            &Some(StringOrBool::String("false".to_string())),
-            &test_log(),
-            "t"
-        ));
+        assert!(
+            !make_ctx()
+                .is_disabled_with_log(
+                    &Some(StringOrBool::String("false".to_string())),
+                    &test_log(),
+                    "t"
+                )
+                .unwrap()
+        );
     }
 
     #[test]
@@ -1145,7 +1161,10 @@ mod tests {
         let disable = Some(StringOrBool::String(
             "{% if IsSnapshot %}true{% endif %}".to_string(),
         ));
-        assert!(ctx.is_disabled_with_log(&disable, &test_log(), "t"));
+        assert!(
+            ctx.is_disabled_with_log(&disable, &test_log(), "t")
+                .unwrap()
+        );
     }
 
     #[test]
@@ -1154,7 +1173,25 @@ mod tests {
         let disable = Some(StringOrBool::String(
             "{% if IsSnapshot == \"true\" %}true{% endif %}".to_string(),
         ));
-        assert!(!ctx.is_disabled_with_log(&disable, &test_log(), "t"));
+        assert!(
+            !ctx.is_disabled_with_log(&disable, &test_log(), "t")
+                .unwrap()
+        );
+    }
+
+    /// Regression: a malformed `disable:` template now propagates as Err
+    /// instead of silently evaluating to "not disabled".
+    #[test]
+    fn test_is_disabled_template_render_failure_propagates() {
+        let ctx = make_ctx();
+        let disable = Some(StringOrBool::String(
+            "{{ NonexistentVarThatTeraDoesNotKnow }}".to_string(),
+        ));
+        let err = ctx
+            .is_disabled_with_log(&disable, &test_log(), "t")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("evaluate disable expression"), "{err}");
     }
 
     // -----------------------------------------------------------------------

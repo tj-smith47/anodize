@@ -213,22 +213,28 @@ impl Context {
 
     /// Evaluate a `disable` field, logging at INFO level when it resolves to true.
     ///
-    /// Returns `false` when `disable` is `None` or evaluates falsy. On truthy,
-    /// writes `"{label} disabled"` via `log.status` and returns `true`.
+    /// Returns `Ok(false)` when `disable` is `None` or evaluates falsy. On
+    /// truthy, writes `"{label} disabled"` via `log.status` and returns
+    /// `Ok(true)`. A malformed `disable:` template propagates as `Err` so the
+    /// caller fails fast — silently treating a render error as "not disabled"
+    /// (the prior behavior) shipped configs that the user thought would
+    /// suppress a stage but actually ran it.
     pub fn is_disabled_with_log(
         &self,
         disable: &Option<crate::config::StringOrBool>,
         log: &StageLogger,
         label: &str,
-    ) -> bool {
+    ) -> anyhow::Result<bool> {
         let Some(d) = disable else {
-            return false;
+            return Ok(false);
         };
-        let should_disable = d.is_disabled(|s| self.render_template(s));
+        let should_disable = d
+            .try_is_disabled(|s| self.render_template(s))
+            .with_context(|| format!("evaluate disable expression for {label}"))?;
         if should_disable {
             log.status(&format!("{} disabled", label));
         }
-        should_disable
+        Ok(should_disable)
     }
 
     pub fn should_skip(&self, stage_name: &str) -> bool {
