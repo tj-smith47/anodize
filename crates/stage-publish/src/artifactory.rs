@@ -409,13 +409,15 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
             None => lookup_env(&username_env_var).unwrap_or_default(),
         };
         let named_env_var = format!("ARTIFACTORY_{}_SECRET", name_upper);
-        let password = lookup_env(&named_env_var)
-            .or_else(|| {
-                entry
-                    .password
-                    .as_ref()
-                    .and_then(|p| ctx.render_template(p).ok())
-            })
+        // Cascade order: explicit config first, then the auto-discovered env
+        // var fallback. Matches GoReleaser http.go:168-178 — a user who set
+        // `password:` in config wants that value to win, not be shadowed by a
+        // stale ARTIFACTORY_X_SECRET left over from a previous run.
+        let password = entry
+            .password
+            .as_ref()
+            .and_then(|p| ctx.render_template(p).ok())
+            .or_else(|| lookup_env(&named_env_var))
             .unwrap_or_default();
 
         // Determine checksum header name (GoReleaser default: X-Checksum-SHA256).

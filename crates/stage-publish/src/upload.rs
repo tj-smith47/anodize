@@ -64,13 +64,15 @@ pub fn publish_to_upload(ctx: &Context, log: &StageLogger) -> Result<()> {
             .unwrap_or_else(|| {
                 lookup_env(&format!("UPLOAD_{}_USERNAME", name_upper)).unwrap_or_default()
             });
-        let password = lookup_env(&format!("UPLOAD_{}_SECRET", name_upper))
-            .or_else(|| {
-                entry
-                    .password
-                    .as_ref()
-                    .and_then(|p| ctx.render_template(p).ok())
-            })
+        // Cascade order: explicit config first, then the auto-discovered env
+        // var fallback. Matches GoReleaser http.go:168-178 — a user who set
+        // `password:` in config wants that value to win, not be shadowed by a
+        // stale UPLOAD_X_SECRET left over from a previous run.
+        let password = entry
+            .password
+            .as_ref()
+            .and_then(|p| ctx.render_template(p).ok())
+            .or_else(|| lookup_env(&format!("UPLOAD_{}_SECRET", name_upper)))
             .unwrap_or_default();
 
         let checksum_header = entry.checksum_header.as_deref().unwrap_or("");

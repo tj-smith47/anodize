@@ -410,6 +410,12 @@ pub fn release_uploadable_kinds() -> &'static [ArtifactKind] {
         ArtifactKind::LinuxPackage,
         ArtifactKind::Flatpak,
         ArtifactKind::SourceRpm,
+        // GoReleaser parity: macOS PKG/DMG, Windows MSI/NSIS installers
+        // are first-class release artifacts. Omitting them meant
+        // `anodizer release` produced the installers but never uploaded
+        // them to the GitHub release, leaving users to fish them out of
+        // dist/ manually.
+        ArtifactKind::Installer,
         ArtifactKind::Sbom,
         ArtifactKind::Checksum,
         ArtifactKind::Signature,
