@@ -38,12 +38,21 @@ pub fn validate_upload_mode(mode: &str) -> Result<()> {
 fn artifact_kinds_for_mode(mode: &str) -> Vec<ArtifactKind> {
     match mode.to_ascii_lowercase().as_str() {
         "binary" => vec![ArtifactKind::UploadableBinary],
+        // A8 fix: include the full first-class artifact set so installers
+        // (MSI/DMG/PKG/NSIS), SRPMs, SBOMs, snaps, and disk images don't
+        // silently no-op on `mode: archive` upload publishers.
         _ => vec![
             ArtifactKind::Archive,
             ArtifactKind::SourceArchive,
             ArtifactKind::Makeself,
             ArtifactKind::LinuxPackage,
             ArtifactKind::Flatpak,
+            ArtifactKind::SourceRpm,
+            ArtifactKind::Sbom,
+            ArtifactKind::Snap,
+            ArtifactKind::DiskImage,
+            ArtifactKind::Installer,
+            ArtifactKind::MacOsPackage,
         ],
     }
 }
@@ -402,10 +411,22 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
         };
         let name_upper = name.to_uppercase().replace('-', "_");
         let username_env_var = format!("ARTIFACTORY_{}_USERNAME", name_upper);
-        let username = match entry.username {
-            Some(ref u) => ctx.render_template(u).with_context(|| {
-                format!("artifactory: failed to render username for '{}'", name)
-            })?,
+        // A2 fix: an empty-string `username:` in config (left behind by a
+        // half-edited YAML or a `username: "{{ .Env.MISSING }}"` that
+        // rendered to "") used to disable the env-var fallback and ship an
+        // anonymous upload. Treat empty-after-render the same as None so the
+        // env-var still wins.
+        let username = match entry.username.as_deref() {
+            Some(u) => {
+                let rendered = ctx.render_template(u).with_context(|| {
+                    format!("artifactory: failed to render username for '{}'", name)
+                })?;
+                if rendered.is_empty() {
+                    lookup_env(&username_env_var).unwrap_or_default()
+                } else {
+                    rendered
+                }
+            }
             None => lookup_env(&username_env_var).unwrap_or_default(),
         };
         let named_env_var = format!("ARTIFACTORY_{}_SECRET", name_upper);
@@ -417,8 +438,39 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
             .password
             .as_ref()
             .and_then(|p| ctx.render_template(p).ok())
+            .filter(|p| !p.is_empty())
             .or_else(|| lookup_env(&named_env_var))
             .unwrap_or_default();
+
+        // A10: silent anonymous upload is a security foot-gun. Distinguish
+        // the two failure modes so the error message points at the actual
+        // missing piece. Skipped in dry-run so config tests / previews
+        // don't have to populate fake credentials.
+        if !ctx.is_dry_run() {
+            match (username.is_empty(), password.is_empty()) {
+                (false, true) => bail!(
+                    "artifactory: '{}' has username set but no password \
+                     (set 'password:' in config or ARTIFACTORY_{}_SECRET in env)",
+                    name,
+                    name_upper
+                ),
+                (true, false) => bail!(
+                    "artifactory: '{}' has password set but no username \
+                     (set 'username:' in config or ARTIFACTORY_{}_USERNAME in env)",
+                    name,
+                    name_upper
+                ),
+                (true, true) => bail!(
+                    "artifactory: '{}' resolved with no credentials \
+                     (set username/password in config or ARTIFACTORY_{}_USERNAME / \
+                     ARTIFACTORY_{}_SECRET in env; anonymous upload is refused)",
+                    name,
+                    name_upper,
+                    name_upper
+                ),
+                (false, false) => {}
+            }
+        }
 
         // Determine checksum header name (GoReleaser default: X-Checksum-SHA256).
         let checksum_header = entry

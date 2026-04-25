@@ -69,13 +69,19 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
             continue;
         }
 
-        // Critical 1: Bail early when username is missing or empty (before
-        // dry-run check so config errors surface even in dry-run mode).
+        // Critical 1: Resolve username from config, falling back to
+        // DOCKER_USERNAME env var (D2 parity with GR's docker auth helpers).
+        // Bail early when neither is set so config errors surface even in
+        // dry-run mode.
+        let username_env = std::env::var("DOCKER_USERNAME").ok();
         let username = match entry.username.as_deref() {
-            Some(u) if !u.is_empty() => u,
-            _ => {
-                bail!("dockerhub: 'username' is required but not set");
-            }
+            Some(u) if !u.is_empty() => u.to_string(),
+            _ => match username_env.as_deref() {
+                Some(u) if !u.is_empty() => u.to_string(),
+                _ => bail!(
+                    "dockerhub: 'username' is required (set in config or via DOCKER_USERNAME env)"
+                ),
+            },
         };
 
         let images = entry.images.as_deref().unwrap_or_default();
@@ -95,7 +101,23 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
         }
 
         // Suggestion 8: Warn when bare image names map to library/ namespace.
+        // D10 fix: also reject obviously invalid forms (multi-slash, empty
+        // segments, leading/trailing slash) so a typo like `acme//proj`
+        // doesn't reach Docker Hub's API just to fail with a 404.
         for image in images {
+            let segments: Vec<&str> = image.split('/').collect();
+            if segments.iter().any(|s| s.is_empty()) {
+                bail!(
+                    "dockerhub: image '{}' has empty path segment(s) (no leading/trailing slash, no consecutive slashes)",
+                    image
+                );
+            }
+            if segments.len() > 2 {
+                bail!(
+                    "dockerhub: image '{}' has too many path segments (Docker Hub format is 'namespace/repo')",
+                    image
+                );
+            }
             if !image.contains('/') {
                 log.warn(&format!(
                     "dockerhub: image '{}' has no namespace; bare names map to 'library/' which requires Docker Inc permissions",

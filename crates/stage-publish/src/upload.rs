@@ -26,8 +26,21 @@ pub fn publish_to_upload(ctx: &Context, log: &StageLogger) -> Result<()> {
             continue;
         }
 
-        // Name defaults to "upload" for env var naming
-        let name = entry.name.as_deref().unwrap_or("upload");
+        // U3 fix: GoReleaser refuses an upload entry with no `name:` because
+        // the env-var lookup (UPLOAD_{NAME}_USERNAME / _SECRET) collapses
+        // for two anonymous entries. Anodizer used to silently pick the
+        // literal string "upload" which made every nameless entry share the
+        // same credential namespace. Fail loudly instead.
+        let name = entry
+            .name
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "upload: entry is missing required 'name:' (used as the env-var \
+                 prefix UPLOAD_<NAME>_USERNAME / UPLOAD_<NAME>_SECRET)"
+                )
+            })?;
 
         // Validate mode (default: "archive")
         let mode = entry.mode.as_deref().unwrap_or("archive");
@@ -57,10 +70,14 @@ pub fn publish_to_upload(ctx: &Context, log: &StageLogger) -> Result<()> {
                 .or_else(|| std::env::var(name).ok())
                 .filter(|s| !s.is_empty())
         };
+        // U9: same empty-after-render fallback as artifactory (A2). An
+        // empty `username:` in config used to suppress the env-var
+        // fallback and ship anonymous.
         let username = entry
             .username
             .as_ref()
             .and_then(|u| ctx.render_template(u).ok())
+            .filter(|s| !s.is_empty())
             .unwrap_or_else(|| {
                 lookup_env(&format!("UPLOAD_{}_USERNAME", name_upper)).unwrap_or_default()
             });
@@ -72,8 +89,24 @@ pub fn publish_to_upload(ctx: &Context, log: &StageLogger) -> Result<()> {
             .password
             .as_ref()
             .and_then(|p| ctx.render_template(p).ok())
+            .filter(|p| !p.is_empty())
             .or_else(|| lookup_env(&format!("UPLOAD_{}_SECRET", name_upper)))
             .unwrap_or_default();
+
+        // U9: refuse a half-set credential pair so a stale env or an
+        // accidentally-blanked password doesn't ship an anonymous upload
+        // to a target that requires auth. Both empty is acceptable —
+        // some Upload targets accept anonymous PUT (treated as opt-in
+        // by the user). Skipped in dry-run so config tests don't need
+        // to populate fake credentials.
+        if !ctx.is_dry_run() && username.is_empty() != password.is_empty() {
+            bail!(
+                "upload: '{}' has only one of username/password set \
+                 (set both to authenticate, or leave both empty for \
+                 anonymous upload)",
+                name
+            );
+        }
 
         let checksum_header = entry.checksum_header.as_deref().unwrap_or("");
         let empty = HashMap::new();
