@@ -10,14 +10,17 @@ use std::fs;
 // validate_upload_mode
 // ---------------------------------------------------------------------------
 
-/// Validate the upload mode string.  Only `"archive"` and `"binary"` are
-/// accepted; anything else is an error.
+/// Validate the upload mode string. Only `"archive"` and `"binary"` are
+/// accepted; matching is case-insensitive (matches GoReleaser
+/// `internal/pipe/upload/upload.go:228` `strings.ToLower(upload.Mode)`),
+/// so YAML lifted from a goreleaser config that capitalised the value
+/// (`mode: Archive`) keeps working.
 pub fn validate_upload_mode(mode: &str) -> Result<()> {
-    match mode {
+    match mode.to_ascii_lowercase().as_str() {
         "archive" | "binary" => Ok(()),
-        other => bail!(
+        _ => bail!(
             "artifactory: invalid upload mode '{}' (expected 'archive' or 'binary')",
-            other
+            mode
         ),
     }
 }
@@ -30,8 +33,10 @@ pub fn validate_upload_mode(mode: &str) -> Result<()> {
 /// GoReleaser archive mode: archives, source archives, makeself, linux packages,
 /// flatpak, python distributions.
 /// GoReleaser binary mode: compiled binaries only.
+/// Mode matching is case-insensitive — `validate_upload_mode` accepts mixed
+/// case for GR-config compatibility, so this normalizes here too.
 fn artifact_kinds_for_mode(mode: &str) -> Vec<ArtifactKind> {
-    match mode {
+    match mode.to_ascii_lowercase().as_str() {
         "binary" => vec![ArtifactKind::UploadableBinary],
         _ => vec![
             ArtifactKind::Archive,

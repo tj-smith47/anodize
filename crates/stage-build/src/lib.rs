@@ -562,9 +562,13 @@ fn build_universal_binary(
         metadata.insert("id".to_string(), id.clone());
     }
 
+    let universal_name = out_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     ctx.artifacts.add(Artifact {
         kind: ArtifactKind::UniversalBinary,
-        name: String::new(),
+        name: universal_name,
         path: out_path,
         target: Some("darwin-universal".to_string()),
         crate_name: crate_name.to_string(),

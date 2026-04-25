@@ -105,6 +105,28 @@ fn hash_hex_len(algorithm: &str) -> usize {
     }
 }
 
+/// Closed set of supported checksum algorithm names. Kept in sync with
+/// `hash_file` and used by `validate_algorithm` for Default()-time checks.
+pub const SUPPORTED_ALGORITHMS: &[&str] = &[
+    "sha1", "sha224", "sha256", "sha384", "sha512", "sha3-224", "sha3-256", "sha3-384", "sha3-512",
+    "blake2b", "blake2s", "blake3", "crc32", "md5",
+];
+
+/// Validate a configured checksum algorithm name. Call this at stage entry
+/// (before any artifact-source iteration) so a typo like `algorithm: sha257`
+/// fails fast instead of mid-pipeline after build/archive completes.
+pub fn validate_algorithm(algorithm: &str) -> Result<()> {
+    if SUPPORTED_ALGORITHMS.contains(&algorithm) {
+        Ok(())
+    } else {
+        bail!(
+            "unsupported checksum algorithm: '{}'. Supported: {}",
+            algorithm,
+            SUPPORTED_ALGORITHMS.join(", ")
+        )
+    }
+}
+
 pub fn hash_file(path: &Path, algorithm: &str) -> Result<String> {
     match algorithm {
         "sha1" => sha1_file(path),
@@ -210,6 +232,22 @@ impl Stage for ChecksumStage {
         let global_ids = global_cksum.and_then(|c| c.ids.clone());
         let global_split = global_cksum.and_then(|c| c.split);
 
+        // Fail fast on unsupported algorithm names — global default first, then
+        // every per-crate override. Without this, a typo (`algorithm: sha257`)
+        // only surfaces at first hash_file call, which is after build/archive
+        // have already run.
+        validate_algorithm(&global_algorithm)?;
+        for crate_cfg in &ctx.config.crates {
+            if let Some(alg) = crate_cfg
+                .checksum
+                .as_ref()
+                .and_then(|c| c.algorithm.as_deref())
+            {
+                validate_algorithm(alg)
+                    .with_context(|| format!("checksum: crate '{}'", crate_cfg.name))?;
+            }
+        }
+
         // Collect crate configs up-front to avoid borrow conflicts
         let crates: Vec<_> = ctx
             .config
@@ -292,9 +330,14 @@ impl Stage for ChecksumStage {
                     if let Some(tmpl) = ef.name_template {
                         metadata.insert("extra_name_template".to_string(), tmpl);
                     }
+                    let name = ef
+                        .path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
                     source_artifacts.push(Artifact {
                         kind: ArtifactKind::Archive, // treated as a checksummable file
-                        name: String::new(),
+                        name,
                         path: ef.path,
                         target: None,
                         crate_name: crate_name.clone(),
@@ -438,9 +481,13 @@ impl Stage for ChecksumStage {
                     ));
 
                     // Register sidecar as a Checksum artifact
+                    let sidecar_name = sidecar_path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
                     new_artifacts.push(Artifact {
                         kind: ArtifactKind::Checksum,
-                        name: String::new(),
+                        name: sidecar_name,
                         path: sidecar_path,
                         target: artifact.target.clone(),
                         crate_name: crate_name.clone(),
@@ -522,9 +569,13 @@ impl Stage for ChecksumStage {
                     combined_path.display()
                 ));
 
+                let combined_name = combined_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
                 new_artifacts.push(Artifact {
                     kind: ArtifactKind::Checksum,
-                    name: String::new(),
+                    name: combined_name,
                     path: combined_path,
                     target: None,
                     crate_name: crate_name.clone(),

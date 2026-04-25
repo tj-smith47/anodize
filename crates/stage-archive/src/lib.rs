@@ -562,9 +562,14 @@ pub fn resolve_file_specs(specs: &[ArchiveFileSpec]) -> Result<Vec<ResolvedExtra
 // ---------------------------------------------------------------------------
 
 /// When no extra files are explicitly configured, glob for common project files
-/// (LICENSE, README, CHANGELOG) in the current directory, matching GoReleaser's
+/// (LICENSE, README, CHANGELOG) in `base_dir`, matching GoReleaser's
 /// Default() behavior. Non-matching patterns are silently skipped.
-fn resolve_default_extra_files() -> Vec<ResolvedExtraFile> {
+///
+/// `base_dir` must be the crate's root directory (resolved absolute against the
+/// project root). Globbing in CWD is unsafe in test/CI environments where the
+/// process working directory may be the workspace root and pull in unrelated
+/// files (e.g. the workspace's top-level README).
+fn resolve_default_extra_files(base_dir: &Path) -> Vec<ResolvedExtraFile> {
     let patterns = [
         "LICENSE*",
         "license*",
@@ -575,7 +580,11 @@ fn resolve_default_extra_files() -> Vec<ResolvedExtraFile> {
     ];
     let mut results = Vec::new();
     for pattern in &patterns {
-        if let Ok(entries) = glob::glob(pattern) {
+        let full_pattern = base_dir.join(pattern);
+        let Some(pattern_str) = full_pattern.to_str() else {
+            continue;
+        };
+        if let Ok(entries) = glob::glob(pattern_str) {
             for entry in entries.flatten() {
                 // Avoid duplicates (e.g. LICENSE matched by both LICENSE* and license*)
                 if !results.iter().any(|r: &ResolvedExtraFile| r.src == entry) {
@@ -880,7 +889,19 @@ impl Stage for ArchiveStage {
             ArtifactKind::CArchive,
             ArtifactKind::CShared,
         ];
-        let work: Vec<(String, Vec<ArchiveConfig>)> = crates
+        // Resolve the project root once: per-crate paths in CrateConfig are
+        // recorded relative to the project root, so default-extra-files glob
+        // (LICENSE/README/CHANGELOG) needs an absolute base to avoid leaking
+        // the workspace's own README into per-crate archives during
+        // `cargo test` runs that execute from the workspace root.
+        let project_root = ctx
+            .options
+            .project_root
+            .clone()
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
+
+        let work: Vec<(String, PathBuf, Vec<ArchiveConfig>)> = crates
             .into_iter()
             .filter_map(|c| {
                 match &c.archives {
@@ -901,7 +922,8 @@ impl Stage for ArchiveStage {
                         } else {
                             cfgs.clone()
                         };
-                        Some((c.name.clone(), archive_cfgs))
+                        let crate_dir = project_root.join(&c.path);
+                        Some((c.name.clone(), crate_dir, archive_cfgs))
                     }
                 }
             })
@@ -909,7 +931,7 @@ impl Stage for ArchiveStage {
 
         // Early validation: reject unknown archive format strings before doing
         // any I/O so typos are surfaced immediately.
-        for (_crate_name, archive_cfgs) in &work {
+        for (_crate_name, _crate_dir, archive_cfgs) in &work {
             for cfg in archive_cfgs {
                 if let Some(ref fmt) = cfg.format
                     && !VALID_ARCHIVE_FORMATS.contains(&fmt.as_str())
@@ -970,7 +992,7 @@ impl Stage for ArchiveStage {
 
         let mut new_artifacts: Vec<Artifact> = Vec::new();
 
-        for (crate_name, archive_cfgs) in &work {
+        for (crate_name, crate_dir, archive_cfgs) in &work {
             // Archive all build artifact types, matching GoReleaser
             // (Binary, UniversalBinary, Header, CArchive, CShared).
             let archivable_kinds = [
@@ -1227,7 +1249,7 @@ impl Stage for ArchiveStage {
                             format!("resolve file specs for {crate_name}/{target}")
                         })?
                     } else {
-                        resolve_default_extra_files()
+                        resolve_default_extra_files(crate_dir)
                     };
 
                     // builds_info: permissions applied to binary entries.
@@ -1857,21 +1879,11 @@ mod tests {
     /// `files:`. User-configured globs keep `default: false`.
     #[test]
     fn test_resolve_default_extra_files_marks_default_flag() {
-        use std::sync::Mutex;
-        // cwd is a process-wide mutable — serialize this test against any
-        // other test that might also mutate it. No other test in this module
-        // does, but this guards against future additions.
-        static CWD_LOCK: Mutex<()> = Mutex::new(());
-        let _guard = CWD_LOCK.lock().unwrap();
-
         let tmp = TempDir::new().unwrap();
         fs::write(tmp.path().join("LICENSE"), b"mit").unwrap();
         fs::write(tmp.path().join("README.md"), b"# readme").unwrap();
 
-        let original = std::env::current_dir().unwrap();
-        std::env::set_current_dir(tmp.path()).unwrap();
-        let results = resolve_default_extra_files();
-        std::env::set_current_dir(&original).unwrap();
+        let results = resolve_default_extra_files(tmp.path());
 
         assert!(
             !results.is_empty(),
@@ -1884,6 +1896,25 @@ mod tests {
                 r.src
             );
         }
+    }
+
+    /// Regression: when no extra files are configured, the default-file glob
+    /// must scope to the crate's directory — never the process CWD. Otherwise
+    /// running `cargo test` from the workspace root leaks the workspace's
+    /// top-level README/LICENSE/CHANGELOG into per-crate archives.
+    #[test]
+    fn test_resolve_default_extra_files_does_not_leak_cwd() {
+        let tmp = TempDir::new().unwrap();
+        // crate_dir intentionally has NO LICENSE/README/CHANGELOG.
+        let crate_dir = tmp.path().join("empty_crate");
+        fs::create_dir(&crate_dir).unwrap();
+
+        let results = resolve_default_extra_files(&crate_dir);
+        assert!(
+            results.is_empty(),
+            "must not glob outside the crate dir; got: {:?}",
+            results.iter().map(|r| &r.src).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -2804,6 +2835,11 @@ crates:
             size: None,
         });
 
+        // Pin project_root to the test tmp dir so default-extra-files glob
+        // (LICENSE/README/CHANGELOG) doesn't pick up the workspace's own
+        // files when `cargo test` runs from /opt/repos/anodizer.
+        ctx.options.project_root = Some(tmp.path().to_path_buf());
+
         let stage = ArchiveStage;
         stage.run(&mut ctx).unwrap();
 
@@ -2816,7 +2852,12 @@ crates:
         let file = File::open(&archives[0].path).unwrap();
         let dec = flate2::read::GzDecoder::new(file);
         let found_files = read_tar_entries(tar::Archive::new(dec));
-        assert_eq!(found_files.len(), 2, "archive should contain both binaries");
+        let names: Vec<&String> = found_files.keys().collect();
+        assert_eq!(
+            found_files.len(),
+            2,
+            "archive should contain both binaries; got: {names:?}"
+        );
         assert!(found_files.contains_key("myapp"));
         assert!(found_files.contains_key("myhelper"));
     }

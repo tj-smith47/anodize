@@ -638,9 +638,13 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
                 let mut metadata = HashMap::new();
                 metadata.insert("sbom_id".to_string(), id.to_string());
 
+                let name = full_path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
                 ctx.artifacts.add(Artifact {
                     kind: ArtifactKind::Sbom,
-                    name: String::new(),
+                    name,
                     path: full_path,
                     target: None,
                     crate_name: project_name.clone(),
@@ -762,9 +766,13 @@ fn run_sbom_builtin(
     metadata.insert("format".to_string(), format.to_string());
     metadata.insert("sbom_id".to_string(), id.to_string());
 
+    let name = output_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     ctx.artifacts.add(Artifact {
         kind: ArtifactKind::Sbom,
-        name: String::new(),
+        name,
         path: output_path,
         target: None,
         crate_name: project_name.to_string(),
