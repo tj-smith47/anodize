@@ -2,6 +2,29 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 
+/// Validate the format of a subreddit name against Reddit's documented rules:
+/// 3–21 characters, ASCII letters / digits / underscore, no leading underscore.
+/// Returning an error here avoids burning an OAuth round-trip just to discover
+/// the post target is invalid.
+fn validate_subreddit(name: &str) -> Result<()> {
+    if name.len() < 3 || name.len() > 21 {
+        anyhow::bail!(
+            "reddit: subreddit '{name}' must be 3–21 characters (got {})",
+            name.len()
+        );
+    }
+    if name.starts_with('_') {
+        anyhow::bail!("reddit: subreddit '{name}' cannot start with an underscore");
+    }
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        anyhow::bail!(
+            "reddit: subreddit '{name}' contains invalid characters \
+             (only letters, digits, and underscore allowed)"
+        );
+    }
+    Ok(())
+}
+
 /// Authenticate with Reddit's OAuth2 API and submit a link post to a subreddit.
 ///
 /// 1. POST to `/api/v1/access_token` with Basic Auth (application_id:secret)
@@ -17,6 +40,8 @@ pub fn send_reddit(
     title: &str,
     url: &str,
 ) -> Result<()> {
+    validate_subreddit(subreddit)?;
+
     let client = reqwest::blocking::Client::builder()
         .user_agent(anodizer_core::http::USER_AGENT)
         .build()?;
@@ -79,4 +104,39 @@ pub fn send_reddit(
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::validate_subreddit;
+
+    #[test]
+    fn accepts_valid_names() {
+        validate_subreddit("rust").unwrap();
+        validate_subreddit("rust_lang").unwrap();
+        validate_subreddit("AnodizerRel123").unwrap();
+    }
+
+    #[test]
+    fn rejects_too_short() {
+        let err = validate_subreddit("ab").unwrap_err().to_string();
+        assert!(err.contains("3–21"), "{err}");
+    }
+
+    #[test]
+    fn rejects_too_long() {
+        let err = validate_subreddit(&"a".repeat(22)).unwrap_err().to_string();
+        assert!(err.contains("3–21"), "{err}");
+    }
+
+    #[test]
+    fn rejects_leading_underscore() {
+        let err = validate_subreddit("_oops").unwrap_err().to_string();
+        assert!(err.contains("underscore"), "{err}");
+    }
+
+    #[test]
+    fn rejects_invalid_characters() {
+        let err = validate_subreddit("has-hyphen").unwrap_err().to_string();
+        assert!(err.contains("invalid characters"), "{err}");
+        let err = validate_subreddit("has space").unwrap_err().to_string();
+        assert!(err.contains("invalid characters"), "{err}");
+    }
+}

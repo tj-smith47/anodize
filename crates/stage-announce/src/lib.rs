@@ -695,9 +695,24 @@ impl Stage for AnnounceStage {
                 let access_token = std::env::var("LINKEDIN_ACCESS_TOKEN").map_err(|_| {
                     anyhow::anyhow!("announce.linkedin: LINKEDIN_ACCESS_TOKEN env var is required")
                 })?;
+                // Trim then structural-check the bearer token: empty / embedded
+                // whitespace / non-printable bytes are all symptoms of an env
+                // file with stray quotes or a wrapped-line copy-paste, and they
+                // produce opaque 401s from LinkedIn rather than a clear local
+                // error. Catch the common shapes here.
+                let access_token = access_token.trim().to_string();
                 if access_token.is_empty() {
                     anyhow::bail!(
                         "announce.linkedin: LINKEDIN_ACCESS_TOKEN env var must not be empty"
+                    );
+                }
+                if access_token
+                    .chars()
+                    .any(|c| c.is_whitespace() || !c.is_ascii() || c.is_ascii_control())
+                {
+                    anyhow::bail!(
+                        "announce.linkedin: LINKEDIN_ACCESS_TOKEN contains whitespace or \
+                         non-printable characters — check for stray quotes or line wraps"
                     );
                 }
                 let log = ctx.logger("announce");

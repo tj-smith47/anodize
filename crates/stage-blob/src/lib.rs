@@ -694,6 +694,22 @@ impl Stage for BlobStage {
             return Ok(());
         }
 
+        // Pre-flight: when `provider` is a literal (no template syntax),
+        // validate it via Provider::parse before any I/O so a typo (e.g.
+        // `provider: gss`) fails immediately instead of after build/archive.
+        // Template-bearing providers (`{{ ... }}`) are validated inside the
+        // per-job loop after rendering. Provider::parse already mentions the
+        // bad value and the valid set, so the error needs no extra context.
+        for krate in &crates {
+            if let Some(blob_configs) = krate.blobs.as_ref() {
+                for blob_cfg in blob_configs {
+                    if !blob_cfg.provider.is_empty() && !blob_cfg.provider.contains("{{") {
+                        Provider::parse(&blob_cfg.provider)?;
+                    }
+                }
+            }
+        }
+
         // Phase 1 (serial): render every config, build stores, collect jobs.
         let mut jobs: Vec<BlobJob> = Vec::new();
 

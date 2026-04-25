@@ -261,6 +261,15 @@ fn run_cross_platform(
         .with_context(|| format!("notarize: macos[{idx}] render sign.certificate"))?
         .ok_or_else(|| anyhow::anyhow!("notarize: macos[{idx}] sign.certificate is required"))?;
 
+    // Stat-check the P12 path before launching rcodesign so a typo or missing
+    // file produces a clean "certificate not found" error instead of an
+    // opaque rcodesign exit code partway through artifact iteration.
+    // Skipped in dry-run because dry-run never actually invokes rcodesign and
+    // upstream callers (incl. tests) commonly point to placeholder paths.
+    if !dry_run && !std::path::Path::new(&certificate).exists() {
+        bail!("notarize: macos[{idx}] sign.certificate path does not exist: '{certificate}'");
+    }
+
     let password = ctx
         .render_template_opt(sign.password.as_deref())
         .with_context(|| format!("notarize: macos[{idx}] render sign.password"))?
@@ -285,6 +294,14 @@ fn run_cross_platform(
                     "notarize: macos[{idx}] notarize.key is required when notarize block is present"
                 )
             })?;
+        // Stat-check the API key file path before launching rcodesign so a
+        // typo or unmounted secret produces a clean "key not found" error
+        // instead of an opaque rcodesign exit code partway through artifact
+        // iteration. Skipped in dry-run for the same reason as the cert
+        // check above.
+        if !dry_run && !std::path::Path::new(&key).exists() {
+            bail!("notarize: macos[{idx}] notarize.key path does not exist: '{key}'");
+        }
         let key_id = ctx.render_template_opt(ncfg.key_id.as_deref())
             .with_context(|| format!("notarize: macos[{idx}] render notarize.key_id"))?
             .ok_or_else(|| {
