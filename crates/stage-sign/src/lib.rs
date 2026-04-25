@@ -424,6 +424,12 @@ fn process_sign_configs(
             ));
         }
 
+        // Default args mirror GoReleaser sign.go:71-73 with the syntax
+        // converted from shell-var (`$signature`, `$artifact`) to Tera
+        // (`{{ .Signature }}`, `{{ .Artifact }}`). The renderer's
+        // `expand_shell_vars` step also accepts the shell-var form, so a
+        // user-supplied `args:` lifted verbatim from a goreleaser config
+        // (e.g. cosign command examples) keeps working.
         let args = sign_cfg.args.clone().unwrap_or_else(|| {
             vec![
                 "--output".to_string(),

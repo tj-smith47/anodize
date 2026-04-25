@@ -338,7 +338,7 @@ pub fn generate_nfpm_yaml(
     format: Option<&str>,
     skip_sign: bool,
     library_paths: &NfpmLibraryPaths,
-) -> String {
+) -> Result<String> {
     // Default env map: empty. The passphrase resolver falls back to process
     // env for unknown keys, so behavior is preserved for callers that don't
     // pass a ctx env map. `generate_nfpm_yaml_with_env` is the production
@@ -368,7 +368,7 @@ pub fn generate_nfpm_yaml_with_env(
     skip_sign: bool,
     library_paths: &NfpmLibraryPaths,
     env_map: &std::collections::HashMap<String, String>,
-) -> String {
+) -> Result<String> {
     let is_meta = config.meta == Some(true);
 
     // Build binary content entries for ALL binaries on this platform (skip for meta packages)
@@ -639,14 +639,13 @@ pub fn generate_nfpm_yaml_with_env(
         changelog: config.changelog.clone(),
     };
 
-    // SAFETY: serde_yaml_ng::to_string can only fail if the type contains
-    // un-serialisable values (e.g. maps with non-string keys). NfpmYamlConfig
-    // is composed entirely of Strings, Vecs, and Options thereof, so
-    // serialisation is infallible in practice.
-    let yaml = serde_yaml_ng::to_string(&yaml_config)
-        .unwrap_or_else(|e| panic!("failed to serialize nfpm YAML: {e}"));
+    // serde_yaml_ng::to_string fails only on un-serialisable values (e.g. maps
+    // with non-string keys). NfpmYamlConfig is composed of Strings/Vecs/Options
+    // so this is effectively infallible — but `overrides:` can carry arbitrary
+    // user-supplied YAML values, so propagate the error rather than panic.
+    let yaml = serde_yaml_ng::to_string(&yaml_config).context("failed to serialize nfpm YAML")?;
     // serde_yaml_ng emits a trailing newline; trim it for consistency
-    yaml.trim_end().to_string()
+    Ok(yaml.trim_end().to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -1497,7 +1496,7 @@ impl Stage for NfpmStage {
                             skip_sign,
                             lib_paths,
                             ctx.template_vars().all_env(),
-                        );
+                        )?;
 
                         // Ensure output directory exists
                         let output_dir = dist.join("linux");
@@ -1768,7 +1767,8 @@ mod tests {
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(yaml.contains("name: myapp"));
         assert!(yaml.contains("version: 1.0.0"));
         assert!(yaml.contains("vendor: Test Vendor"));
@@ -1798,7 +1798,8 @@ mod tests {
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         // All three binaries should appear as contents entries
         assert!(
             yaml.contains("/usr/bin/myapp-server"),
@@ -1863,7 +1864,8 @@ mod tests {
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(yaml.contains("version: 2.0.0"));
         assert!(yaml.contains("/etc/myapp/config"));
         assert!(yaml.contains("/usr/bin/myapp"));
@@ -1958,7 +1960,8 @@ mod tests {
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(yaml.contains("scripts:"));
         assert!(yaml.contains("  preinstall: /scripts/preinstall.sh"));
         assert!(yaml.contains("  postinstall: /scripts/postinstall.sh"));
@@ -1985,7 +1988,8 @@ mod tests {
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(yaml.contains("recommends:"));
         assert!(yaml.contains("- libfoo"));
         assert!(yaml.contains("- libbar"));
@@ -2026,7 +2030,8 @@ mod tests {
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(yaml.contains("  type: config"));
         assert!(yaml.contains("  file_info:"));
         assert!(yaml.contains("    owner: root"));
@@ -2057,7 +2062,8 @@ mod tests {
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(yaml.contains("  type: dir"));
         // The binary entry always has file_info with mode 0755, but the
         // extra "dir" content entry should NOT have file_info
@@ -2165,7 +2171,8 @@ crates:
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         // Empty lists should not produce a section
         assert!(!yaml.contains("recommends:"));
         assert!(!yaml.contains("suggests:"));
@@ -2196,7 +2203,8 @@ crates:
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(yaml.contains("scripts:"));
         assert!(yaml.contains("  preinstall: /scripts/pre.sh"));
         assert!(yaml.contains("  postinstall: /scripts/post.sh"));
@@ -2223,7 +2231,8 @@ crates:
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
 
         // Each field should appear with its items
         assert!(yaml.contains("recommends:\n- libfoo\n- libbar"));
@@ -2271,7 +2280,8 @@ crates:
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
 
         // First content entry with type and file_info
         assert!(yaml.contains("- src: /src/config.toml"));
@@ -2452,7 +2462,8 @@ crates:
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
 
         // Binary should appear in the contents section
         assert!(yaml.contains("contents:"));
@@ -2475,7 +2486,8 @@ crates:
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(yaml.contains("dst: /opt/myapp/bin/myapp"));
     }
 
@@ -2549,7 +2561,8 @@ crates:
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(
             !yaml.contains("name:"),
             "no name: line should appear when package_name is None"
@@ -2571,7 +2584,8 @@ crates:
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(yaml.contains("version: 0.1.0"));
         assert!(yaml.contains("contents:"));
         assert!(yaml.contains("- src: /bin/test"));
@@ -3043,7 +3057,8 @@ crates:
             Some("deb"),
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         // The YAML key must be "depends" (what nfpm expects), not "dependencies"
         assert!(
             yaml.contains("depends:"),
@@ -3090,7 +3105,8 @@ crates:
             Some("deb"),
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(
             yaml_deb.contains("- libc6"),
             "deb deps expected:\n{yaml_deb}"
@@ -3108,7 +3124,8 @@ crates:
             Some("rpm"),
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(
             yaml_rpm.contains("- glibc"),
             "rpm deps expected:\n{yaml_rpm}"
@@ -3141,7 +3158,8 @@ crates:
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(yaml.contains("depends:"), "depends key expected:\n{yaml}");
         assert!(
             yaml.contains("- libc6") || yaml.contains("- glibc"),
@@ -3171,7 +3189,8 @@ crates:
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(
             yaml.contains("epoch: '1'"),
             "epoch missing from YAML:\n{yaml}"
@@ -3209,7 +3228,8 @@ crates:
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(yaml.contains("section: utils"), "section missing:\n{yaml}");
         assert!(
             yaml.contains("priority: optional"),
@@ -3238,7 +3258,8 @@ crates:
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(!yaml.contains("epoch:"), "epoch should not appear:\n{yaml}");
         assert!(
             !yaml.contains("release:"),
@@ -3303,7 +3324,8 @@ crates:
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(
             yaml.contains("file_info:"),
             "file_info block missing:\n{yaml}"
@@ -3343,7 +3365,8 @@ crates:
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(yaml.contains("rpm:"), "rpm section missing:\n{yaml}");
         assert!(
             yaml.contains("summary: My package summary"),
@@ -3393,7 +3416,8 @@ crates:
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(yaml.contains("prefixes:"), "rpm prefixes missing:\n{yaml}");
         assert!(yaml.contains("- /usr"), "rpm prefix /usr missing:\n{yaml}");
         assert!(yaml.contains("- /etc"), "rpm prefix /etc missing:\n{yaml}");
@@ -3436,7 +3460,8 @@ crates:
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(yaml.contains("deb:"), "deb section missing:\n{yaml}");
         assert!(yaml.contains("triggers:"), "deb triggers missing:\n{yaml}");
         assert!(
@@ -3502,7 +3527,8 @@ crates:
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(
             yaml.contains("compression: xz"),
             "deb compression missing:\n{yaml}"
@@ -3540,7 +3566,8 @@ crates:
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(yaml.contains("apk:"), "apk section missing:\n{yaml}");
         assert!(
             yaml.contains("signature:"),
@@ -3575,7 +3602,8 @@ crates:
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(
             yaml.contains("archlinux:"),
             "archlinux section missing:\n{yaml}"
@@ -3626,7 +3654,8 @@ crates:
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(
             yaml.contains("key_passphrase: secret123"),
             "key_passphrase missing from signature:\n{yaml}"
@@ -3659,7 +3688,8 @@ crates:
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(yaml.contains("interest:"), "interest missing:\n{yaml}");
         assert!(
             yaml.contains("interest_await:"),
@@ -4127,7 +4157,8 @@ crates:
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
 
         // Verify all sections present
         assert!(yaml.contains("epoch:"), "epoch missing:\n{yaml}");
@@ -4190,7 +4221,8 @@ crates:
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(
             yaml.contains("meta: false"),
             "meta: false should appear in YAML:\n{yaml}"
@@ -4212,7 +4244,8 @@ crates:
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(
             !yaml.contains("meta:"),
             "meta should not appear when None:\n{yaml}"
@@ -4676,7 +4709,8 @@ crates:
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(
             yaml.contains("key_name: mykey.rsa.pub"),
             "key_name missing from signature:\n{yaml}"
@@ -4710,7 +4744,8 @@ crates:
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(
             !yaml.contains("key_name:"),
             "key_name should not appear when None:\n{yaml}"
@@ -4750,7 +4785,8 @@ crates:
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(
             yaml.contains("packager: deb"),
             "content packager missing from YAML:\n{yaml}"
@@ -4784,7 +4820,8 @@ crates:
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(
             !yaml.contains("packager:"),
             "packager should not appear when None:\n{yaml}"
@@ -4821,7 +4858,8 @@ crates:
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(yaml.contains("apk:"), "apk section missing:\n{yaml}");
         assert!(
             yaml.contains("scripts:"),
@@ -4859,7 +4897,8 @@ crates:
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(
             yaml.contains("apk:"),
             "apk section should be present:\n{yaml}"
@@ -5174,7 +5213,8 @@ crates:
             None,
             false,
             &lib_paths,
-        );
+        )
+        .unwrap();
         assert!(
             yaml.contains("src: /dist/mylib.h"),
             "libdirs header src missing:\n{yaml}"
@@ -5213,7 +5253,8 @@ crates:
             None,
             false,
             &lib_paths,
-        );
+        )
+        .unwrap();
         assert!(
             yaml.contains("src: /dist/mylib.a"),
             "libdirs carchive src missing:\n{yaml}"
@@ -5248,7 +5289,8 @@ crates:
             None,
             false,
             &lib_paths,
-        );
+        )
+        .unwrap();
         assert!(
             yaml.contains("src: /dist/mylib.so"),
             "libdirs cshared src missing:\n{yaml}"
@@ -5288,7 +5330,8 @@ crates:
             None,
             false,
             &lib_paths,
-        );
+        )
+        .unwrap();
         // All three entries should appear
         assert!(
             yaml.contains("dst: /usr/include/mylib.h"),
@@ -5319,7 +5362,8 @@ crates:
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         // Should only have the main binary entry, no .h/.a/.so entries
         assert!(
             !yaml.contains(".h"),
@@ -5360,7 +5404,8 @@ crates:
             None,
             false,
             &lib_paths,
-        );
+        )
+        .unwrap();
         // GoReleaser defaults: header=/usr/include
         assert!(
             yaml.contains("dst: /usr/include/myapp.h"),
@@ -5384,7 +5429,8 @@ crates:
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(
             !yaml.contains(".h"),
             "no .h entry expected when libdirs is None:\n{yaml}"
@@ -5430,7 +5476,8 @@ crates:
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(
             yaml.contains("changelog: changelog.yaml"),
             "changelog field missing from YAML:\n{yaml}"
@@ -5452,7 +5499,8 @@ crates:
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(
             !yaml.contains("changelog:"),
             "changelog should not appear when None:\n{yaml}"
@@ -5568,7 +5616,8 @@ crates:
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(
             yaml.contains("owner: root"),
             "static owner should appear in YAML:\n{yaml}"
@@ -5604,7 +5653,8 @@ crates:
             None,
             false,
             &lib_paths,
-        );
+        )
+        .unwrap();
         assert!(
             yaml.contains("src: /build/output/mylib.h"),
             "src should use actual artifact path:\n{yaml}"
@@ -5630,7 +5680,8 @@ crates:
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(
             yaml.contains("changelog: /path/to/changelog.yaml"),
             "absolute changelog path missing:\n{yaml}"
@@ -5660,7 +5711,8 @@ crates:
             None,
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         // No library artifacts = no library content entries
         assert!(
             !yaml.contains("/usr/include"),
@@ -5703,7 +5755,8 @@ crates:
             Some("ipk"),
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(yaml.contains("ipk:"), "should have ipk section:\n{yaml}");
         assert!(
             yaml.contains("abi_version: '1.0'"),
@@ -5753,7 +5806,8 @@ crates:
             Some("ipk"),
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(
             !yaml.contains("ipk:"),
             "empty ipk config should be omitted:\n{yaml}"
@@ -5961,7 +6015,8 @@ crates:
             Some("ipk"),
             false,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(yaml.contains("ipk:"), "ipk section missing:\n{yaml}");
         assert!(
             yaml.contains("abi_version: '1.0'") || yaml.contains("abi_version: \"1.0\""),
@@ -6015,7 +6070,8 @@ crates:
             None,
             false,
             &lib_paths,
-        );
+        )
+        .unwrap();
         // Actual header path should be used
         assert!(
             yaml.contains("src: /build/mylib.h"),
@@ -6066,7 +6122,8 @@ crates:
             None,
             false,
             &lib_paths,
-        );
+        )
+        .unwrap();
         // Default header dir is /usr/include
         assert!(
             yaml.contains("dst: /usr/include/foo.h"),
@@ -6359,7 +6416,8 @@ crates:
             Some("deb"),
             true,
             &NfpmLibraryPaths::default(),
-        );
+        )
+        .unwrap();
         assert!(yaml.contains("homepage: https://project.example"));
         assert!(yaml.contains("license: Apache-2.0"));
         assert!(yaml.contains("description: Project-level description"));

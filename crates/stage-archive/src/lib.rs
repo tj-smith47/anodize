@@ -15,8 +15,17 @@ use anodizer_core::config::{
 };
 use anodizer_core::context::Context;
 use anodizer_core::hooks::run_hooks;
+use anodizer_core::log::{StageLogger, Verbosity};
 use anodizer_core::stage::Stage;
 use anodizer_core::target::map_target;
+
+/// Module-level logger for warnings emitted from helpers that don't have
+/// runtime access to the stage's `ctx.logger("archive")`. Uses `Verbosity::Normal`
+/// so warnings are always shown except in `--quiet` mode (which the helpers
+/// can't observe). Routes through StageLogger for consistent `[archive]` framing.
+fn archive_log() -> StageLogger {
+    StageLogger::new("archive", Verbosity::Normal)
+}
 
 // ---------------------------------------------------------------------------
 // parse_mtime  (helper)
@@ -57,10 +66,9 @@ fn apply_file_info_to_header(
         if let Some(ts) = parse_mtime(mtime_str) {
             header.set_mtime(ts);
         } else {
-            eprintln!(
-                "Warning: [archive] could not parse mtime '{}' as RFC3339 or unix timestamp, ignoring",
-                mtime_str
-            );
+            archive_log().warn(&format!(
+                "could not parse mtime '{mtime_str}' as RFC3339 or unix timestamp, ignoring"
+            ));
         }
     }
 }
@@ -646,12 +654,12 @@ fn deduplicate_entries(entries: Vec<ArchiveEntry>) -> Vec<ArchiveEntry> {
     let mut result = Vec::with_capacity(entries.len());
     for entry in entries {
         if let Some(first_src) = seen.get(&entry.archive_name) {
-            eprintln!(
-                "Warning: [archive] file '{}' already exists in archive as '{}' — '{}' will be ignored",
+            archive_log().warn(&format!(
+                "file '{}' already exists in archive as '{}' — '{}' will be ignored",
                 entry.archive_name.display(),
                 first_src.display(),
                 entry.src.display(),
-            );
+            ));
         } else {
             seen.insert(entry.archive_name.clone(), entry.src.clone());
             result.push(entry);

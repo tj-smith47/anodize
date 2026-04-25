@@ -367,10 +367,12 @@ fn build_universal_binary(
         .artifacts
         .by_kind_and_crate(ArtifactKind::Binary, crate_name);
 
-    // GoReleaser universalbinary.go:42-44 — default `ids` to [ID] when unset.
-    // The universal binary's `id` (or the crate name as a last resort) is the
-    // implicit filter, so a bare `universal_binaries: [{ id: foo }]` selects
-    // only build outputs with that id.
+    // Default `ids` to `[ID]` when unset, with the per-crate fallback below.
+    // GoReleaser (universalbinary.go:42-44) falls back to `ProjectName`;
+    // anodizer falls back to `crate_name` because the workspace model scopes
+    // builds per-crate and there is no single project-wide "default id".
+    // For single-crate workspaces the two are equivalent; for multi-crate
+    // workspaces the per-crate scoping is anodizer-additive and intentional.
     let default_ids: Vec<String> = vec![ub.id.clone().unwrap_or_else(|| crate_name.to_string())];
     let effective_ids = ub.ids.clone().unwrap_or(default_ids);
 
@@ -1032,18 +1034,12 @@ fn cargo_target_dir(build_env: Option<&HashMap<String, String>>) -> PathBuf {
 // resolve_reproducible_epoch — parse SOURCE_DATE_EPOCH with commit_timestamp fallback
 // ---------------------------------------------------------------------------
 
-fn resolve_reproducible_epoch(commit_timestamp: &str) -> i64 {
+fn resolve_reproducible_epoch(commit_timestamp: &str) -> Option<i64> {
     let epoch = std::env::var("SOURCE_DATE_EPOCH")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or_else(|| commit_timestamp.parse::<i64>().unwrap_or(0));
-    if epoch == 0 {
-        eprintln!(
-            "Warning: [build] reproducible build requested but could not determine epoch \
-             from SOURCE_DATE_EPOCH or CommitTimestamp; mtime will not be set"
-        );
-    }
-    epoch
+    if epoch > 0 { Some(epoch) } else { None }
 }
 
 // ---------------------------------------------------------------------------
@@ -2020,9 +2016,13 @@ impl Stage for BuildStage {
 
                 // Reproducible mtime: set binary mtime to SOURCE_DATE_EPOCH
                 if job.reproducible && resolved_bin.exists() {
-                    let epoch = resolve_reproducible_epoch(&commit_timestamp);
-                    if epoch > 0 {
+                    if let Some(epoch) = resolve_reproducible_epoch(&commit_timestamp) {
                         anodizer_core::util::set_file_mtime_epoch(&resolved_bin, epoch)?;
+                    } else {
+                        log.warn(
+                            "reproducible build requested but could not determine epoch \
+                             from SOURCE_DATE_EPOCH or CommitTimestamp; mtime will not be set",
+                        );
                     }
                 }
 
@@ -2194,9 +2194,13 @@ impl Stage for BuildStage {
 
                                 // Reproducible mtime: set binary mtime to SOURCE_DATE_EPOCH
                                 if reproducible && bin_path.exists() {
-                                    let epoch = resolve_reproducible_epoch(&commit_ts);
-                                    if epoch > 0 {
+                                    if let Some(epoch) = resolve_reproducible_epoch(&commit_ts) {
                                         anodizer_core::util::set_file_mtime_epoch(&bin_path, epoch)?;
+                                    } else {
+                                        log.warn(
+                                            "reproducible build requested but could not determine epoch \
+                                             from SOURCE_DATE_EPOCH or CommitTimestamp; mtime will not be set",
+                                        );
                                     }
                                 }
 
@@ -3746,7 +3750,7 @@ crate_type = ["dylib"]
         if let Some(val) = saved {
             unsafe { std::env::set_var("SOURCE_DATE_EPOCH", val) };
         }
-        assert_eq!(epoch, 1700000000);
+        assert_eq!(epoch, Some(1700000000));
     }
 
     #[test]
@@ -3758,7 +3762,7 @@ crate_type = ["dylib"]
         if let Some(val) = saved {
             unsafe { std::env::set_var("SOURCE_DATE_EPOCH", val) };
         }
-        assert_eq!(epoch, 0);
+        assert_eq!(epoch, None);
     }
 
     // ---- Fix 5: config parsing with hooks test ----

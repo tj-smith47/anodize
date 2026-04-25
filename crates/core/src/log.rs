@@ -48,6 +48,7 @@ impl Verbosity {
 /// log.verbose(&format!("RUSTFLAGS={}", flags));
 /// log.debug(&format!("full env: {:?}", env));
 /// ```
+#[derive(Clone, Copy)]
 pub struct StageLogger {
     stage: &'static str,
     verbosity: Verbosity,

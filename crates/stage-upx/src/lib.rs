@@ -104,7 +104,15 @@ impl Stage for UpxStage {
             }
 
             // Collect matching Binary + UniversalBinary artifacts
-            // (GoReleaser parity: upx.go:119 filters ByTypes(Binary, UniversalBinary))
+            // (GoReleaser parity: upx.go:119 filters ByTypes(Binary, UniversalBinary)).
+            //
+            // Pipeline ordering: UPX runs after both `build` (per-arch Binary) and
+            // `universal` (UniversalBinary lipo'd from per-arch Binaries), so
+            // when `replace: true` is set on the universal config the source
+            // per-arch binaries have already been removed by the universal stage
+            // and only the universal binary is compressed. With `replace: false`
+            // both the per-arch and universal binaries appear here and BOTH get
+            // compressed in-place.
             let mut binary_artifacts = ctx.artifacts.by_kind(ArtifactKind::Binary);
             binary_artifacts.extend(ctx.artifacts.by_kind(ArtifactKind::UniversalBinary));
             let matching_artifacts: Vec<(std::path::PathBuf, Option<String>)> = binary_artifacts

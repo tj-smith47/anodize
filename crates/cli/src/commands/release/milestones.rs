@@ -22,6 +22,8 @@ pub(super) fn close_milestones(
             continue;
         }
 
+        // GoReleaser milestone.go:13 defaults to `"{{ .Tag }}"` (Go template);
+        // anodizer's Tera-shaped equivalent renders to the same string.
         let name_template = milestone_cfg
             .name_template
             .as_deref()

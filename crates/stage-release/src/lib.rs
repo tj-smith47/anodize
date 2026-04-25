@@ -7,8 +7,17 @@ use anodizer_core::config::{
 };
 use anodizer_core::context::Context;
 use anodizer_core::git;
+use anodizer_core::log::{StageLogger, Verbosity};
 use anodizer_core::scm::ScmTokenType;
 use anodizer_core::stage::Stage;
+
+/// Module-level logger for warnings emitted from helpers (and async upload
+/// retry loops) that don't have runtime access to the stage's
+/// `ctx.logger("release")`. Routes through StageLogger for consistent `[release]`
+/// framing.
+fn release_log() -> StageLogger {
+    StageLogger::new("release", Verbosity::Normal)
+}
 use anyhow::{Context as _, Result, bail};
 use http::header::HeaderValue;
 use octocrab::service::middleware::auth_header::AuthHeaderLayer;
@@ -90,10 +99,9 @@ async fn check_github_rate_limit(client: &reqwest::Client, token: &str, threshol
     } else {
         5 // Minimum 5 seconds if reset is in the past
     };
-    eprintln!(
-        "rate limit almost reached ({} remaining), sleeping for {}s...",
-        remaining, sleep_secs
-    );
+    release_log().status(&format!(
+        "rate limit almost reached ({remaining} remaining), sleeping for {sleep_secs}s..."
+    ));
     tokio::time::sleep(std::time::Duration::from_secs(sleep_secs)).await;
 }
 
@@ -934,7 +942,7 @@ fn build_octocrab_client_insecure(
     token: &str,
     github_urls: &Option<GitHubUrlsConfig>,
 ) -> Result<octocrab::Octocrab> {
-    eprintln!("WARNING: TLS certificate verification disabled for GitHub API — this is insecure");
+    release_log().warn("TLS certificate verification disabled for GitHub API — this is insecure");
 
     // Build a rustls ClientConfig that accepts any server certificate.
     let crypto_provider = rustls::crypto::ring::default_provider();
@@ -1226,7 +1234,11 @@ impl Stage for ReleaseStage {
                 ));
             }
 
-            // Resolve release name (GoReleaser defaults to "{{.Tag}}").
+            // Resolve release name. GoReleaser defaults to `"{{.Tag}}"` (Go
+            // template); anodizer's renderer expects Tera syntax so the default
+            // is the equivalent `"{{ Tag }}"`. The two render to the same
+            // string for any user-supplied template; this only affects the
+            // surface form (no leading dot) when introspecting the default.
             let name_tmpl = release_cfg.name_template.as_deref().unwrap_or("{{ Tag }}");
             let release_name = ctx.render_template(name_tmpl).with_context(|| {
                 format!(
@@ -2355,12 +2367,11 @@ impl Stage for ReleaseStage {
                                                 // eventual-consistency window after our prior
                                                 // successful delete; retrying doesn't help.
                                                 if overwrite_attempted {
-                                                    eprintln!(
-                                                        "warn: existing asset '{}' on release '{}' \
+                                                    release_log().warn(&format!(
+                                                        "existing asset '{file_name}' on release '{tag_c}' \
                                                          reappeared after delete+retry; \
-                                                         skipping — stale asset kept",
-                                                        file_name, tag_c
-                                                    );
+                                                         skipping — stale asset kept"
+                                                    ));
                                                     last_err = None;
                                                     break;
                                                 }
@@ -2425,11 +2436,10 @@ impl Stage for ReleaseStage {
                                                         continue;
                                                     }
                                                     Err(del_err) => {
-                                                        eprintln!(
-                                                            "warn: could not overwrite existing asset '{}' on release '{}' \
-                                                             (size mismatch and delete failed: {}); skipping — stale asset kept",
-                                                            file_name, tag_c, del_err
-                                                        );
+                                                        release_log().warn(&format!(
+                                                            "could not overwrite existing asset '{file_name}' on release '{tag_c}' \
+                                                             (size mismatch and delete failed: {del_err}); skipping — stale asset kept"
+                                                        ));
                                                         last_err = None;
                                                         break;
                                                     }
@@ -2446,10 +2456,9 @@ impl Stage for ReleaseStage {
                                             );
 
                                             if is_rate_limited {
-                                                eprintln!(
-                                                    "rate limited on upload of '{}', checking rate limits...",
-                                                    file_name
-                                                );
+                                                release_log().status(&format!(
+                                                    "rate limited on upload of '{file_name}', checking rate limits..."
+                                                ));
                                                 check_github_rate_limit(
                                                     &reqwest::Client::new(),
                                                     &token_for_rate_limit,
@@ -2472,10 +2481,9 @@ impl Stage for ReleaseStage {
                                                 // while our error-mapping expected JSON — always
                                                 // transient, safe to retry. Log the variant so
                                                 // future diagnostics don't have to guess.
-                                                eprintln!(
-                                                    "warn: transient upload error on '{}' attempt {}/{}: {:?}",
-                                                    file_name, attempt, MAX_UPLOAD_ATTEMPTS, err
-                                                );
+                                                release_log().warn(&format!(
+                                                    "transient upload error on '{file_name}' attempt {attempt}/{MAX_UPLOAD_ATTEMPTS}: {err:?}"
+                                                ));
                                                 last_err = Some(anyhow::anyhow!(err));
                                                 if attempt < MAX_UPLOAD_ATTEMPTS {
                                                     let delay = std::cmp::min(

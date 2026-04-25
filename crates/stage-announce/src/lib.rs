@@ -383,6 +383,13 @@ impl Stage for AnnounceStage {
                 let chat_id = require_rendered(ctx, cfg.chat_id.as_deref(), "telegram", "chat_id")?;
                 // Telegram defaults to MarkdownV2 parse mode, so the default
                 // message template must apply the mdv2escape filter.
+                //
+                // GoReleaser telegram.go:18 uses Go-template syntax:
+                //   `{{ print .ProjectName " " .Tag " is out! ... " .ReleaseURL | mdv2escape }}`
+                // anodizer renders via Tera, where string concat is `~`. A user
+                // copy-pasting GR's `{{ print ... }}` form from upstream docs
+                // will hit a Tera parse error — document an anodizer template
+                // example in the per-template-engine cheat sheet.
                 const TELEGRAM_DEFAULT_TEMPLATE: &str = "{{ ProjectName ~ \" \" ~ Tag ~ \" is out! Check it out at \" ~ ReleaseURL | mdv2escape }}";
                 let message = ctx.render_template(
                     cfg.message_template

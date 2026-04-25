@@ -2155,8 +2155,10 @@ pub struct HomebrewConfig {
     /// for prerelease versions. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip_upload: Option<StringOrBool>,
-    /// Custom commit message template.  Rendered via Tera with `name` and
-    /// `version` variables.  Defaults to `"chore: update {{ name }} formula to {{ version }}"`.
+    /// Custom commit message template. Rendered via Tera with the standard
+    /// release template variables (`ProjectName`, `Tag`, `Version`, etc.).
+    /// Default: `"Brew formula update for {{ ProjectName }} version {{ Tag }}"`
+    /// (set in `crates/stage-publish/src/homebrew.rs::default_commit_msg_template`).
     pub commit_msg_template: Option<String>,
     /// Git commit author name for tap updates (legacy; prefer `commit_author`).
     pub commit_author_name: Option<String>,
@@ -2931,11 +2933,15 @@ pub struct DockerConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct DockerRetryConfig {
-    /// Number of retry attempts for failed docker push operations (default: 3).
+    /// Number of retry attempts for failed docker push operations
+    /// (default: 10, set in `crates/stage-docker/src/lib.rs::resolve_retry_settings`).
     pub attempts: Option<u32>,
-    /// Duration string, e.g. "1s", "500ms".
+    /// Duration string for the initial retry delay (default: `"10s"`).
+    /// Examples: `"1s"`, `"500ms"`.
     pub delay: Option<String>,
-    /// Maximum delay between retries, e.g. "30s".
+    /// Maximum delay between retries (default: `"5m"`). Caps the exponential
+    /// backoff so attempt-9 with a 10s base does not stretch to ~42 min.
+    /// Example: `"30s"`.
     pub max_delay: Option<String>,
 }
 
@@ -3875,7 +3881,15 @@ pub struct BlobConfig {
     /// Defaults to `true` when `endpoint` is set (MinIO, R2, DO Spaces need this),
     /// `false` otherwise (standard AWS virtual-hosted style).
     pub s3_force_path_style: Option<bool>,
-    /// ACL for uploaded objects (S3, e.g. "public-read", "private").
+    /// Canned ACL for uploaded objects.
+    /// **S3**: one of `private` (default), `public-read`, `public-read-write`,
+    /// `authenticated-read`, `aws-exec-read`, `bucket-owner-read`,
+    /// `bucket-owner-full-control`. Matches GoReleaser's accepted set;
+    /// AWS's `log-delivery-write` is intentionally omitted because it is only
+    /// valid on `S3LogBucket` targets and would silently fail on a normal bucket.
+    /// **GCS**: pass the camelCase predefined-ACL name (e.g. `publicRead`,
+    /// `bucketOwnerFullControl`); not validated up-front, so a typo surfaces
+    /// as a 400 from the GCS API at upload time.
     pub acl: Option<String>,
     /// HTTP Cache-Control header values, joined with ", " when uploading.
     /// Accepts a string (single value) or array of strings in YAML.
@@ -5865,9 +5879,14 @@ pub struct UploadConfig {
     pub exts: Option<Vec<String>>,
     /// Target URL template (supports template variables like {{ .ProjectName }}, {{ .Version }}).
     pub target: String,
-    /// Username for HTTP basic auth (or env var template).
+    /// Username for HTTP basic auth.
+    /// Resolution order: rendered `username` template → env `UPLOAD_{NAME}_USERNAME`.
+    /// Set this to a literal value or a `{{ .Env.X }}` template.
     pub username: Option<String>,
-    /// Password for HTTP basic auth (env var template recommended).
+    /// Password for HTTP basic auth (env var template strongly recommended;
+    /// in-config plaintext leaves the value in `dist/config.yaml` after dry-run).
+    /// Resolution order: rendered `password` template → env `UPLOAD_{NAME}_SECRET`.
+    /// Mirrors GoReleaser's `Upload.Password` cascade (added in upstream v2.12).
     pub password: Option<String>,
     /// HTTP method: PUT or POST (default: PUT).
     pub method: Option<String>,

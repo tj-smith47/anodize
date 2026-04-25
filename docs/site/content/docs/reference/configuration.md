@@ -577,11 +577,11 @@ GoReleaser Pro feature: all rendered template files are uploaded to the release 
 | `method` | string | — | HTTP method: PUT or POST (default: PUT). |
 | `mode` | string | — | Upload mode: "archive" (default) or "binary". |
 | `name` | string | — | Human-readable name for this upload config. |
-| `password` | string | — | Password for HTTP basic auth (env var template recommended). |
+| `password` | string | — | Password for HTTP basic auth (env var template strongly recommended; in-config plaintext leaves the value in `dist/config.yaml` after dry-run). Resolution order: rendered `password` template → env `UPLOAD_{NAME}_SECRET`. Mirrors GoReleaser's `Upload.Password` cascade (added in upstream v2.12). |
 | `signature` | bool | — | Include signatures in uploaded artifacts. |
 | `target` | string | — | Target URL template (supports template variables like {{ .ProjectName }}, {{ .Version }}). |
 | `trusted_certificates` | string | — | Path to PEM-encoded trusted CA certificates. |
-| `username` | string | — | Username for HTTP basic auth (or env var template). |
+| `username` | string | — | Username for HTTP basic auth. Resolution order: rendered `username` template → env `UPLOAD_{NAME}_USERNAME`. Set this to a literal value or a `{{ .Env.X }}` template. |
 
 ## `upx`
 | Field | Type | Default | Description |

@@ -741,6 +741,10 @@ impl Stage for BlobStage {
                     )
                 })?;
 
+                // Default mirrors GoReleaser's `{{ .ProjectName }}/{{ .Tag }}`
+                // (blob.go:27) but expressed in Tera syntax (no leading `.`).
+                // Anodizer's renderer accepts both forms, so a YAML lifted from
+                // a goreleaser config that overrides `directory:` keeps working.
                 let directory_template = blob_cfg
                     .directory
                     .as_deref()
