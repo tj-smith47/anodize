@@ -516,14 +516,22 @@ impl Stage for SnapcraftStage {
 
             for snap_cfg in snap_configs {
                 // Skip disabled configs
-                if let Some(ref d) = snap_cfg.disable
-                    && d.is_disabled(|tmpl| ctx.render_template(tmpl))
-                {
-                    log.status(&format!(
-                        "skipping disabled snapcraft config for crate {}",
-                        krate.name
-                    ));
-                    continue;
+                if let Some(ref d) = snap_cfg.disable {
+                    let off = d
+                        .try_is_disabled(|tmpl| ctx.render_template(tmpl))
+                        .with_context(|| {
+                            format!(
+                                "snapcraft: render disable template for crate {}",
+                                krate.name
+                            )
+                        })?;
+                    if off {
+                        log.status(&format!(
+                            "skipping disabled snapcraft config for crate {}",
+                            krate.name
+                        ));
+                        continue;
+                    }
                 }
 
                 // Validate confinement value
@@ -1030,10 +1038,18 @@ impl Stage for SnapcraftPublishStage {
                     continue;
                 }
                 // Skip disabled configs
-                if let Some(ref d) = snap_cfg.disable
-                    && d.is_disabled(|tmpl| ctx.render_template(tmpl))
-                {
-                    continue;
+                if let Some(ref d) = snap_cfg.disable {
+                    let off = d
+                        .try_is_disabled(|tmpl| ctx.render_template(tmpl))
+                        .with_context(|| {
+                            format!(
+                                "snapcraft: render publish.disable template for crate {}",
+                                krate.name
+                            )
+                        })?;
+                    if off {
+                        continue;
+                    }
                 }
 
                 // Find snap artifacts for this crate (optionally filtered by id)

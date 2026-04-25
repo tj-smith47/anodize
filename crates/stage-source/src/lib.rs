@@ -771,11 +771,14 @@ impl SourceStage {
         let id = sbom_cfg.id.as_deref().unwrap_or("default");
 
         // Evaluate disable — supports bool or template string
-        if let Some(ref d) = sbom_cfg.disable
-            && d.is_disabled(|s| ctx.render_template(s))
-        {
-            log.status(&format!("sbom[{}]: disabled, skipping", id));
-            return Ok(());
+        if let Some(ref d) = sbom_cfg.disable {
+            let off = d
+                .try_is_disabled(|s| ctx.render_template(s))
+                .with_context(|| format!("sbom[{}]: render disable template", id))?;
+            if off {
+                log.status(&format!("sbom[{}]: disabled, skipping", id));
+                return Ok(());
+            }
         }
 
         // Determine if this is a built-in (no external command) or subprocess model

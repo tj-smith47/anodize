@@ -893,11 +893,14 @@ impl Stage for ChangelogStage {
         }
 
         // If disabled, skip the stage entirely (supports template-conditional disable).
-        if let Some(d) = changelog_cfg.as_ref().and_then(|c| c.disable.as_ref())
-            && d.is_disabled(|s| ctx.render_template(s))
-        {
-            log.status("disabled, skipping");
-            return Ok(());
+        if let Some(d) = changelog_cfg.as_ref().and_then(|c| c.disable.as_ref()) {
+            let off = d
+                .try_is_disabled(|s| ctx.render_template(s))
+                .with_context(|| "changelog: render disable template")?;
+            if off {
+                log.status("disabled, skipping");
+                return Ok(());
+            }
         }
 
         // If `use: github-native`, skip changelog generation and store empty

@@ -29,11 +29,14 @@ impl Stage for SrpmStage {
         };
 
         // Check disable
-        if let Some(ref d) = srpm_cfg.disable
-            && d.is_disabled(|tmpl| ctx.render_template(tmpl))
-        {
-            log.verbose("skipping disabled SRPM config");
-            return Ok(());
+        if let Some(ref d) = srpm_cfg.disable {
+            let off = d
+                .try_is_disabled(|tmpl| ctx.render_template(tmpl))
+                .with_context(|| "srpm: render disable template")?;
+            if off {
+                log.verbose("skipping disabled SRPM config");
+                return Ok(());
+            }
         }
 
         // when global skip_sign is active, clear signature config

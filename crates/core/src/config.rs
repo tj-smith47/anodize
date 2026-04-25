@@ -5496,23 +5496,8 @@ impl StringOrBool {
     /// the provided closure and the result is compared to `"true"`.
     /// Otherwise, the plain bool / string value is evaluated directly.
     ///
-    /// **Note:** silently treats render errors as `false`. Prefer
-    /// [`try_evaluates_to_true`](Self::try_evaluates_to_true) at any new
-    /// callsite so a malformed template fails fast instead of silently
-    /// disabling the gate.
-    pub fn evaluates_to_true(&self, render: impl Fn(&str) -> anyhow::Result<String>) -> bool {
-        if self.is_template() {
-            render(self.as_str())
-                .map(|r| r.trim() == "true")
-                .unwrap_or(false)
-        } else {
-            self.as_bool()
-        }
-    }
-
-    /// Fallible variant of [`evaluates_to_true`](Self::evaluates_to_true) —
-    /// surfaces template render failures instead of silently treating them
-    /// as `false`. Prefer this at any new callsite.
+    /// Returns the render error so callers can fail fast on a malformed
+    /// template instead of silently treating it as `false`.
     pub fn try_evaluates_to_true(
         &self,
         render: impl Fn(&str) -> anyhow::Result<String>,
@@ -5526,13 +5511,8 @@ impl StringOrBool {
 
     /// Evaluate whether this value means "disabled".
     ///
-    /// Delegates to [`evaluates_to_true`](Self::evaluates_to_true) — a
-    /// convenience alias with domain-specific semantics.
-    pub fn is_disabled(&self, render: impl Fn(&str) -> anyhow::Result<String>) -> bool {
-        self.evaluates_to_true(render)
-    }
-
-    /// Fallible variant of [`is_disabled`](Self::is_disabled). Returns the
+    /// Domain-specific alias for
+    /// [`try_evaluates_to_true`](Self::try_evaluates_to_true). Returns the
     /// render error so callers can fail fast on a malformed `disable:`
     /// template instead of silently treating it as "not disabled".
     pub fn try_is_disabled(

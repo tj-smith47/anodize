@@ -62,11 +62,14 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
 
     for entry in entries {
         // Check disable flag.
-        if let Some(ref d) = entry.disable
-            && d.is_disabled(|tmpl| ctx.render_template(tmpl))
-        {
-            log.status("dockerhub: entry disabled, skipping");
-            continue;
+        if let Some(ref d) = entry.disable {
+            let off = d
+                .try_is_disabled(|tmpl| ctx.render_template(tmpl))
+                .with_context(|| "dockerhub: render disable template")?;
+            if off {
+                log.status("dockerhub: entry disabled, skipping");
+                continue;
+            }
         }
 
         // Critical 1: Resolve username from config, falling back to

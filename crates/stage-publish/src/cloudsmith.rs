@@ -75,11 +75,14 @@ pub fn publish_to_cloudsmith(ctx: &Context, log: &StageLogger) -> Result<()> {
 
     for entry in entries {
         // Check skip flag.
-        if let Some(ref s) = entry.skip
-            && s.is_disabled(|tmpl| ctx.render_template(tmpl))
-        {
-            log.status("cloudsmith: entry skipped");
-            continue;
+        if let Some(ref s) = entry.skip {
+            let off = s
+                .try_is_disabled(|tmpl| ctx.render_template(tmpl))
+                .with_context(|| "cloudsmith: render skip template")?;
+            if off {
+                log.status("cloudsmith: entry skipped");
+                continue;
+            }
         }
 
         // Organization is required — bail before dry-run so config errors
@@ -140,11 +143,12 @@ pub fn publish_to_cloudsmith(ctx: &Context, log: &StageLogger) -> Result<()> {
             .map(|c| ctx.render_template(c).unwrap_or_else(|_| c.clone()));
 
         // Check republish flag.
-        let republish = entry
-            .republish
-            .as_ref()
-            .map(|r| r.evaluates_to_true(|tmpl| ctx.render_template(tmpl)))
-            .unwrap_or(false);
+        let republish = match entry.republish.as_ref() {
+            Some(r) => r
+                .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+                .with_context(|| "cloudsmith: render republish template")?,
+            None => false,
+        };
 
         // Collect matching artifacts.
         let artifacts: Vec<_> = ctx

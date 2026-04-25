@@ -750,11 +750,12 @@ fn process_sign_configs(
                 id_label: sign_cfg.id.as_deref().unwrap_or("default").to_string(),
                 artifact_display: artifact_str.to_string(),
                 signature_display: signature_str.clone(),
-                output_flag: sign_cfg
-                    .output
-                    .as_ref()
-                    .map(|s| s.evaluates_to_true(|tmpl| ctx.render_template(tmpl)))
-                    .unwrap_or(false),
+                output_flag: match sign_cfg.output.as_ref() {
+                    Some(s) => s
+                        .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+                        .with_context(|| "sign: render output template")?,
+                    None => false,
+                },
                 new_artifacts: job_artifacts,
             });
         }
@@ -1199,11 +1200,12 @@ impl Stage for DockerSignStage {
                     let stderr_str =
                         anodizer_core::redact::redact_string(&stderr_raw, &docker_env_pairs);
 
-                    let show_output = docker_sign_cfg
-                        .output
-                        .as_ref()
-                        .map(|s| s.evaluates_to_true(|tmpl| ctx.render_template(tmpl)))
-                        .unwrap_or(true);
+                    let show_output = match docker_sign_cfg.output.as_ref() {
+                        Some(s) => s
+                            .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+                            .with_context(|| "docker_sign: render output template")?,
+                        None => true,
+                    };
                     if show_output {
                         if !stdout_str.is_empty() {
                             log.status(&format!("[docker-sign stdout] {}", stdout_str.trim()));

@@ -493,11 +493,16 @@ pub fn setup_env(
     // Error early if no SCM token and the pipeline needs one.
     // Snapshot mode, dry-run, and release.disable can proceed without a token.
     if ctx.options.token.is_none() && !ctx.is_snapshot() && !ctx.is_dry_run() {
-        let release_disabled = config
+        let release_disabled = match config
             .crates
             .first()
             .and_then(|c| c.release.as_ref()?.disable.as_ref())
-            .is_some_and(|d| d.is_disabled(|t| ctx.render_template(t)));
+        {
+            Some(d) => d
+                .try_is_disabled(|t| ctx.render_template(t))
+                .with_context(|| "release: render disable template")?,
+            None => false,
+        };
         let needs_token = config.crates.iter().any(|c| c.release.is_some())
             && !ctx.should_skip("release")
             && !release_disabled;

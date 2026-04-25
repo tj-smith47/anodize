@@ -66,17 +66,20 @@ pub fn run_publishers(
         let label = publisher.name.as_deref().unwrap_or(&default_label);
 
         // Check template-conditional disable
-        if let Some(ref d) = publisher.disable
-            && d.is_disabled(|tmpl| template::render(tmpl, base_vars))
-        {
-            log.verbose(&format!(
-                "[publisher] skipping {} -- disabled by template",
-                label
-            ));
-            if let Some(sm) = skip_memento {
-                sm.remember("publisher", label, "disabled by template");
+        if let Some(ref d) = publisher.disable {
+            let off = d
+                .try_is_disabled(|tmpl| template::render(tmpl, base_vars))
+                .with_context(|| format!("[publisher] render disable template for {}", label))?;
+            if off {
+                log.verbose(&format!(
+                    "[publisher] skipping {} -- disabled by template",
+                    label
+                ));
+                if let Some(sm) = skip_memento {
+                    sm.remember("publisher", label, "disabled by template");
+                }
+                continue;
             }
-            continue;
         }
 
         if publisher.cmd.is_empty() {

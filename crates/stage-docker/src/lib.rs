@@ -599,11 +599,14 @@ pub fn build_docker_v2_command(
 /// Evaluate whether a Docker V2 config is disabled.
 ///
 /// Checks the `disable` field: if it's a template, renders it and checks for "true".
-/// Returns `true` when the config should be skipped.
-pub fn is_docker_v2_disabled(disable: &Option<StringOrBool>, ctx: &Context) -> bool {
+/// Returns `true` when the config should be skipped. Surfaces template render
+/// errors instead of silently treating them as "not disabled".
+pub fn is_docker_v2_disabled(disable: &Option<StringOrBool>, ctx: &Context) -> Result<bool> {
     match disable {
-        None => false,
-        Some(d) => d.is_disabled(|s| ctx.render_template(s)),
+        None => Ok(false),
+        Some(d) => d
+            .try_is_disabled(|s| ctx.render_template(s))
+            .with_context(|| "docker_v2: render disable template"),
     }
 }
 
@@ -620,7 +623,9 @@ fn resolve_digest_config(
     };
     let disabled = match &dc.disable {
         None => false,
-        Some(d) => d.is_disabled(|s| ctx.render_template(s)),
+        Some(d) => d
+            .try_is_disabled(|s| ctx.render_template(s))
+            .with_context(|| "docker: render digest disable template")?,
     };
     let name_template = match dc.name_template.as_ref() {
         Some(tmpl) => {
@@ -641,11 +646,14 @@ fn resolve_digest_config(
 /// Evaluate whether the sbom flag should be added for a Docker V2 config.
 ///
 /// The `sbom` field is a [`StringOrBool`]. When it evaluates to true, the
-/// `--attest=type=sbom` flag is added to the buildx command.
-pub fn is_docker_v2_sbom_enabled(sbom: &Option<StringOrBool>, ctx: &Context) -> bool {
+/// `--attest=type=sbom` flag is added to the buildx command. Surfaces template
+/// render errors instead of silently treating them as "not enabled".
+pub fn is_docker_v2_sbom_enabled(sbom: &Option<StringOrBool>, ctx: &Context) -> Result<bool> {
     match sbom {
-        None => false,
-        Some(s) => s.evaluates_to_true(|tmpl| ctx.render_template(tmpl)),
+        None => Ok(false),
+        Some(s) => s
+            .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+            .with_context(|| "docker_v2: render sbom template"),
     }
 }
 
@@ -1957,7 +1965,7 @@ impl Stage for DockerStage {
 
             for (idx, v2_cfg) in docker_v2_configs.iter().enumerate() {
                 // Check disable — skip when template evaluates to true
-                if is_docker_v2_disabled(&v2_cfg.disable, ctx) {
+                if is_docker_v2_disabled(&v2_cfg.disable, ctx)? {
                     log.status(&format!(
                         "docker_v2[{}]: skipping disabled config for crate {}",
                         idx, krate.name
@@ -2160,7 +2168,7 @@ impl Stage for DockerStage {
                     let sbom_enabled = if ctx.is_snapshot() {
                         false
                     } else {
-                        is_docker_v2_sbom_enabled(&v2_cfg.sbom, ctx)
+                        is_docker_v2_sbom_enabled(&v2_cfg.sbom, ctx)?
                     };
 
                     let platform_refs: Vec<&str> =
@@ -2174,7 +2182,9 @@ impl Stage for DockerStage {
                     } else {
                         let v2_skip_push = match &v2_cfg.skip_push {
                             None => false,
-                            Some(s) => s.evaluates_to_true(|tmpl| ctx.render_template(tmpl)),
+                            Some(s) => s
+                                .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+                                .with_context(|| "docker_v2: render skip_push template")?,
                         };
                         !dry_run && !v2_skip_push
                     };
@@ -5555,7 +5565,7 @@ crates:
         use anodizer_core::context::{Context, ContextOptions};
 
         let ctx = Context::new(Config::default(), ContextOptions::default());
-        assert!(!is_docker_v2_disabled(&None, &ctx));
+        assert!(!is_docker_v2_disabled(&None, &ctx).unwrap());
     }
 
     #[test]
@@ -5564,7 +5574,7 @@ crates:
         use anodizer_core::context::{Context, ContextOptions};
 
         let ctx = Context::new(Config::default(), ContextOptions::default());
-        assert!(is_docker_v2_disabled(&Some(StringOrBool::Bool(true)), &ctx));
+        assert!(is_docker_v2_disabled(&Some(StringOrBool::Bool(true)), &ctx).unwrap());
     }
 
     #[test]
@@ -5573,10 +5583,7 @@ crates:
         use anodizer_core::context::{Context, ContextOptions};
 
         let ctx = Context::new(Config::default(), ContextOptions::default());
-        assert!(!is_docker_v2_disabled(
-            &Some(StringOrBool::Bool(false)),
-            &ctx
-        ));
+        assert!(!is_docker_v2_disabled(&Some(StringOrBool::Bool(false)), &ctx).unwrap());
     }
 
     #[test]
@@ -5585,7 +5592,7 @@ crates:
         use anodizer_core::context::{Context, ContextOptions};
 
         let ctx = Context::new(Config::default(), ContextOptions::default());
-        assert!(!is_docker_v2_sbom_enabled(&None, &ctx));
+        assert!(!is_docker_v2_sbom_enabled(&None, &ctx).unwrap());
     }
 
     #[test]
@@ -5594,10 +5601,7 @@ crates:
         use anodizer_core::context::{Context, ContextOptions};
 
         let ctx = Context::new(Config::default(), ContextOptions::default());
-        assert!(is_docker_v2_sbom_enabled(
-            &Some(StringOrBool::Bool(true)),
-            &ctx
-        ));
+        assert!(is_docker_v2_sbom_enabled(&Some(StringOrBool::Bool(true)), &ctx).unwrap());
     }
 
     #[test]
@@ -5606,10 +5610,7 @@ crates:
         use anodizer_core::context::{Context, ContextOptions};
 
         let ctx = Context::new(Config::default(), ContextOptions::default());
-        assert!(!is_docker_v2_sbom_enabled(
-            &Some(StringOrBool::Bool(false)),
-            &ctx
-        ));
+        assert!(!is_docker_v2_sbom_enabled(&Some(StringOrBool::Bool(false)), &ctx).unwrap());
     }
 
     #[test]
@@ -5618,10 +5619,9 @@ crates:
         use anodizer_core::context::{Context, ContextOptions};
 
         let ctx = Context::new(Config::default(), ContextOptions::default());
-        assert!(is_docker_v2_disabled(
-            &Some(StringOrBool::String("true".to_string())),
-            &ctx
-        ));
+        assert!(
+            is_docker_v2_disabled(&Some(StringOrBool::String("true".to_string())), &ctx).unwrap()
+        );
     }
 
     #[test]
@@ -5630,10 +5630,9 @@ crates:
         use anodizer_core::context::{Context, ContextOptions};
 
         let ctx = Context::new(Config::default(), ContextOptions::default());
-        assert!(!is_docker_v2_disabled(
-            &Some(StringOrBool::String("false".to_string())),
-            &ctx
-        ));
+        assert!(
+            !is_docker_v2_disabled(&Some(StringOrBool::String("false".to_string())), &ctx).unwrap()
+        );
     }
 
     #[test]
@@ -5643,10 +5642,13 @@ crates:
 
         let mut ctx = Context::new(Config::default(), ContextOptions::default());
         ctx.template_vars_mut().set("IsSnapshot", "true");
-        assert!(is_docker_v2_disabled(
-            &Some(StringOrBool::String("{{ .IsSnapshot }}".to_string())),
-            &ctx
-        ));
+        assert!(
+            is_docker_v2_disabled(
+                &Some(StringOrBool::String("{{ .IsSnapshot }}".to_string())),
+                &ctx
+            )
+            .unwrap()
+        );
     }
 
     #[test]
@@ -5656,10 +5658,13 @@ crates:
 
         let mut ctx = Context::new(Config::default(), ContextOptions::default());
         ctx.template_vars_mut().set("IsSnapshot", "false");
-        assert!(!is_docker_v2_disabled(
-            &Some(StringOrBool::String("{{ .IsSnapshot }}".to_string())),
-            &ctx
-        ));
+        assert!(
+            !is_docker_v2_disabled(
+                &Some(StringOrBool::String("{{ .IsSnapshot }}".to_string())),
+                &ctx
+            )
+            .unwrap()
+        );
     }
 
     #[test]
@@ -5668,10 +5673,10 @@ crates:
         use anodizer_core::context::{Context, ContextOptions};
 
         let ctx = Context::new(Config::default(), ContextOptions::default());
-        assert!(is_docker_v2_sbom_enabled(
-            &Some(StringOrBool::String("true".to_string())),
-            &ctx
-        ));
+        assert!(
+            is_docker_v2_sbom_enabled(&Some(StringOrBool::String("true".to_string())), &ctx)
+                .unwrap()
+        );
     }
 
     #[test]
@@ -5680,10 +5685,10 @@ crates:
         use anodizer_core::context::{Context, ContextOptions};
 
         let ctx = Context::new(Config::default(), ContextOptions::default());
-        assert!(!is_docker_v2_sbom_enabled(
-            &Some(StringOrBool::String("false".to_string())),
-            &ctx
-        ));
+        assert!(
+            !is_docker_v2_sbom_enabled(&Some(StringOrBool::String("false".to_string())), &ctx)
+                .unwrap()
+        );
     }
 
     #[test]
@@ -5693,10 +5698,13 @@ crates:
 
         let mut ctx = Context::new(Config::default(), ContextOptions::default());
         ctx.template_vars_mut().set("IsSnapshot", "true");
-        assert!(is_docker_v2_sbom_enabled(
-            &Some(StringOrBool::String("{{ .IsSnapshot }}".to_string())),
-            &ctx
-        ));
+        assert!(
+            is_docker_v2_sbom_enabled(
+                &Some(StringOrBool::String("{{ .IsSnapshot }}".to_string())),
+                &ctx
+            )
+            .unwrap()
+        );
     }
 
     #[test]
@@ -5706,10 +5714,13 @@ crates:
 
         let mut ctx = Context::new(Config::default(), ContextOptions::default());
         ctx.template_vars_mut().set("IsSnapshot", "false");
-        assert!(!is_docker_v2_sbom_enabled(
-            &Some(StringOrBool::String("{{ .IsSnapshot }}".to_string())),
-            &ctx
-        ));
+        assert!(
+            !is_docker_v2_sbom_enabled(
+                &Some(StringOrBool::String("{{ .IsSnapshot }}".to_string())),
+                &ctx
+            )
+            .unwrap()
+        );
     }
 
     #[test]

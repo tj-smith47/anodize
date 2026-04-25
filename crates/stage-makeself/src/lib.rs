@@ -175,11 +175,14 @@ impl Stage for MakeselfStage {
 
         for cfg in &configs {
             // Check disable
-            if let Some(ref d) = cfg.disable
-                && d.is_disabled(|tmpl| ctx.render_template(tmpl))
-            {
-                log.verbose("skipping disabled makeself config");
-                continue;
+            if let Some(ref d) = cfg.disable {
+                let off = d
+                    .try_is_disabled(|tmpl| ctx.render_template(tmpl))
+                    .with_context(|| "makeself: render disable template")?;
+                if off {
+                    log.verbose("skipping disabled makeself config");
+                    continue;
+                }
             }
 
             let id = cfg.id.as_deref().unwrap_or("default");

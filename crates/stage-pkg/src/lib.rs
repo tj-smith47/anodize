@@ -137,14 +137,19 @@ impl Stage for PkgStage {
                 }
 
                 // Skip disabled configs (supports bool or template string)
-                if let Some(ref d) = pkg_cfg.disable
-                    && d.is_disabled(|s| ctx.render_template(s))
-                {
-                    log.status(&format!(
-                        "skipping disabled pkg config for crate {}",
-                        krate.name
-                    ));
-                    continue;
+                if let Some(ref d) = pkg_cfg.disable {
+                    let off = d
+                        .try_is_disabled(|s| ctx.render_template(s))
+                        .with_context(|| {
+                            format!("pkg: render disable template for crate {}", krate.name)
+                        })?;
+                    if off {
+                        log.status(&format!(
+                            "skipping disabled pkg config for crate {}",
+                            krate.name
+                        ));
+                        continue;
+                    }
                 }
 
                 // Validate `use` field

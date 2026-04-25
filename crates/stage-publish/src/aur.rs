@@ -283,11 +283,14 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         .ok_or_else(|| anyhow::anyhow!("aur: no aur config for '{}'", crate_name))?;
 
     // Check disable before doing any work.
-    if let Some(ref d) = aur_cfg.disable
-        && d.is_disabled(|tmpl| ctx.render_template(tmpl))
-    {
-        log.status(&format!("aur: disabled for '{}'", crate_name));
-        return Ok(());
+    if let Some(ref d) = aur_cfg.disable {
+        let off = d
+            .try_is_disabled(|tmpl| ctx.render_template(tmpl))
+            .with_context(|| format!("aur: render disable template for '{}'", crate_name))?;
+        if off {
+            log.status(&format!("aur: disabled for '{}'", crate_name));
+            return Ok(());
+        }
     }
 
     // Check skip_upload before doing any work.

@@ -364,11 +364,19 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
 
     for entry in entries {
         // Check skip flag.
-        if let Some(ref s) = entry.skip
-            && s.is_disabled(|tmpl| ctx.render_template(tmpl))
-        {
-            log.status("artifactory: entry skipped");
-            continue;
+        if let Some(ref s) = entry.skip {
+            let off = s
+                .try_is_disabled(|tmpl| ctx.render_template(tmpl))
+                .with_context(|| {
+                    format!(
+                        "artifactory: render skip template for entry '{}'",
+                        entry.name.as_deref().unwrap_or("<unnamed>")
+                    )
+                })?;
+            if off {
+                log.status("artifactory: entry skipped");
+                continue;
+            }
         }
 
         // Name is required.

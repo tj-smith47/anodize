@@ -19,11 +19,19 @@ pub fn publish_to_upload(ctx: &Context, log: &StageLogger) -> Result<()> {
 
     for entry in entries {
         // Check disable flag
-        if let Some(ref d) = entry.disable
-            && d.is_disabled(|tmpl| ctx.render_template(tmpl))
-        {
-            log.status("upload: entry skipped (disabled)");
-            continue;
+        if let Some(ref d) = entry.disable {
+            let off = d
+                .try_is_disabled(|tmpl| ctx.render_template(tmpl))
+                .with_context(|| {
+                    format!(
+                        "upload: render disable template for entry '{}'",
+                        entry.name.as_deref().unwrap_or("<unnamed>")
+                    )
+                })?;
+            if off {
+                log.status("upload: entry skipped (disabled)");
+                continue;
+            }
         }
 
         // U3 fix: GoReleaser refuses an upload entry with no `name:` because

@@ -77,11 +77,12 @@ impl Stage for UpxStage {
 
         for upx_cfg in &upx_configs {
             // enabled supports template strings via tmpl.Bool()
-            let is_enabled = upx_cfg
-                .enabled
-                .as_ref()
-                .map(|v| v.evaluates_to_true(|tmpl| ctx.render_template(tmpl)))
-                .unwrap_or(false);
+            let is_enabled = match upx_cfg.enabled.as_ref() {
+                Some(v) => v
+                    .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+                    .with_context(|| "upx: render enabled template")?,
+                None => false,
+            };
             if !is_enabled {
                 continue;
             }

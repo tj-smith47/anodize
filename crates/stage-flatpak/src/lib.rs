@@ -128,15 +128,30 @@ impl Stage for FlatpakStage {
         }
 
         // Check if any flatpak config is actually enabled before requiring tools
-        let has_enabled = crates.iter().any(|c| {
-            c.flatpaks.as_ref().is_some_and(|cfgs| {
-                cfgs.iter().any(|cfg| {
-                    cfg.disable
-                        .as_ref()
-                        .is_none_or(|d| !d.is_disabled(|s| ctx.render_template(s)))
-                })
-            })
-        });
+        let mut has_enabled = false;
+        for c in &crates {
+            let Some(cfgs) = c.flatpaks.as_ref() else {
+                continue;
+            };
+            for cfg in cfgs {
+                let off = match cfg.disable.as_ref() {
+                    Some(d) => {
+                        d.try_is_disabled(|s| ctx.render_template(s))
+                            .with_context(|| {
+                                format!("flatpak: render disable template for crate {}", c.name)
+                            })?
+                    }
+                    None => false,
+                };
+                if !off {
+                    has_enabled = true;
+                    break;
+                }
+            }
+            if has_enabled {
+                break;
+            }
+        }
         if !has_enabled {
             return Ok(());
         }
@@ -192,14 +207,19 @@ impl Stage for FlatpakStage {
 
             for flatpak_cfg in flatpak_configs {
                 // Skip disabled configs (supports bool or template string)
-                if let Some(ref d) = flatpak_cfg.disable
-                    && d.is_disabled(|s| ctx.render_template(s))
-                {
-                    log.status(&format!(
-                        "skipping disabled flatpak config for crate {}",
-                        krate.name
-                    ));
-                    continue;
+                if let Some(ref d) = flatpak_cfg.disable {
+                    let off = d
+                        .try_is_disabled(|s| ctx.render_template(s))
+                        .with_context(|| {
+                            format!("flatpak: render disable template for crate {}", krate.name)
+                        })?;
+                    if off {
+                        log.status(&format!(
+                            "skipping disabled flatpak config for crate {}",
+                            krate.name
+                        ));
+                        continue;
+                    }
                 }
 
                 // Validate required fields

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use anodizer_core::config::StringOrBool;
 use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 
 pub mod bluesky;
 pub mod discord;
@@ -34,11 +34,15 @@ const WEBHOOK_DEFAULT_MESSAGE_TEMPLATE: &str =
     r#"{"message":"{{ ProjectName }} {{ Tag }} is out! Check it out at {{ ReleaseURL }}"}"#;
 
 /// Evaluate an `enabled` field (now `Option<StringOrBool>`) through the template
-/// engine.  Returns `true` only when the value is present and resolves to truthy.
-fn is_enabled(ctx: &mut Context, enabled: Option<&StringOrBool>) -> bool {
+/// engine. Returns `Ok(true)` only when the value is present and resolves to
+/// truthy. Surfaces template render errors instead of silently treating them
+/// as "not enabled".
+fn is_enabled(ctx: &mut Context, enabled: Option<&StringOrBool>) -> Result<bool> {
     match enabled {
-        None => false,
-        Some(val) => val.evaluates_to_true(|tmpl| ctx.render_template(tmpl)),
+        None => Ok(false),
+        Some(val) => val
+            .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+            .with_context(|| "announce: render enabled template"),
     }
 }
 
@@ -124,7 +128,9 @@ impl Stage for AnnounceStage {
 
         // Evaluate template-conditional skip.
         if let Some(ref skip_val) = announce.skip {
-            let should_skip = skip_val.is_disabled(|tmpl| ctx.render_template(tmpl));
+            let should_skip = skip_val
+                .try_is_disabled(|tmpl| ctx.render_template(tmpl))
+                .with_context(|| "announce: render skip template")?;
             if should_skip {
                 log.status("announce.skip evaluated to true — skipping");
                 return Ok(());
@@ -138,7 +144,7 @@ impl Stage for AnnounceStage {
         // Discord
         // ----------------------------------------------------------------
         if let Some(cfg) = &announce.discord
-            && is_enabled(ctx, cfg.enabled.as_ref())
+            && is_enabled(ctx, cfg.enabled.as_ref())?
             && let Err(e) = (|| -> Result<()> {
                 // GoReleaser reads DISCORD_WEBHOOK_ID and DISCORD_WEBHOOK_TOKEN from
                 // env, and optionally DISCORD_API for the base URL.
@@ -202,7 +208,7 @@ impl Stage for AnnounceStage {
         // Discourse
         // ----------------------------------------------------------------
         if let Some(cfg) = &announce.discourse
-            && is_enabled(ctx, cfg.enabled.as_ref())
+            && is_enabled(ctx, cfg.enabled.as_ref())?
             && let Err(e) = (|| -> Result<()> {
                 let server = require_rendered(ctx, cfg.server.as_deref(), "discourse", "server")?;
                 if server.is_empty() {
@@ -249,7 +255,7 @@ impl Stage for AnnounceStage {
         // Slack
         // ----------------------------------------------------------------
         if let Some(cfg) = &announce.slack
-            && is_enabled(ctx, cfg.enabled.as_ref())
+            && is_enabled(ctx, cfg.enabled.as_ref())?
             && let Err(e) = (|| -> Result<()> {
                 let url = match cfg.webhook_url.as_deref() {
                     Some(u) => ctx.render_template(u)?,
@@ -294,7 +300,7 @@ impl Stage for AnnounceStage {
         // Generic HTTP webhook
         // ----------------------------------------------------------------
         if let Some(cfg) = &announce.webhook
-            && is_enabled(ctx, cfg.enabled.as_ref())
+            && is_enabled(ctx, cfg.enabled.as_ref())?
             && let Err(e) = (|| -> Result<()> {
                 let url =
                     require_rendered(ctx, cfg.endpoint_url.as_deref(), "webhook", "endpoint_url")?;
@@ -371,7 +377,7 @@ impl Stage for AnnounceStage {
         // Telegram
         // ----------------------------------------------------------------
         if let Some(cfg) = &announce.telegram
-            && is_enabled(ctx, cfg.enabled.as_ref())
+            && is_enabled(ctx, cfg.enabled.as_ref())?
             && let Err(e) = (|| -> Result<()> {
                 let bot_token = match cfg.bot_token.as_deref() {
                     Some(t) => ctx.render_template(t)?,
@@ -450,7 +456,7 @@ impl Stage for AnnounceStage {
         // Microsoft Teams
         // ----------------------------------------------------------------
         if let Some(cfg) = &announce.teams
-            && is_enabled(ctx, cfg.enabled.as_ref())
+            && is_enabled(ctx, cfg.enabled.as_ref())?
             && let Err(e) = (|| -> Result<()> {
                 let url = match cfg.webhook_url.as_deref() {
                     Some(u) => ctx.render_template(u)?,
@@ -489,7 +495,7 @@ impl Stage for AnnounceStage {
         // Mattermost
         // ----------------------------------------------------------------
         if let Some(cfg) = &announce.mattermost
-            && is_enabled(ctx, cfg.enabled.as_ref())
+            && is_enabled(ctx, cfg.enabled.as_ref())?
             && let Err(e) = (|| -> Result<()> {
                 let url = match cfg.webhook_url.as_deref() {
                     Some(u) => ctx.render_template(u)?,
@@ -541,7 +547,7 @@ impl Stage for AnnounceStage {
         // Reddit
         // ----------------------------------------------------------------
         if let Some(cfg) = &announce.reddit
-            && is_enabled(ctx, cfg.enabled.as_ref())
+            && is_enabled(ctx, cfg.enabled.as_ref())?
             && let Err(e) = (|| -> Result<()> {
                 let app_id = require_rendered(
                     ctx,
@@ -584,7 +590,7 @@ impl Stage for AnnounceStage {
         // Twitter/X
         // ----------------------------------------------------------------
         if let Some(cfg) = &announce.twitter
-            && is_enabled(ctx, cfg.enabled.as_ref())
+            && is_enabled(ctx, cfg.enabled.as_ref())?
             && let Err(e) = (|| -> Result<()> {
                 let message = render_message(ctx, cfg.message_template.as_deref())?;
                 let consumer_key = std::env::var("TWITTER_CONSUMER_KEY").map_err(|_| {
@@ -621,7 +627,7 @@ impl Stage for AnnounceStage {
         // Mastodon
         // ----------------------------------------------------------------
         if let Some(cfg) = &announce.mastodon
-            && is_enabled(ctx, cfg.enabled.as_ref())
+            && is_enabled(ctx, cfg.enabled.as_ref())?
             && let Err(e) = (|| -> Result<()> {
                 let server = require_rendered(ctx, cfg.server.as_deref(), "mastodon", "server")?;
                 if server.is_empty() {
@@ -649,7 +655,7 @@ impl Stage for AnnounceStage {
         // Bluesky
         // ----------------------------------------------------------------
         if let Some(cfg) = &announce.bluesky
-            && is_enabled(ctx, cfg.enabled.as_ref())
+            && is_enabled(ctx, cfg.enabled.as_ref())?
             && let Err(e) = (|| -> Result<()> {
                 let username =
                     require_rendered(ctx, cfg.username.as_deref(), "bluesky", "username")?;
@@ -689,7 +695,7 @@ impl Stage for AnnounceStage {
         // LinkedIn
         // ----------------------------------------------------------------
         if let Some(cfg) = &announce.linkedin
-            && is_enabled(ctx, cfg.enabled.as_ref())
+            && is_enabled(ctx, cfg.enabled.as_ref())?
             && let Err(e) = (|| -> Result<()> {
                 let message = render_message(ctx, cfg.message_template.as_deref())?;
                 let access_token = std::env::var("LINKEDIN_ACCESS_TOKEN").map_err(|_| {
@@ -728,7 +734,7 @@ impl Stage for AnnounceStage {
         // OpenCollective
         // ----------------------------------------------------------------
         if let Some(cfg) = &announce.opencollective
-            && is_enabled(ctx, cfg.enabled.as_ref())
+            && is_enabled(ctx, cfg.enabled.as_ref())?
             && let Err(e) = (|| -> Result<()> {
                 let slug = require_rendered(ctx, cfg.slug.as_deref(), "opencollective", "slug")?;
                 if slug.is_empty() {
@@ -769,7 +775,7 @@ impl Stage for AnnounceStage {
         // Email (SMTP or sendmail/msmtp fallback)
         // ----------------------------------------------------------------
         if let Some(cfg) = &announce.email
-            && is_enabled(ctx, cfg.enabled.as_ref())
+            && is_enabled(ctx, cfg.enabled.as_ref())?
             && let Err(e) = (|| -> Result<()> {
                 let from = require_rendered(ctx, cfg.from.as_deref(), "email", "from")?;
 

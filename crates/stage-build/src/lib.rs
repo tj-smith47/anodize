@@ -1376,11 +1376,17 @@ impl Stage for BuildStage {
 
             for build in &builds {
                 // Skip builds marked with skip: true/template
-                let should_skip = build
-                    .skip
-                    .as_ref()
-                    .map(|s| s.is_disabled(|tmpl| ctx.render_template(tmpl)))
-                    .unwrap_or(false);
+                let should_skip = match build.skip.as_ref() {
+                    Some(s) => s
+                        .try_is_disabled(|tmpl| ctx.render_template(tmpl))
+                        .with_context(|| {
+                            format!(
+                                "build: render skip template for build '{}'",
+                                build.id.as_deref().unwrap_or(&build.binary)
+                            )
+                        })?,
+                    None => false,
+                };
                 if should_skip {
                     log.status(&format!(
                         "skipping build '{}' (skip: true)",
@@ -1498,17 +1504,15 @@ impl Stage for BuildStage {
                 check_workspace_package(&crate_cfg.path, flags)?;
 
                 // Resolve no_unique_dist_dir: per-build overrides crate-level
-                let no_unique_dist_dir_val = build
-                    .no_unique_dist_dir
-                    .as_ref()
-                    .map(|s| s.is_disabled(|tmpl| ctx.render_template(tmpl)))
-                    .or_else(|| {
-                        crate_cfg
-                            .no_unique_dist_dir
-                            .as_ref()
-                            .map(|s| s.is_disabled(|tmpl| ctx.render_template(tmpl)))
-                    })
-                    .unwrap_or(false);
+                let no_unique_dist_dir_val = if let Some(s) = build.no_unique_dist_dir.as_ref() {
+                    s.try_is_disabled(|tmpl| ctx.render_template(tmpl))
+                        .with_context(|| "build: render no_unique_dist_dir template")?
+                } else if let Some(s) = crate_cfg.no_unique_dist_dir.as_ref() {
+                    s.try_is_disabled(|tmpl| ctx.render_template(tmpl))
+                        .with_context(|| "crate: render no_unique_dist_dir template")?
+                } else {
+                    false
+                };
 
                 // Per-target env (target-keyed map in BuildConfig.env)
                 for target in &targets {

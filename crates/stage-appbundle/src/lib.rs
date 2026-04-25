@@ -278,14 +278,22 @@ impl Stage for AppBundleStage {
                 }
 
                 // Skip disabled configs (supports bool or template string)
-                if let Some(ref d) = bundle_cfg.disable
-                    && d.is_disabled(|s| ctx.render_template(s))
-                {
-                    log.status(&format!(
-                        "skipping disabled appbundle config for crate {}",
-                        krate.name
-                    ));
-                    continue;
+                if let Some(ref d) = bundle_cfg.disable {
+                    let off = d
+                        .try_is_disabled(|s| ctx.render_template(s))
+                        .with_context(|| {
+                            format!(
+                                "appbundle: render disable template for crate {}",
+                                krate.name
+                            )
+                        })?;
+                    if off {
+                        log.status(&format!(
+                            "skipping disabled appbundle config for crate {}",
+                            krate.name
+                        ));
+                        continue;
+                    }
                 }
 
                 // Filter by build IDs if specified
