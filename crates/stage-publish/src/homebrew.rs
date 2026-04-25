@@ -703,16 +703,17 @@ pub fn publish_cask(ctx: &Context, crate_name: &str, log: &StageLogger) -> Resul
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("homebrew cask: no cask config for '{}'", crate_name))?;
 
-    // Check skip_upload before doing any work.
-    if should_skip_upload(hb_cfg.skip_upload.as_ref(), ctx) {
+    // Check skip_upload before doing any work. Per-crate cask skip_upload
+    // takes precedence; falls back to the formula's skip_upload.
+    let effective_skip = cask_cfg
+        .skip_upload
+        .as_ref()
+        .or(hb_cfg.skip_upload.as_ref());
+    if should_skip_upload(effective_skip, ctx) {
         log.status(&format!(
             "homebrew cask: skipping upload for '{}' (skip_upload={})",
             crate_name,
-            hb_cfg
-                .skip_upload
-                .as_ref()
-                .map(|v| v.as_str())
-                .unwrap_or("")
+            effective_skip.map(|v| v.as_str()).unwrap_or("")
         ));
         return Ok(());
     }
@@ -1619,19 +1620,33 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
     let mut cask_path_lossy: Option<String> = None;
 
     if let Some(cask_cfg) = hb_cfg.cask.as_ref() {
-        let cask_result = generate_cask_from_context(ctx, crate_name, hb_cfg, cask_cfg)?;
+        if should_skip_upload(cask_cfg.skip_upload.as_ref(), ctx) {
+            log.status(&format!(
+                "homebrew cask: skipping upload for '{}' (skip_upload={})",
+                crate_name,
+                cask_cfg
+                    .skip_upload
+                    .as_ref()
+                    .map(|v| v.as_str())
+                    .unwrap_or("")
+            ));
+        } else {
+            let cask_result = generate_cask_from_context(ctx, crate_name, hb_cfg, cask_cfg)?;
 
-        let casks_dir = repo_path.join("Casks");
-        std::fs::create_dir_all(&casks_dir)
-            .with_context(|| format!("homebrew cask: create Casks dir {}", casks_dir.display()))?;
+            let casks_dir = repo_path.join("Casks");
+            std::fs::create_dir_all(&casks_dir).with_context(|| {
+                format!("homebrew cask: create Casks dir {}", casks_dir.display())
+            })?;
 
-        let cask_path = casks_dir.join(format!("{}.rb", cask_result.cask_name));
-        std::fs::write(&cask_path, &cask_result.content)
-            .with_context(|| format!("homebrew cask: write cask file {}", cask_path.display()))?;
+            let cask_path = casks_dir.join(format!("{}.rb", cask_result.cask_name));
+            std::fs::write(&cask_path, &cask_result.content).with_context(|| {
+                format!("homebrew cask: write cask file {}", cask_path.display())
+            })?;
 
-        log.status(&format!("wrote Homebrew cask: {}", cask_path.display()));
-        cask_path_lossy = Some(cask_path.to_string_lossy().into_owned());
-        cask_name_for_log = Some(cask_result.cask_name);
+            log.status(&format!("wrote Homebrew cask: {}", cask_path.display()));
+            cask_path_lossy = Some(cask_path.to_string_lossy().into_owned());
+            cask_name_for_log = Some(cask_result.cask_name);
+        }
     }
 
     // Build the list of files to commit: always the formula, plus the cask if present.

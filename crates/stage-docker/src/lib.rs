@@ -1648,19 +1648,7 @@ impl Stage for DockerStage {
             };
 
             for (idx, docker_cfg) in docker_configs.iter().enumerate() {
-                // Check disable (template-aware) before doing any work.
-                if let Some(ref d) = docker_cfg.disable
-                    && d.is_disabled(|tmpl| ctx.render_template(tmpl))
-                {
-                    let fallback = format!("index {}", idx);
-                    let label = docker_cfg.id.as_deref().unwrap_or(&fallback);
-                    log.status(&format!(
-                        "docker: skipping disabled config '{}' for crate {}",
-                        label, krate.name
-                    ));
-                    continue;
-                }
-
+                let _ = idx;
                 // Determine platforms (default: empty = use host platform, no --platform flag).
                 // GoReleaser omits --platform when unset, letting Docker use the host platform.
                 // Setting platforms forces buildx mode and requires QEMU/binfmt for cross-arch.
@@ -2434,19 +2422,7 @@ impl Stage for DockerStage {
             // ------------------------------------------------------------------
             if let Some(ref manifest_configs) = krate.docker_manifests {
                 for (midx, manifest_cfg) in manifest_configs.iter().enumerate() {
-                    // Check disable (template-aware) before doing any work.
-                    if let Some(ref d) = manifest_cfg.disable
-                        && d.is_disabled(|tmpl| ctx.render_template(tmpl))
-                    {
-                        let fallback = format!("index {}", midx);
-                        let label = manifest_cfg.id.as_deref().unwrap_or(&fallback);
-                        log.status(&format!(
-                            "docker: skipping disabled manifest '{}' for crate {}",
-                            label, krate.name
-                        ));
-                        continue;
-                    }
-
+                    let _ = midx;
                     // Validate: image_templates must not be empty — a manifest
                     // with zero images is always a configuration error.
                     if manifest_cfg.image_templates.is_empty() {
@@ -3012,7 +2988,6 @@ mod tests {
             labels: None,
             retry: None,
             use_backend: None,
-            disable: None,
         };
 
         let crate_cfg = CrateConfig {
@@ -3248,7 +3223,6 @@ push_flags:
             labels: None,
             retry: None,
             use_backend: None,
-            disable: None,
         };
 
         let crate_cfg = CrateConfig {
@@ -3323,7 +3297,6 @@ push_flags:
                 max_delay: None,
             }),
             use_backend: None,
-            disable: None,
         };
 
         let crate_cfg = CrateConfig {
@@ -3494,7 +3467,6 @@ dockerfile: Dockerfile
             labels: None,
             retry: None,
             use_backend: None,
-            disable: None,
         };
 
         let crate_cfg = CrateConfig {
@@ -3573,7 +3545,6 @@ dockerfile: Dockerfile
                 max_delay: None,
             }),
             use_backend: None,
-            disable: None,
         };
 
         let dist = tmp.path().join("dist");
@@ -3706,7 +3677,6 @@ dockerfile: Dockerfile
             labels: None,
             retry: None,
             use_backend: None,
-            disable: None,
         };
 
         let crate_cfg = CrateConfig {
@@ -3765,7 +3735,6 @@ dockerfile: Dockerfile
             labels: None,
             retry: None,
             use_backend: None,
-            disable: None,
         };
 
         let crate_cfg = CrateConfig {
@@ -3830,7 +3799,6 @@ dockerfile: Dockerfile
             labels: None,
             retry: None,
             use_backend: None,
-            disable: None,
         };
 
         let crate_cfg = CrateConfig {
@@ -4103,7 +4071,6 @@ retry:
                 max_delay: Some("10s".to_string()),
             }),
             use_backend: None,
-            disable: None,
         };
 
         let crate_cfg = CrateConfig {
@@ -4167,7 +4134,6 @@ retry:
             labels: None,
             retry: None, // No retry config = default 10 attempts
             use_backend: None,
-            disable: None,
         };
 
         let crate_cfg = CrateConfig {
@@ -4544,7 +4510,6 @@ crates:
                     id: Some("multi-arch".to_string()),
                     use_backend: None,
                     retry: None,
-                    disable: None,
                 }]),
                 ..Default::default()
             }],
@@ -4612,7 +4577,6 @@ crates:
                     id: Some("multi-arch-templated".to_string()),
                     use_backend: None,
                     retry: None,
-                    disable: None,
                 }]),
                 ..Default::default()
             }],
@@ -4677,7 +4641,6 @@ crates:
                     id: None,
                     use_backend: None,
                     retry: None,
-                    disable: None,
                 }]),
                 ..Default::default()
             }],
@@ -4745,7 +4708,6 @@ use: podman
             labels: None,
             retry: None,
             use_backend: Some("podman".to_string()),
-            disable: None,
         };
 
         let crate_cfg = CrateConfig {

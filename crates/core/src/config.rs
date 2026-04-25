@@ -2276,6 +2276,10 @@ pub struct HomebrewCaskConfig {
     pub conflicts: Option<Vec<HomebrewCaskConflictEntry>>,
     /// Pre/post install/uninstall hooks.
     pub hooks: Option<HomebrewCaskHooks>,
+    /// Skip publishing the cask. `"true"` always skips; `"auto"` skips
+    /// for prerelease versions. Accepts bool or template string.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub skip_upload: Option<StringOrBool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2581,9 +2585,6 @@ pub struct ChocolateyConfig {
     pub source_repo: Option<String>,
     /// Skip pushing to the Chocolatey community repository.
     pub skip_publish: Option<bool>,
-    /// Disable this chocolatey config. Accepts bool or template string.
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub disable: Option<StringOrBool>,
     /// Artifact selection: "archive" (default), "msi", or "nsis".
     #[serde(rename = "use")]
     pub use_artifact: Option<String>,
@@ -2809,11 +2810,6 @@ pub struct KrewConfig {
     /// Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip_upload: Option<StringOrBool>,
-    /// Disable this Krew config entirely. Accepts bool or template string
-    /// (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional disable).
-    /// Matches GoReleaser's `disable` field (v2.7+).
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub disable: Option<StringOrBool>,
     /// Legacy upstream repo for PR target. Use `repository.pull_request.base` instead.
     pub upstream_repo: Option<KrewManifestsRepoConfig>,
     /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
@@ -2930,9 +2926,6 @@ pub struct DockerConfig {
     /// Docker backend: "docker", "buildx" (default), or "podman".
     #[serde(rename = "use")]
     pub use_backend: Option<String>,
-    /// When truthy, skip this docker build entirely. Supports templates.
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub disable: Option<StringOrBool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -3043,9 +3036,6 @@ pub struct DockerManifestConfig {
     pub use_backend: Option<String>,
     /// Retry configuration for manifest push (handles transient registry errors).
     pub retry: Option<DockerRetryConfig>,
-    /// When truthy, skip this docker manifest entirely. Supports templates.
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub disable: Option<StringOrBool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -5148,11 +5138,6 @@ pub struct ArtifactoryConfig {
     /// Template-conditional skip: if rendered result is `"true"`, skip this publisher.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
-    /// Disable this Artifactory entry entirely. Accepts bool or template string
-    /// (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional disable).
-    /// Matches GoReleaser's Upload publisher `disable` field.
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub disable: Option<StringOrBool>,
 }
 
 // ---------------------------------------------------------------------------

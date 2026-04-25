@@ -262,13 +262,6 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("chocolatey: no chocolatey config for '{}'", crate_name))?;
 
-    if let Some(ref d) = choco_cfg.disable
-        && d.is_disabled(|tmpl| ctx.render_template(tmpl))
-    {
-        log.status(&format!("chocolatey: disabled for '{}'", crate_name));
-        return Ok(());
-    }
-
     let project_repo = choco_cfg.project_repo.as_ref().ok_or_else(|| {
         anyhow::anyhow!("chocolatey: no project_repo config for '{}'", crate_name)
     })?;
