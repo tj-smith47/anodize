@@ -96,12 +96,33 @@ fn matches_ids(artifact: &Artifact, ids: &Option<Vec<String>>) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// Defaults
+// ---------------------------------------------------------------------------
+
+/// Apple's public RFC-3161 timestamp service. Used by rcodesign sign so the
+/// signature carries a trusted timestamp rather than the host clock. Allowed
+/// to be overridden via `notarize.macos[*].timestamp_url`.
+const DEFAULT_APPLE_TIMESTAMP_URL: &str = "http://timestamp.apple.com/ts01";
+
+/// Default notarization wait window — matches the upstream macos.go default.
+const DEFAULT_NOTARIZE_TIMEOUT: &str = "10m";
+
+// ---------------------------------------------------------------------------
 // Helper: redact sensitive values from command args for safe logging
 // ---------------------------------------------------------------------------
 
 /// Redact sensitive values from command args for safe logging.
 fn redact_args(args: &[String]) -> Vec<String> {
-    let sensitive_flags = ["--p12-password", "--api-key-path"];
+    // Anything immediately following one of these flags is a credential or
+    // file path containing a credential.
+    let sensitive_flags = [
+        "--p12-password",
+        "--api-key-path",
+        "--api-key",
+        "--password",
+        "--token",
+        "--apple-id-password",
+    ];
     let mut result = Vec::with_capacity(args.len());
     let mut redact_next = false;
     for arg in args {
@@ -213,6 +234,26 @@ impl Stage for NotarizeStage {
             return Ok(());
         }
 
+        // `macos` and `macos_native` are mutually exclusive — they sign and
+        // notarize the same artifacts via different toolchains. Refuse a
+        // config that populates both so a binary doesn't get signed twice
+        // (the second pass would invalidate the first signature).
+        let has_cross = notarize_config
+            .macos
+            .as_ref()
+            .is_some_and(|v| !v.is_empty());
+        let has_native = notarize_config
+            .macos_native
+            .as_ref()
+            .is_some_and(|v| !v.is_empty());
+        if has_cross && has_native {
+            bail!(
+                "notarize: 'macos' and 'macos_native' cannot both be populated — \
+                 they sign and notarize the same artifacts via different toolchains. \
+                 Pick one (rcodesign for macos, codesign+notarytool for macos_native)."
+            );
+        }
+
         // Phase 1: Cross-platform signing/notarization (rcodesign)
         if let Some(ref macos_configs) = notarize_config.macos {
             for (idx, cfg) in macos_configs.iter().enumerate() {
@@ -310,8 +351,10 @@ fn run_cross_platform(
             .ok_or_else(|| {
                 anyhow::anyhow!("notarize: macos[{idx}] notarize.key_id is required when notarize block is present")
             })?;
-        // Default timeout to 10 minutes (GoReleaser parity: macos.go:33)
-        let timeout = ncfg.timeout.clone().or_else(|| Some("10m".to_string()));
+        let timeout = ncfg
+            .timeout
+            .clone()
+            .or_else(|| Some(DEFAULT_NOTARIZE_TIMEOUT.to_string()));
         Some((issuer_id, key, key_id, ncfg.wait.unwrap_or(false), timeout))
     } else {
         None
@@ -359,7 +402,15 @@ fn run_cross_platform(
     for artifact in &darwin_artifacts {
         let binary_path = artifact.path.to_string_lossy();
 
-        // Build rcodesign sign command
+        // Resolve the timestamp URL once per artifact: per-config override
+        // wins over the Apple default.
+        let timestamp_url = sign
+            .timestamp_url
+            .as_deref()
+            .map(|u| u.trim())
+            .filter(|u| !u.is_empty())
+            .unwrap_or(DEFAULT_APPLE_TIMESTAMP_URL);
+
         let mut sign_args = vec![
             "rcodesign".to_string(),
             "sign".to_string(),
@@ -367,9 +418,8 @@ fn run_cross_platform(
             certificate.clone(),
             "--p12-password".to_string(),
             password.clone(),
-            // Apple's public timestamp server (GoReleaser parity: macos.go:95)
             "--timestamp-url".to_string(),
-            "http://timestamp.apple.com/ts01".to_string(),
+            timestamp_url.to_string(),
         ];
         if let Some(ref ent) = entitlements {
             sign_args.push("--entitlements-xml-path".to_string());
@@ -528,11 +578,10 @@ fn run_native(
 
     let wait = notarize.wait.unwrap_or(false);
 
-    // Default timeout to 10 minutes (GoReleaser parity: macos.go:33)
     let timeout = ctx
         .render_template_opt(notarize.timeout.as_deref())
         .with_context(|| format!("notarize: macos_native[{idx}] render notarize.timeout"))?
-        .or_else(|| Some("10m".to_string()));
+        .or_else(|| Some(DEFAULT_NOTARIZE_TIMEOUT.to_string()));
 
     // Default IDs to project name when not specified (GoReleaser parity: macos.go:35)
     let ids = cfg.ids.clone().or_else(|| {
@@ -1459,6 +1508,7 @@ notarize: {}
                     certificate: Some("cert.p12".to_string()),
                     password: Some("pass".to_string()),
                     entitlements: Some("ent.xml".to_string()),
+                    ..Default::default()
                 }),
                 notarize: Some(MacOSNotarizeApiConfig {
                     issuer_id: Some("issuer-123".to_string()),

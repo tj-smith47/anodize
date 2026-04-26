@@ -3994,6 +3994,10 @@ pub struct MacOSSignConfig {
     pub password: Option<String>,
     /// Path to entitlements XML file. Templates allowed.
     pub entitlements: Option<String>,
+    /// RFC-3161 timestamp service URL passed to `rcodesign sign --timestamp-url`.
+    /// Defaults to Apple's public timestamp service. Override when running
+    /// behind a corporate proxy or when Apple's service is unreachable.
+    pub timestamp_url: Option<String>,
 }
 
 /// App Store Connect API key configuration for `rcodesign notary-submit`.
