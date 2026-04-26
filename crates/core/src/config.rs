@@ -4881,7 +4881,16 @@ pub struct TelegramAnnounce {
     pub message_thread_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+/// Default Adaptive Card title for Teams announcements. Centralised so that a
+/// config-load round-trip (parse → serialise → re-parse) preserves the value
+/// instead of stripping it back to `None`.
+pub const TEAMS_DEFAULT_TITLE_TEMPLATE: &str = "{{ ProjectName }} {{ Tag }} is out!";
+
+fn default_teams_title_template() -> Option<String> {
+    Some(TEAMS_DEFAULT_TITLE_TEMPLATE.to_string())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
 pub struct TeamsAnnounce {
     /// Enable Microsoft Teams announcements (supports template expressions).
@@ -4891,12 +4900,26 @@ pub struct TeamsAnnounce {
     pub webhook_url: Option<String>,
     /// Message template for the Adaptive Card body. Default: "{{ .ProjectName }} {{ .Tag }} is out! Check it out at {{ .ReleaseURL }}"
     pub message_template: Option<String>,
-    /// Title template for the Adaptive Card header.
+    /// Title template for the Adaptive Card header. Default: "{{ ProjectName }} {{ Tag }} is out!"
+    #[serde(default = "default_teams_title_template")]
     pub title_template: Option<String>,
     /// Theme color for the card (hex string, e.g. "0076D7").
     pub color: Option<String>,
     /// Icon URL displayed in the card header.
     pub icon_url: Option<String>,
+}
+
+impl Default for TeamsAnnounce {
+    fn default() -> Self {
+        Self {
+            enabled: None,
+            webhook_url: None,
+            message_template: None,
+            title_template: default_teams_title_template(),
+            color: None,
+            icon_url: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -4948,6 +4971,25 @@ pub struct EmailAnnounce {
     pub message_template: Option<String>,
     /// Skip TLS certificate verification (default: false).
     pub insecure_skip_verify: Option<bool>,
+    /// Transport encryption mode. `auto` (the default) picks SMTPS for port
+    /// 465, plain SMTP for port 25, and STARTTLS for everything else; `tls`
+    /// forces SMTPS, `starttls` forces STARTTLS, `none` forces plain SMTP.
+    pub encryption: Option<EmailEncryption>,
+}
+
+/// Email transport encryption mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum EmailEncryption {
+    /// Pick based on port: 465 → SMTPS, 25 → none, otherwise STARTTLS.
+    #[default]
+    Auto,
+    /// Implicit TLS on connect (typically port 465).
+    Tls,
+    /// Plain SMTP that upgrades to TLS via STARTTLS (typically port 587).
+    Starttls,
+    /// Plain SMTP, no TLS. Only safe on trusted local relays (port 25).
+    None,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]

@@ -58,22 +58,65 @@ fn require_rendered(
     ctx.render_template(value)
 }
 
+/// Read a required env var, bailing with a unified message when it is missing
+/// or empty after trim. Avoids the duplicated `var(...).map_err(...)?; if
+/// empty bail!()` pattern across every provider.
+fn require_env(provider: &str, name: &str) -> Result<String> {
+    let value = std::env::var(name)
+        .map_err(|_| anyhow::anyhow!("announce.{provider}: {name} env var is required"))?;
+    if value.trim().is_empty() {
+        anyhow::bail!("announce.{provider}: {name} env var must not be empty");
+    }
+    Ok(value)
+}
+
+/// Read multiple required env vars in one shot, returning a single error that
+/// lists every missing/empty var so users can fix them all at once instead of
+/// hitting one error per CI run.
+fn require_env_all(provider: &str, names: &[&str]) -> Result<Vec<String>> {
+    let mut missing: Vec<String> = Vec::new();
+    let mut values: Vec<String> = Vec::with_capacity(names.len());
+    for name in names {
+        match std::env::var(name) {
+            Ok(v) if !v.trim().is_empty() => values.push(v),
+            Ok(_) => {
+                missing.push(format!("{name} (empty)"));
+                values.push(String::new());
+            }
+            Err(_) => {
+                missing.push((*name).to_string());
+                values.push(String::new());
+            }
+        }
+    }
+    if !missing.is_empty() {
+        anyhow::bail!(
+            "announce.{provider}: required env vars missing or empty: {}",
+            missing.join(", ")
+        );
+    }
+    Ok(values)
+}
+
 /// Render a message template, falling back to the standard default.
 fn render_message(ctx: &mut Context, tmpl: Option<&str>) -> Result<String> {
     ctx.render_template(tmpl.unwrap_or(DEFAULT_MESSAGE_TEMPLATE))
 }
 
 /// Render template variables inside a `serde_json::Value` by serializing to
-/// string, running through the template engine, then parsing back.
+/// string, running through the template engine, then parsing back. Skips the
+/// round-trip when the serialised form has no template markers, since a
+/// no-op render would still pay for two JSON parses.
 fn render_json_template(
     ctx: &Context,
     val: Option<&serde_json::Value>,
 ) -> Result<Option<serde_json::Value>> {
     match val {
         Some(v) => {
-            // GoReleaser slack.go:107 un-escapes inner double quotes before template
-            // rendering so template expressions inside JSON strings work correctly.
             let json_str = v.to_string().replace("\\\"", "\"");
+            if !json_str.contains("{{") && !json_str.contains("{%") {
+                return Ok(Some(v.clone()));
+            }
             let rendered = ctx.render_template(&json_str)?;
             Ok(Some(serde_json::from_str(&rendered)?))
         }
@@ -146,16 +189,13 @@ impl Stage for AnnounceStage {
         if let Some(cfg) = &announce.discord
             && is_enabled(ctx, cfg.enabled.as_ref())?
             && let Err(e) = (|| -> Result<()> {
-                // GoReleaser reads DISCORD_WEBHOOK_ID and DISCORD_WEBHOOK_TOKEN from
-                // env, and optionally DISCORD_API for the base URL.
-                let url = match (
-                    std::env::var("DISCORD_WEBHOOK_ID")
-                        .ok()
-                        .filter(|s| !s.is_empty()),
-                    std::env::var("DISCORD_WEBHOOK_TOKEN")
-                        .ok()
-                        .filter(|s| !s.is_empty()),
-                ) {
+                let id = std::env::var("DISCORD_WEBHOOK_ID")
+                    .ok()
+                    .filter(|s| !s.is_empty());
+                let token = std::env::var("DISCORD_WEBHOOK_TOKEN")
+                    .ok()
+                    .filter(|s| !s.is_empty());
+                let url = match (id, token) {
                     (Some(id), Some(token)) => {
                         let base = std::env::var("DISCORD_API")
                             .ok()
@@ -163,15 +203,17 @@ impl Stage for AnnounceStage {
                             .unwrap_or_else(|| "https://discord.com/api".to_string());
                         format!("{}/webhooks/{}/{}", base.trim_end_matches('/'), id, token)
                     }
-                    _ => {
-                        require_rendered(ctx, cfg.webhook_url.as_deref(), "discord", "webhook_url")?
-                    }
+                    _ => match cfg.webhook_url.as_deref() {
+                        Some(raw) => ctx.render_template(raw)?,
+                        None => anyhow::bail!(
+                            "announce.discord: missing webhook_url \
+                             (set discord.webhook_url, or both \
+                             DISCORD_WEBHOOK_ID and DISCORD_WEBHOOK_TOKEN env vars)"
+                        ),
+                    },
                 };
                 let message = render_message(ctx, cfg.message_template.as_deref())?;
-                // Default author to "anodizer" (GoReleaser defaults to "GoReleaser").
                 let author = ctx.render_template_opt(cfg.author.as_deref().or(Some("anodizer")))?;
-                // Color is a string that may contain template expressions; render
-                // and parse to u32 at runtime.
                 let color: Option<u32> = match cfg.color.as_deref() {
                     Some(raw) => {
                         let rendered = ctx.render_template(raw)?;
@@ -179,13 +221,16 @@ impl Stage for AnnounceStage {
                         if trimmed.is_empty() {
                             None
                         } else {
-                            Some(trimmed.parse::<u32>().map_err(|e| {
-                                anyhow::anyhow!(
-                                    "announce.discord: invalid color {:?}: {}",
-                                    trimmed,
-                                    e
-                                )
-                            })?)
+                            let parsed = trimmed.parse::<i64>().map_err(|e| {
+                                anyhow::anyhow!("announce.discord: invalid color {trimmed:?}: {e}")
+                            })?;
+                            if !(0..=0xFFFFFF).contains(&parsed) {
+                                anyhow::bail!(
+                                    "announce.discord: color {parsed} out of range \
+                                     (must be 0..=16777215, the 24-bit RGB space)"
+                                );
+                            }
+                            Some(parsed as u32)
                         }
                     }
                     None => None,
@@ -227,14 +272,7 @@ impl Stage for AnnounceStage {
                         .unwrap_or("{{ ProjectName }} {{ Tag }} is out!"),
                 )?;
                 let message = render_message(ctx, cfg.message_template.as_deref())?;
-                let api_key = std::env::var("DISCOURSE_API_KEY").map_err(|_| {
-                    anyhow::anyhow!("announce.discourse: DISCOURSE_API_KEY env var is required")
-                })?;
-                if api_key.is_empty() {
-                    anyhow::bail!(
-                        "announce.discourse: DISCOURSE_API_KEY env var must not be empty"
-                    );
-                }
+                let api_key = require_env("discourse", "DISCOURSE_API_KEY")?;
 
                 dispatch(ctx, "discourse", &title, || {
                     discourse::send_discourse(
@@ -266,20 +304,18 @@ impl Stage for AnnounceStage {
                 };
                 let message = render_message(ctx, cfg.message_template.as_deref())?;
                 let channel = ctx.render_template_opt(cfg.channel.as_deref())?;
-                // Default username to "anodizer" (GoReleaser defaults to "GoReleaser").
                 let username =
                     ctx.render_template_opt(cfg.username.as_deref().or(Some("anodizer")))?;
-                let icon_emoji = cfg.icon_emoji.clone();
-                let icon_url = cfg.icon_url.clone();
-                // Convert typed blocks/attachments to serde_json::Value for template rendering
-                let blocks_val = cfg.blocks.as_ref().map(serde_json::to_value).transpose()?;
-                let blocks = render_json_template(ctx, blocks_val.as_ref())?;
-                let attachments_val = cfg
-                    .attachments
-                    .as_ref()
-                    .map(serde_json::to_value)
-                    .transpose()?;
-                let attachments = render_json_template(ctx, attachments_val.as_ref())?;
+                let icon_emoji = ctx.render_template_opt(cfg.icon_emoji.as_deref())?;
+                let icon_url = ctx.render_template_opt(cfg.icon_url.as_deref())?;
+                let blocks = match cfg.blocks.as_ref() {
+                    Some(b) => render_json_template(ctx, Some(&serde_json::to_value(b)?))?,
+                    None => None,
+                };
+                let attachments = match cfg.attachments.as_ref() {
+                    Some(a) => render_json_template(ctx, Some(&serde_json::to_value(a)?))?,
+                    None => None,
+                };
                 dispatch(ctx, "slack", &message, || {
                     let opts = slack::SlackOptions {
                         channel: channel.as_deref(),
@@ -304,12 +340,20 @@ impl Stage for AnnounceStage {
             && let Err(e) = (|| -> Result<()> {
                 let url =
                     require_rendered(ctx, cfg.endpoint_url.as_deref(), "webhook", "endpoint_url")?;
-                // Validate the endpoint URL before attempting the request.
-                if reqwest::Url::parse(&url).is_err() {
+                let parsed = reqwest::Url::parse(&url).map_err(|e| {
+                    anyhow::anyhow!(
+                        "announce.webhook: endpoint_url {url:?} is not a valid URL: {e}"
+                    )
+                })?;
+                if !matches!(parsed.scheme(), "http" | "https") {
                     anyhow::bail!(
-                        "announce.webhook: endpoint_url {:?} is not a valid URL",
-                        url
+                        "announce.webhook: endpoint_url {url:?} must use http or https \
+                         (got scheme {:?})",
+                        parsed.scheme()
                     );
+                }
+                if parsed.host().is_none() {
+                    anyhow::bail!("announce.webhook: endpoint_url {url:?} must include a host");
                 }
                 // webhook uses a JSON-envelope
                 // default distinct from the plain-text default used by other
@@ -466,16 +510,11 @@ impl Stage for AnnounceStage {
                         .ok_or_else(|| anyhow::anyhow!("announce.teams: missing webhook_url (set config or TEAMS_WEBHOOK env var)"))?,
                 };
                 let message = render_message(ctx, cfg.message_template.as_deref())?;
-                // Default title to "{{ ProjectName }} {{ Tag }} is out!" (GoReleaser default).
                 let title_template = cfg
                     .title_template
                     .as_deref()
-                    .unwrap_or("{{ ProjectName }} {{ Tag }} is out!");
+                    .unwrap_or(anodizer_core::config::TEAMS_DEFAULT_TITLE_TEMPLATE);
                 let title = Some(ctx.render_template(title_template)?);
-                // Default color to "#2D313E" (GoReleaser default).
-                // GoReleaser defaults icon_url to "https://goreleaser.com/static/avatar.png".
-                // We omit icon_url until anodizer has its own hosted avatar — a 404 URL would
-                // be worse than no icon.  Teams Adaptive Cards work fine without an icon.
                 let color_val = cfg.color.clone().unwrap_or_else(|| "#2D313E".to_string());
                 let icon_url = ctx.render_template_opt(cfg.icon_url.as_deref())?;
                 let opts = teams::TeamsOptions {
@@ -565,21 +604,23 @@ impl Stage for AnnounceStage {
                 )?;
                 let url =
                     ctx.render_template(cfg.url_template.as_deref().unwrap_or("{{ ReleaseURL }}"))?;
-                let secret = std::env::var("REDDIT_SECRET").map_err(|_| {
-                    anyhow::anyhow!("announce.reddit: REDDIT_SECRET env var is required")
-                })?;
-                if secret.is_empty() {
-                    anyhow::bail!("announce.reddit: REDDIT_SECRET env var must not be empty");
-                }
-                let password = std::env::var("REDDIT_PASSWORD").map_err(|_| {
-                    anyhow::anyhow!("announce.reddit: REDDIT_PASSWORD env var is required")
-                })?;
-                if password.is_empty() {
-                    anyhow::bail!("announce.reddit: REDDIT_PASSWORD env var must not be empty");
-                }
-
+                let creds = require_env_all("reddit", &["REDDIT_SECRET", "REDDIT_PASSWORD"])?;
+                let secret = &creds[0];
+                let password = &creds[1];
+                let log = ctx.logger("announce");
                 dispatch(ctx, "reddit", &format!("r/{sub}: {title}"), || {
-                    reddit::send_reddit(&app_id, &secret, &username, &password, &sub, &title, &url)
+                    reddit::send_reddit(
+                        &reddit::RedditPost {
+                            application_id: &app_id,
+                            secret,
+                            username: &username,
+                            password,
+                            subreddit: &sub,
+                            title: &title,
+                            url: &url,
+                        },
+                        &log,
+                    )
                 })
             })()
         {
@@ -593,28 +634,26 @@ impl Stage for AnnounceStage {
             && is_enabled(ctx, cfg.enabled.as_ref())?
             && let Err(e) = (|| -> Result<()> {
                 let message = render_message(ctx, cfg.message_template.as_deref())?;
-                let consumer_key = std::env::var("TWITTER_CONSUMER_KEY").map_err(|_| {
-                    anyhow::anyhow!("announce.twitter: TWITTER_CONSUMER_KEY env var is required")
-                })?;
-                let consumer_secret = std::env::var("TWITTER_CONSUMER_SECRET").map_err(|_| {
-                    anyhow::anyhow!("announce.twitter: TWITTER_CONSUMER_SECRET env var is required")
-                })?;
-                let access_token = std::env::var("TWITTER_ACCESS_TOKEN").map_err(|_| {
-                    anyhow::anyhow!("announce.twitter: TWITTER_ACCESS_TOKEN env var is required")
-                })?;
-                let access_token_secret =
-                    std::env::var("TWITTER_ACCESS_TOKEN_SECRET").map_err(|_| {
-                        anyhow::anyhow!(
-                            "announce.twitter: TWITTER_ACCESS_TOKEN_SECRET env var is required"
-                        )
-                    })?;
+                let creds = require_env_all(
+                    "twitter",
+                    &[
+                        "TWITTER_CONSUMER_KEY",
+                        "TWITTER_CONSUMER_SECRET",
+                        "TWITTER_ACCESS_TOKEN",
+                        "TWITTER_ACCESS_TOKEN_SECRET",
+                    ],
+                )?;
+                let consumer_key = &creds[0];
+                let consumer_secret = &creds[1];
+                let access_token = &creds[2];
+                let access_token_secret = &creds[3];
 
                 dispatch(ctx, "twitter", &message, || {
                     twitter::send_twitter(
-                        &consumer_key,
-                        &consumer_secret,
-                        &access_token,
-                        &access_token_secret,
+                        consumer_key,
+                        consumer_secret,
+                        access_token,
+                        access_token_secret,
                         &message,
                     )
                 })
@@ -631,21 +670,13 @@ impl Stage for AnnounceStage {
             && let Err(e) = (|| -> Result<()> {
                 let server = require_rendered(ctx, cfg.server.as_deref(), "mastodon", "server")?;
                 if server.is_empty() {
-                    // GoReleaser skips silently when server is empty
-                    let log = ctx.logger("announce");
-                    log.status("mastodon: server is empty — skipping");
-                } else {
-                    let message = render_message(ctx, cfg.message_template.as_deref())?;
-                    let access_token = std::env::var("MASTODON_ACCESS_TOKEN").map_err(|_| {
-                        anyhow::anyhow!(
-                            "announce.mastodon: MASTODON_ACCESS_TOKEN env var is required"
-                        )
-                    })?;
-                    dispatch(ctx, "mastodon", &message, || {
-                        mastodon::send_mastodon(&server, &access_token, &message)
-                    })?;
+                    return Ok(());
                 }
-                Ok(())
+                let message = render_message(ctx, cfg.message_template.as_deref())?;
+                let access_token = require_env("mastodon", "MASTODON_ACCESS_TOKEN")?;
+                dispatch(ctx, "mastodon", &message, || {
+                    mastodon::send_mastodon(&server, &access_token, &message)
+                })
             })()
         {
             errors.push(format!("mastodon: {e}"));
@@ -660,17 +691,8 @@ impl Stage for AnnounceStage {
                 let username =
                     require_rendered(ctx, cfg.username.as_deref(), "bluesky", "username")?;
                 let message = render_message(ctx, cfg.message_template.as_deref())?;
-                let app_password = std::env::var("BLUESKY_APP_PASSWORD").map_err(|_| {
-                    anyhow::anyhow!("announce.bluesky: BLUESKY_APP_PASSWORD env var is required")
-                })?;
-                if app_password.is_empty() {
-                    anyhow::bail!(
-                        "announce.bluesky: BLUESKY_APP_PASSWORD env var must not be empty"
-                    );
-                }
+                let app_password = require_env("bluesky", "BLUESKY_APP_PASSWORD")?;
                 let release_url = ctx.template_vars().get("ReleaseURL").map(|s| s.to_string());
-                // Template-render pds_url so users can reference env vars
-                // (e.g. `{{ .Env.BLUESKY_PDS }}`) for self-hosted instances.
                 let pds_url = cfg
                     .pds_url
                     .as_deref()
@@ -698,20 +720,9 @@ impl Stage for AnnounceStage {
             && is_enabled(ctx, cfg.enabled.as_ref())?
             && let Err(e) = (|| -> Result<()> {
                 let message = render_message(ctx, cfg.message_template.as_deref())?;
-                let access_token = std::env::var("LINKEDIN_ACCESS_TOKEN").map_err(|_| {
-                    anyhow::anyhow!("announce.linkedin: LINKEDIN_ACCESS_TOKEN env var is required")
-                })?;
-                // Trim then structural-check the bearer token: empty / embedded
-                // whitespace / non-printable bytes are all symptoms of an env
-                // file with stray quotes or a wrapped-line copy-paste, and they
-                // produce opaque 401s from LinkedIn rather than a clear local
-                // error. Catch the common shapes here.
-                let access_token = access_token.trim().to_string();
-                if access_token.is_empty() {
-                    anyhow::bail!(
-                        "announce.linkedin: LINKEDIN_ACCESS_TOKEN env var must not be empty"
-                    );
-                }
+                let access_token = require_env("linkedin", "LINKEDIN_ACCESS_TOKEN")?
+                    .trim()
+                    .to_string();
                 if access_token
                     .chars()
                     .any(|c| c.is_whitespace() || !c.is_ascii() || c.is_ascii_control())
@@ -721,6 +732,7 @@ impl Stage for AnnounceStage {
                          non-printable characters — check for stray quotes or line wraps"
                     );
                 }
+                linkedin::validate_token_shape(&access_token)?;
                 let log = ctx.logger("announce");
                 dispatch(ctx, "linkedin", &message, || {
                     linkedin::send_linkedin(&access_token, &message, &log)
@@ -738,34 +750,24 @@ impl Stage for AnnounceStage {
             && let Err(e) = (|| -> Result<()> {
                 let slug = require_rendered(ctx, cfg.slug.as_deref(), "opencollective", "slug")?;
                 if slug.is_empty() {
-                    let log = ctx.logger("announce");
-                    log.status("opencollective: slug is empty — skipping");
-                } else {
-                    let title = ctx.render_template(
-                        cfg.title_template
-                            .as_deref()
-                            .unwrap_or(opencollective::DEFAULT_TITLE_TEMPLATE),
-                    )?;
-                    let html = ctx.render_template(
-                        cfg.message_template
-                            .as_deref()
-                            .unwrap_or(opencollective::DEFAULT_MESSAGE_TEMPLATE),
-                    )?;
-                    let token = std::env::var("OPENCOLLECTIVE_TOKEN").map_err(|_| {
-                        anyhow::anyhow!(
-                            "announce.opencollective: OPENCOLLECTIVE_TOKEN env var is required"
-                        )
-                    })?;
-                    if token.is_empty() {
-                        anyhow::bail!(
-                            "announce.opencollective: OPENCOLLECTIVE_TOKEN env var must not be empty"
-                        );
-                    }
-                    dispatch(ctx, "opencollective", &title, || {
-                        opencollective::send_opencollective(&token, &slug, &title, &html)
-                    })?;
+                    return Ok(());
                 }
-                Ok(())
+                opencollective::validate_slug(&slug)?;
+                let title = ctx.render_template(
+                    cfg.title_template
+                        .as_deref()
+                        .unwrap_or(opencollective::DEFAULT_TITLE_TEMPLATE),
+                )?;
+                let html = ctx.render_template(
+                    cfg.message_template
+                        .as_deref()
+                        .unwrap_or(opencollective::DEFAULT_MESSAGE_TEMPLATE),
+                )?;
+                let token = require_env("opencollective", "OPENCOLLECTIVE_TOKEN")?;
+                opencollective::validate_token_shape(&token)?;
+                dispatch(ctx, "opencollective", &title, || {
+                    opencollective::send_opencollective(&token, &slug, &title, &html)
+                })
             })()
         {
             errors.push(format!("opencollective: {e}"));
@@ -821,7 +823,6 @@ impl Stage for AnnounceStage {
                 });
 
                 if let Some(host) = &smtp_host {
-                    // SMTP transport
                     let smtp_username = cfg
                         .username
                         .clone()
@@ -830,15 +831,16 @@ impl Stage for AnnounceStage {
                     if smtp_username.is_empty() {
                         anyhow::bail!("announce.email: SMTP username is required");
                     }
-                    let smtp_password = std::env::var("SMTP_PASSWORD").map_err(|_| {
-                        anyhow::anyhow!(
-                            "announce.email: SMTP_PASSWORD env var is required for SMTP transport"
-                        )
-                    })?;
-                    // Default to 587 (STARTTLS) to match the doc comment on
-                    // `announce.email.port` and GoReleaser's SMTP default.
-                    // Users on SMTPS or plain-SMTP setups must set the port
-                    // explicitly.
+                    let encryption = cfg.encryption.unwrap_or_default();
+                    let needs_password = !matches!(
+                        email::resolve_encryption(encryption, smtp_port.unwrap_or(587)),
+                        anodizer_core::config::EmailEncryption::None
+                    );
+                    let smtp_password = if needs_password {
+                        require_env("email", "SMTP_PASSWORD")?
+                    } else {
+                        std::env::var("SMTP_PASSWORD").unwrap_or_default()
+                    };
                     let port = smtp_port.unwrap_or(587);
                     let insecure = cfg.insecure_skip_verify.unwrap_or(false);
 
@@ -848,12 +850,12 @@ impl Stage for AnnounceStage {
                         username: &smtp_username,
                         password: &smtp_password,
                         insecure_skip_verify: insecure,
+                        encryption,
                     };
                     dispatch(ctx, "email (smtp)", &log_line, || {
                         email::send_smtp(&email_params, &smtp_params)
                     })?;
                 } else {
-                    // Sendmail fallback
                     dispatch(ctx, "email", &log_line, || {
                         email::send_sendmail(&email_params)
                     })?;
@@ -2014,7 +2016,12 @@ blocks:
     #[serial]
     #[test]
     fn test_dry_run_linkedin() {
-        unsafe { std::env::set_var("LINKEDIN_ACCESS_TOKEN", "test_token") };
+        unsafe {
+            std::env::set_var(
+                "LINKEDIN_ACCESS_TOKEN",
+                "AQXopaque_test_token_long_enough_to_pass_validation_xx",
+            )
+        };
         let announce = AnnounceConfig {
             linkedin: Some(LinkedInAnnounce {
                 enabled: Some(StringOrBool::Bool(true)),
@@ -2110,7 +2117,12 @@ blocks:
     #[serial]
     #[test]
     fn test_dry_run_opencollective() {
-        unsafe { std::env::set_var("OPENCOLLECTIVE_TOKEN", "test_token") };
+        unsafe {
+            std::env::set_var(
+                "OPENCOLLECTIVE_TOKEN",
+                "test_token_long_enough_to_pass_validation_check_xx",
+            )
+        };
         let announce = AnnounceConfig {
             opencollective: Some(OpenCollectiveAnnounce {
                 enabled: Some(StringOrBool::Bool(true)),

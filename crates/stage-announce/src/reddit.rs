@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use anodizer_core::log::StageLogger;
 use anyhow::Result;
 
 /// Validate the format of a subreddit name against Reddit's documented rules:
@@ -25,21 +26,35 @@ fn validate_subreddit(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Bundled credentials + post payload for a Reddit submission. Grouped into a
+/// single struct so `send_reddit` stays under clippy's argument-count limit
+/// and the call-site reads as one record per submission.
+pub struct RedditPost<'a> {
+    pub application_id: &'a str,
+    pub secret: &'a str,
+    pub username: &'a str,
+    pub password: &'a str,
+    pub subreddit: &'a str,
+    pub title: &'a str,
+    pub url: &'a str,
+}
+
 /// Authenticate with Reddit's OAuth2 API and submit a link post to a subreddit.
 ///
 /// 1. POST to `/api/v1/access_token` with Basic Auth (application_id:secret)
 ///    and `grant_type=password` to obtain a bearer token.
 /// 2. POST to `/api/submit` on `oauth.reddit.com` with the bearer token to
 ///    create the link post.
-pub fn send_reddit(
-    application_id: &str,
-    secret: &str,
-    username: &str,
-    password: &str,
-    subreddit: &str,
-    title: &str,
-    url: &str,
-) -> Result<()> {
+pub fn send_reddit(post: &RedditPost<'_>, log: &StageLogger) -> Result<()> {
+    let RedditPost {
+        application_id,
+        secret,
+        username,
+        password,
+        subreddit,
+        title,
+        url,
+    } = *post;
     validate_subreddit(subreddit)?;
 
     let client = reqwest::blocking::Client::builder()
@@ -59,7 +74,9 @@ pub fn send_reddit(
 
     if !token_resp.status().is_success() {
         let status = token_resp.status();
-        let body = token_resp.text().unwrap_or_default();
+        let body = token_resp
+            .text()
+            .unwrap_or_else(|e| format!("<body read failed: {e}>"));
         anyhow::bail!("reddit: OAuth token request failed ({status}): {body}");
     }
 
@@ -83,9 +100,13 @@ pub fn send_reddit(
         .form(&form)
         .send()?;
 
+    log_rate_limit(submit_resp.headers(), log);
+
     if !submit_resp.status().is_success() {
         let status = submit_resp.status();
-        let body = submit_resp.text().unwrap_or_default();
+        let body = submit_resp
+            .text()
+            .unwrap_or_else(|e| format!("<body read failed: {e}>"));
         anyhow::bail!("reddit: submit failed ({status}): {body}");
     }
 
@@ -101,6 +122,36 @@ pub fn send_reddit(
     }
 
     Ok(())
+}
+
+/// Surface Reddit's `X-Ratelimit-*` headers so users see throttle pressure
+/// before it turns into 429s on the next release.
+fn log_rate_limit(headers: &reqwest::header::HeaderMap, log: &StageLogger) {
+    let used = header_str(headers, "x-ratelimit-used");
+    let remaining = header_str(headers, "x-ratelimit-remaining");
+    let reset = header_str(headers, "x-ratelimit-reset");
+    if used.is_none() && remaining.is_none() && reset.is_none() {
+        return;
+    }
+    let remaining_num = remaining.as_deref().and_then(|s| s.parse::<f64>().ok());
+    let line = format!(
+        "reddit rate limit: used={} remaining={} reset_in={}s",
+        used.as_deref().unwrap_or("?"),
+        remaining.as_deref().unwrap_or("?"),
+        reset.as_deref().unwrap_or("?"),
+    );
+    if remaining_num.map(|n| n < 5.0).unwrap_or(false) {
+        log.warn(&line);
+    } else {
+        log.status(&line);
+    }
+}
+
+fn header_str(headers: &reqwest::header::HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
 }
 
 #[cfg(test)]

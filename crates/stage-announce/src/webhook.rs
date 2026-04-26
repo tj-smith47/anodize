@@ -1,18 +1,6 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
-// ---------------------------------------------------------------------------
-// Body builder
-// ---------------------------------------------------------------------------
-
-/// Build the request body for a generic HTTP webhook.
-///
-/// GoReleaser sends the raw template output as the request body regardless of
-/// content type. The default template is already valid JSON (`{ "message": "..." }`).
-/// We match this behavior: always send the rendered message verbatim.
-pub(crate) fn webhook_body(message: &str, _content_type: &str) -> String {
-    message.to_string()
-}
 
 // ---------------------------------------------------------------------------
 // Status code helpers
@@ -48,7 +36,6 @@ pub fn send_webhook(
     skip_tls_verify: bool,
     expected_status_codes: &[u16],
 ) -> Result<()> {
-    let body = webhook_body(message, content_type);
     let effective_ct = if content_type.is_empty() {
         "application/json; charset=utf-8"
     } else {
@@ -63,7 +50,7 @@ pub fn send_webhook(
     let mut builder = client
         .post(endpoint_url)
         .header("Content-Type", effective_ct)
-        .body(body);
+        .body(message.to_string());
 
     for (key, value) in headers {
         builder = builder.header(key.as_str(), value.as_str());
@@ -102,41 +89,5 @@ mod tests {
     fn test_default_expected_status_codes() {
         let defaults = default_expected_status_codes();
         assert_eq!(defaults, vec![200, 201, 202, 204]);
-    }
-
-    #[test]
-    fn test_webhook_body_json_passthrough() {
-        // Valid JSON is passed through verbatim when content_type is application/json
-        let body = webhook_body(r#"{"project":"myapp","tag":"v1.0.0"}"#, "application/json");
-        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(json["project"], "myapp");
-        assert_eq!(json["tag"], "v1.0.0");
-    }
-
-    #[test]
-    fn test_webhook_body_json_raw_passthrough() {
-        // GoReleaser sends the raw template output as-is, no wrapping.
-        // The default template is already valid JSON.
-        let body = webhook_body("Release v1.0.0 is out!", "application/json");
-        assert_eq!(body, "Release v1.0.0 is out!");
-    }
-
-    #[test]
-    fn test_webhook_body_text_plain_raw() {
-        // text/plain returns the message as-is
-        let body = webhook_body("hello world", "text/plain");
-        assert_eq!(body, "hello world");
-    }
-
-    #[test]
-    fn test_webhook_body_json_with_charset() {
-        // "application/json; charset=utf-8" (the default) should still trigger JSON handling.
-        let body = webhook_body(r#"{"tag":"v1.0"}"#, "application/json; charset=utf-8");
-        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(json["tag"], "v1.0");
-
-        // Plain text is also passed through raw (GoReleaser behavior).
-        let body2 = webhook_body("plain text", "application/json; charset=utf-8");
-        assert_eq!(body2, "plain text");
     }
 }

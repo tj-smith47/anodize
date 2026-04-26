@@ -1,3 +1,4 @@
+use anodizer_core::config::EmailEncryption;
 use anodizer_core::template::{self, TemplateVars};
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -27,6 +28,21 @@ pub struct SmtpParams<'a> {
     pub username: &'a str,
     pub password: &'a str,
     pub insecure_skip_verify: bool,
+    pub encryption: EmailEncryption,
+}
+
+/// Resolve `EmailEncryption::Auto` against the configured port. Pure function
+/// so the call-site can short-circuit a few clearly-wrong combinations
+/// (e.g. requesting `none` on port 465) before opening a connection.
+pub(crate) fn resolve_encryption(mode: EmailEncryption, port: u16) -> EmailEncryption {
+    match mode {
+        EmailEncryption::Auto => match port {
+            465 => EmailEncryption::Tls,
+            25 => EmailEncryption::None,
+            _ => EmailEncryption::Starttls,
+        },
+        other => other,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -53,24 +69,26 @@ pub fn send_smtp(params: &EmailParams<'_>, smtp: &SmtpParams<'_>) -> Result<()> 
 
     let creds = Credentials::new(smtp.username.to_string(), smtp.password.to_string());
     let port = smtp.port;
+    let encryption = resolve_encryption(smtp.encryption, port);
 
-    // Port 465 is SMTPS (implicit TLS on connect); other ports use STARTTLS.
-    let mut transport = if port == 465 {
-        SmtpTransport::relay(smtp.host)
+    let mut transport = match encryption {
+        EmailEncryption::Tls | EmailEncryption::Auto => SmtpTransport::relay(smtp.host)
             .context(format!(
                 "failed to create SMTPS transport for {}",
                 smtp.host
             ))?
             .port(port)
-            .credentials(creds)
-    } else {
-        SmtpTransport::starttls_relay(smtp.host)
+            .credentials(creds),
+        EmailEncryption::Starttls => SmtpTransport::starttls_relay(smtp.host)
             .context(format!("failed to create SMTP transport for {}", smtp.host))?
             .port(port)
-            .credentials(creds)
+            .credentials(creds),
+        EmailEncryption::None => SmtpTransport::builder_dangerous(smtp.host)
+            .port(port)
+            .credentials(creds),
     };
 
-    if smtp.insecure_skip_verify {
+    if smtp.insecure_skip_verify && !matches!(encryption, EmailEncryption::None) {
         let tls = TlsParameters::builder(smtp.host.to_string())
             .dangerous_accept_invalid_certs(true)
             .build()
@@ -252,14 +270,13 @@ mod tests {
 
     #[test]
     fn test_smtp_params_default_port() {
-        // Port default (587) is resolved at the call site in lib.rs;
-        // SmtpParams always carries a real port number.
         let params = SmtpParams {
             host: "smtp.example.com",
             port: 587,
             username: "user",
             password: "pass",
             insecure_skip_verify: false,
+            encryption: EmailEncryption::Auto,
         };
         assert_eq!(params.port, 587);
     }
@@ -272,7 +289,48 @@ mod tests {
             username: "user",
             password: "pass",
             insecure_skip_verify: false,
+            encryption: EmailEncryption::Auto,
         };
         assert_eq!(params.port, 465);
+    }
+
+    #[test]
+    fn auto_encryption_picks_smtps_for_465() {
+        assert_eq!(
+            resolve_encryption(EmailEncryption::Auto, 465),
+            EmailEncryption::Tls
+        );
+    }
+
+    #[test]
+    fn auto_encryption_picks_plain_for_25() {
+        assert_eq!(
+            resolve_encryption(EmailEncryption::Auto, 25),
+            EmailEncryption::None
+        );
+    }
+
+    #[test]
+    fn auto_encryption_falls_back_to_starttls() {
+        assert_eq!(
+            resolve_encryption(EmailEncryption::Auto, 587),
+            EmailEncryption::Starttls
+        );
+        assert_eq!(
+            resolve_encryption(EmailEncryption::Auto, 2525),
+            EmailEncryption::Starttls
+        );
+    }
+
+    #[test]
+    fn explicit_encryption_overrides_port() {
+        assert_eq!(
+            resolve_encryption(EmailEncryption::None, 587),
+            EmailEncryption::None
+        );
+        assert_eq!(
+            resolve_encryption(EmailEncryption::Tls, 25),
+            EmailEncryption::Tls
+        );
     }
 }

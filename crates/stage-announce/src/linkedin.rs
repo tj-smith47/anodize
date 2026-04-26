@@ -4,6 +4,49 @@ use serde_json::json;
 
 const API_BASE: &str = "https://api.linkedin.com";
 
+/// Loose structural check on a LinkedIn access token. LinkedIn issues
+/// signed JWTs (3 dot-separated base64url segments) and opaque OAuth tokens
+/// (long alphanumeric blobs). We accept either shape and only reject values
+/// that are obviously not credentials so that an early bail beats a 401
+/// from the API.
+pub fn validate_token_shape(token: &str) -> Result<()> {
+    if token.len() < 16 {
+        anyhow::bail!(
+            "announce.linkedin: LINKEDIN_ACCESS_TOKEN looks too short ({} chars) \
+             — LinkedIn tokens are typically 100+ characters",
+            token.len()
+        );
+    }
+    let dot_segments = token.split('.').count();
+    if dot_segments == 3 {
+        for (idx, seg) in token.split('.').enumerate() {
+            if seg.is_empty() {
+                anyhow::bail!(
+                    "announce.linkedin: LINKEDIN_ACCESS_TOKEN looks like a JWT but \
+                     segment {} is empty",
+                    idx + 1
+                );
+            }
+            if !seg
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '=')
+            {
+                anyhow::bail!(
+                    "announce.linkedin: LINKEDIN_ACCESS_TOKEN looks like a JWT but \
+                     segment {} contains non-base64url characters",
+                    idx + 1
+                );
+            }
+        }
+    } else if dot_segments != 1 {
+        anyhow::bail!(
+            "announce.linkedin: LINKEDIN_ACCESS_TOKEN has {dot_segments} dot-separated \
+             segments — expected 1 (opaque token) or 3 (JWT)"
+        );
+    }
+    Ok(())
+}
+
 /// Post a share to LinkedIn via the v2 Share API.
 ///
 /// Two-step flow matching GoReleaser:
@@ -109,6 +152,7 @@ fn get_profile_urn_legacy(
 
 #[cfg(test)]
 mod tests {
+    use super::validate_token_shape;
     use serde_json::json;
 
     #[test]
@@ -121,5 +165,38 @@ mod tests {
         assert_eq!(payload["owner"], "urn:li:person:abc123");
         assert_eq!(payload["text"]["text"], "myapp v1.0 released");
         assert!(payload["distribution"]["linkedInDistributionTarget"].is_object());
+    }
+
+    #[test]
+    fn token_shape_accepts_jwt_format() {
+        let jwt = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxMjMifQ.signature_blob_padded";
+        validate_token_shape(jwt).unwrap();
+    }
+
+    #[test]
+    fn token_shape_accepts_opaque_token() {
+        validate_token_shape("AQXopaque_long_alphanumeric_token_value_1234567890abcdef").unwrap();
+    }
+
+    #[test]
+    fn token_shape_rejects_too_short() {
+        let err = validate_token_shape("abc").unwrap_err().to_string();
+        assert!(err.contains("too short"), "{err}");
+    }
+
+    #[test]
+    fn token_shape_rejects_two_segments() {
+        let err = validate_token_shape("abcdefghijklmnop.qrstuvwxyz")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("dot-separated segments"), "{err}");
+    }
+
+    #[test]
+    fn token_shape_rejects_jwt_with_empty_segment() {
+        let err = validate_token_shape("eyJhbGciOiJIUzI1NiJ9..signature_blob_padded")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("segment"), "{err}");
     }
 }

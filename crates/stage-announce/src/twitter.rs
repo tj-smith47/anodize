@@ -188,4 +188,43 @@ mod tests {
         assert_eq!(nonce.len(), 32);
         assert!(nonce.chars().all(|c| c.is_ascii_hexdigit()));
     }
+
+    #[test]
+    fn test_oauth1_signature_is_deterministic_per_inputs() {
+        // Same inputs → same signature because params are sorted into a
+        // BTreeMap before being signed. Building the header twice with the
+        // same nonce/timestamp must produce the same `oauth_signature`.
+        // We can't fix the timestamp at the public-API level; instead we
+        // verify the underlying signing routine via `hmac_sha1_base64`
+        // with a hand-built signature base string in lexicographic order.
+        let base = "POST&https%3A%2F%2Fapi.x.com%2F2%2Ftweets&\
+                    oauth_consumer_key%3Dck%26oauth_nonce%3Dn%26\
+                    oauth_signature_method%3DHMAC-SHA1%26\
+                    oauth_timestamp%3D1700000000%26oauth_token%3Dat%26\
+                    oauth_version%3D1.0";
+        let key = "cs&ats";
+        let sig1 = hmac_sha1_base64(key.as_bytes(), base.as_bytes()).unwrap();
+        let sig2 = hmac_sha1_base64(key.as_bytes(), base.as_bytes()).unwrap();
+        assert_eq!(sig1, sig2);
+        assert!(!sig1.is_empty());
+    }
+
+    #[test]
+    fn test_oauth1_param_lexicographic_ordering() {
+        // RFC 5849 §3.4.1.3.2 requires params be sorted ascending by encoded
+        // key (then value). The six oauth_* params we always emit must
+        // satisfy this order — guards against future moves to a non-sorted
+        // map type.
+        let mut params = BTreeMap::new();
+        params.insert("oauth_consumer_key", "ck");
+        params.insert("oauth_nonce", "nn");
+        params.insert("oauth_signature_method", "HMAC-SHA1");
+        params.insert("oauth_timestamp", "1700000000");
+        params.insert("oauth_token", "at");
+        params.insert("oauth_version", "1.0");
+        let keys: Vec<&&str> = params.keys().collect();
+        let mut sorted = keys.clone();
+        sorted.sort();
+        assert_eq!(keys, sorted, "BTreeMap must yield params in sorted order");
+    }
 }

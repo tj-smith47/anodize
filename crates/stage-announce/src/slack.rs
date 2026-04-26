@@ -23,13 +23,8 @@ pub struct SlackOptions<'a> {
 // ---------------------------------------------------------------------------
 
 pub(crate) fn slack_payload(message: &str, opts: &SlackOptions<'_>) -> String {
-    let mut payload = json!({ "text": message });
-    // `payload` was just built from `json!({...})` with an object literal,
-    // so `as_object_mut` is always Some. The unwrap_or_else defends the
-    // invariant without panicking if a future refactor changes the shape.
-    let Some(obj) = payload.as_object_mut() else {
-        return message.to_string();
-    };
+    let mut obj = serde_json::Map::new();
+    obj.insert("text".into(), json!(message));
     if let Some(ch) = opts.channel {
         obj.insert("channel".into(), json!(ch));
     }
@@ -48,7 +43,7 @@ pub(crate) fn slack_payload(message: &str, opts: &SlackOptions<'_>) -> String {
     if let Some(a) = opts.attachments {
         obj.insert("attachments".into(), a.clone());
     }
-    payload.to_string()
+    serde_json::Value::Object(obj).to_string()
 }
 
 // ---------------------------------------------------------------------------

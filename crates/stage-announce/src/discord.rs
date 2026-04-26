@@ -24,22 +24,23 @@ const DEFAULT_COLOR: u32 = 3_888_754;
 pub(crate) fn discord_payload(message: &str, opts: &DiscordOptions<'_>) -> String {
     let color = opts.color.unwrap_or(DEFAULT_COLOR);
 
-    let mut embed = json!({
-        "description": message,
-        "color": color,
-    });
+    let mut embed = serde_json::Map::new();
+    embed.insert("description".into(), json!(message));
+    embed.insert("color".into(), json!(color));
 
-    if let Some(author) = opts.author {
-        let mut author_obj = json!({ "name": author });
+    // Discord rejects an `author` object without a `name` — it must always
+    // accompany an `icon_url`. Suppress the embed.author entirely when
+    // `name` is absent rather than building a payload Discord will reject.
+    if let Some(name) = opts.author {
+        let mut author_obj = serde_json::Map::new();
+        author_obj.insert("name".into(), json!(name));
         if let Some(icon) = opts.icon_url {
-            author_obj["icon_url"] = json!(icon);
+            author_obj.insert("icon_url".into(), json!(icon));
         }
-        embed["author"] = author_obj;
-    } else if let Some(icon) = opts.icon_url {
-        embed["author"] = json!({ "icon_url": icon });
+        embed.insert("author".into(), json!(author_obj));
     }
 
-    json!({ "embeds": [embed] }).to_string()
+    json!({ "embeds": [serde_json::Value::Object(embed)] }).to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -92,7 +93,9 @@ mod tests {
     }
 
     #[test]
-    fn test_discord_payload_with_icon_url() {
+    fn test_discord_payload_icon_url_without_author_drops_author() {
+        // Discord requires `author.name`; without it we must not emit an
+        // `author` object at all (an icon-only author is invalid and 400s).
         let opts = DiscordOptions {
             author: None,
             color: None,
@@ -101,7 +104,10 @@ mod tests {
         let payload = discord_payload("released!", &opts);
         let json: serde_json::Value = serde_json::from_str(&payload).unwrap();
         let embed = &json["embeds"][0];
-        assert_eq!(embed["author"]["icon_url"], "https://example.com/icon.png");
+        assert!(
+            embed.get("author").is_none(),
+            "author object must be omitted"
+        );
     }
 
     #[test]

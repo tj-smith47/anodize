@@ -48,7 +48,7 @@ pub fn send_bluesky(
         .ok_or_else(|| anyhow::anyhow!("bluesky: missing did in session response"))?;
 
     // Step 2: Build post record
-    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
     let mut record = json!({
         "$type": "app.bsky.feed.post",
         "text": message,
