@@ -103,8 +103,18 @@ pub(super) fn close_milestones(
             ),
         };
         match close_result {
-            Ok(()) => {
+            Ok(MilestoneCloseOutcome::Closed) => {
                 log.status(&format!("milestone '{}' closed", milestone_name));
+            }
+            Ok(MilestoneCloseOutcome::NotFound) => {
+                // GoReleaser closes by ID; we close by name lookup, so a
+                // re-run after a successful close finds nothing. Log it
+                // verbosely so the user understands the no-op instead of
+                // wondering whether a previous close actually happened.
+                log.verbose(&format!(
+                    "milestone '{}' not found on {}/{} (likely already closed)",
+                    milestone_name, owner, repo_name
+                ));
             }
             Err(e) => {
                 if milestone_cfg.fail_on_error.unwrap_or(false) {
@@ -122,6 +132,12 @@ pub(super) fn close_milestones(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MilestoneCloseOutcome {
+    Closed,
+    NotFound,
+}
+
 fn resolve_milestone_repo(
     milestone_cfg: &anodizer_core::config::MilestoneConfig,
     config: &Config,
@@ -134,53 +150,39 @@ fn resolve_milestone_repo(
         return (repo_cfg.owner.clone(), repo_cfg.name.clone());
     }
 
-    // Fall back to the first crate's release config for the matching provider.
-    // Scans in preferred-provider order — first a release block on the active
-    // SCM (ctx.token_type), then anything else — so a mixed-provider repo
-    // doesn't pick up an irrelevant block.
+    // Single pass over crates that prefers a release block matching the
+    // active SCM (ctx.token_type) but accepts any block as a fallback.
+    // Earlier we walked the crate list twice — once for the matching
+    // provider, once for any provider — which produced two near-identical
+    // loops with different short-circuit behaviour.
+    let mut fallback: Option<(String, String)> = None;
     for crate_cfg in &config.crates {
-        if let Some(ref release_cfg) = crate_cfg.release {
-            let matched = match token_type {
-                ScmTokenType::GitHub => release_cfg
-                    .github
-                    .as_ref()
-                    .map(|r| (r.owner.clone(), r.name.clone())),
-                ScmTokenType::GitLab => release_cfg
-                    .gitlab
-                    .as_ref()
-                    .map(|r| (r.owner.clone(), r.name.clone())),
-                ScmTokenType::Gitea => release_cfg
-                    .gitea
-                    .as_ref()
-                    .map(|r| (r.owner.clone(), r.name.clone())),
-            };
-            if let Some(pair) = matched {
-                return pair;
-            }
+        let Some(ref release_cfg) = crate_cfg.release else {
+            continue;
+        };
+        let preferred = match token_type {
+            ScmTokenType::GitHub => release_cfg.github.as_ref(),
+            ScmTokenType::GitLab => release_cfg.gitlab.as_ref(),
+            ScmTokenType::Gitea => release_cfg.gitea.as_ref(),
+        };
+        if let Some(r) = preferred {
+            return (r.owner.clone(), r.name.clone());
+        }
+        if fallback.is_none() {
+            fallback = release_cfg
+                .github
+                .as_ref()
+                .or(release_cfg.gitlab.as_ref())
+                .or(release_cfg.gitea.as_ref())
+                .map(|r| (r.owner.clone(), r.name.clone()));
         }
     }
-
-    // Last resort: any release block regardless of provider. Keeps behaviour
-    // for older single-provider configs that never set a release block on the
-    // token's matching provider (e.g. GitLab API via a Gitea-style block).
-    for crate_cfg in &config.crates {
-        if let Some(ref release_cfg) = crate_cfg.release {
-            if let Some(ref gh) = release_cfg.github {
-                return (gh.owner.clone(), gh.name.clone());
-            }
-            if let Some(ref gl) = release_cfg.gitlab {
-                return (gl.owner.clone(), gl.name.clone());
-            }
-            if let Some(ref gt) = release_cfg.gitea {
-                return (gt.owner.clone(), gt.name.clone());
-            }
-        }
+    if let Some(pair) = fallback {
+        return pair;
     }
 
-    // Final fallback: infer from the `origin` git remote (matches GoReleaser
-    // milestone.go:30-41 `ExtractRepoFromConfig`). Lets top-level `milestones:`
-    // blocks work without any per-crate release config when the `origin`
-    // remote already points at the right owner/name.
+    // Final fallback: infer from the `origin` git remote so a top-level
+    // `milestones:` block works without per-crate release config.
     if let Ok(pair) = anodizer_core::git::detect_owner_repo() {
         return pair;
     }
@@ -195,7 +197,7 @@ fn close_milestone_github(
     owner: &str,
     repo: &str,
     milestone_name: &str,
-) -> Result<()> {
+) -> Result<MilestoneCloseOutcome> {
     if token.is_empty() {
         anyhow::bail!("no authentication token available for milestone close");
     }
@@ -259,10 +261,7 @@ fn close_milestone_github(
 
         let milestone_number = match milestone_number {
             Some(n) => n,
-            None => {
-                // Milestone not found -- treat as success (may have been closed already)
-                return Ok(());
-            }
+            None => return Ok(MilestoneCloseOutcome::NotFound),
         };
 
         // Close the milestone
@@ -286,30 +285,30 @@ fn close_milestone_github(
             anyhow::bail!("milestone: close failed (HTTP {}): {}", status, body);
         }
 
-        Ok(())
+        Ok(MilestoneCloseOutcome::Closed)
     })
 }
 
 use anodizer_core::url::percent_encode_unreserved as url_encode;
 
-/// Resolve the API base URL for milestone operations on GitLab/Gitea.
+/// Resolve the full API base URL (including any `/api/vN` suffix) for
+/// milestone operations on GitLab/Gitea, normalising any trailing slash.
+/// Returns `None` if no override is configured; callers default to the
+/// public host.
 fn resolve_milestone_api_url(
     _milestone_cfg: &anodizer_core::config::MilestoneConfig,
     config: &Config,
 ) -> Option<String> {
-    // Check top-level gitlab_urls / gitea_urls config
+    let normalize = |api: &str| api.trim_end_matches('/').to_string();
     if let Some(ref gitlab) = config.gitlab_urls
         && let Some(ref api) = gitlab.api
     {
-        // Strip trailing /api/v4/ to get base URL
-        let base = api.trim_end_matches('/').trim_end_matches("/api/v4");
-        return Some(base.to_string());
+        return Some(normalize(api));
     }
     if let Some(ref gitea) = config.gitea_urls
         && let Some(ref api) = gitea.api
     {
-        let base = api.trim_end_matches('/').trim_end_matches("/api/v1");
-        return Some(base.to_string());
+        return Some(normalize(api));
     }
     None
 }
@@ -322,20 +321,21 @@ fn close_milestone_gitlab(
     repo: &str,
     milestone_name: &str,
     api_url: Option<&str>,
-) -> Result<()> {
+) -> Result<MilestoneCloseOutcome> {
     if token.is_empty() {
         anyhow::bail!("no authentication token available for GitLab milestone close");
     }
-    let base = api_url.unwrap_or("https://gitlab.com");
+    // Default to GitLab.com's API root; user-supplied api_url already
+    // includes the `/api/vN` path so we just append the resource path.
+    let base = api_url.unwrap_or("https://gitlab.com/api/v4");
 
     rt.block_on(async {
         let client = reqwest::Client::new();
         let project_path = format!("{}/{}", owner, repo);
         let encoded_path = url_encode(&project_path);
 
-        // List milestones to find matching title
         let url = format!(
-            "{}/api/v4/projects/{}/milestones?title={}",
+            "{}/projects/{}/milestones?title={}",
             base,
             encoded_path,
             url_encode(milestone_name)
@@ -374,12 +374,11 @@ fn close_milestone_gitlab(
 
         let milestone_id = match milestone_id {
             Some(id) => id,
-            None => return Ok(()), // Not found — may be already closed
+            None => return Ok(MilestoneCloseOutcome::NotFound),
         };
 
-        // Close the milestone (GoReleaser: StateEvent = "close")
         let close_url = format!(
-            "{}/api/v4/projects/{}/milestones/{}",
+            "{}/projects/{}/milestones/{}",
             base, encoded_path, milestone_id
         );
         let resp = client
@@ -396,7 +395,7 @@ fn close_milestone_gitlab(
             let body = resp.text().await.unwrap_or_default();
             anyhow::bail!("milestone: GitLab close failed (HTTP {}): {}", status, body);
         }
-        Ok(())
+        Ok(MilestoneCloseOutcome::Closed)
     })
 }
 
@@ -408,18 +407,19 @@ fn close_milestone_gitea(
     repo: &str,
     milestone_name: &str,
     api_url: Option<&str>,
-) -> Result<()> {
+) -> Result<MilestoneCloseOutcome> {
     if token.is_empty() {
         anyhow::bail!("no authentication token available for Gitea milestone close");
     }
-    let base = api_url.unwrap_or("https://gitea.com");
+    // Default to Gitea.com's API root; user-supplied api_url already
+    // includes the `/api/vN` path so we just append the resource path.
+    let base = api_url.unwrap_or("https://gitea.com/api/v1");
 
     rt.block_on(async {
         let client = reqwest::Client::new();
 
-        // List milestones to find matching title
         let url = format!(
-            "{}/api/v1/repos/{}/{}/milestones?state=open&name={}",
+            "{}/repos/{}/{}/milestones?state=open&name={}",
             base,
             owner,
             repo,
@@ -459,32 +459,34 @@ fn close_milestone_gitea(
 
         let milestone_id = match milestone_id {
             Some(id) => id,
-            None => return Ok(()), // Not found — may be already closed
+            None => return Ok(MilestoneCloseOutcome::NotFound),
         };
 
-        // Close the milestone (GoReleaser: state = "closed")
         let close_url = format!(
-            "{}/api/v1/repos/{}/{}/milestones/{}",
+            "{}/repos/{}/{}/milestones/{}",
             base, owner, repo, milestone_id
         );
+        // PATCH only the `state` field. Including `title` would round-trip
+        // the title and assert it hasn't changed under our feet — a
+        // surprising side-effect for an API call meant to close, not
+        // rename.
         let resp = client
             .patch(&close_url)
             .header("Authorization", format!("token {}", token))
             .header("User-Agent", anodizer_core::http::USER_AGENT)
-            .json(&serde_json::json!({ "state": "closed", "title": milestone_name }))
+            .json(&serde_json::json!({ "state": "closed" }))
             .send()
             .await
             .context("milestone: Gitea close milestone failed")?;
 
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            // 404 means milestone not found
-            return Ok(());
+            return Ok(MilestoneCloseOutcome::NotFound);
         }
         if !resp.status().is_success() {
             let status = resp.status();
             let body = resp.text().await.unwrap_or_default();
             anyhow::bail!("milestone: Gitea close failed (HTTP {}): {}", status, body);
         }
-        Ok(())
+        Ok(MilestoneCloseOutcome::Closed)
     })
 }
