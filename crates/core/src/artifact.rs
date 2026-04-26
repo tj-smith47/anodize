@@ -299,6 +299,39 @@ impl ArtifactRegistry {
             .collect()
     }
 
+    /// Return one artifact per `path` from the (Binary | UploadableBinary |
+    /// UniversalBinary) set, preferring `UploadableBinary` when both kinds
+    /// register the same path. UniversalBinary paths differ from their
+    /// component binaries so they pass through untouched.
+    ///
+    /// Mirrors GoReleaser's `artifact.ByBinaryLikeArtifacts`
+    /// (`internal/artifact/artifact.go:733-761`). Used by stage-sbom to
+    /// avoid generating duplicate SBOMs at the same path; would be silently
+    /// hand-rolled in any future stage that walks binary kinds.
+    pub fn binary_like_dedup(&self) -> Vec<&Artifact> {
+        let uploadable_paths: std::collections::HashSet<&std::path::Path> = self
+            .artifacts
+            .iter()
+            .filter(|a| a.kind == ArtifactKind::UploadableBinary)
+            .map(|a| a.path.as_path())
+            .collect();
+        self.artifacts
+            .iter()
+            .filter(|a| {
+                matches!(
+                    a.kind,
+                    ArtifactKind::Binary
+                        | ArtifactKind::UploadableBinary
+                        | ArtifactKind::UniversalBinary
+                )
+            })
+            .filter(|a| {
+                a.kind == ArtifactKind::UploadableBinary
+                    || !uploadable_paths.contains(a.path.as_path())
+            })
+            .collect()
+    }
+
     pub fn all(&self) -> &[Artifact] {
         &self.artifacts
     }

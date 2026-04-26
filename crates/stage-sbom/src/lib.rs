@@ -411,38 +411,13 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
     let matching_artifacts: Vec<(PathBuf, HashMap<String, String>, Option<String>)> =
         match artifacts_type {
             "any" => vec![],
-            "binary" => {
-                let uploadable_paths: std::collections::HashSet<PathBuf> = ctx
-                    .artifacts
-                    .all()
-                    .iter()
-                    .filter(|a| a.kind == ArtifactKind::UploadableBinary)
-                    .map(|a| a.path.clone())
-                    .collect();
-                ctx.artifacts
-                    .all()
-                    .iter()
-                    .filter(|a| {
-                        matches!(
-                            a.kind,
-                            ArtifactKind::Binary
-                                | ArtifactKind::UploadableBinary
-                                | ArtifactKind::UniversalBinary
-                        )
-                    })
-                    .filter(|a| {
-                        // Prefer UploadableBinary over a plain Binary at the same
-                        // path. UniversalBinary paths differ from component binaries
-                        // so they survive this filter and get their own SBOM.
-                        if a.kind == ArtifactKind::UploadableBinary {
-                            return true;
-                        }
-                        !uploadable_paths.contains(&a.path)
-                    })
-                    .filter(|a| matches_id_filter(a, sbom_cfg.ids.as_deref()))
-                    .map(|a| (a.path.clone(), a.metadata.clone(), a.target.clone()))
-                    .collect()
-            }
+            "binary" => ctx
+                .artifacts
+                .binary_like_dedup()
+                .into_iter()
+                .filter(|a| matches_id_filter(a, sbom_cfg.ids.as_deref()))
+                .map(|a| (a.path.clone(), a.metadata.clone(), a.target.clone()))
+                .collect(),
             _ => {
                 let kind = match artifacts_type {
                     "source" => ArtifactKind::SourceArchive,
@@ -607,20 +582,7 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
         command.args(&rendered_args);
         command.current_dir(dist);
         command.env_clear();
-        for key in &[
-            "HOME",
-            "USER",
-            "USERPROFILE",
-            "TMPDIR",
-            "TMP",
-            "TEMP",
-            "PATH",
-            "LOCALAPPDATA",
-        ] {
-            if let Ok(val) = std::env::var(key) {
-                command.env(key, val);
-            }
-        }
+        anodizer_core::util::apply_minimal_env(&mut command);
         for (k, v) in &rendered_env {
             command.env(k, v);
         }

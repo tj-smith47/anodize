@@ -1023,20 +1023,7 @@ impl SourceStage {
             // restrict environment to a small
             // whitelist to prevent accidental leakage of tokens/credentials.
             command.env_clear();
-            for key in &[
-                "HOME",
-                "USER",
-                "USERPROFILE",
-                "TMPDIR",
-                "TMP",
-                "TEMP",
-                "PATH",
-                "LOCALAPPDATA",
-            ] {
-                if let Ok(val) = std::env::var(key) {
-                    command.env(key, val);
-                }
-            }
+            anodizer_core::util::apply_minimal_env(&mut command);
             for (k, v) in &rendered_env {
                 command.env(k, v);
             }

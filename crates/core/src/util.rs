@@ -264,6 +264,34 @@ pub fn collect_if_replace(
     }
 }
 
+/// Apply a "minimal trusted" environment to a `Command` after `env_clear()`.
+///
+/// Stage subprocess invocations (sbom, source-archive, …) clear the env to
+/// stop accidental token leakage but still need a small set of platform-
+/// neutral keys so that `git`, `tar`, `syft`, etc. behave normally — HOME
+/// for tool config, USER for git author fallback, USERPROFILE/LOCALAPPDATA
+/// for the Windows equivalents, TMPDIR/TMP/TEMP so temp-file allocation
+/// doesn't land in a forbidden directory, and PATH so the tool itself can
+/// find its dependencies. Keeping this list in core means any new entry
+/// (e.g. SSL_CERT_DIR for syft pulling enrich data) is added once.
+pub fn apply_minimal_env(command: &mut std::process::Command) {
+    const PASSTHROUGH: &[&str] = &[
+        "HOME",
+        "USER",
+        "USERPROFILE",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "PATH",
+        "LOCALAPPDATA",
+    ];
+    for key in PASSTHROUGH {
+        if let Ok(val) = std::env::var(key) {
+            command.env(key, val);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
