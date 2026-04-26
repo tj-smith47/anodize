@@ -1,9 +1,14 @@
-# 2026-04 config gaps — Session A index
+# 2026-04 config gaps — Session A index (CLOSED 2026-04-26)
 
 Wrap-up index for Session A of the anodizer cohesive-refactor program
 (`/root/.claude/plans/anodizer-refactor-program.md`). Session A landed
 five GoReleaser parity audits, categorised the findings into four
 buckets, and applied the in-session-actionable buckets (a) and (d).
+
+**Status: CLOSED.** All categorised (a) and (d) findings landed.
+Buckets (b) and (c) were handed off to Sessions B and C. The post-batch
+follow-on per-publisher work (originally listed as "items not yet
+landed") was completed across tasks #23–#37 of the executing session.
 
 ## Audits in this set
 
@@ -24,86 +29,84 @@ Plus root-cause sub-audits:
 [`_categorization.md`](_categorization.md) is the master per-finding
 ledger. Totals:
 
-| Bucket | Count | Owner |
-|---|---|---|
-| (a) production bug | 140 | Session A (in-session) |
-| (b) config-schema | 33 | [_session-b-inputs.md](_session-b-inputs.md) |
-| (c) publisher-behavior | 33 | [_session-c-inputs.md](_session-c-inputs.md) |
-| (d) docs/comment | 15 | Session A (in-session) |
-| done (already shipped) | 3 | — |
-| verified-OK / no-op | 26 | — |
+| Bucket | Count | Owner | Status |
+|---|---|---|---|
+| (a) production bug | 140 | Session A + follow-on tasks | **all landed** |
+| (b) config-schema | 33 | [_session-b-inputs.md](_session-b-inputs.md) | handed off |
+| (c) publisher-behavior | 33 | [_session-c-inputs.md](_session-c-inputs.md) | handed off |
+| (d) docs/comment | 15 | Session A | **all landed** |
+| done (already shipped) | 3 | — | verified |
+| verified-OK / no-op | 26 | — | verified |
 
 Grand total: **250 findings** across the five audit areas.
 
-## Batches landed in Session A
-
-The categorization recommended ten approval-batches; commits that landed
-each are listed below for traceability.
+## Batches landed
 
 | Batch | Theme | Commit(s) |
 |---|---|---|
 | 10 | stage-nfpm production `panic!` → `Result<>` | `9505686` |
 | 1 | `eprintln!` → `StageLogger` (3 audit-flagged + 5 bonus) | `9505686` |
 | 5 | 15 doc/comment fixes | `9505686` |
-| 4 | Default()-time validation (~10 items): N4, N8, L15, AN39, AN42, K (validate_algorithm), A12 (case-insensitive upload mode) | `9505686`, `f43ce2f`, `4ddd456` |
-| 3 | `name: String::new()` → derive from path.file_name() (4 sites) | `f43ce2f` |
-| 2 | Template render-error swallows (~12 sites) | `13844da` |
-| 6 | Cross-cutting cleanups: L4 (installers in release-uploadable), A1 / U2 (config-first password cascade), `try_is_disabled` for stage-notarize + stage-sbom | `513fc30`, `00f9957`, `2697cef` |
-| 9 | Per-publisher production bugs — first wave: artifactory A2/A8/A10, upload U3/U9, dockerhub D2/D10 | `d9ce3a5` |
-| 8 | Tokio runtime reuse — milestones M4 (3 sites collapsed to one runtime) | `27c58cf` |
-| 7 | Stage monolith splits (3) | **not landed in Session A** — defer to dedicated splitting session (stage-archive 1700L, stage-release 5800L+, stage-sign 3700L; refactor-only, no behaviour change) |
+| 4 | Default()-time validation: N4, N8, L15, AN39, AN42, K (validate_algorithm), A12 | `9505686`, `f43ce2f`, `4ddd456` |
+| 3 | `name: String::new()` → derive from path.file_name() | `f43ce2f`, `cd8319c`, `4a4e5c1` |
+| 2 | Template render-error swallows | `13844da`, `00f9957`, `2697cef`, `087ff72` |
+| 6 | Cross-cutting cleanups: L4 (installers in release-uploadable), A1/U2 (config-first password cascade), `try_is_disabled` migration | `513fc30`, `00f9957`, `2697cef`, `087ff72` |
+| 9 | Per-publisher production bugs — first wave | `d9ce3a5` |
+| 9b | Per-publisher production bugs — second wave (artifactory A4/5/6/7/9/11, upload U4–U12, dockerhub D3–D9) | `f0f9908` |
+| 8 | Tokio runtime reuse — milestones M4 + stage-blob L11 | `27c58cf`, `189397f` |
+| C-series | stage-changelog (C5/C6/C9/C10/C13/C14/C15) | `c4628a9` |
+| M-series | milestones (M5/M8/M9/M10) | `2e41172` |
+| K-series | stage-checksum (K1/K3/K5/K6/K7/K8) | `a3615fe` |
+| S-series | stage-sign (S4/S6/S8/S9/S10/S13/S14/S15/S16) | `4a4e5c1` |
+| N-series | stage-notarize remaining (N3/N5/N10–N14) | `72e6a15` |
+| AN-series | stage-announce (23 fixes across 13 providers) | `66976f7` |
+| build/source/upx | audit-1 (a)-bucket remainders | `cd8319c` |
+| P-series | stage-publish per-pkgmgr (P6/P10/P11/P12/P13/P21/P23/P25/P26/P27/P28/P35) | `0704158` |
+| L-series | stage-blob (L4 verified, L7/L9/L10/L13/L17/L18 + L6 preflight) | `91c72af` |
+| B-series | stage-sbom (B3/B6/B12/B14 + B8/B10 dedup) | `91c72af`, `8dcc0b3` |
+| Shared HTTP | http_upload module credential cascade extraction | `3b03710` |
+| 7 | Stage monolith splits — stage-archive (formats/entries/file_specs), stage-sign (helpers/process), stage-release (release_body) | `96d08db`, `d2a65d2`, `4d1ddd8` |
 
-Plus the `f43ce2f` archive default-extra-files glob bug found while
-running Session A's tests (root-cause: `resolve_default_extra_files()`
-globbed CWD instead of the crate dir, leaking the workspace's own
-README into per-crate archives during `cargo test` runs).
+Plus `f43ce2f` for the archive default-extra-files glob bug found while
+running Session A's tests, `2433cd6` for publisher-keying alignment,
+`d408d75` for chocolatey moderation/no-windows-artifact, `7b550f6` for
+krew bin-on-windows + per-archive binary name + hard fail, and
+`a1ece19` for per-crate README.md generation so crates.io renders.
 
-## Items not yet landed in Session A
+## Follow-on items (now landed)
 
-Most of the per-publisher (a) items remain. The first wave (Batch 9
-above) covered the highest-impact authentication / image-validation
-foot-guns; the second wave is mechanical and lands in follow-on
-batches:
+The original "items not yet landed" section listed per-publisher
+remainders. All were closed in tasks #23–#37 of the implementation
+session:
 
-- **artifactory remaining**: A4, A5, A6 (JSON error parser
-  `errors[].status`), A7 (1119-line module split), A9 (dry-run vs
-  live render drift), A11 (PEM empty-after-parse hard-error vs GR
-  soft-skip).
-- **upload remaining**: U4–U8, U10–U12.
-- **dockerhub remaining**: D3–D9 (notably D7 client pool, D8 secret
-  validation before dry-run skip). D11 (from_url/from_file
-  exactly-one) was landed in this set then user-reverted; do **not**
-  re-apply.
-- **stage-release**: R2 (owner/name template render), R4 (ReleaseURL
-  variable), R5 (body template structure), R6 (Checksums map keys),
-  R7, R9 (`skip_upload: "yes"` falls through), R13 (eprintln warning),
-  R14 (5732-line split — Batch 7).
-- **stage-changelog**: C5, C6, C9, C10, C13, C14, C15.
-- **milestones**: M5 (URL strip-then-append), M8 (silent
-  "milestone not found"), M9 (Gitea PATCH includes `title`), M10
-  (double-iteration fallback). M4 done.
-- **stage-checksum**: K1 (lazy default vs eager), K3 (kind label
-  `Archive` vs `UploadableFile`), K5 (split + non-template overwrite),
-  K6 (non-UTF8 filename), K7 (already done by Batch 2), K8 (extra-file
-  per-crate in workspace runs).
-- **stage-sign**: S4 (lazy default), S6/S8 (`docker_signs.artifacts`
-  validation), S9, S10, S13, S14 (cache `default_sign_cmd`), S15, S16,
-  S17 (3729-line split — Batch 7).
-- **stage-notarize remaining**: N3 (hard-coded Apple timestamp URL),
-  N5 (macos + macos_native both populated), N10, N11, N12, N14.
-- **stage-announce remaining**: AN1–AN46 (~21 (a) items spanning
-  all providers — discord rate-limit, slack token format, mastodon
-  visibility validation, etc.).
-- **`StringOrBool::is_disabled` legacy callers**: 30+ sites still
-  call the silently-swallowing legacy method. Migrating each to
-  `try_is_disabled` is mechanical and will land alongside each
-  publisher's per-publisher batch above (rather than a single
-  cross-cutting commit). The fallible `try_*` API is in place as of
-  `00f9957`.
-- **Shared HTTP-upload helper extraction** (cross-cutting, ~600L
-  of duplication between `artifactory.rs` and `upload.rs`) lands
-  with Batch 7's stage-publish split, since the helper crystallises
-  the boundary between the two publishers.
+- **artifactory/upload/dockerhub remaining**: landed in `f0f9908`
+  (Task #25 second wave).
+- **stage-release R-series**: landed in `c6db731` (Task #26).
+- **stage-changelog C-series**: landed in `c4628a9` (Task #27).
+- **milestones M-series**: landed in `2e41172` (Task #28).
+- **stage-checksum K-series**: landed in `a3615fe` (Task #29).
+- **stage-sign S-series**: landed in `4a4e5c1` (Task #30).
+- **stage-notarize remaining**: landed in `72e6a15` (Task #31).
+- **stage-announce AN-series**: landed in `66976f7` (Task #32, 23
+  fixes across discord/slack/teams/twitter/mastodon/bluesky/webhook/
+  email/reddit/linkedin/opencollective providers).
+- **`StringOrBool::is_disabled` legacy callers**: migrated wholesale
+  in `087ff72` (Task #23).
+- **Shared HTTP-upload helper**: extracted in `3b03710` (Task #36) —
+  not 600L of dedup as originally estimated; the `validate_upload_mode`
+  / `collect_upload_artifacts` / `build_reqwest_client` /
+  `render_artifact_url` / `upload_single_artifact` helpers were
+  already shared. The remaining duplication was the credential
+  cascade (~50 lines × 2) and mTLS pair check, now in
+  `crates/stage-publish/src/http_upload.rs`.
+- **Batch 7 monolith splits**: all three landed.
+  - stage-archive 5642 → 4917 LOC (`96d08db`); 3 new modules
+    (formats/entries/file_specs).
+  - stage-sign 3738 → 2950 LOC (`d2a65d2`); 2 new modules
+    (helpers/process).
+  - stage-release 5821 → 5391 LOC (`4d1ddd8`); release_body module
+    extracted. Remaining ReleaseStage orchestration stays in lib.rs
+    as a single Stage impl.
 
 ## Handoff to Sessions B and C
 
@@ -113,9 +116,13 @@ batches:
 Both handoff files were authored together with the categorization in
 the audit-landing pass and have not been edited since.
 
-## Test posture
+## Test posture (final)
 
-Workspace test count at session close: **~3000 unit/lib tests** across
-27 crates — all green. clippy `--all-targets -- -D warnings` clean.
-`task lint` (fmt + build + clippy + xtask gen-docs + dry-run release)
-green for every commit in this session.
+Workspace test count at session close: **2649 unit/lib tests** across
+27 crates — all green. clippy `--all-targets -- -D warnings` clean
+across the workspace. `task lint` (fmt + build + clippy + xtask
+gen-docs + dry-run release) green for every commit in this session.
+
+33 commits total, all on master, all behind explicit `task commit`
+gating which runs the full lint → snapshot dry-run pipeline as a
+precondition.
