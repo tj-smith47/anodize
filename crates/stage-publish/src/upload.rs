@@ -3,7 +3,7 @@ use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result, bail};
 use std::collections::HashMap;
 
-use crate::artifactory::{self, validate_upload_mode};
+use crate::artifactory::{self, render_artifact_url, validate_upload_mode};
 
 /// Publish artifacts to generic HTTP endpoints.
 ///
@@ -54,9 +54,16 @@ pub fn publish_to_upload(ctx: &Context, log: &StageLogger) -> Result<()> {
         let mode = entry.mode.as_deref().unwrap_or("archive");
         validate_upload_mode(mode)?;
 
-        // Target URL is required
+        // U4 fix: GR (`internal/http/http.go:101-104`) treats a missing
+        // target as `pipe.Skip(...)` — a soft skip with a status log,
+        // not a hard error. Match that so a partly-filled YAML scaffold
+        // doesn't break the whole release.
         if entry.target.is_empty() {
-            bail!("upload: entry '{}' is missing required 'target' URL", name);
+            log.status(&format!(
+                "upload: entry '{}' has no 'target' URL configured, skipping",
+                name
+            ));
+            continue;
         }
         let target_template = &entry.target;
 
@@ -116,6 +123,20 @@ pub fn publish_to_upload(ctx: &Context, log: &StageLogger) -> Result<()> {
             );
         }
 
+        // U10 fix: GR (`internal/http/http.go:138-149`) refuses an mTLS
+        // config where only one of the cert/key pair is set. Anodizer
+        // previously deferred this check to build_reqwest_client, which
+        // ran *after* artifact collection — wasted work, and the error
+        // surface was inconsistent with artifactory.rs which validates
+        // the pair upfront.
+        if entry.client_x509_cert.is_some() != entry.client_x509_key.is_some() {
+            bail!(
+                "upload: '{}' has only one of client_x509_cert / client_x509_key set \
+                 (set both to enable mTLS, or leave both empty)",
+                name
+            );
+        }
+
         let checksum_header = entry.checksum_header.as_deref().unwrap_or("");
         let empty = HashMap::new();
         let custom_headers = entry.custom_headers.as_ref().unwrap_or(&empty);
@@ -138,7 +159,11 @@ pub fn publish_to_upload(ctx: &Context, log: &StageLogger) -> Result<()> {
         );
 
         if artifacts.is_empty() {
-            log.verbose(&format!(
+            // U7 fix: artifactory.rs logs the "no artifacts matched" case at
+            // status level so it appears in normal CI output. upload.rs used
+            // to log it at verbose level, hiding the fact from anyone not
+            // running with `-v`. Match the artifactory level.
+            log.status(&format!(
                 "upload: no artifacts matched for '{}' (mode={})",
                 name, mode
             ));
@@ -146,17 +171,23 @@ pub fn publish_to_upload(ctx: &Context, log: &StageLogger) -> Result<()> {
         }
 
         if ctx.is_dry_run() {
-            let target_url = ctx
-                .render_template(target_template)
-                .with_context(|| format!("upload: render target URL for '{}'", name))?;
             log.status(&format!(
-                "(dry-run) would upload {} artifacts to '{}' at {} (mode={}, method={})",
+                "(dry-run) would upload {} artifacts to '{}' (mode={}, method={})",
                 artifacts.len(),
                 name,
-                target_url,
                 mode,
                 method
             ));
+            // Render each artifact URL through the same code path live mode
+            // uses so dry-run accurately reflects template behaviour.
+            for artifact in &artifacts {
+                let url =
+                    render_artifact_url(ctx, target_template, artifact, custom_artifact_name)?;
+                log.status(&format!(
+                    "(dry-run)   {} ({}) -> {}",
+                    artifact.name, artifact.kind, url
+                ));
+            }
             continue;
         }
 
@@ -176,36 +207,11 @@ pub fn publish_to_upload(ctx: &Context, log: &StageLogger) -> Result<()> {
         )?;
 
         for artifact in &artifacts {
-            // Render target URL with artifact context
-            let mut vars = ctx.template_vars().clone();
-            vars.set("ArtifactName", &artifact.name);
-            vars.set(
-                "ArtifactExt",
-                anodizer_core::template::extract_artifact_ext(&artifact.name),
-            );
-            if let Some(ref target) = artifact.target {
-                let (os, arch) = anodizer_core::target::map_target(target);
-                vars.set("Os", &os);
-                vars.set("Arch", &arch);
-                vars.set("Target", target);
-            }
-
-            let rendered_target = anodizer_core::template::render(target_template, &vars)
-                .with_context(|| {
-                    format!("upload: render target URL for artifact '{}'", artifact.name)
-                })?;
-
-            // Build full URL — append artifact name unless custom_artifact_name is set
-            let url = if custom_artifact_name {
-                rendered_target
-            } else {
-                let sep = if rendered_target.ends_with('/') {
-                    ""
-                } else {
-                    "/"
-                };
-                format!("{}{}{}", rendered_target, sep, artifact.name)
-            };
+            // U8 fix: share render_artifact_url with the artifactory
+            // publisher so the per-artifact template behaviour, ArtifactName
+            // double-name guard, and Os/Arch/Target binding stay in lock-step
+            // between the two structurally-identical publishers.
+            let url = render_artifact_url(ctx, target_template, artifact, custom_artifact_name)?;
 
             log.status(&format!("  {} {} -> {}", method, artifact.name, url));
 

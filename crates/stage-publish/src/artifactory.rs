@@ -169,11 +169,30 @@ pub fn build_reqwest_client(
         );
     }
 
-    // Trusted CA certificates
+    // Trusted CA certificates. GR (`http.go:134-136`) calls AppendCertsFromPEM
+    // and treats a "no certs found" result as a misconfigured warning that
+    // skips the publisher rather than a hard error. Match that: a bundle
+    // present but containing zero parseable certs almost always means a
+    // copy-paste accident (PEM headers stripped, base64 truncated). Bail with
+    // a clear message so the user knows to re-paste, but don't pretend a
+    // parse failure produced a working bundle.
     if let Some(pem_data) = trusted_certs_pem {
-        for cert in reqwest::Certificate::from_pem_bundle(pem_data.as_bytes())
-            .context("artifactory: failed to parse trusted_certificates PEM")?
-        {
+        let trimmed = pem_data.trim();
+        if trimmed.is_empty() {
+            bail!(
+                "artifactory: trusted_certificates is set but empty (remove the field \
+                 to use the system trust store, or supply a valid PEM bundle)"
+            );
+        }
+        let certs = reqwest::Certificate::from_pem_bundle(pem_data.as_bytes())
+            .context("artifactory: failed to parse trusted_certificates PEM")?;
+        if certs.is_empty() {
+            bail!(
+                "artifactory: trusted_certificates contains no parseable certificates \
+                 (check PEM headers and that the bundle is not truncated)"
+            );
+        }
+        for cert in certs {
             builder = builder.add_root_certificate(cert);
         }
     }
@@ -188,41 +207,54 @@ pub fn build_reqwest_client(
 // ---------------------------------------------------------------------------
 
 /// Render a target URL template with artifact-specific variables.
-/// Supports {{ .ProjectName }}, {{ .Version }}, {{ .Tag }}, {{ .Os }}, {{ .Arch }},
-/// and {{ .ArtifactName }}. Falls back to ctx.render_template for global vars.
-fn render_artifact_url(
+///
+/// Uses the full template engine with the artifact context bound (Os, Arch,
+/// Target, ArtifactName, ArtifactExt) so the same expressions, filters, and
+/// pipes a user can write in `target:` work consistently in both the dry-run
+/// log and the live upload (A4 / A9). Previously this was a hand-rolled
+/// string-replace pass that only recognised exact `{{ .ArtifactName }}`,
+/// `{{ .Os }}`, `{{ .Arch }}` whitespace variants — pipe expressions
+/// (`{{ .Arch | upper }}`) and any other artifact field rendered as the
+/// raw template, while the dry-run log used the full engine.
+///
+/// When `custom_artifact_name` is false (default) and the template does not
+/// already reference `ArtifactName`, the artifact name is appended after the
+/// rendered URL. The "already references" guard prevents the double-name
+/// `…/myapp.tar.gz/myapp.tar.gz` foot-gun (A5) when a user writes
+/// `target: ".../{{ .ArtifactName }}"`.
+pub fn render_artifact_url(
     ctx: &Context,
     template: &str,
     artifact: &Artifact,
     custom_artifact_name: bool,
 ) -> Result<String> {
-    // First pass: render global vars through the template engine
-    let mut rendered = ctx
-        .render_template(template)
+    let mut vars = ctx.template_vars().clone();
+    let art_name = artifact.name();
+    vars.set("ArtifactName", art_name);
+    vars.set(
+        "ArtifactExt",
+        anodizer_core::template::extract_artifact_ext(art_name),
+    );
+    if let Some(ref target) = artifact.target {
+        let (os, arch) = anodizer_core::target::map_target(target);
+        vars.set("Os", &os);
+        vars.set("Arch", &arch);
+        vars.set("Target", target);
+    }
+
+    let mut rendered = anodizer_core::template::render(template, &vars)
         .with_context(|| "artifactory: failed to render target URL template")?;
 
-    // Replace artifact-specific placeholders that the global renderer doesn't know
-    let art_name = artifact.name();
-    let os = artifact.goos().unwrap_or_default();
-    let arch = artifact.goarch().unwrap_or_default();
-
-    // GoReleaser uses .ArtifactName in URL templates
-    rendered = rendered.replace("{{ .ArtifactName }}", art_name);
-    rendered = rendered.replace("{{.ArtifactName}}", art_name);
-
-    // If custom_artifact_name is false (default), append artifact name to URL
-    if !custom_artifact_name {
+    // GR upload.go:191-198 only appends the artifact name when
+    // custom_artifact_name is unset and the template did not already place it
+    // in the URL. The substring check matches both `ArtifactName` and
+    // `.ArtifactName` (Tera-style and Go-style).
+    if !custom_artifact_name && !template.contains("ArtifactName") {
         if !rendered.ends_with('/') {
             rendered.push('/');
         }
         rendered.push_str(art_name);
     }
-
-    // Replace any remaining .Os / .Arch patterns
-    rendered = rendered.replace("{{ .Os }}", &os);
-    rendered = rendered.replace("{{.Os}}", &os);
-    rendered = rendered.replace("{{ .Arch }}", &arch);
-    rendered = rendered.replace("{{.Arch}}", &arch);
 
     Ok(rendered)
 }
@@ -320,12 +352,34 @@ pub fn upload_single_artifact(
     let status = resp.status();
     if !status.is_success() {
         let resp_body = resp.text().unwrap_or_default();
-        // Try to extract JSON error details (Artifactory format)
+        // Try to extract JSON error details (Artifactory format —
+        // {"errors": [{"status": 401, "message": "..."}]}). GR's Error
+        // struct surfaces both `status` and `message`; only including
+        // message hides per-error HTTP codes that explain why a 200 OK
+        // could be paired with a partial-failure body.
         let detail = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&resp_body) {
             if let Some(errors) = json.get("errors").and_then(|e| e.as_array()) {
                 errors
                     .iter()
-                    .filter_map(|e| e.get("message").and_then(|m| m.as_str()))
+                    .map(|e| {
+                        let msg = e.get("message").and_then(|m| m.as_str()).unwrap_or("");
+                        match e.get("status") {
+                            Some(s) if !s.is_null() => {
+                                let s_str = s
+                                    .as_str()
+                                    .map(str::to_owned)
+                                    .or_else(|| s.as_i64().map(|n| n.to_string()))
+                                    .unwrap_or_else(|| s.to_string());
+                                if msg.is_empty() {
+                                    format!("status={}", s_str)
+                                } else {
+                                    format!("status={} {}", s_str, msg)
+                                }
+                            }
+                            _ => msg.to_string(),
+                        }
+                    })
+                    .filter(|s| !s.is_empty())
                     .collect::<Vec<_>>()
                     .join("; ")
             } else {
@@ -557,31 +611,22 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
                 extra_files_only,
             );
             log.status(&format!("(dry-run) {} artifacts matched", artifacts.len()));
+            // A9 fix: render the per-artifact URL through the same code path
+            // live mode uses, so dry-run doesn't lie about whether template
+            // expressions like `{{ .ArtifactName | upper }}` will work at
+            // upload time.
             for a in &artifacts {
-                log.status(&format!("(dry-run)   {} ({})", a.name(), a.kind));
+                let url = render_artifact_url(ctx, target_template, a, custom_artifact_name)?;
+                log.status(&format!("(dry-run)   {} ({}) -> {}", a.name(), a.kind, url));
             }
             continue;
         }
 
         // --- Live mode ---
-
-        // Cross-validate credentials: both must be set or both empty (GoReleaser CheckConfig parity)
-        if !username.is_empty() && password.is_empty() {
-            bail!(
-                "artifactory: entry '{}' has username set but no password (set {} or config password)",
-                name,
-                named_env_var
-            );
-        }
-        if !password.is_empty() && username.is_empty() {
-            bail!(
-                "artifactory: entry '{}' has password/secret set but no username (set username in config or {})",
-                name,
-                username_env_var
-            );
-        }
-
-        // Validate mTLS cert/key pair
+        //
+        // Credential cross-validation already happened upstream in the A10
+        // block, so live mode is unreachable with a half-set username/
+        // password pair. mTLS still needs its own pair check.
         if entry.client_x509_cert.is_some() != entry.client_x509_key.is_some() {
             bail!(
                 "artifactory: entry '{}': client_x509_cert and client_x509_key must both be set",

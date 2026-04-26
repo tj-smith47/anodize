@@ -30,7 +30,12 @@ pub fn resolve_full_description(
             .with_context(|| format!("dockerhub: failed to fetch URL '{}'", from_url.url))?;
         let status = resp.status();
         if !status.is_success() {
-            let body = resp.text().unwrap_or_default();
+            // D4: surface the body-read failure mode instead of swallowing
+            // it as `unwrap_or_default()` — an empty body in the error
+            // message is otherwise indistinguishable from a real empty body.
+            let body = resp
+                .text()
+                .unwrap_or_else(|e| format!("<body read failed: {}>", e));
             bail!(
                 "dockerhub: GET {} returned HTTP {}: {}",
                 from_url.url,
@@ -59,6 +64,16 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
         Some(ref v) if !v.is_empty() => v,
         _ => return Ok(()),
     };
+
+    // D7 fix: build one HTTP client up front and share it across every
+    // entry. The previous per-entry `Client::new()` allocated a fresh
+    // connection pool for each repo and never reused TLS handshakes.
+    // A 30s timeout matches the docs.docker.com guidance for the API.
+    let shared_client = reqwest::blocking::Client::builder()
+        .user_agent("anodizer/1.0")
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .context("dockerhub: failed to build shared HTTP client")?;
 
     for entry in entries {
         // Check disable flag.
@@ -94,19 +109,45 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
             continue;
         }
 
-        // Important 5: Validate short description length.
-        let short_desc = entry.description.as_deref().unwrap_or("");
-        if short_desc.len() > 100 {
+        // D3 fix: GR Pro's dockerhub doc says
+        // "Default: inferred from global metadata." When the per-entry
+        // `description:` is empty, fall back to the project's global
+        // metadata.description so a single source of truth in
+        // `metadata.description` covers every dockerhub entry.
+        let description_owned: Option<String> = entry
+            .description
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                ctx.config
+                    .metadata
+                    .as_ref()
+                    .and_then(|m| m.description.as_deref())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+            });
+        let short_desc: &str = description_owned.as_deref().unwrap_or("");
+        // D6 fix: short description length warning previously used
+        // `s.len()` (UTF-8 byte count), which over-counts emoji and
+        // accented characters by 2-4×. Docker Hub itself counts code
+        // points (Unicode chars), not bytes — a 50-emoji description is
+        // 50 chars on Docker Hub's side, not 200. `chars().count()` is
+        // the closest pre-grapheme-cluster approximation in std.
+        let short_desc_chars = short_desc.chars().count();
+        if short_desc_chars > 100 {
             log.warn(&format!(
                 "dockerhub: short description is {} chars (max 100); Docker Hub will truncate it",
-                short_desc.len()
+                short_desc_chars
             ));
         }
 
-        // Suggestion 8: Warn when bare image names map to library/ namespace.
-        // D10 fix: also reject obviously invalid forms (multi-slash, empty
-        // segments, leading/trailing slash) so a typo like `acme//proj`
-        // doesn't reach Docker Hub's API just to fail with a 404.
+        // Validate image references. D5/D9/D10: reject obviously invalid
+        // forms upfront (empty segments, multi-slash) and refuse bare names
+        // in strict mode — Docker Hub's `library/` namespace requires
+        // Docker Inc permissions, so a bare name is almost never what the
+        // user wants. Outside strict mode, keep the legacy warn-and-proceed
+        // behaviour so existing configs don't break on upgrade.
         for image in images {
             let segments: Vec<&str> = image.split('/').collect();
             if segments.iter().any(|s| s.is_empty()) {
@@ -122,11 +163,24 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
                 );
             }
             if !image.contains('/') {
-                log.warn(&format!(
+                ctx.strict_guard(log, &format!(
                     "dockerhub: image '{}' has no namespace; bare names map to 'library/' which requires Docker Inc permissions",
                     image
-                ));
+                ))?;
             }
+        }
+
+        // D8 fix: in dry-run, surface a misconfigured `secret_name:` so a
+        // typo doesn't slip through unnoticed. We don't fail dry-run on
+        // missing env (config tests should still pass without secrets in
+        // the environment), but we do log a clear warning so the user
+        // knows authentication will fail at live time.
+        let secret_name = entry.secret_name.as_deref().unwrap_or("DOCKER_PASSWORD");
+        if ctx.is_dry_run() && std::env::var(secret_name).ok().is_none() {
+            log.warn(&format!(
+                "dockerhub: secret env '{}' is not set; live mode will fail authentication",
+                secret_name
+            ));
         }
 
         // Important 3: Dry-run check BEFORE resolving full description.
@@ -140,13 +194,12 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
             continue;
         }
 
-        // Important 4: Create a single client for the entire entry.
-        let client = reqwest::blocking::Client::new();
+        let client = &shared_client;
 
         // Resolve full description if configured (after dry-run check).
         let full_desc = match entry.full_description {
             Some(ref fd) => Some(
-                resolve_full_description(fd, &client)
+                resolve_full_description(fd, client)
                     .context("dockerhub: failed to resolve full_description")?,
             ),
             None => None,
@@ -161,9 +214,8 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
             continue;
         }
 
-        // Authenticate: POST to get JWT token.
-        let secret_name = entry.secret_name.as_deref().unwrap_or("DOCKER_PASSWORD");
-
+        // Authenticate: POST to get JWT token. `secret_name` was resolved
+        // above so dry-run can warn on a misconfigured value (D8).
         let password = std::env::var(secret_name).with_context(|| {
             format!("dockerhub: environment variable '{}' not set", secret_name)
         })?;
@@ -182,7 +234,12 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
         // Important 6: Include response body in login error message.
         if !login_resp.status().is_success() {
             let status = login_resp.status();
-            let body = login_resp.text().unwrap_or_default();
+            // D4 fix: surface the body-read failure mode in the error
+            // message so an empty `body:` doesn't masquerade as a real
+            // empty response.
+            let body = login_resp
+                .text()
+                .unwrap_or_else(|e| format!("<body read failed: {}>", e));
             bail!(
                 "dockerhub: authentication failed (HTTP {}): {}",
                 status,
@@ -234,7 +291,11 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
             // Important 6: Include response body in PATCH error message.
             if !patch_resp.status().is_success() {
                 let status = patch_resp.status();
-                let body = patch_resp.text().unwrap_or_default();
+                // D4 fix: same as login — distinguish a "body read failed"
+                // from a "real empty body" in the surfaced error.
+                let body = patch_resp
+                    .text()
+                    .unwrap_or_else(|e| format!("<body read failed: {}>", e));
                 bail!(
                     "dockerhub: PATCH {}/{} failed (HTTP {}): {}",
                     namespace,
