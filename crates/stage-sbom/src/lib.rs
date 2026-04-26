@@ -450,16 +450,12 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
                     "package" => ArtifactKind::LinuxPackage,
                     "diskimage" => ArtifactKind::DiskImage,
                     "installer" => ArtifactKind::Installer,
-                    _ => {
-                        ctx.strict_guard(
-                            &log,
-                            &format!(
-                                "sbom[{}]: unknown artifacts type '{}', defaulting to archive",
-                                id, artifacts_type
-                            ),
-                        )?;
-                        ArtifactKind::Archive
-                    }
+                    other => anyhow::bail!(
+                        "sbom[{}]: unknown artifacts type '{}'. Valid values are: \
+                         source, archive, package, diskimage, installer, binary, any",
+                        id,
+                        other
+                    ),
                 };
 
                 let matched: Vec<(PathBuf, HashMap<String, String>, Option<String>)> = ctx
@@ -557,6 +553,21 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
                     id, doc_tpl
                 )
             })?;
+            // Document paths are joined onto `dist/` for both write and
+            // artifact registration. An absolute path would silently bypass
+            // dist (Path::join discards the base when joined with absolute)
+            // and produce an artifact registered at a nonexistent
+            // dist/$rendered location. GoReleaser refuses absolute paths
+            // here for the same reason — keep SBOMs inside dist or the
+            // checksum/release stages can't find them.
+            if Path::new(&rendered).is_absolute() {
+                bail!(
+                    "sbom[{}]: rendered document path '{}' is absolute; \
+                     SBOM outputs must be relative to the dist directory",
+                    id,
+                    rendered
+                );
+            }
             rendered_docs.push(rendered);
         }
 
@@ -666,13 +677,7 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
         }
     }
 
-    // Clear per-target template vars
-    ctx.template_vars_mut().set("Os", "");
-    ctx.template_vars_mut().set("Arch", "");
-    ctx.template_vars_mut().set("Target", "");
-    ctx.template_vars_mut().set("ArtifactName", "");
-    ctx.template_vars_mut().set("ArtifactExt", "");
-    ctx.template_vars_mut().set("ArtifactID", "");
+    anodizer_core::template::clear_per_artifact_vars(ctx.template_vars_mut());
 
     Ok(())
 }
@@ -688,12 +693,26 @@ fn run_sbom_builtin(
     let log = ctx.logger("sbom");
     let id = sbom_cfg.id.as_deref().unwrap_or("default");
 
+    // Detect format from the document's extension chain rather than a raw
+    // substring match. `mytool-spdx-companion.cdx.json` should resolve to
+    // CycloneDX because the trailing extension is `.cdx.json`; the prior
+    // `.contains("spdx")` heuristic flipped to SPDX based on the marketing
+    // word in the basename and produced a malformed CycloneDX-by-name /
+    // SPDX-by-payload file.
     let format = if let Some(ref docs) = sbom_cfg.documents {
-        if docs.iter().any(|d| d.to_lowercase().contains("spdx")) {
-            "spdx"
-        } else {
-            "cyclonedx"
+        let mut detected = "cyclonedx";
+        for d in docs {
+            let lower = d.to_lowercase();
+            if lower.ends_with(".spdx.json") || lower.ends_with(".spdx") {
+                detected = "spdx";
+                break;
+            }
+            if lower.ends_with(".cdx.json") || lower.ends_with(".cyclonedx.json") {
+                detected = "cyclonedx";
+                break;
+            }
         }
+        detected
     } else {
         "cyclonedx"
     };

@@ -1364,6 +1364,23 @@ pub const PER_TARGET_VARS: &[&str] = &[
     "Os", "Arch", "Target", "Arm", "Arm64", "Amd64", "Mips", "I386",
 ];
 
+/// Per-artifact template variable keys (set inside per-artifact loops in
+/// stage-sbom, stage-sign, stage-checksum). Bundled into a constant so the
+/// "set, render, clear" pattern stays in one place — when an additional var
+/// gets added (e.g. `ArtifactPath`), every consumer picks it up.
+pub const PER_ARTIFACT_VARS: &[&str] = &["ArtifactName", "ArtifactExt", "ArtifactID"];
+
+/// Clear both `PER_TARGET_VARS` and `PER_ARTIFACT_VARS` on exit from a
+/// per-artifact loop. Mirrors `clear_per_target_vars` but covers the larger
+/// surface that sbom/sign/checksum loops touch — preventing the "stale
+/// ArtifactName from sbom run leaking into announce" class of bug.
+pub fn clear_per_artifact_vars(tv: &mut TemplateVars) {
+    clear_per_target_vars(tv);
+    for key in PER_ARTIFACT_VARS {
+        tv.set(key, "");
+    }
+}
+
 /// Known numeric template fields that should be inserted as integers into the
 /// Tera context so that numeric comparisons like `{% if Major == 1 %}` work
 /// correctly. Without this, they would be strings and `"1" != 1`.

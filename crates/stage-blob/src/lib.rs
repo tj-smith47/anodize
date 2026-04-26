@@ -82,6 +82,101 @@ fn parse_kms_provider(kms_key: &str) -> KmsProvider {
     }
 }
 
+/// Refuse a kms_key whose URL scheme cannot encrypt for `provider`.
+///
+/// `awskms://` only makes sense alongside `provider: s3` (AWS CLI signs with
+/// AWS creds), `gcpkms://` alongside `gs`, `azurekeyvault://` alongside
+/// `azblob`. A plain ARN/ID (ServerSide) is only accepted on S3 because GCS
+/// and Azure object_store backends don't surface SSE-KMS through canned
+/// headers. Catching this at config-time prevents a confusing
+/// "AccessDenied"-or-similar failure deep inside the upload phase.
+fn validate_kms_provider_match(provider: Provider, kms: KmsProvider, kms_key: &str) -> Result<()> {
+    let ok = matches!(
+        (provider, kms),
+        (Provider::S3, KmsProvider::Aws | KmsProvider::ServerSide)
+            | (Provider::Gcs, KmsProvider::Gcp)
+            | (Provider::AzBlob, KmsProvider::Azure)
+    );
+    if ok {
+        Ok(())
+    } else {
+        let want_scheme = match provider {
+            Provider::S3 => "awskms:// (or a plain ARN for SSE-KMS)",
+            Provider::Gcs => "gcpkms://",
+            Provider::AzBlob => "azurekeyvault://",
+        };
+        anyhow::bail!(
+            "blobs: kms_key '{}' is not compatible with provider '{}'; expected scheme: {}",
+            kms_key,
+            provider.display_name(),
+            want_scheme
+        );
+    }
+}
+
+/// Verify the CLI tool needed for `provider`'s client-side encryption is on
+/// PATH. Runs `<tool> --version` (or equivalent) once before fanning out so
+/// missing-CLI failures surface at config-validate time, not deep inside the
+/// upload phase where the failure shape is opaque.
+fn preflight_kms_cli(provider: KmsProvider) -> Result<()> {
+    let tool = match provider {
+        KmsProvider::Aws => "aws",
+        KmsProvider::Gcp => "gcloud",
+        KmsProvider::Azure => "az",
+        KmsProvider::ServerSide => return Ok(()),
+    };
+    std::process::Command::new(tool)
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .with_context(|| format!("blobs: '{tool}' CLI not found on PATH (required for client-side KMS encryption)"))
+        .and_then(|status| {
+            if status.success() {
+                Ok(())
+            } else {
+                anyhow::bail!(
+                    "blobs: '{tool} --version' exited {} — install or repair the CLI before running KMS-backed blob upload",
+                    status.code().unwrap_or(-1)
+                )
+            }
+        })
+}
+
+/// Run a CLI subprocess with stdin piped, return stdout on success.
+/// Centralizes the spawn / write / wait_with_output pattern that the per-CLI
+/// arms used to repeat with subtle differences in error wrapping.
+fn run_kms_cli_with_stdin(
+    program: &str,
+    args: &[&str],
+    stdin: &[u8],
+    label: &str,
+) -> Result<Vec<u8>> {
+    let mut child = std::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .with_context(|| format!("blobs: failed to spawn '{program}' for {label}"))?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("blobs: {label}: child has no stdin"))?
+        .write_all(stdin)
+        .with_context(|| format!("blobs: {label}: failed to write plaintext to {program} stdin"))?;
+    let output = child
+        .wait_with_output()
+        .with_context(|| format!("blobs: {label}: failed to wait for {program}"))?;
+    if !output.status.success() {
+        bail!(
+            "blobs: {label} ({program}) failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(output.stdout)
+}
+
 /// Encrypt `data` client-side using the appropriate cloud CLI tool.
 ///
 /// Returns the encrypted ciphertext bytes. For `ServerSide`, returns the data
@@ -95,9 +190,9 @@ fn encrypt_with_kms(data: &[u8], kms_key: &str, provider: KmsProvider) -> Result
                 .strip_prefix("awskms://")
                 .ok_or_else(|| anyhow::anyhow!("expected awskms:// scheme, got {kms_key}"))?
                 .trim_start_matches('/');
-
-            let mut child = std::process::Command::new("aws")
-                .args([
+            let stdout = run_kms_cli_with_stdin(
+                "aws",
+                &[
                     "kms",
                     "encrypt",
                     "--key-id",
@@ -106,37 +201,15 @@ fn encrypt_with_kms(data: &[u8], kms_key: &str, provider: KmsProvider) -> Result
                     "fileb:///dev/stdin",
                     "--output",
                     "json",
-                ])
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()
-                .context("failed to run 'aws' CLI — is it installed?")?;
-
-            child
-                .stdin
-                .take()
-                .ok_or_else(|| anyhow::anyhow!("blobs: aws kms child has no stdin"))?
-                .write_all(data)
-                .context("blobs: failed to write plaintext to aws kms stdin")?;
-
-            let output = child
-                .wait_with_output()
-                .context("blobs: failed to wait for aws kms encrypt")?;
-
-            if !output.status.success() {
-                bail!(
-                    "aws kms encrypt failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
-            }
-
-            let resp: serde_json::Value = serde_json::from_slice(&output.stdout)
+                ],
+                data,
+                "aws kms encrypt",
+            )?;
+            let resp: serde_json::Value = serde_json::from_slice(&stdout)
                 .context("blobs: failed to parse aws kms encrypt JSON response")?;
             let b64 = resp["CiphertextBlob"]
                 .as_str()
                 .context("missing CiphertextBlob in aws kms encrypt response")?;
-
             base64::engine::general_purpose::STANDARD
                 .decode(b64)
                 .context("blobs: failed to decode CiphertextBlob base64")
@@ -147,9 +220,10 @@ fn encrypt_with_kms(data: &[u8], kms_key: &str, provider: KmsProvider) -> Result
             let resource = kms_key
                 .strip_prefix("gcpkms://")
                 .ok_or_else(|| anyhow::anyhow!("expected gcpkms:// scheme, got {kms_key}"))?;
-
-            let mut child = std::process::Command::new("gcloud")
-                .args([
+            // gcloud outputs raw ciphertext bytes to stdout.
+            run_kms_cli_with_stdin(
+                "gcloud",
+                &[
                     "kms",
                     "encrypt",
                     "--key",
@@ -158,33 +232,10 @@ fn encrypt_with_kms(data: &[u8], kms_key: &str, provider: KmsProvider) -> Result
                     "-",
                     "--ciphertext-file",
                     "-",
-                ])
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()
-                .context("failed to run 'gcloud' CLI — is it installed?")?;
-
-            child
-                .stdin
-                .take()
-                .ok_or_else(|| anyhow::anyhow!("blobs: gcloud kms child has no stdin"))?
-                .write_all(data)
-                .context("blobs: failed to write plaintext to gcloud kms stdin")?;
-
-            let output = child
-                .wait_with_output()
-                .context("blobs: failed to wait for gcloud kms encrypt")?;
-
-            if !output.status.success() {
-                bail!(
-                    "gcloud kms encrypt failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
-            }
-
-            // gcloud outputs raw ciphertext bytes to stdout
-            Ok(output.stdout)
+                ],
+                data,
+                "gcloud kms encrypt",
+            )
         }
 
         KmsProvider::Azure => {
@@ -200,9 +251,9 @@ fn encrypt_with_kms(data: &[u8], kms_key: &str, provider: KmsProvider) -> Result
             let key_name = parts
                 .get(2)
                 .context("missing key name in azurekeyvault:// URL (expected vault/keys/name)")?;
-
             let b64_data = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(data);
-
+            // `az` reads --value, no stdin — use a one-shot Command::output here
+            // because run_kms_cli_with_stdin assumes stdin-driven I/O.
             let output = std::process::Command::new("az")
                 .args([
                     "keyvault",
@@ -222,21 +273,18 @@ fn encrypt_with_kms(data: &[u8], kms_key: &str, provider: KmsProvider) -> Result
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .output()
-                .context("failed to run 'az' CLI — is it installed?")?;
-
+                .context("blobs: failed to spawn 'az' for keyvault encrypt")?;
             if !output.status.success() {
                 bail!(
-                    "az keyvault key encrypt failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
+                    "blobs: az keyvault key encrypt failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
                 );
             }
-
             let resp: serde_json::Value = serde_json::from_slice(&output.stdout)
                 .context("blobs: failed to parse az keyvault encrypt JSON response")?;
             let result = resp["result"]
                 .as_str()
                 .context("missing 'result' field in az keyvault encrypt response")?;
-
             base64::engine::general_purpose::URL_SAFE_NO_PAD
                 .decode(result)
                 .context("blobs: failed to decode az keyvault encryption result")
@@ -357,8 +405,28 @@ fn build_gcs_store(bucket: &str, config: &BlobConfig) -> Result<Box<dyn ObjectSt
 
     let mut builder = GoogleCloudStorageBuilder::from_env().with_bucket_name(bucket);
 
-    // GCS predefined ACL via x-goog-acl header
+    // GCS predefined ACL via x-goog-acl header.
+    // Match the public list documented at
+    // https://cloud.google.com/storage/docs/access-control/lists#predefined-acl
+    // and the GCS XML API canned ACL set so a typo (e.g. `public-read` instead
+    // of `publicRead`) errors here rather than producing a 400 deep in upload.
     if let Some(ref acl) = config.acl {
+        const VALID_GCS_ACLS: &[&str] = &[
+            "authenticatedRead",
+            "bucketOwnerFullControl",
+            "bucketOwnerRead",
+            "private",
+            "projectPrivate",
+            "publicRead",
+            "publicReadWrite",
+        ];
+        if !VALID_GCS_ACLS.contains(&acl.as_str()) {
+            anyhow::bail!(
+                "blobs: invalid GCS predefined ACL '{}'. Valid values are: {}",
+                acl,
+                VALID_GCS_ACLS.join(", ")
+            );
+        }
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
             reqwest::header::HeaderName::from_static("x-goog-acl"),
@@ -392,15 +460,58 @@ fn build_azure_store(container: &str) -> Result<Box<dyn ObjectStore>> {
 // Put options — headers (cache-control, content-disposition)
 // ---------------------------------------------------------------------------
 
+/// Validate a single Cache-Control directive against the response-directive
+/// set defined in RFC 7234 §5.2.2 plus the `immutable` token added by RFC
+/// 8246. Directives may take a `=token` argument (e.g. `max-age=3600`,
+/// `s-maxage=120`); we accept the directive name regardless of its argument.
+fn validate_cache_control_directive(directive: &str) -> Result<()> {
+    const VALID_DIRECTIVES: &[&str] = &[
+        "must-revalidate",
+        "no-cache",
+        "no-store",
+        "no-transform",
+        "public",
+        "private",
+        "proxy-revalidate",
+        "max-age",
+        "s-maxage",
+        "stale-while-revalidate",
+        "stale-if-error",
+        "immutable",
+    ];
+    let trimmed = directive.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("blobs: cache_control entry is empty");
+    }
+    let name = trimmed.split('=').next().unwrap_or(trimmed).trim();
+    if !VALID_DIRECTIVES
+        .iter()
+        .any(|d| d.eq_ignore_ascii_case(name))
+    {
+        anyhow::bail!(
+            "blobs: invalid Cache-Control directive '{}'. Valid directives are: {}",
+            name,
+            VALID_DIRECTIVES.join(", ")
+        );
+    }
+    Ok(())
+}
+
 fn build_put_options(config: &BlobConfig, filename: &str, ctx: &Context) -> Result<PutOptions> {
     use object_store::Attribute;
 
     let mut attrs = object_store::Attributes::new();
 
-    // Cache-Control: join array with ", " (GoReleaser uses []string)
+    // Cache-Control: join array with ", " (GoReleaser uses []string).
+    // Each directive is validated against the RFC-7234 §5.2 response-directive
+    // set so a typo (e.g. `max_age` instead of `max-age`) surfaces here rather
+    // than as a silent CDN miss in production.
     if let Some(ref cc) = config.cache_control
         && !cc.is_empty()
     {
+        for directive in cc {
+            validate_cache_control_directive(directive)?;
+        }
         attrs.insert(Attribute::CacheControl, cc.join(", ").into());
     }
 
@@ -498,23 +609,7 @@ fn collect_artifacts<'a>(
         .iter()
         .filter(|a| a.crate_name == crate_name)
         .filter(|a| uploadable_kinds.contains(&a.kind))
-        .filter(|a| {
-            if let Some(ref filter_ids) = config.ids {
-                if filter_ids.is_empty() {
-                    return true;
-                }
-                a.metadata
-                    .get("id")
-                    .map(|id| filter_ids.contains(id))
-                    .unwrap_or(false)
-                    || a.metadata
-                        .get("name")
-                        .map(|n| filter_ids.contains(n))
-                        .unwrap_or(false)
-            } else {
-                true
-            }
-        })
+        .filter(|a| anodizer_core::artifact::matches_id_filter(a, config.ids.as_deref()))
         .collect()
 }
 
@@ -593,11 +688,7 @@ fn upload_files_owned(
 
 fn format_remote_path(provider: Provider, bucket: &str, directory: &str, key: &str) -> String {
     let dir_trimmed = directory.trim_matches('/');
-    let scheme = match provider {
-        Provider::S3 => "s3",
-        Provider::Gcs => "gs",
-        Provider::AzBlob => "azblob",
-    };
+    let scheme = provider.display_name();
     if dir_trimmed.is_empty() {
         format!("{}://{}/{}", scheme, bucket, key)
     } else {
@@ -870,14 +961,23 @@ impl Stage for BlobStage {
                     .map(|(_, key)| build_put_options(blob_cfg, key, ctx))
                     .collect::<Result<_>>()?;
 
-                // Determine if client-side KMS encryption is needed
-                let client_kms = blob_cfg.kms_key.as_deref().and_then(|key| {
+                // Determine if client-side KMS encryption is needed.
+                // Validate KMS scheme matches the bucket provider so a misconfig
+                // surfaces here, not deep inside the upload phase. Preflight
+                // the CLI tool too — a missing `aws`/`gcloud`/`az` binary on
+                // PATH used to fail per-artifact during fan-out, producing N
+                // identical errors. One check, one error.
+                let client_kms = if let Some(key) = blob_cfg.kms_key.as_deref() {
                     let kms_provider = parse_kms_provider(key);
+                    validate_kms_provider_match(provider, kms_provider, key)?;
+                    preflight_kms_cli(kms_provider)?;
                     match kms_provider {
                         KmsProvider::ServerSide => None,
                         _ => Some((key.to_string(), kms_provider)),
                     }
-                });
+                } else {
+                    None
+                };
 
                 let parallelism_inner = blob_cfg
                     .parallelism
