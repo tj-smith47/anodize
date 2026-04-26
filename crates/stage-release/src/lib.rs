@@ -415,6 +415,55 @@ fn populate_artifact_download_urls(
 }
 
 // ---------------------------------------------------------------------------
+// render_repo_ref
+// ---------------------------------------------------------------------------
+
+/// Pick the `ScmRepoConfig` for the active token type (with github
+/// fallback) and template-render its `owner` and `name` fields.
+///
+/// Returns `Ok(None)` when no matching block is configured.
+pub(crate) fn resolve_release_repo(
+    release_cfg: &anodizer_core::config::ReleaseConfig,
+    token_type: ScmTokenType,
+    ctx: &anodizer_core::context::Context,
+) -> Result<Option<anodizer_core::config::ScmRepoConfig>> {
+    let raw = match token_type {
+        ScmTokenType::GitLab => release_cfg.gitlab.as_ref().or(release_cfg.github.as_ref()),
+        ScmTokenType::Gitea => release_cfg.gitea.as_ref().or(release_cfg.github.as_ref()),
+        ScmTokenType::GitHub => release_cfg.github.as_ref(),
+    };
+    let Some(repo) = raw else {
+        return Ok(None);
+    };
+    let owner = ctx
+        .render_template(&repo.owner)
+        .with_context(|| format!("release: render repo.owner '{}'", repo.owner))?;
+    let name = ctx
+        .render_template(&repo.name)
+        .with_context(|| format!("release: render repo.name '{}'", repo.name))?;
+    Ok(Some(anodizer_core::config::ScmRepoConfig { owner, name }))
+}
+
+/// Compose the public release HTML URL for the active SCM provider.
+pub(crate) fn compose_release_url(
+    token_type: ScmTokenType,
+    download_base: &str,
+    owner: &str,
+    repo: &str,
+    tag: &str,
+) -> String {
+    let base = download_base.trim_end_matches('/');
+    match token_type {
+        ScmTokenType::GitHub | ScmTokenType::Gitea => {
+            format!("{}/{}/{}/releases/tag/{}", base, owner, repo, tag)
+        }
+        ScmTokenType::GitLab => {
+            format!("{}/{}/{}/-/releases/{}", base, owner, repo, tag)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // should_mark_prerelease
 // ---------------------------------------------------------------------------
 
@@ -465,7 +514,9 @@ pub(crate) fn build_release_body(
     if parts.is_empty() {
         String::new()
     } else {
-        let mut s = parts.join("\n");
+        // Header / changelog / footer are separated by a blank line so
+        // markdown renderers treat them as distinct paragraphs.
+        let mut s = parts.join("\n\n");
         s.push('\n');
         s
     }
@@ -1158,11 +1209,15 @@ impl Stage for ReleaseStage {
                     _ => {
                         let mut map = serde_json::Map::new();
                         for artifact in &checksum_artifacts {
+                            // Unmarked checksum artifacts collide on the
+                            // empty-string key rather than the absolute
+                            // filesystem path, which would otherwise leak
+                            // the build host's layout into release notes.
                             let key = artifact
                                 .metadata
                                 .get("ChecksumOf")
                                 .cloned()
-                                .unwrap_or_else(|| artifact.path.to_string_lossy().into_owned());
+                                .unwrap_or_default();
                             let content =
                                 std::fs::read_to_string(&artifact.path).unwrap_or_default();
                             map.insert(key, serde_json::Value::String(content));
@@ -1274,7 +1329,14 @@ impl Stage for ReleaseStage {
                     };
                     match rendered.trim() {
                         "auto" => ctx.is_snapshot(),
-                        other => other == "true" || other == "1",
+                        "true" | "1" => true,
+                        "false" | "0" | "" => false,
+                        other => bail!(
+                            "release: invalid skip_upload value '{}' for crate '{}' \
+                             (expected one of: true/false/auto/1/0, or a template that renders to one of those)",
+                            other,
+                            crate_cfg.name
+                        ),
                     }
                 }
                 None => false,
@@ -1340,12 +1402,21 @@ impl Stage for ReleaseStage {
                 .collect();
 
             if let Some(ids) = ids_filter {
-                log.verbose(&format!(
-                    "ids filter {:?} selected {} artifacts for crate '{}'",
-                    ids,
-                    artifact_entries.len(),
-                    crate_cfg.name
-                ));
+                if artifact_entries.is_empty() {
+                    log.warn(&format!(
+                        "release: ids filter {:?} matched zero artifacts for crate '{}' \
+                         (the release will be created with no uploaded files; check \
+                         the ids match a configured build/archive id)",
+                        ids, crate_cfg.name
+                    ));
+                } else {
+                    log.verbose(&format!(
+                        "ids filter {:?} selected {} artifacts for crate '{}'",
+                        ids,
+                        artifact_entries.len(),
+                        crate_cfg.name
+                    ));
+                }
             }
 
             // GoReleaser release.go:121 — refresh combined checksum files
@@ -1525,28 +1596,11 @@ impl Stage for ReleaseStage {
                             })
                     }
                 };
-                let dry_owner = match ctx.token_type {
-                    ScmTokenType::GitLab => {
-                        release_cfg.gitlab.as_ref().or(release_cfg.github.as_ref())
-                    }
-                    ScmTokenType::Gitea => {
-                        release_cfg.gitea.as_ref().or(release_cfg.github.as_ref())
-                    }
-                    ScmTokenType::GitHub => release_cfg.github.as_ref(),
-                }
-                .map(|r| r.owner.as_str())
-                .unwrap_or("");
-                let dry_repo = match ctx.token_type {
-                    ScmTokenType::GitLab => {
-                        release_cfg.gitlab.as_ref().or(release_cfg.github.as_ref())
-                    }
-                    ScmTokenType::Gitea => {
-                        release_cfg.gitea.as_ref().or(release_cfg.github.as_ref())
-                    }
-                    ScmTokenType::GitHub => release_cfg.github.as_ref(),
-                }
-                .map(|r| r.name.as_str())
-                .unwrap_or("");
+                let dry_repo_cfg = resolve_release_repo(release_cfg, ctx.token_type, ctx)?;
+                let (dry_owner, dry_repo) = dry_repo_cfg
+                    .as_ref()
+                    .map(|r| (r.owner.as_str(), r.name.as_str()))
+                    .unwrap_or(("", ""));
                 populate_artifact_download_urls(
                     ctx,
                     &crate_name,
@@ -1556,6 +1610,16 @@ impl Stage for ReleaseStage {
                     dry_repo,
                     &tag,
                 );
+                if !dry_owner.is_empty() && !dry_repo.is_empty() {
+                    let dry_release_url = compose_release_url(
+                        ctx.token_type,
+                        &dry_dl_base,
+                        dry_owner,
+                        dry_repo,
+                        &tag,
+                    );
+                    ctx.set_release_url(&dry_release_url);
+                }
 
                 continue;
             }
@@ -1570,10 +1634,8 @@ impl Stage for ReleaseStage {
                 // GitLab backend
                 // ===============================================================
                 ScmTokenType::GitLab => {
-                    // Resolve the repo config: prefer release.gitlab, fall back to release.github.
-                    let repo_cfg = match release_cfg.gitlab.as_ref().or(release_cfg.github.as_ref())
-                    {
-                        Some(r) => r.clone(),
+                    let repo_cfg = match resolve_release_repo(release_cfg, ctx.token_type, ctx)? {
+                        Some(r) => r,
                         None => {
                             log.warn(&format!(
                                 "no gitlab config for crate '{}', skipping",
@@ -1771,10 +1833,8 @@ impl Stage for ReleaseStage {
                 // Gitea backend
                 // ===============================================================
                 ScmTokenType::Gitea => {
-                    // Resolve the repo config: prefer release.gitea, fall back to release.github.
-                    let repo_cfg = match release_cfg.gitea.as_ref().or(release_cfg.github.as_ref())
-                    {
-                        Some(r) => r.clone(),
+                    let repo_cfg = match resolve_release_repo(release_cfg, ctx.token_type, ctx)? {
+                        Some(r) => r,
                         None => {
                             log.warn(&format!(
                                 "no gitea config for crate '{}', skipping",
@@ -1965,9 +2025,8 @@ impl Stage for ReleaseStage {
                 // GitHub backend (existing octocrab implementation)
                 // ===============================================================
                 ScmTokenType::GitHub => {
-                    // Require a GitHub config block.
-                    let github = match &release_cfg.github {
-                        Some(g) => g.clone(),
+                    let github = match resolve_release_repo(release_cfg, ctx.token_type, ctx)? {
+                        Some(r) => r,
                         None => {
                             log.warn(&format!(
                                 "no github config for crate '{}', skipping",
@@ -2970,20 +3029,20 @@ mod tests {
         );
         assert_eq!(
             body,
-            "# Release v1.0\n## Changes\n- Fixed a bug\n---\nPowered by anodizer\n"
+            "# Release v1.0\n\n## Changes\n- Fixed a bug\n\n---\nPowered by anodizer\n"
         );
     }
 
     #[test]
     fn test_build_release_body_header_only() {
         let body = build_release_body("changelog content", Some("HEADER"), None);
-        assert_eq!(body, "HEADER\nchangelog content\n");
+        assert_eq!(body, "HEADER\n\nchangelog content\n");
     }
 
     #[test]
     fn test_build_release_body_footer_only() {
         let body = build_release_body("changelog content", None, Some("FOOTER"));
-        assert_eq!(body, "changelog content\nFOOTER\n");
+        assert_eq!(body, "changelog content\n\nFOOTER\n");
     }
 
     #[test]
@@ -2995,7 +3054,7 @@ mod tests {
     #[test]
     fn test_build_release_body_empty_changelog() {
         let body = build_release_body("", Some("HEADER"), Some("FOOTER"));
-        assert_eq!(body, "HEADER\nFOOTER\n");
+        assert_eq!(body, "HEADER\n\nFOOTER\n");
     }
 
     #[test]
@@ -3493,7 +3552,7 @@ mod tests {
         let create_calls = mock.create_release_calls();
         assert_eq!(create_calls[0].owner, "testowner");
         assert_eq!(create_calls[0].tag_name, "v1.0.0");
-        assert_eq!(create_calls[0].body, "# v1.0.0\n- initial release\n");
+        assert_eq!(create_calls[0].body, "# v1.0.0\n\n- initial release\n");
         assert!(!create_calls[0].prerelease);
 
         let upload_calls = mock.upload_asset_calls();
@@ -3518,9 +3577,10 @@ mod tests {
         assert!(body.contains("- Added feature B"));
         assert!(body.ends_with("Thank you for using our tool!\n"));
 
-        // parts separated by single newline
-        assert!(body.contains("## Release v2.0\n- Fixed bug A"));
-        assert!(body.contains("Added feature B\n---"));
+        // parts separated by a blank line so markdown renderers treat them
+        // as distinct paragraphs
+        assert!(body.contains("## Release v2.0\n\n- Fixed bug A"));
+        assert!(body.contains("Added feature B\n\n---"));
     }
 
     #[test]
