@@ -514,8 +514,14 @@ pub fn validate_defaults_axis(config: &Config) -> Result<(), String> {
 /// Validate `archives[].format_overrides[].goos` values reject unknown OSes.
 /// GoReleaser silently no-ops unknown overrides, which has burned users typing
 /// Rust triples like `apple` or `pc-windows-msvc`.
+///
+/// Walks every `archives[]` location in the config:
+/// - `crates[].archives:`
+/// - `workspaces[].crates[].archives:`
+/// - `defaults.archives:` (an unknown `os` here would otherwise pass silently
+///   and propagate to every inheriting crate at merge time).
 pub fn validate_format_overrides(config: &Config) -> Result<(), String> {
-    let check = |crate_name: &str, archives: &[ArchiveConfig]| -> Result<(), String> {
+    let check = |location: &str, archives: &[ArchiveConfig]| -> Result<(), String> {
         for (idx, archive) in archives.iter().enumerate() {
             let Some(ref overrides) = archive.format_overrides else {
                 continue;
@@ -524,9 +530,9 @@ pub fn validate_format_overrides(config: &Config) -> Result<(), String> {
                 if !KNOWN_GOOS.contains(&over.os.as_str()) {
                     let archive_id = archive.id.as_deref().unwrap_or("default");
                     return Err(format!(
-                        "crate {}: archives[{}] (id={}): format_overrides.goos=\"{}\" is not a recognised OS. \
+                        "{}: archives[{}] (id={}): format_overrides.goos=\"{}\" is not a recognised OS. \
                          Accepted values: {}.",
-                        crate_name,
+                        location,
                         idx,
                         archive_id,
                         over.os,
@@ -539,17 +545,24 @@ pub fn validate_format_overrides(config: &Config) -> Result<(), String> {
     };
     for krate in &config.crates {
         if let ArchivesConfig::Configs(ref list) = krate.archives {
-            check(&krate.name, list)?;
+            check(&format!("crate {}", krate.name), list)?;
         }
     }
     if let Some(ws_list) = config.workspaces.as_ref() {
         for ws in ws_list {
             for krate in &ws.crates {
                 if let ArchivesConfig::Configs(ref list) = krate.archives {
-                    check(&krate.name, list)?;
+                    check(&format!("crate {}", krate.name), list)?;
                 }
             }
         }
+    }
+    if let Some(ref defaults) = config.defaults
+        && let Some(ref archive) = defaults.archives
+    {
+        // defaults.archives is a single ArchiveConfig (not a list); wrap it
+        // into a one-element slice so the same checker walks it.
+        check("defaults.archives", std::slice::from_ref(archive))?;
     }
     Ok(())
 }
@@ -1071,15 +1084,21 @@ pub struct PublishDefaults {
 /// Marker block under `defaults.crates:` that signals crate-axis defaults
 /// scope. Required to drive the DEC-4 axis-mismatch validator. Currently
 /// empty; future per-crate-id overrides will live here.
+///
+/// `deny_unknown_fields` so that typing `defaults.crates: { foo: bar }`
+/// surfaces as a parse error rather than silently being accepted — without
+/// it, the empty struct is a sink that swallows arbitrary keys.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct DefaultsCrateBlock {}
 
 /// Marker block under `defaults.workspaces:` that signals workspace-axis
 /// defaults scope. Required to drive the DEC-4 axis-mismatch validator.
 /// Currently empty; future per-workspace-name overrides will live here.
+///
+/// `deny_unknown_fields` per the same rationale as `DefaultsCrateBlock`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct DefaultsWorkspaceBlock {}
 
 // ---------------------------------------------------------------------------
@@ -11450,5 +11469,101 @@ before:
         MY_VAR: value
 "#;
         assert_env_map_rejected(yaml, "StructuredHook");
+    }
+
+    // ---- defaults.archives.format_overrides validation -------------------
+
+    #[test]
+    fn test_validate_format_overrides_in_defaults_block_rejects_unknown_os() {
+        // defaults.archives.format_overrides[].os = "pc-windows-msvc" is a
+        // common Rust-triple typo for "windows" and used to slip past the
+        // validator because the defaults block was not walked.
+        let yaml = r#"
+project_name: test
+defaults:
+  archives:
+    format_overrides:
+      - os: pc-windows-msvc
+        formats: [zip]
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let err = validate_format_overrides(&config).unwrap_err();
+        assert!(
+            err.contains("defaults.archives"),
+            "error should locate the offender at defaults.archives: {err}"
+        );
+        assert!(
+            err.contains("pc-windows-msvc"),
+            "error should echo the bad os value: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_format_overrides_in_defaults_block_accepts_known_os() {
+        let yaml = r#"
+project_name: test
+defaults:
+  archives:
+    format_overrides:
+      - os: windows
+        formats: [zip]
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        validate_format_overrides(&config).expect("known os value should pass");
+    }
+
+    // ---- DefaultsCrateBlock / DefaultsWorkspaceBlock unknown-field rejection
+
+    #[test]
+    fn test_defaults_crates_block_rejects_unknown_field() {
+        let yaml = r#"
+project_name: test
+defaults:
+  crates:
+    foo: bar
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
+        let err = result.expect_err("unknown field under defaults.crates should be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unknown field"),
+            "error should mention 'unknown field': {msg}"
+        );
+    }
+
+    #[test]
+    fn test_defaults_workspaces_block_rejects_unknown_field() {
+        let yaml = r#"
+project_name: test
+defaults:
+  workspaces:
+    foo: bar
+workspaces:
+  - name: ws1
+    crates:
+      - name: a
+        path: "."
+        tag_template: "v{{ .Version }}"
+crates: []
+"#;
+        let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
+        let err = result.expect_err("unknown field under defaults.workspaces should be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unknown field"),
+            "error should mention 'unknown field': {msg}"
+        );
     }
 }

@@ -3864,12 +3864,14 @@
       }
     },
     "DefaultsCrateBlock": {
-      "description": "Marker block under `defaults.crates:` that signals crate-axis defaults scope. Required to drive the DEC-4 axis-mismatch validator. Currently empty; future per-crate-id overrides will live here.",
-      "type": "object"
+      "description": "Marker block under `defaults.crates:` that signals crate-axis defaults scope. Required to drive the DEC-4 axis-mismatch validator. Currently empty; future per-crate-id overrides will live here.\n\n`deny_unknown_fields` so that typing `defaults.crates: { foo: bar }` surfaces as a parse error rather than silently being accepted — without it, the empty struct is a sink that swallows arbitrary keys.",
+      "type": "object",
+      "additionalProperties": false
     },
     "DefaultsWorkspaceBlock": {
-      "description": "Marker block under `defaults.workspaces:` that signals workspace-axis defaults scope. Required to drive the DEC-4 axis-mismatch validator. Currently empty; future per-workspace-name overrides will live here.",
-      "type": "object"
+      "description": "Marker block under `defaults.workspaces:` that signals workspace-axis defaults scope. Required to drive the DEC-4 axis-mismatch validator. Currently empty; future per-workspace-name overrides will live here.\n\n`deny_unknown_fields` per the same rationale as `DefaultsCrateBlock`.",
+      "type": "object",
+      "additionalProperties": false
     },
     "DiscordAnnounce": {
       "type": "object",
