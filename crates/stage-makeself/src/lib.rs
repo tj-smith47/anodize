@@ -177,10 +177,10 @@ impl Stage for MakeselfStage {
             // Check disable
             if let Some(ref d) = cfg.skip {
                 let off = d
-                    .try_is_disabled(|tmpl| ctx.render_template(tmpl))
-                    .with_context(|| "makeself: render disable template")?;
+                    .try_evaluates_to_skip(|tmpl| ctx.render_template(tmpl))
+                    .with_context(|| "makeself: render skip template")?;
                 if off {
-                    log.verbose("skipping disabled makeself config");
+                    log.verbose("makeself config skipped");
                     continue;
                 }
             }

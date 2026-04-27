@@ -471,22 +471,15 @@ pub(crate) fn process_sign_configs(
                 label,
             )?;
 
-            let mut rendered_env: Vec<(String, String)> = match sign_cfg.env.as_ref() {
-                Some(env_list) => {
-                    let parsed = anodizer_core::config::parse_env_entries(env_list)
-                        .with_context(|| format!("sign[{label}]: parse env entries"))?;
-                    parsed
-                        .into_iter()
-                        .map(|(k, v)| -> Result<(String, String)> {
-                            let rendered_val = ctx.render_template(&v).with_context(|| {
-                                format!("sign[{label}]: render env value for '{k}'")
-                            })?;
-                            Ok((k, rendered_val))
-                        })
-                        .collect::<Result<Vec<_>>>()?
-                }
-                None => Vec::new(),
-            };
+            let mut rendered_env: Vec<(String, String)> = sign_cfg
+                .env
+                .as_deref()
+                .map(|env_list| {
+                    anodizer_core::config::render_env_entries(env_list, |v| ctx.render_template(v))
+                        .with_context(|| format!("sign[{label}]: render env entries"))
+                })
+                .transpose()?
+                .unwrap_or_default();
 
             for (k, v) in shell_vars.iter() {
                 if v.is_empty() {

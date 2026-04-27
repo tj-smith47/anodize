@@ -139,15 +139,12 @@ impl Stage for PkgStage {
                 // Skip disabled configs (supports bool or template string)
                 if let Some(ref d) = pkg_cfg.skip {
                     let off = d
-                        .try_is_disabled(|s| ctx.render_template(s))
+                        .try_evaluates_to_skip(|s| ctx.render_template(s))
                         .with_context(|| {
-                            format!("pkg: render disable template for crate {}", krate.name)
+                            format!("pkg: render skip template for crate {}", krate.name)
                         })?;
                     if off {
-                        log.status(&format!(
-                            "skipping disabled pkg config for crate {}",
-                            krate.name
-                        ));
+                        log.status(&format!("pkg config skipped for crate {}", krate.name));
                         continue;
                     }
                 }

@@ -18,18 +18,18 @@ pub fn publish_to_upload(ctx: &Context, log: &StageLogger) -> Result<()> {
     };
 
     for entry in entries {
-        // Check disable flag
+        // Check skip flag
         if let Some(ref d) = entry.skip {
             let off = d
-                .try_is_disabled(|tmpl| ctx.render_template(tmpl))
+                .try_evaluates_to_skip(|tmpl| ctx.render_template(tmpl))
                 .with_context(|| {
                     format!(
-                        "upload: render disable template for entry '{}'",
+                        "upload: render skip template for entry '{}'",
                         entry.name.as_deref().unwrap_or("<unnamed>")
                     )
                 })?;
             if off {
-                log.status("upload: entry skipped (disabled)");
+                log.status("upload: entry skipped");
                 continue;
             }
         }

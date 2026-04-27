@@ -253,8 +253,8 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
     // surrounding repository/short_description boilerplate.
     if let Some(d) = krew_cfg.skip.as_ref() {
         let off = d
-            .try_is_disabled(|tmpl| ctx.render_template(tmpl))
-            .with_context(|| format!("krew: render disable template for '{}'", crate_name))?;
+            .try_evaluates_to_skip(|tmpl| ctx.render_template(tmpl))
+            .with_context(|| format!("krew: render skip template for '{}'", crate_name))?;
         if off {
             log.status(&format!(
                 "krew: skipping disabled config for '{}' (disable=true)",

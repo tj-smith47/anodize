@@ -71,13 +71,13 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
         .context("dockerhub: failed to build shared HTTP client")?;
 
     for entry in entries {
-        // Check disable flag.
+        // Check skip flag.
         if let Some(ref d) = entry.skip {
             let off = d
-                .try_is_disabled(|tmpl| ctx.render_template(tmpl))
-                .with_context(|| "dockerhub: render disable template")?;
+                .try_evaluates_to_skip(|tmpl| ctx.render_template(tmpl))
+                .with_context(|| "dockerhub: render skip template")?;
             if off {
-                log.status("dockerhub: entry disabled, skipping");
+                log.status("dockerhub: entry skipped");
                 continue;
             }
         }

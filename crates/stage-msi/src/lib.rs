@@ -313,15 +313,12 @@ impl Stage for MsiStage {
                 // Skip disabled configs (supports bool or template string)
                 if let Some(ref d) = msi_cfg.skip {
                     let off = d
-                        .try_is_disabled(|s| ctx.render_template(s))
+                        .try_evaluates_to_skip(|s| ctx.render_template(s))
                         .with_context(|| {
-                            format!("msi: render disable template for crate {}", krate.name)
+                            format!("msi: render skip template for crate {}", krate.name)
                         })?;
                     if off {
-                        log.status(&format!(
-                            "skipping disabled MSI config for crate {}",
-                            krate.name
-                        ));
+                        log.status(&format!("MSI config skipped for crate {}", krate.name));
                         continue;
                     }
                 }

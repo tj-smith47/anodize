@@ -255,7 +255,7 @@ pub fn publish_to_aur_source(ctx: &mut Context, crate_name: &str, log: &StageLog
         .clone();
 
     let label = format!("aur_source: crate '{crate_name}'");
-    if crate::util::is_publisher_disabled(
+    if crate::util::should_skip_publisher(
         ctx,
         publish_cfg.skip.as_ref(),
         publish_cfg.skip_upload.as_ref(),
@@ -287,7 +287,7 @@ pub fn publish_top_level_aur_sources(ctx: &mut Context, log: &StageLogger) -> Re
 
     for (i, cfg) in entries.iter().enumerate() {
         let label = format!("aur_sources[{}]", i);
-        if crate::util::is_publisher_disabled(
+        if crate::util::should_skip_publisher(
             ctx,
             cfg.skip.as_ref(),
             cfg.skip_upload.as_ref(),

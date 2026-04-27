@@ -31,10 +31,10 @@ impl Stage for SrpmStage {
         // Check disable
         if let Some(ref d) = srpm_cfg.skip {
             let off = d
-                .try_is_disabled(|tmpl| ctx.render_template(tmpl))
-                .with_context(|| "srpm: render disable template")?;
+                .try_evaluates_to_skip(|tmpl| ctx.render_template(tmpl))
+                .with_context(|| "srpm: render skip template")?;
             if off {
-                log.verbose("skipping disabled SRPM config");
+                log.verbose("SRPM config skipped");
                 return Ok(());
             }
         }

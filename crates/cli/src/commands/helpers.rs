@@ -499,8 +499,8 @@ pub fn setup_env(
             .and_then(|c| c.release.as_ref()?.skip.as_ref())
         {
             Some(d) => d
-                .try_is_disabled(|t| ctx.render_template(t))
-                .with_context(|| "release: render disable template")?,
+                .try_evaluates_to_skip(|t| ctx.render_template(t))
+                .with_context(|| "release: render skip template")?,
             None => false,
         };
         let needs_token = config.crates.iter().any(|c| c.release.is_some())

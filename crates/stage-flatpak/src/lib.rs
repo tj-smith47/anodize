@@ -135,12 +135,11 @@ impl Stage for FlatpakStage {
             };
             for cfg in cfgs {
                 let off = match cfg.skip.as_ref() {
-                    Some(d) => {
-                        d.try_is_disabled(|s| ctx.render_template(s))
-                            .with_context(|| {
-                                format!("flatpak: render disable template for crate {}", c.name)
-                            })?
-                    }
+                    Some(d) => d
+                        .try_evaluates_to_skip(|s| ctx.render_template(s))
+                        .with_context(|| {
+                            format!("flatpak: render skip template for crate {}", c.name)
+                        })?,
                     None => false,
                 };
                 if !off {
@@ -209,15 +208,12 @@ impl Stage for FlatpakStage {
                 // Skip disabled configs (supports bool or template string)
                 if let Some(ref d) = flatpak_cfg.skip {
                     let off = d
-                        .try_is_disabled(|s| ctx.render_template(s))
+                        .try_evaluates_to_skip(|s| ctx.render_template(s))
                         .with_context(|| {
-                            format!("flatpak: render disable template for crate {}", krate.name)
+                            format!("flatpak: render skip template for crate {}", krate.name)
                         })?;
                     if off {
-                        log.status(&format!(
-                            "skipping disabled flatpak config for crate {}",
-                            krate.name
-                        ));
+                        log.status(&format!("flatpak config skipped for crate {}", krate.name));
                         continue;
                     }
                 }

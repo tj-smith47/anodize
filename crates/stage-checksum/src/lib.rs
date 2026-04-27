@@ -217,8 +217,8 @@ impl Stage for ChecksumStage {
             .as_ref()
             .and_then(|d| d.checksum.as_ref());
 
-        let global_disable = global_cksum.and_then(|c| c.skip.clone());
-        if ctx.is_disabled_with_log(&global_disable, &log, "checksum globally")? {
+        let global_skip = global_cksum.and_then(|c| c.skip.clone());
+        if ctx.skip_with_log(&global_skip, &log, "checksum globally")? {
             return Ok(());
         }
 
@@ -267,10 +267,10 @@ impl Stage for ChecksumStage {
         for crate_cfg in &crates {
             let crate_name = &crate_cfg.name;
 
-            // Skip crates that have checksum explicitly disabled
-            let crate_disable = crate_cfg.checksum.as_ref().and_then(|c| c.skip.clone());
-            if ctx.is_disabled_with_log(
-                &crate_disable,
+            // Skip crates that have checksum explicitly set to skip
+            let crate_skip = crate_cfg.checksum.as_ref().and_then(|c| c.skip.clone());
+            if ctx.skip_with_log(
+                &crate_skip,
                 &log,
                 &format!("checksum for crate {crate_name}"),
             )? {

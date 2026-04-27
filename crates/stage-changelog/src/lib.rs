@@ -910,13 +910,13 @@ impl Stage for ChangelogStage {
             return Ok(());
         }
 
-        // If disabled, skip the stage entirely (supports template-conditional disable).
+        // If skipped, skip the stage entirely (supports template-conditional skip).
         if let Some(d) = changelog_cfg.as_ref().and_then(|c| c.skip.as_ref()) {
             let off = d
-                .try_is_disabled(|s| ctx.render_template(s))
-                .with_context(|| "changelog: render disable template")?;
+                .try_evaluates_to_skip(|s| ctx.render_template(s))
+                .with_context(|| "changelog: render skip template")?;
             if off {
-                log.status("disabled, skipping");
+                log.status("changelog skipped");
                 return Ok(());
             }
         }

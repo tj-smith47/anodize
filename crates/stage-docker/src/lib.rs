@@ -605,7 +605,7 @@ pub fn is_docker_v2_disabled(skip: &Option<StringOrBool>, ctx: &Context) -> Resu
     match skip {
         None => Ok(false),
         Some(d) => d
-            .try_is_disabled(|s| ctx.render_template(s))
+            .try_evaluates_to_skip(|s| ctx.render_template(s))
             .with_context(|| "docker_v2: render skip template"),
     }
 }
@@ -624,7 +624,7 @@ fn resolve_digest_config(
     let disabled = match &dc.skip {
         None => false,
         Some(d) => d
-            .try_is_disabled(|s| ctx.render_template(s))
+            .try_evaluates_to_skip(|s| ctx.render_template(s))
             .with_context(|| "docker: render digest disable template")?,
     };
     let name_template = match dc.name_template.as_ref() {

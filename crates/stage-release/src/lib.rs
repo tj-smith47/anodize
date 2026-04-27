@@ -728,10 +728,10 @@ impl Stage for ReleaseStage {
             // Skip crates where release is explicitly disabled (supports template strings).
             if let Some(ref d) = release_cfg.skip {
                 let off = d
-                    .try_is_disabled(|s| ctx.render_template(s))
+                    .try_evaluates_to_skip(|s| ctx.render_template(s))
                     .with_context(|| {
                         format!(
-                            "release: render disable template for crate '{}'",
+                            "release: render skip template for crate '{}'",
                             crate_cfg.name
                         )
                     })?;

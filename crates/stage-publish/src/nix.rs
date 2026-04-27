@@ -700,13 +700,10 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     // Honor `disable` first (template-aware), then `skip_upload`.
     if let Some(d) = nix_cfg.skip.as_ref() {
         let off = d
-            .try_is_disabled(|tmpl| ctx.render_template(tmpl))
-            .with_context(|| format!("nix: render disable template for '{}'", crate_name))?;
+            .try_evaluates_to_skip(|tmpl| ctx.render_template(tmpl))
+            .with_context(|| format!("nix: render skip template for '{}'", crate_name))?;
         if off {
-            log.status(&format!(
-                "nix: skipping disabled config for '{}' (disable=true)",
-                crate_name
-            ));
+            log.status(&format!("nix: config skipped for '{}'", crate_name));
             return Ok(());
         }
     }

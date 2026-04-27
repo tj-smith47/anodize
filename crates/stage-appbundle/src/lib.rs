@@ -280,16 +280,13 @@ impl Stage for AppBundleStage {
                 // Skip disabled configs (supports bool or template string)
                 if let Some(ref d) = bundle_cfg.skip {
                     let off = d
-                        .try_is_disabled(|s| ctx.render_template(s))
+                        .try_evaluates_to_skip(|s| ctx.render_template(s))
                         .with_context(|| {
-                            format!(
-                                "appbundle: render disable template for crate {}",
-                                krate.name
-                            )
+                            format!("appbundle: render skip template for crate {}", krate.name)
                         })?;
                     if off {
                         log.status(&format!(
-                            "skipping disabled appbundle config for crate {}",
+                            "appbundle config skipped for crate {}",
                             krate.name
                         ));
                         continue;

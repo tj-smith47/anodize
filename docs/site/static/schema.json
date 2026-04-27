@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "Config",
-  "description": "GoReleaser parity: `deny_unknown_fields` rejects typos and unknown config fields at parse time, matching GoReleaser's `yaml.UnmarshalStrict`.",
+  "description": "`deny_unknown_fields` rejects typos and unknown config fields at parse time, matching GoReleaser's `yaml.UnmarshalStrict`.",
   "type": "object",
   "properties": {
     "after": {
@@ -141,13 +141,13 @@
       }
     },
     "env": {
-      "description": "Environment variables available to all template expressions.\n\nAccepts two YAML forms: - **Map form**: `env: { MY_VAR: hello, DEPLOY_ENV: staging }` - **List form** (GoReleaser parity): `env: [\"MY_VAR=hello\", \"DEPLOY_ENV=staging\"]`\n\nValues are rendered through the template engine before being set, so expressions like `{{ .Tag }}` or `{{ .Date }}` are expanded.",
+      "description": "Environment variables available to all template expressions.\n\nList of `KEY=VALUE` strings (matches GoReleaser): `env: [\"MY_VAR=hello\", \"DEPLOY_ENV=staging\"]`. Order is preserved so chained env applications (sign + sbom + notarize) see entries in declared order. Values are rendered through the template engine before being set, so expressions like `{{ .Tag }}` or `{{ .Date }}` are expanded.",
       "default": null,
       "type": [
-        "object",
+        "array",
         "null"
       ],
-      "additionalProperties": {
+      "items": {
         "type": "string"
       }
     },
@@ -224,7 +224,7 @@
       ]
     },
     "homebrew_casks": {
-      "description": "Top-level Homebrew Cask configurations. GoReleaser parity: `homebrew_casks` is a top-level array with its own repository, commit_author, directory, skip_upload, hooks, dependencies, conflicts, completions, manpages, structured uninstall/zap, etc.",
+      "description": "Top-level Homebrew Cask configurations. `homebrew_casks` is a top-level array with its own repository, commit_author, directory, skip_upload, hooks, dependencies, conflicts, completions, manpages, structured uninstall/zap, etc.",
       "default": null,
       "type": [
         "array",
@@ -685,18 +685,6 @@
             "null"
           ]
         },
-        "disable": {
-          "description": "Disable this app bundle config. Accepts bool or template string.",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/StringOrBool"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "extra_files": {
           "description": "Additional files to include in the bundle (src/dst/info objects or glob strings).",
           "default": null,
@@ -765,6 +753,18 @@
           "type": [
             "boolean",
             "null"
+          ]
+        },
+        "skip": {
+          "description": "Skip this app bundle config. Accepts bool or template string.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "templated_extra_files": {
@@ -856,11 +856,11 @@
           }
         },
         "hooks": {
-          "description": "Pre/post archive hooks.",
+          "description": "Pre/post archive hooks (`before`/`after`; `pre`/`post` accepted as aliases).",
           "default": null,
           "anyOf": [
             {
-              "$ref": "#/definitions/BuildHooksConfig"
+              "$ref": "#/definitions/ArchiveHooksConfig"
             },
             {
               "type": "null"
@@ -868,8 +868,8 @@
           ]
         },
         "id": {
-          "description": "Unique identifier for cross-referencing this archive from other configs.",
-          "default": null,
+          "description": "Unique identifier for cross-referencing this archive from other configs. Defaults to `\"default\"` so a parse->serialise->reparse round-trip is stable (GoReleaser stores this verbatim, not as an Option).",
+          "default": "default",
           "type": [
             "string",
             "null"
@@ -965,6 +965,34 @@
           }
         }
       ]
+    },
+    "ArchiveHooksConfig": {
+      "description": "Pre/post archive hook configuration.\n\nArchive hooks in GoReleaser's YAML use `before`/`after` (not the build-stage's `pre`/`post`). `ArchiveHooksConfig` serializes with those field names so `dist/config.yaml` round-trips user-supplied spelling; `pre`/`post` are accepted as aliases so migrated configs still parse.",
+      "type": "object",
+      "properties": {
+        "after": {
+          "description": "Commands to run after the archive step.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/HookEntry"
+          }
+        },
+        "before": {
+          "description": "Commands to run before the archive step.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/HookEntry"
+          }
+        }
+      }
     },
     "ArtifactoryConfig": {
       "description": "Artifactory upload configuration. Uploads artifacts to JFrog Artifactory repositories.",
@@ -1239,18 +1267,6 @@
             "null"
           ]
         },
-        "disable": {
-          "description": "Disable this AUR config. Accepts bool or template string (e.g. `\"{{ if .IsSnapshot }}true{{ endif }}\"` for conditional disable).",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/StringOrBool"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "git_ssh_command": {
           "description": "Custom SSH command for git operations.",
           "default": null,
@@ -1378,6 +1394,18 @@
             "type": "string"
           }
         },
+        "skip": {
+          "description": "Skip this AUR config. Accepts bool or template string (e.g. `\"{{ if .IsSnapshot }}true{{ endif }}\"` for conditional skip).",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "skip_upload": {
           "description": "Skip publishing. `\"true\"` always skips; `\"auto\"` skips for prereleases. Accepts bool or template string.",
           "default": null,
@@ -1406,7 +1434,8 @@
             "null"
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "AurSourceConfig": {
       "type": "object",
@@ -1508,18 +1537,6 @@
           "type": [
             "string",
             "null"
-          ]
-        },
-        "disable": {
-          "description": "Disable this config.",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/StringOrBool"
-            },
-            {
-              "type": "null"
-            }
           ]
         },
         "git_ssh_command": {
@@ -1649,6 +1666,18 @@
             "null"
           ]
         },
+        "skip": {
+          "description": "Skip this config.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "skip_upload": {
           "description": "Skip publishing. `\"true\"` always skips; `\"auto\"` skips for prereleases.",
           "default": null,
@@ -1669,7 +1698,8 @@
             "null"
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "BinstallConfig": {
       "type": "object",
@@ -1712,7 +1742,7 @@
       "type": "object",
       "properties": {
         "acl": {
-          "description": "ACL for uploaded objects (S3, e.g. \"public-read\", \"private\").",
+          "description": "Canned ACL for uploaded objects. **S3**: one of `private` (default), `public-read`, `public-read-write`, `authenticated-read`, `aws-exec-read`, `bucket-owner-read`, `bucket-owner-full-control`. Matches GoReleaser's accepted set; AWS's `log-delivery-write` is intentionally omitted because it is only valid on `S3LogBucket` targets and would silently fail on a normal bucket. **GCS**: pass the camelCase predefined-ACL name (e.g. `publicRead`, `bucketOwnerFullControl`); not validated up-front, so a typo surfaces as a 400 from the GCS API at upload time.",
           "default": null,
           "type": [
             "string",
@@ -1751,18 +1781,6 @@
             "null"
           ]
         },
-        "disable": {
-          "description": "Disable this blob config. Accepts bool or template string (e.g. `\"{{ if IsSnapshot }}true{{ endif }}\"` for conditional disable).",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/StringOrBool"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "disable_ssl": {
           "description": "Disable SSL for the connection (S3 only, default: false).",
           "default": null,
@@ -1787,7 +1805,7 @@
             "null"
           ],
           "items": {
-            "$ref": "#/definitions/ExtraFile"
+            "$ref": "#/definitions/ExtraFileSpec"
           }
         },
         "extra_files_only": {
@@ -1862,6 +1880,18 @@
           "type": [
             "boolean",
             "null"
+          ]
+        },
+        "skip": {
+          "description": "Skip this blob config. Accepts bool or template string (e.g. `\"{{ if IsSnapshot }}true{{ endif }}\"` for conditional skip).",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "templated_extra_files": {
@@ -2104,7 +2134,7 @@
       }
     },
     "BuildHooksConfig": {
-      "description": "Pre/post hook configuration shared across multiple stages. Despite the `Build` prefix in the name, this type is used by both the **build** stage (pre/post compilation hooks) and the **archive** stage (pre/post archiving hooks). The name is kept for backward compatibility with existing configs. **Not** to be confused with the top-level `HooksConfig` (which carries a flat `hooks: Vec<String>` list for `before`/`after` lifecycle hooks).\n\nGoReleaser parity: archive hooks in GoReleaser use `before`/`after` (not `pre`/`post`). Anodizer accepts both spellings via serde aliases so configs copied from GoReleaser docs don't silently drop their hooks.",
+      "description": "Pre/post hook configuration shared across multiple stages. Despite the `Build` prefix in the name, this type is used by both the **build** stage (pre/post compilation hooks) and the **archive** stage (pre/post archiving hooks). The name is kept for backward compatibility with existing configs. **Not** to be confused with the top-level `HooksConfig` (which carries a flat `hooks: Vec<String>` list for `before`/`after` lifecycle hooks).\n\narchive hooks in GoReleaser use `before`/`after` (not `pre`/`post`). Anodizer accepts both spellings via serde aliases so configs copied from GoReleaser docs don't silently drop their hooks.",
       "type": "object",
       "properties": {
         "post": {
@@ -2157,10 +2187,10 @@
           "description": "Extra environment variables to set for matching targets.",
           "default": null,
           "type": [
-            "object",
+            "array",
             "null"
           ],
-          "additionalProperties": {
+          "items": {
             "type": "string"
           }
         },
@@ -2298,18 +2328,6 @@
             }
           ]
         },
-        "disable": {
-          "description": "Disable changelog generation. Accepts bool or template string (e.g. `\"{{ if IsSnapshot }}true{{ endif }}\"` for conditional disable).",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/StringOrBool"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "divider": {
           "description": "Divider string inserted between changelog groups (e.g. `\"---\"`). Supports templates.",
           "default": null,
@@ -2375,6 +2393,18 @@
           "items": {
             "type": "string"
           }
+        },
+        "skip": {
+          "description": "Skip changelog generation. Accepts bool or template string (e.g. `\"{{ if IsSnapshot }}true{{ endif }}\"` for conditional skip).",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "sort": {
           "description": "Sort order for changelog entries: \"asc\" or \"desc\" (default: \"asc\").",
@@ -2478,18 +2508,6 @@
             "null"
           ]
         },
-        "disable": {
-          "description": "Disable checksums. Accepts bool or template string.",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/StringOrBool"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "extra_files": {
           "description": "Extra files to include in the checksum file (beyond build artifacts).",
           "default": null,
@@ -2518,6 +2536,18 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "skip": {
+          "description": "Disable checksums. Accepts bool or template string.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "split": {
@@ -2601,18 +2631,6 @@
           "type": [
             "string",
             "null"
-          ]
-        },
-        "disable": {
-          "description": "Disable this chocolatey config. Accepts bool or template string.",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/StringOrBool"
-            },
-            {
-              "type": "null"
-            }
           ]
         },
         "docs_url": {
@@ -2785,7 +2803,8 @@
             "null"
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "ChocolateyDependency": {
       "description": "Chocolatey package dependency with optional version constraint.",
@@ -3345,6 +3364,14 @@
             "$ref": "#/definitions/UniversalBinaryConfig"
           }
         },
+        "version": {
+          "description": "Pinned semver version. When set, `anodizer bump --strict` refuses to edit this crate's `Cargo.toml` to anything other than this value; without `--strict`, the bump proceeds with a warning. Lets a release captain freeze a crate's version while still running broad `--workspace` bumps.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "version_sync": {
           "description": "Automatic version number synchronization configuration for this crate.",
           "default": null,
@@ -3593,18 +3620,6 @@
     "DmgConfig": {
       "type": "object",
       "properties": {
-        "disable": {
-          "description": "Disable this DMG config. Accepts bool or template string.",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/StringOrBool"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "extra_files": {
           "description": "Additional files to include in the DMG (glob or {glob, name_template}).",
           "default": null,
@@ -3667,6 +3682,18 @@
             "null"
           ]
         },
+        "skip": {
+          "description": "Skip this DMG config. Accepts bool or template string.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "templated_extra_files": {
           "description": "Extra files whose contents are rendered through the template engine before inclusion. Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded. GoReleaser Pro feature.",
           "default": null,
@@ -3712,18 +3739,6 @@
           "items": {
             "type": "string"
           }
-        },
-        "disable": {
-          "description": "When truthy, skip this docker build entirely. Supports templates.",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/StringOrBool"
-            },
-            {
-              "type": "null"
-            }
-          ]
         },
         "dockerfile": {
           "description": "Path to the Dockerfile relative to the project root.",
@@ -3853,7 +3868,15 @@
       "description": "Controls docker image digest file creation.\n\nAfter each docker image push, a digest file (containing the sha256 digest) is written to the dist directory. This config controls whether that happens and how the files are named.",
       "type": "object",
       "properties": {
-        "disable": {
+        "name_template": {
+          "description": "Template for the digest artifact filename. Default: tag-based naming (e.g., \"ghcr.io_owner_app_v1.0.0.digest\").",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "skip": {
           "description": "When truthy, disable docker digest artifact creation.",
           "default": null,
           "anyOf": [
@@ -3863,14 +3886,6 @@
             {
               "type": "null"
             }
-          ]
-        },
-        "name_template": {
-          "description": "Template for the digest artifact filename. Default: tag-based naming (e.g., \"ghcr.io_owner_app_v1.0.0.digest\").",
-          "default": null,
-          "type": [
-            "string",
-            "null"
           ]
         }
       }
@@ -3885,18 +3900,6 @@
           "type": [
             "string",
             "null"
-          ]
-        },
-        "disable": {
-          "description": "Disable this publisher. Accepts bool or template string.",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/StringOrBool"
-            },
-            {
-              "type": "null"
-            }
           ]
         },
         "full_description": {
@@ -3928,6 +3931,18 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "skip": {
+          "description": "Skip this publisher. Accepts bool or template string.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "username": {
@@ -4017,18 +4032,6 @@
             "type": "string"
           }
         },
-        "disable": {
-          "description": "When truthy, skip this docker manifest entirely. Supports templates.",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/StringOrBool"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "id": {
           "description": "Unique identifier for this manifest config.",
           "default": null,
@@ -4102,7 +4105,7 @@
       "type": "object",
       "properties": {
         "attempts": {
-          "description": "Number of retry attempts for failed docker push operations (default: 3).",
+          "description": "Number of retry attempts for failed docker push operations (default: 10, set in `crates/stage-docker/src/lib.rs::resolve_retry_settings`).",
           "default": null,
           "type": [
             "integer",
@@ -4112,7 +4115,7 @@
           "minimum": 0.0
         },
         "delay": {
-          "description": "Duration string, e.g. \"1s\", \"500ms\".",
+          "description": "Duration string for the initial retry delay (default: `\"10s\"`). Examples: `\"1s\"`, `\"500ms\"`.",
           "default": null,
           "type": [
             "string",
@@ -4120,7 +4123,7 @@
           ]
         },
         "max_delay": {
-          "description": "Maximum delay between retries, e.g. \"30s\".",
+          "description": "Maximum delay between retries (default: `\"5m\"`). Caps the exponential backoff so attempt-9 with a 10s base does not stretch to ~42 min. Example: `\"30s\"`.",
           "default": null,
           "type": [
             "string",
@@ -4171,10 +4174,10 @@
           "description": "Environment variables passed to the signing command.",
           "default": null,
           "type": [
-            "object",
+            "array",
             "null"
           ],
-          "additionalProperties": {
+          "items": {
             "type": "string"
           }
         },
@@ -4268,18 +4271,6 @@
           "additionalProperties": {
             "type": "string"
           }
-        },
-        "disable": {
-          "description": "When truthy, skip this docker build entirely. Supports templates.",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/StringOrBool"
-            },
-            {
-              "type": "null"
-            }
-          ]
         },
         "dockerfile": {
           "description": "Path to the Dockerfile relative to the project root.",
@@ -4381,6 +4372,18 @@
             }
           ]
         },
+        "skip": {
+          "description": "When truthy, skip this docker build entirely. Supports templates.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "skip_push": {
           "description": "When truthy, skip pushing images after build. Supports templates.",
           "default": null,
@@ -4412,6 +4415,18 @@
           "anyOf": [
             {
               "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "encryption": {
+          "description": "Transport encryption mode. `auto` (the default) picks SMTPS for port 465, plain SMTP for port 25, and STARTTLS for everything else; `tls` forces SMTPS, `starttls` forces STARTTLS, `none` forces plain SMTP.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/EmailEncryption"
             },
             {
               "type": "null"
@@ -4486,6 +4501,39 @@
         }
       }
     },
+    "EmailEncryption": {
+      "description": "Email transport encryption mode.",
+      "oneOf": [
+        {
+          "description": "Pick based on port: 465 → SMTPS, 25 → none, otherwise STARTTLS.",
+          "type": "string",
+          "enum": [
+            "auto"
+          ]
+        },
+        {
+          "description": "Implicit TLS on connect (typically port 465).",
+          "type": "string",
+          "enum": [
+            "tls"
+          ]
+        },
+        {
+          "description": "Plain SMTP that upgrades to TLS via STARTTLS (typically port 587).",
+          "type": "string",
+          "enum": [
+            "starttls"
+          ]
+        },
+        {
+          "description": "Plain SMTP, no TLS. Only safe on trusted local relays (port 25).",
+          "type": "string",
+          "enum": [
+            "none"
+          ]
+        }
+      ]
+    },
     "EnvFilesConfig": {
       "description": "Environment file configuration.\n\nAccepts two forms: - **List form** (anodizer extension): array of `.env` file paths loaded as KEY=VALUE. ```yaml env_files: - .env - .release.env ``` - **Struct form** (GoReleaser parity): paths to files containing provider tokens. ```yaml env_files: github_token: ~/.config/goreleaser/github_token gitlab_token: ~/.config/goreleaser/gitlab_token gitea_token: ~/.config/goreleaser/gitea_token ```",
       "anyOf": [
@@ -4537,25 +4585,6 @@
       },
       "additionalProperties": false
     },
-    "ExtraFile": {
-      "description": "An extra file to upload, with optional name override.",
-      "type": "object",
-      "properties": {
-        "glob": {
-          "description": "Glob pattern for the file(s) to upload.",
-          "default": "",
-          "type": "string"
-        },
-        "name": {
-          "description": "Optional override for the upload filename.",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      }
-    },
     "ExtraFileSpec": {
       "description": "Specifies an extra file to include in checksums or release uploads. Can be a simple glob string or a detailed object with glob and name_template fields.\n\nSee [`ArchiveFileSpec`] doc comment for why this is a separate type.",
       "anyOf": [
@@ -4572,6 +4601,8 @@
               "type": "string"
             },
             "name_template": {
+              "description": "Optional override for the upload filename. Accepts `name_template` or `name` in YAML (aliased for ergonomics with older configs).",
+              "default": null,
               "type": [
                 "string",
                 "null"
@@ -4636,18 +4667,6 @@
           "type": [
             "string",
             "null"
-          ]
-        },
-        "disable": {
-          "description": "Disable this Flatpak config. Accepts bool or template string.",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/StringOrBool"
-            },
-            {
-              "type": "null"
-            }
           ]
         },
         "extra_files": {
@@ -4737,6 +4756,18 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "skip": {
+          "description": "Skip this Flatpak config. Accepts bool or template string.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
           ]
         }
       }
@@ -5147,6 +5178,18 @@
             "null"
           ]
         },
+        "skip_upload": {
+          "description": "Skip publishing the cask. `\"true\"` always skips; `\"auto\"` skips for prerelease versions. Accepts bool or template string.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "uninstall": {
           "description": "Uninstall stanza directives.",
           "default": null,
@@ -5177,7 +5220,8 @@
             "type": "string"
           }
         }
-      }
+      },
+      "additionalProperties": false
     },
     "HomebrewCaskConflictEntry": {
       "description": "Cask conflict (with another cask or formula).",
@@ -5535,7 +5579,7 @@
           ]
         },
         "commit_msg_template": {
-          "description": "Custom commit message template.  Rendered via Tera with `name` and `version` variables.  Defaults to `\"chore: update {{ name }} formula to {{ version }}\"`.",
+          "description": "Custom commit message template. Rendered via Tera with the standard release template variables (`ProjectName`, `Tag`, `Version`, etc.). Default: `\"Brew formula update for {{ ProjectName }} version {{ Tag }}\"` (set in `crates/stage-publish/src/homebrew.rs::default_commit_msg_template`).",
           "default": null,
           "type": [
             "string",
@@ -5742,7 +5786,8 @@
             "null"
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "HomebrewConflict": {
       "description": "A Homebrew conflict entry, supporting both a bare name string and a structured object with an optional `because` reason.",
@@ -6023,6 +6068,18 @@
             "null"
           ]
         },
+        "skip": {
+          "description": "Skip this Krew config. Accepts bool or template string (e.g. `\"{{ if .IsSnapshot }}true{{ endif }}\"` for conditional skip). Distinct from `skip_upload` so users can opt out of generating the manifest entirely (common when a project is not a kubectl plugin and has no krew channel).",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "skip_upload": {
           "description": "Skip publishing. `\"true\"` always skips; `\"auto\"` skips for prereleases. Accepts bool or template string.",
           "default": null,
@@ -6055,7 +6112,8 @@
             "null"
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "KrewManifestsRepoConfig": {
       "type": "object",
@@ -6304,6 +6362,14 @@
             "string",
             "null"
           ]
+        },
+        "timestamp_url": {
+          "description": "RFC-3161 timestamp service URL passed to `rcodesign sign --timestamp-url`. Defaults to Apple's public timestamp service. Override when running behind a corporate proxy or when Apple's service is unreachable.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
         }
       }
     },
@@ -6377,18 +6443,6 @@
           "type": [
             "string",
             "null"
-          ]
-        },
-        "disable": {
-          "description": "Disable this config. Accepts bool or template string.",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/StringOrBool"
-            },
-            {
-              "type": "null"
-            }
           ]
         },
         "extra_args": {
@@ -6511,6 +6565,18 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "skip": {
+          "description": "Skip this config. Accepts bool or template string.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
           ]
         }
       }
@@ -6794,18 +6860,6 @@
     "MsiConfig": {
       "type": "object",
       "properties": {
-        "disable": {
-          "description": "Disable this MSI config. Accepts bool or template string.",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/StringOrBool"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "extensions": {
           "description": "WiX extensions to enable (e.g., \"WixUIExtension\"). Templates allowed.",
           "default": null,
@@ -6889,6 +6943,18 @@
           "type": [
             "boolean",
             "null"
+          ]
+        },
+        "skip": {
+          "description": "Skip this MSI config. Accepts bool or template string.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "version": {
@@ -8158,6 +8224,18 @@
             }
           ]
         },
+        "skip": {
+          "description": "Skip this Nix config. Accepts bool or template string (e.g. `\"{{ if .IsSnapshot }}true{{ endif }}\"` for conditional skip). Distinct from `skip_upload` so users can model both intents — disable means \"don't generate at all\", skip_upload means \"generate but don't push\". Without this field, `nix: { skip: true }` was silently dropped by the serde unknown-field default.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "skip_upload": {
           "description": "Skip publishing. `\"true\"` always skips; `\"auto\"` skips for prereleases. Accepts bool or template string.",
           "default": null,
@@ -8178,7 +8256,8 @@
             "null"
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "NixDependency": {
       "description": "Nix package dependency with optional OS restriction.",
@@ -8203,18 +8282,6 @@
       "description": "Top-level notarization configuration supporting both cross-platform (`rcodesign`) and native macOS (`codesign` + `xcrun notarytool`) modes.",
       "type": "object",
       "properties": {
-        "disable": {
-          "description": "Disable all notarization. Accepts bool or template string.",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/StringOrBool"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "macos": {
           "description": "Cross-platform signing/notarization (rcodesign-based, works on any OS).",
           "default": null,
@@ -8236,14 +8303,9 @@
           "items": {
             "$ref": "#/definitions/MacOSNativeSignNotarizeConfig"
           }
-        }
-      }
-    },
-    "NsisConfig": {
-      "type": "object",
-      "properties": {
-        "disable": {
-          "description": "Disable this NSIS config. Accepts bool or template string.",
+        },
+        "skip": {
+          "description": "Skip all notarization. Accepts bool or template string.",
           "default": null,
           "anyOf": [
             {
@@ -8253,7 +8315,12 @@
               "type": "null"
             }
           ]
-        },
+        }
+      }
+    },
+    "NsisConfig": {
+      "type": "object",
+      "properties": {
         "extra_files": {
           "description": "Additional files to include alongside the installer (glob or {glob, name_template}).",
           "default": null,
@@ -8322,6 +8389,18 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "skip": {
+          "description": "Skip this NSIS config. Accepts bool or template string.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "templated_extra_files": {
@@ -8394,18 +8473,6 @@
     "PkgConfig": {
       "type": "object",
       "properties": {
-        "disable": {
-          "description": "Disable this PKG config. Accepts bool or template string.",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/StringOrBool"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "extra_files": {
           "description": "Additional files to include in the package (glob or {glob, name_template}).",
           "default": null,
@@ -8460,6 +8527,14 @@
             "null"
           ]
         },
+        "min_os_version": {
+          "description": "Minimum macOS version (e.g. \"10.13\"). Forwarded to `productbuild --min-os-version`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "mod_timestamp": {
           "description": "Output timestamp for reproducible builds.",
           "default": null,
@@ -8490,6 +8565,18 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "skip": {
+          "description": "Skip this PKG config. Accepts bool or template string.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "use": {
@@ -8605,7 +8692,8 @@
             }
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "PublisherConfig": {
       "type": "object",
@@ -8653,26 +8741,14 @@
             "null"
           ]
         },
-        "disable": {
-          "description": "Template-conditional disable: if rendered result is `\"true\"`, skip this publisher. Accepts bool or template string (e.g. `\"{{ if .IsSnapshot }}true{{ endif }}\"`).",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/StringOrBool"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "env": {
           "description": "Environment variables passed to the publish command.",
           "default": null,
           "type": [
-            "object",
+            "array",
             "null"
           ],
-          "additionalProperties": {
+          "items": {
             "type": "string"
           }
         },
@@ -8684,7 +8760,7 @@
             "null"
           ],
           "items": {
-            "$ref": "#/definitions/ExtraFile"
+            "$ref": "#/definitions/ExtraFileSpec"
           }
         },
         "ids": {
@@ -8720,6 +8796,18 @@
           "type": [
             "boolean",
             "null"
+          ]
+        },
+        "skip": {
+          "description": "Template-conditional skip: if rendered result is `\"true\"`, skip this publisher. Accepts bool or template string (e.g. `\"{{ if .IsSnapshot }}true{{ endif }}\"`).",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "templated_extra_files": {
@@ -8867,18 +8955,6 @@
     "ReleaseConfig": {
       "type": "object",
       "properties": {
-        "disable": {
-          "description": "Disable the release stage. Accepts bool or template string (e.g. `\"{{ if IsSnapshot }}true{{ endif }}\"` for conditional disable). GoReleaser supports template strings here since v1.15.0.",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/StringOrBool"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "discussion_category_name": {
           "description": "GitHub Discussion category name for the release.",
           "default": null,
@@ -9047,6 +9123,18 @@
             "null"
           ]
         },
+        "skip": {
+          "description": "Skip the release stage. Accepts bool or template string (e.g. `\"{{ if IsSnapshot }}true{{ endif }}\"` for conditional skip). GoReleaser supports template strings here since v1.15.0.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "skip_upload": {
           "description": "Skip uploading artifacts: true, false, or \"auto\" (skip for snapshots). Accepts bool or template string (GoReleaser uses string type).",
           "default": null,
@@ -9196,18 +9284,6 @@
             "null"
           ]
         },
-        "disable": {
-          "description": "Disable this SBOM config. Accepts bool or template string.",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/StringOrBool"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "documents": {
           "description": "Output document path templates (supports templates).",
           "default": null,
@@ -9220,13 +9296,13 @@
           }
         },
         "env": {
-          "description": "Environment variables to pass to the command.\n\nAccepts both map form (`KEY: value`) and GoReleaser list form (`- KEY=value`). Values are template-rendered before being set.",
+          "description": "Environment variables to pass to the command, as `KEY=VALUE` strings. Order is preserved. Values are template-rendered before being set.",
           "default": null,
           "type": [
-            "object",
+            "array",
             "null"
           ],
-          "additionalProperties": {
+          "items": {
             "type": "string"
           }
         },
@@ -9248,6 +9324,18 @@
           "items": {
             "type": "string"
           }
+        },
+        "skip": {
+          "description": "Skip this SBOM config. Accepts bool or template string.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },
@@ -9476,7 +9564,8 @@
             "null"
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "SignConfig": {
       "type": "object",
@@ -9520,10 +9609,10 @@
           "description": "Environment variables passed to the signing command.",
           "default": null,
           "type": [
-            "object",
+            "array",
             "null"
           ],
-          "additionalProperties": {
+          "items": {
             "type": "string"
           }
         },
@@ -10129,18 +10218,6 @@
             "null"
           ]
         },
-        "disable": {
-          "description": "Disable this snapcraft config. Accepts bool or template string (e.g. `\"{{ if .IsSnapshot }}true{{ endif }}\"` for conditional disable).",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/StringOrBool"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "extra_files": {
           "description": "Additional static files to bundle (string shorthand or structured form).",
           "default": null,
@@ -10262,6 +10339,18 @@
           "type": [
             "boolean",
             "null"
+          ]
+        },
+        "skip": {
+          "description": "Skip this snapcraft config. Accepts bool or template string (e.g. `\"{{ if .IsSnapshot }}true{{ endif }}\"` for conditional skip).",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "slots": {
@@ -10542,18 +10631,6 @@
             "null"
           ]
         },
-        "disable": {
-          "description": "Disable this config. Accepts bool or template string.",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/StringOrBool"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "docs": {
           "description": "Documentation files to include.",
           "default": null,
@@ -10657,6 +10734,18 @@
             }
           ]
         },
+        "skip": {
+          "description": "Skip this config. Accepts bool or template string.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "spec_file": {
           "description": "Path to the RPM spec file template.",
           "default": null,
@@ -10713,7 +10802,7 @@
       }
     },
     "StringOrBool": {
-      "description": "A value that can be either a bool or a template string. Used by `disable`, `skip_upload`, and similar fields across multiple config structs to support both `disable: true` and template conditionals like `disable: \"{{ if .IsSnapshot }}true{{ endif }}\"`.",
+      "description": "A value that can be either a bool or a template string. Used by `skip`, `skip_upload`, and similar fields across multiple config structs to support both `skip: true` and template conditionals like `skip: \"{{ if .IsSnapshot }}true{{ endif }}\"`.",
       "anyOf": [
         {
           "type": "boolean"
@@ -10743,10 +10832,10 @@
           "description": "Environment variables for the command.",
           "default": null,
           "type": [
-            "object",
+            "array",
             "null"
           ],
-          "additionalProperties": {
+          "items": {
             "type": "string"
           }
         },
@@ -10983,8 +11072,8 @@
           ]
         },
         "title_template": {
-          "description": "Title template for the Adaptive Card header.",
-          "default": null,
+          "description": "Title template for the Adaptive Card header. Default: \"{{ ProjectName }} {{ Tag }} is out!\"",
+          "default": "{{ ProjectName }} {{ Tag }} is out!",
           "type": [
             "string",
             "null"
@@ -11374,7 +11463,8 @@
             }
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "TwitterAnnounce": {
       "type": "object",
@@ -11515,18 +11605,6 @@
             "type": "string"
           }
         },
-        "disable": {
-          "description": "Skip condition template (if rendered to \"true\", skip this upload).",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/StringOrBool"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "extra_files": {
           "description": "Extra files to include in uploading.",
           "default": null,
@@ -11535,7 +11613,7 @@
             "null"
           ],
           "items": {
-            "$ref": "#/definitions/ExtraFile"
+            "$ref": "#/definitions/ExtraFileSpec"
           }
         },
         "extra_files_only": {
@@ -11601,7 +11679,7 @@
           ]
         },
         "password": {
-          "description": "Password for HTTP basic auth (env var template recommended).",
+          "description": "Password for HTTP basic auth (env var template strongly recommended; in-config plaintext leaves the value in `dist/config.yaml` after dry-run). Resolution order: rendered `password` template → env `UPLOAD_{NAME}_SECRET`. Mirrors GoReleaser's `Upload.Password` cascade (added in upstream v2.12).",
           "default": null,
           "type": [
             "string",
@@ -11614,6 +11692,18 @@
           "type": [
             "boolean",
             "null"
+          ]
+        },
+        "skip": {
+          "description": "Skip condition template (if rendered to \"true\", skip this upload).",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "target": {
@@ -11630,7 +11720,7 @@
           ]
         },
         "username": {
-          "description": "Username for HTTP basic auth (or env var template).",
+          "description": "Username for HTTP basic auth. Resolution order: rendered `username` template → env `UPLOAD_{NAME}_USERNAME`. Set this to a literal value or a `{{ .Env.X }}` template.",
           "default": null,
           "type": [
             "string",
@@ -11791,7 +11881,7 @@
           }
         },
         "headers": {
-          "description": "Custom HTTP headers to include in the request.",
+          "description": "Custom HTTP headers to include in the request.\n\nPrecedence — **anodizer diverges from GoReleaser here**: - anodizer: a config-supplied `Authorization` header wins over the `BASIC_AUTH_HEADER_VALUE` / `BEARER_TOKEN_HEADER_VALUE` env var. - GoReleaser (webhook.go:104-115): env-supplied `Authorization` is appended FIRST; most servers honour the first occurrence, so the env value effectively wins.\n\nMigrating configs that relied on env-overriding the config header must either remove the config entry or be reconfigured. Use templated config (`Authorization: \"Bearer {{ .Env.MY_TOKEN }}\"`) for the cleanest migration.",
           "default": null,
           "type": [
             "object",
@@ -12095,7 +12185,8 @@
             "null"
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "WingetDependency": {
       "description": "WinGet package dependency.",
@@ -12190,13 +12281,13 @@
           }
         },
         "env": {
-          "description": "Environment variables scoped to this workspace.\n\nAccepts both map form (`MY_VAR: hello`) and GoReleaser list form (`- MY_VAR=hello`). Values are template-rendered at pipeline startup.",
+          "description": "Environment variables scoped to this workspace.\n\nList of `KEY=VALUE` strings (GoReleaser parity). Order is preserved. Values are template-rendered at pipeline startup.",
           "default": null,
           "type": [
-            "object",
+            "array",
             "null"
           ],
-          "additionalProperties": {
+          "items": {
             "type": "string"
           }
         },

@@ -733,14 +733,12 @@ pub(crate) fn should_skip_upload(
     }
 }
 
-/// Render a `disable` / `skip_upload` field's bool-or-template into a bool,
-/// returning a labeled error on render failure. Used by publisher loops that
-/// need to short-circuit early when either field evaluates truthy.
+/// Evaluate `skip` / `skip_upload` fields for a publisher entry.
 ///
 /// Returns `Ok(true)` to skip; `Ok(false)` to proceed. This consolidates the
 /// per-publisher pattern of two near-identical `if let Some(d) = ...` blocks
 /// that previously lived in aur_source.rs (per-crate AND top-level paths).
-pub(crate) fn is_publisher_disabled(
+pub(crate) fn should_skip_publisher(
     ctx: &Context,
     skip: Option<&anodizer_core::config::StringOrBool>,
     skip_upload: Option<&anodizer_core::config::StringOrBool>,
@@ -749,16 +747,16 @@ pub(crate) fn is_publisher_disabled(
 ) -> Result<bool> {
     if let Some(d) = skip {
         let off = d
-            .try_is_disabled(|tmpl| ctx.render_template(tmpl))
+            .try_evaluates_to_skip(|tmpl| ctx.render_template(tmpl))
             .with_context(|| format!("{label}: render skip template"))?;
         if off {
-            log.status(&format!("{label}: skipping disabled entry"));
+            log.status(&format!("{label}: skipped"));
             return Ok(true);
         }
     }
     if let Some(s) = skip_upload {
         let off = s
-            .try_is_disabled(|tmpl| ctx.render_template(tmpl))
+            .try_evaluates_to_skip(|tmpl| ctx.render_template(tmpl))
             .with_context(|| format!("{label}: render skip_upload template"))?;
         if off {
             log.status(&format!("{label}: skipping upload (skip_upload=true)"));

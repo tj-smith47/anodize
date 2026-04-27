@@ -282,13 +282,13 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("aur: no aur config for '{}'", crate_name))?;
 
-    // Check disable before doing any work.
+    // Check skip before doing any work.
     if let Some(ref d) = aur_cfg.skip {
         let off = d
-            .try_is_disabled(|tmpl| ctx.render_template(tmpl))
-            .with_context(|| format!("aur: render disable template for '{}'", crate_name))?;
+            .try_evaluates_to_skip(|tmpl| ctx.render_template(tmpl))
+            .with_context(|| format!("aur: render skip template for '{}'", crate_name))?;
         if off {
-            log.status(&format!("aur: disabled for '{}'", crate_name));
+            log.status(&format!("aur: skipped for '{}'", crate_name));
             return Ok(());
         }
     }

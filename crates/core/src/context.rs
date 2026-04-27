@@ -211,15 +211,15 @@ impl Context {
         template.map(|t| self.render_template(t)).transpose()
     }
 
-    /// Evaluate a `disable` field, logging at INFO level when it resolves to true.
+    /// Evaluate a `skip` field, logging at INFO level when it resolves to true.
     ///
-    /// Returns `Ok(false)` when `disable` is `None` or evaluates falsy. On
-    /// truthy, writes `"{label} disabled"` via `log.status` and returns
+    /// Returns `Ok(false)` when `skip` is `None` or evaluates falsy. On
+    /// truthy, writes `"{label} skipped"` via `log.status` and returns
     /// `Ok(true)`. A malformed `skip:` template propagates as `Err` so the
-    /// caller fails fast — silently treating a render error as "not disabled"
+    /// caller fails fast — silently treating a render error as "not skipped"
     /// (the prior behavior) shipped configs that the user thought would
     /// suppress a stage but actually ran it.
-    pub fn is_disabled_with_log(
+    pub fn skip_with_log(
         &self,
         skip: &Option<crate::config::StringOrBool>,
         log: &StageLogger,
@@ -229,10 +229,10 @@ impl Context {
             return Ok(false);
         };
         let should_skip = d
-            .try_is_disabled(|s| self.render_template(s))
+            .try_evaluates_to_skip(|s| self.render_template(s))
             .with_context(|| format!("evaluate skip expression for {label}"))?;
         if should_skip {
-            log.status(&format!("{} disabled", label));
+            log.status(&format!("{} skipped", label));
         }
         Ok(should_skip)
     }

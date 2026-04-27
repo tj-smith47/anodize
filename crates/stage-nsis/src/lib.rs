@@ -141,15 +141,12 @@ impl Stage for NsisStage {
                 // Skip disabled configs (supports bool or template string)
                 if let Some(ref d) = nsis_cfg.skip {
                     let off = d
-                        .try_is_disabled(|s| ctx.render_template(s))
+                        .try_evaluates_to_skip(|s| ctx.render_template(s))
                         .with_context(|| {
-                            format!("nsis: render disable template for crate {}", krate.name)
+                            format!("nsis: render skip template for crate {}", krate.name)
                         })?;
                     if off {
-                        log.status(&format!(
-                            "skipping disabled NSIS config for crate {}",
-                            krate.name
-                        ));
+                        log.status(&format!("NSIS config skipped for crate {}", krate.name));
                         continue;
                     }
                 }

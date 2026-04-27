@@ -173,15 +173,12 @@ impl Stage for DmgStage {
                 // Skip disabled configs (supports bool or template string)
                 if let Some(ref d) = dmg_cfg.skip {
                     let off = d
-                        .try_is_disabled(|s| ctx.render_template(s))
+                        .try_evaluates_to_skip(|s| ctx.render_template(s))
                         .with_context(|| {
-                            format!("dmg: render disable template for crate {}", krate.name)
+                            format!("dmg: render skip template for crate {}", krate.name)
                         })?;
                     if off {
-                        log.status(&format!(
-                            "skipping disabled dmg config for crate {}",
-                            krate.name
-                        ));
+                        log.status(&format!("dmg config skipped for crate {}", krate.name));
                         continue;
                     }
                 }

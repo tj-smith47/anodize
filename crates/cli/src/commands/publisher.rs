@@ -68,8 +68,8 @@ pub fn run_publishers(
         // Check template-conditional disable
         if let Some(ref d) = publisher.skip {
             let off = d
-                .try_is_disabled(|tmpl| template::render(tmpl, base_vars))
-                .with_context(|| format!("[publisher] render disable template for {}", label))?;
+                .try_evaluates_to_skip(|tmpl| template::render(tmpl, base_vars))
+                .with_context(|| format!("[publisher] render skip template for {}", label))?;
             if off {
                 log.verbose(&format!(
                     "[publisher] skipping {} -- disabled by template",
@@ -232,9 +232,11 @@ pub fn run_publishers(
                     }
                 }
                 if let Some(ref env_list) = publisher.env {
-                    let parsed = anodizer_core::config::parse_env_entries(env_list)
-                        .with_context(|| "publisher env: parse entries")?;
-                    for (k, v) in &parsed {
+                    let rendered = anodizer_core::config::render_env_entries(env_list, |v| {
+                        template::render(v, base_vars)
+                    })
+                    .with_context(|| "publisher env: parse and render entries")?;
+                    for (k, v) in &rendered {
                         cmd.env(k, v);
                     }
                 }

@@ -794,13 +794,13 @@ impl SourceStage {
 
         let id = sbom_cfg.id.as_deref().unwrap_or("default");
 
-        // Evaluate disable — supports bool or template string
+        // Evaluate skip — supports bool or template string
         if let Some(ref d) = sbom_cfg.skip {
             let off = d
-                .try_is_disabled(|s| ctx.render_template(s))
-                .with_context(|| format!("sbom[{}]: render disable template", id))?;
+                .try_evaluates_to_skip(|s| ctx.render_template(s))
+                .with_context(|| format!("sbom[{}]: render skip template", id))?;
             if off {
-                log.status(&format!("sbom[{}]: disabled, skipping", id));
+                log.status(&format!("sbom[{}]: skipped", id));
                 return Ok(());
             }
         }

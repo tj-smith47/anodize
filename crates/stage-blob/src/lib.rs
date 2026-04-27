@@ -817,7 +817,7 @@ impl Stage for BlobStage {
 
             for blob_cfg in blob_configs {
                 // Evaluate disable (supports both bool and template string)
-                if ctx.is_disabled_with_log(
+                if ctx.skip_with_log(
                     &blob_cfg.skip,
                     &log,
                     &format!("blob config for crate {}", krate.name),
@@ -1216,18 +1216,14 @@ mod tests {
 
     #[test]
     fn test_is_disabled_none() {
-        assert!(
-            !make_ctx()
-                .is_disabled_with_log(&None, &test_log(), "t")
-                .unwrap()
-        );
+        assert!(!make_ctx().skip_with_log(&None, &test_log(), "t").unwrap());
     }
 
     #[test]
     fn test_is_disabled_bool_true() {
         assert!(
             make_ctx()
-                .is_disabled_with_log(&Some(StringOrBool::Bool(true)), &test_log(), "t")
+                .skip_with_log(&Some(StringOrBool::Bool(true)), &test_log(), "t")
                 .unwrap()
         );
     }
@@ -1236,7 +1232,7 @@ mod tests {
     fn test_is_disabled_bool_false() {
         assert!(
             !make_ctx()
-                .is_disabled_with_log(&Some(StringOrBool::Bool(false)), &test_log(), "t")
+                .skip_with_log(&Some(StringOrBool::Bool(false)), &test_log(), "t")
                 .unwrap()
         );
     }
@@ -1245,7 +1241,7 @@ mod tests {
     fn test_is_disabled_string_true() {
         assert!(
             make_ctx()
-                .is_disabled_with_log(
+                .skip_with_log(
                     &Some(StringOrBool::String("true".to_string())),
                     &test_log(),
                     "t"
@@ -1258,7 +1254,7 @@ mod tests {
     fn test_is_disabled_string_false() {
         assert!(
             !make_ctx()
-                .is_disabled_with_log(
+                .skip_with_log(
                     &Some(StringOrBool::String("false".to_string())),
                     &test_log(),
                     "t"
@@ -1273,10 +1269,7 @@ mod tests {
         let disable = Some(StringOrBool::String(
             "{% if IsSnapshot %}true{% endif %}".to_string(),
         ));
-        assert!(
-            ctx.is_disabled_with_log(&disable, &test_log(), "t")
-                .unwrap()
-        );
+        assert!(ctx.skip_with_log(&disable, &test_log(), "t").unwrap());
     }
 
     #[test]
@@ -1285,14 +1278,11 @@ mod tests {
         let disable = Some(StringOrBool::String(
             "{% if IsSnapshot == \"true\" %}true{% endif %}".to_string(),
         ));
-        assert!(
-            !ctx.is_disabled_with_log(&disable, &test_log(), "t")
-                .unwrap()
-        );
+        assert!(!ctx.skip_with_log(&disable, &test_log(), "t").unwrap());
     }
 
     /// Regression: a malformed `skip:` template now propagates as Err
-    /// instead of silently evaluating to "not disabled".
+    /// instead of silently evaluating to "not skipped".
     #[test]
     fn test_is_disabled_template_render_failure_propagates() {
         let ctx = make_ctx();
@@ -1300,7 +1290,7 @@ mod tests {
             "{{ NonexistentVarThatTeraDoesNotKnow }}".to_string(),
         ));
         let err = ctx
-            .is_disabled_with_log(&disable, &test_log(), "t")
+            .skip_with_log(&disable, &test_log(), "t")
             .unwrap_err()
             .to_string();
         assert!(err.contains("evaluate skip expression"), "{err}");

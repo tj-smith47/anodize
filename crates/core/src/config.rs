@@ -765,6 +765,36 @@ pub fn parse_env_entries(entries: &[String]) -> anyhow::Result<Vec<(String, Stri
         .collect()
 }
 
+/// Parse `KEY=VALUE` env entries and render each value through a template closure.
+///
+/// Combines [`parse_env_entries`] with per-value rendering in one pass so call
+/// sites don't duplicate the parse → iterate → render loop.  The `render`
+/// closure is called once per value; any error is propagated with a
+/// descriptive context message so the caller can identify which key failed.
+///
+/// Preserves declaration order — important for chained-env semantics in stages
+/// like sign, sbom, and notarize where later entries may reference env vars set
+/// by earlier ones.
+///
+/// ```ignore
+/// let rendered = render_env_entries(cfg.env.as_deref().unwrap_or(&[]), |v| ctx.render_template(v))?;
+/// for (k, v) in rendered { cmd.env(k, v); }
+/// ```
+pub fn render_env_entries<F>(entries: &[String], render: F) -> anyhow::Result<Vec<(String, String)>>
+where
+    F: Fn(&str) -> anyhow::Result<String>,
+{
+    use anyhow::Context as _;
+    let parsed = parse_env_entries(entries)?;
+    parsed
+        .into_iter()
+        .map(|(k, v)| {
+            let rendered = render(&v).with_context(|| format!("render env value for '{k}'"))?;
+            Ok((k, rendered))
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Defaults
 // ---------------------------------------------------------------------------
@@ -1537,8 +1567,8 @@ pub struct ReleaseConfig {
     pub replace_existing_draft: Option<bool>,
     /// When true, replace existing release artifacts with the same name.
     pub replace_existing_artifacts: Option<bool>,
-    /// Disable the release stage. Accepts bool or template string
-    /// (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional disable).
+    /// Skip the release stage. Accepts bool or template string
+    /// (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional skip).
     /// GoReleaser supports template strings here since v1.15.0.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
@@ -2723,8 +2753,8 @@ pub struct AurConfig {
     pub private_key: Option<String>,
     /// Subdirectory in the git repo for committed files.
     pub directory: Option<String>,
-    /// Disable this AUR config. Accepts bool or template string
-    /// (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional disable).
+    /// Skip this AUR config. Accepts bool or template string
+    /// (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional skip).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
     /// Content for a .install file (post-install/pre-remove scripts).
@@ -2772,8 +2802,8 @@ pub struct KrewConfig {
     /// Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip_upload: Option<StringOrBool>,
-    /// Disable this Krew config. Accepts bool or template string
-    /// (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional disable).
+    /// Skip this Krew config. Accepts bool or template string
+    /// (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional skip).
     /// Distinct from `skip_upload` so users can opt out of generating the
     /// manifest entirely (common when a project is not a kubectl plugin and
     /// has no krew channel).
@@ -2824,8 +2854,8 @@ pub struct NixConfig {
     /// Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip_upload: Option<StringOrBool>,
-    /// Disable this Nix config. Accepts bool or template string
-    /// (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional disable).
+    /// Skip this Nix config. Accepts bool or template string
+    /// (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional skip).
     /// Distinct from `skip_upload` so users can model both intents — disable
     /// means "don't generate at all", skip_upload means "generate but don't
     /// push". Without this field, `nix: { skip: true }` was silently
@@ -3461,8 +3491,8 @@ pub struct SnapcraftConfig {
     pub templated_extra_files: Option<Vec<TemplatedExtraFile>>,
     /// Template for the output snap filename.
     pub name_template: Option<String>,
-    /// Disable this snapcraft config. Accepts bool or template string
-    /// (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional disable).
+    /// Skip this snapcraft config. Accepts bool or template string
+    /// (e.g. `"{{ if .IsSnapshot }}true{{ endif }}"` for conditional skip).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
     /// Remove source archives from artifacts, keeping only snap.
@@ -3635,7 +3665,7 @@ pub struct DmgConfig {
     pub replace: Option<bool>,
     /// Output timestamp for reproducible builds.
     pub mod_timestamp: Option<String>,
-    /// Disable this DMG config. Accepts bool or template string.
+    /// Skip this DMG config. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
     /// Which artifact type to package: "binary" (default) or "appbundle".
@@ -3668,7 +3698,7 @@ pub struct MsiConfig {
     pub replace: Option<bool>,
     /// Output timestamp for reproducible builds.
     pub mod_timestamp: Option<String>,
-    /// Disable this MSI config. Accepts bool or template string.
+    /// Skip this MSI config. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
     /// Additional files available in the WiX build context (simple filenames).
@@ -3715,7 +3745,7 @@ pub struct PkgConfig {
     pub use_: Option<String>,
     /// Minimum macOS version (e.g. "10.13"). Forwarded to `productbuild --min-os-version`.
     pub min_os_version: Option<String>,
-    /// Disable this PKG config. Accepts bool or template string.
+    /// Skip this PKG config. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
     /// Template-conditional: skip this PKG config if rendered result is "false"
@@ -3745,7 +3775,7 @@ pub struct NsisConfig {
     /// Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded.
     /// GoReleaser Pro feature.
     pub templated_extra_files: Option<Vec<TemplatedExtraFile>>,
-    /// Disable this NSIS config. Accepts bool or template string.
+    /// Skip this NSIS config. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
     /// Remove source archives from artifacts, keeping only the installer.
@@ -3785,7 +3815,7 @@ pub struct AppBundleConfig {
     pub mod_timestamp: Option<String>,
     /// Remove source archives from artifacts, keeping only the app bundle.
     pub replace: Option<bool>,
-    /// Disable this app bundle config. Accepts bool or template string.
+    /// Skip this app bundle config. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
     /// Template-conditional: skip this app bundle config if rendered result is
@@ -3825,7 +3855,7 @@ pub struct FlatpakConfig {
     pub replace: Option<bool>,
     /// Output timestamp for reproducible builds.
     pub mod_timestamp: Option<String>,
-    /// Disable this Flatpak config. Accepts bool or template string.
+    /// Skip this Flatpak config. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
 }
@@ -3877,8 +3907,8 @@ pub struct BlobConfig {
     pub kms_key: Option<String>,
     /// Build IDs to include. Empty means all artifacts.
     pub ids: Option<Vec<String>>,
-    /// Disable this blob config. Accepts bool or template string
-    /// (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional disable).
+    /// Skip this blob config. Accepts bool or template string
+    /// (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional skip).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
     /// Also upload metadata.json and artifacts.json.
@@ -3935,7 +3965,7 @@ pub struct BinstallConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct NotarizeConfig {
-    /// Disable all notarization. Accepts bool or template string.
+    /// Skip all notarization. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
     /// Cross-platform signing/notarization (rcodesign-based, works on any OS).
@@ -4199,7 +4229,7 @@ pub struct SbomConfig {
     pub artifacts: Option<String>,
     /// Filter by artifact IDs (ignored if artifacts="source").
     pub ids: Option<Vec<String>>,
-    /// Disable this SBOM config. Accepts bool or template string.
+    /// Skip this SBOM config. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
 }
@@ -4279,8 +4309,8 @@ pub struct ChangelogConfig {
     pub header: Option<String>,
     /// Text appended to the changelog (inline string or path).
     pub footer: Option<String>,
-    /// Disable changelog generation. Accepts bool or template string
-    /// (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional disable).
+    /// Skip changelog generation. Accepts bool or template string
+    /// (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional skip).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
     /// Changelog source: `"git"` (default), `"github"`, or `"github-native"`.
@@ -5087,7 +5117,7 @@ pub struct DockerHubConfig {
     pub description: Option<String>,
     /// Full description (README) source for the DockerHub repository.
     pub full_description: Option<DockerHubFullDescription>,
-    /// Disable this publisher. Accepts bool or template string.
+    /// Skip this publisher. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
 }
@@ -5475,7 +5505,7 @@ pub struct WorkspaceConfig {
 // ---------------------------------------------------------------------------
 
 /// A value that can be either a bool or a template string.
-/// Used by `disable`, `skip_upload`, and similar fields across multiple config
+/// Used by `skip`, `skip_upload`, and similar fields across multiple config
 /// structs to support both `skip: true` and template conditionals like
 /// `skip: "{{ if .IsSnapshot }}true{{ endif }}"`.
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
@@ -5528,13 +5558,13 @@ impl StringOrBool {
         }
     }
 
-    /// Evaluate whether this value means "disabled".
+    /// Evaluate whether this value means "skip this item".
     ///
     /// Domain-specific alias for
     /// [`try_evaluates_to_true`](Self::try_evaluates_to_true). Returns the
     /// render error so callers can fail fast on a malformed `skip:`
-    /// template instead of silently treating it as "not disabled".
-    pub fn try_is_disabled(
+    /// template instead of silently treating it as "not skipped".
+    pub fn try_evaluates_to_skip(
         &self,
         render: impl Fn(&str) -> anyhow::Result<String>,
     ) -> anyhow::Result<bool> {
@@ -5729,7 +5759,7 @@ pub struct MakeselfConfig {
     pub goos: Option<Vec<String>>,
     /// Target architecture filter.
     pub goarch: Option<Vec<String>>,
-    /// Disable this config. Accepts bool or template string.
+    /// Skip this config. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
 }
@@ -5844,7 +5874,7 @@ pub struct SrpmConfig {
     pub contents: Option<Vec<NfpmContentConfig>>,
     /// RPM signature configuration.
     pub signature: Option<SrpmSignatureConfig>,
-    /// Disable this config. Accepts bool or template string.
+    /// Skip this config. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
 }
@@ -6006,7 +6036,7 @@ pub struct AurSourceConfig {
     pub private_key: Option<String>,
     /// Subdirectory in the git repo for committed files.
     pub directory: Option<String>,
-    /// Disable this config.
+    /// Skip this config.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
     /// Explicit architecture list (default: auto-detect from artifacts).
@@ -10675,5 +10705,130 @@ sboms:
         let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let s = &cfg.sboms[0];
         assert!(s.env.is_none());
+    }
+
+    // ---- env map-form rejection tests (must be Vec<String>, not map) ----
+
+    #[test]
+    fn test_top_level_env_map_form_rejected() {
+        let yaml = r#"
+project_name: test
+crates: []
+env:
+  MY_VAR: hello
+"#;
+        let result = serde_yaml_ng::from_str::<Config>(yaml);
+        assert!(
+            result.is_err(),
+            "top-level Config.env map form should be rejected after Vec<String> migration"
+        );
+    }
+
+    #[test]
+    fn test_build_override_env_map_form_rejected() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ version }}"
+    builds:
+      - binary: app
+defaults:
+  overrides:
+    - targets: ["x86_64-unknown-linux-gnu"]
+      env:
+        MY_VAR: hello
+"#;
+        let result = serde_yaml_ng::from_str::<Config>(yaml);
+        assert!(
+            result.is_err(),
+            "BuildOverride.env map form should be rejected after Vec<String> migration"
+        );
+    }
+
+    #[test]
+    fn test_sign_config_env_map_form_rejected() {
+        let yaml = r#"
+project_name: test
+crates: []
+signs:
+  - cmd: cosign
+    env:
+      COSIGN_PASSWORD: hunter2
+"#;
+        let result = serde_yaml_ng::from_str::<Config>(yaml);
+        assert!(
+            result.is_err(),
+            "SignConfig.env map form should be rejected after Vec<String> migration"
+        );
+    }
+
+    #[test]
+    fn test_sbom_config_env_map_form_rejected() {
+        let yaml = r#"
+project_name: test
+sboms:
+  - cmd: syft
+    env:
+      MY_VAR: value
+"#;
+        let result = serde_yaml_ng::from_str::<Config>(yaml);
+        assert!(
+            result.is_err(),
+            "SbomConfig.env map form should be rejected after Vec<String> migration"
+        );
+    }
+
+    #[test]
+    fn test_workspace_env_map_form_rejected() {
+        let yaml = r#"
+project_name: test
+workspaces:
+  - name: myws
+    crates: []
+    env:
+      MY_VAR: value
+"#;
+        let result = serde_yaml_ng::from_str::<Config>(yaml);
+        assert!(
+            result.is_err(),
+            "WorkspaceConfig.env map form should be rejected after Vec<String> migration"
+        );
+    }
+
+    #[test]
+    fn test_publisher_config_env_map_form_rejected() {
+        let yaml = r#"
+project_name: test
+crates: []
+publishers:
+  - cmd: "my-publisher"
+    env:
+      MY_VAR: value
+"#;
+        let result = serde_yaml_ng::from_str::<Config>(yaml);
+        assert!(
+            result.is_err(),
+            "PublisherConfig.env map form should be rejected after Vec<String> migration"
+        );
+    }
+
+    #[test]
+    fn test_structured_hook_env_map_form_rejected() {
+        let yaml = r#"
+project_name: test
+crates: []
+before:
+  hooks:
+    - cmd: "echo hello"
+      env:
+        MY_VAR: value
+"#;
+        let result = serde_yaml_ng::from_str::<Config>(yaml);
+        assert!(
+            result.is_err(),
+            "StructuredHook.env map form should be rejected after Vec<String> migration"
+        );
     }
 }

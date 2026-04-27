@@ -139,7 +139,7 @@ Artifactory upload configuration. Uploads artifacts to JFrog Artifactory reposit
 | `private_key` | string | — | Path to SSH private key file. |
 | `provides` | list of string | — | Packages this PKGBUILD provides. |
 | `rel` | string | — | Package release number (default: "1"). |
-| `skip` | StringOrBool | — | Disable this config. |
+| `skip` | StringOrBool | — | Skip this config. |
 | `skip_upload` | StringOrBool | — | Skip publishing. `"true"` always skips; `"auto"` skips for prereleases. |
 | `url_template` | string | — | Custom URL template for download URLs. |
 
@@ -178,7 +178,7 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `groups` | list of ChangelogGroup | — | Groups for organizing changelog entries by commit message prefix. |
 | `header` | string | — | Text prepended to the changelog (inline string or path). |
 | `paths` | list of string | — | File paths to filter commits by. Only commits touching files under these paths are included. Works with `use: git` for precise per-commit filtering. With `use: github`, only the first path is used for API queries; multi-path filtering is coarse. Supports template rendering. |
-| `skip` | StringOrBool | — | Disable changelog generation. Accepts bool or template string (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional disable). |
+| `skip` | StringOrBool | — | Skip changelog generation. Accepts bool or template string (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional skip). |
 | `sort` | string | — | Sort order for changelog entries: "asc" or "desc" (default: "asc"). |
 | `title` | string | — | Title heading for the changelog. Default: "Changelog". Supports templates. |
 | `use` | string | — | Changelog source: `"git"` (default), `"github"`, or `"github-native"`. `"github"` fetches commits via the GitHub API, enriching entries with author login information (available as the `Logins` template variable). `"github-native"` delegates entirely to GitHub's auto-generated notes. |
@@ -264,7 +264,7 @@ DockerHub description sync configuration. Pushes image descriptions and README c
 | `full_description` | DockerHubFullDescription | — | Full description (README) source for the DockerHub repository. |
 | `images` | list of string | — | DockerHub image names to update (e.g. `myorg/myapp`). |
 | `secret_name` | string | — | Environment variable name containing the DockerHub token. |
-| `skip` | StringOrBool | — | Disable this publisher. Accepts bool or template string. |
+| `skip` | StringOrBool | — | Skip this publisher. Accepts bool or template string. |
 | `username` | string | — | DockerHub username for authentication. |
 
 ## `git`
@@ -355,7 +355,7 @@ Top-level Homebrew Cask configuration. GoReleaser has `homebrew_casks` as a top-
 | `name` | string | — | Display name embedded in the self-extracting archive. |
 | `name_template` | string | — | Output filename template (default includes project, version, os, arch). |
 | `script` | string | — | Startup script to run when the archive is extracted and executed. Required — the archive will not be created without this. |
-| `skip` | StringOrBool | — | Disable this config. Accepts bool or template string. |
+| `skip` | StringOrBool | — | Skip this config. Accepts bool or template string. |
 
 ## `metadata`
 | Field | Type | Default | Description |
@@ -405,7 +405,7 @@ Top-level notarization configuration supporting both cross-platform (`rcodesign`
 |-------|------|---------|-------------|
 | `macos` | list of MacOSSignNotarizeConfig | — | Cross-platform signing/notarization (rcodesign-based, works on any OS). |
 | `macos_native` | list of MacOSNativeSignNotarizeConfig | — | Native signing/notarization (codesign + xcrun, macOS only). |
-| `skip` | StringOrBool | — | Disable all notarization. Accepts bool or template string. |
+| `skip` | StringOrBool | — | Skip all notarization. Accepts bool or template string. |
 
 ## `partial`
 | Field | Type | Default | Description |
@@ -448,7 +448,7 @@ Top-level notarization configuration supporting both cross-platform (`rcodesign`
 | `prerelease` | object | — | Mark release as pre-release: true, false, or "auto" (inferred from tag). |
 | `replace_existing_artifacts` | bool | — | When true, replace existing release artifacts with the same name. |
 | `replace_existing_draft` | bool | — | When true, replace an existing draft release instead of failing. |
-| `skip` | StringOrBool | — | Disable the release stage. Accepts bool or template string (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional disable). GoReleaser supports template strings here since v1.15.0. |
+| `skip` | StringOrBool | — | Skip the release stage. Accepts bool or template string (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional skip). GoReleaser supports template strings here since v1.15.0. |
 | `skip_upload` | StringOrBool | — | Skip uploading artifacts: true, false, or "auto" (skip for snapshots). Accepts bool or template string (GoReleaser uses string type). |
 | `tag` | string | — | Override the release tag (template string). When set, this tag is used as the `tag_name` in the GitHub release API instead of the crate's `tag_template`. Useful in monorepo setups to strip a tag prefix (e.g. `"{{ .Tag }}"` to publish `v1.0.0` instead of `myapp/v1.0.0`). This is a GoReleaser Pro feature provided for free by anodizer. |
 | `target_commitish` | string | — | Target branch or SHA for the release tag. |
@@ -465,7 +465,7 @@ Top-level notarization configuration supporting both cross-platform (`rcodesign`
 | `env` | list of string | — | Environment variables to pass to the command, as `KEY=VALUE` strings. Order is preserved. Values are template-rendered before being set. |
 | `id` | string | — | Unique identifier for this SBOM config (default: "default"). |
 | `ids` | list of string | — | Filter by artifact IDs (ignored if artifacts="source"). |
-| `skip` | StringOrBool | — | Disable this SBOM config. Accepts bool or template string. |
+| `skip` | StringOrBool | — | Skip this SBOM config. Accepts bool or template string. |
 
 ## `signs`
 | Field | Type | Default | Description |
@@ -515,7 +515,7 @@ Top-level notarization configuration supporting both cross-platform (`rcodesign`
 | `packager` | string | — | RPM packager field. |
 | `section` | string | — | RPM section. |
 | `signature` | SrpmSignatureConfig | — | RPM signature configuration. |
-| `skip` | StringOrBool | — | Disable this config. Accepts bool or template string. |
+| `skip` | StringOrBool | — | Skip this config. Accepts bool or template string. |
 | `spec_file` | string | — | Path to the RPM spec file template. |
 | `summary` | string | — | Summary line. |
 | `url` | string | — | Homepage URL. |
