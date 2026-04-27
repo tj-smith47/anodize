@@ -353,7 +353,7 @@ fn run_cross_platform(
             })?;
         let timeout = ncfg
             .timeout
-            .clone()
+            .map(|d| d.as_humantime_string())
             .or_else(|| Some(DEFAULT_NOTARIZE_TIMEOUT.to_string()));
         Some((issuer_id, key, key_id, ncfg.wait.unwrap_or(false), timeout))
     } else {
@@ -578,9 +578,9 @@ fn run_native(
 
     let wait = notarize.wait.unwrap_or(false);
 
-    let timeout = ctx
-        .render_template_opt(notarize.timeout.as_deref())
-        .with_context(|| format!("notarize: macos_native[{idx}] render notarize.timeout"))?
+    let timeout = notarize
+        .timeout
+        .map(|d| d.as_humantime_string())
         .or_else(|| Some(DEFAULT_NOTARIZE_TIMEOUT.to_string()));
 
     // Default IDs to project name when not specified (GoReleaser parity: macos.go:35)
@@ -1038,7 +1038,10 @@ notarize:
         assert_eq!(notarize_api.issuer_id, Some("abc-123".to_string()));
         assert_eq!(notarize_api.key, Some("/path/to/key.p8".to_string()));
         assert_eq!(notarize_api.key_id, Some("KEY123".to_string()));
-        assert_eq!(notarize_api.timeout, Some("15m".to_string()));
+        assert_eq!(
+            notarize_api.timeout.map(|d| d.as_humantime_string()),
+            Some("15m".to_string())
+        );
         assert_eq!(notarize_api.wait, Some(true));
     }
 
@@ -1515,7 +1518,9 @@ notarize: {}
                     key: Some("key.p8".to_string()),
                     key_id: Some("KEY1".to_string()),
                     wait: Some(true),
-                    timeout: Some("20m".to_string()),
+                    timeout: Some(anodizer_core::config::HumanDuration(
+                        std::time::Duration::from_secs(20 * 60),
+                    )),
                 }),
                 ..Default::default()
             }]),

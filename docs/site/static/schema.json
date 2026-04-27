@@ -2026,12 +2026,15 @@
           }
         },
         "flags": {
-          "description": "Extra flags passed to cargo build (e.g., \"--locked\").",
+          "description": "Extra flags passed to cargo build, one per list entry (e.g., `[\"--release\", \"--locked\"]`). Each entry is template-rendered then passed verbatim as a single argv token, so quoted shell arguments (`--cfg=feature=\"foo bar\"`) survive intact.",
           "default": null,
           "type": [
-            "string",
+            "array",
             "null"
-          ]
+          ],
+          "items": {
+            "type": "string"
+          }
         },
         "hooks": {
           "description": "Per-build hooks executed before and after compilation.",
@@ -2209,12 +2212,15 @@
           }
         },
         "flags": {
-          "description": "Extra flags to append for matching targets.",
+          "description": "Extra flags to append for matching targets, one per list entry.",
           "default": null,
           "type": [
-            "string",
+            "array",
             "null"
-          ]
+          ],
+          "items": {
+            "type": "string"
+          }
         },
         "targets": {
           "description": "Glob patterns to match against target triples (e.g., `[\"x86_64-*\", \"*-linux-*\"]`).",
@@ -2506,11 +2512,15 @@
           ]
         },
         "footer": {
-          "description": "Text appended to the changelog (inline string or path).",
+          "description": "Text appended to the changelog. Same shape as `header`.",
           "default": null,
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ContentSource"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "format": {
@@ -2533,11 +2543,15 @@
           }
         },
         "header": {
-          "description": "Text prepended to the changelog (inline string or path).",
+          "description": "Text prepended to the changelog. Inline string, `from_file: <path>`, or `from_url: <url>` — symmetric with the release block's header/footer so users can compose headers from a templated file or remote endpoint (GoReleaser uses a plain string here; anodizer extends to ContentSource for consistency with `release.header`).",
           "default": null,
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ContentSource"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "paths": {
@@ -2926,7 +2940,7 @@
           ]
         },
         "tags": {
-          "description": "Space-separated tags for the Chocolatey gallery. Accepts either a space-separated string (GoReleaser compat) or an array.",
+          "description": "Tags for the Chocolatey gallery (joined with single spaces in the emitted nuspec). Always a typed list — the legacy space-separated-string form was dropped in WAVE 5.1 (DEC-11) for IDE-completion friendliness and to remove whitespace ambiguity.",
           "default": null,
           "type": [
             "array",
@@ -4793,6 +4807,25 @@
         }
       }
     },
+    "Duration": {
+      "type": "object",
+      "required": [
+        "nanos",
+        "secs"
+      ],
+      "properties": {
+        "nanos": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "secs": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      }
+    },
     "EmailAnnounce": {
       "type": "object",
       "properties": {
@@ -5012,12 +5045,14 @@
           ]
         },
         "mode": {
-          "description": "File permission mode in octal (e.g., \"0755\" or \"0o755\").",
+          "description": "File permission mode. Accepts a YAML int (decimal, e.g. `420` for `0o644`) or an octal-prefixed string (`\"0o644\"`, `\"0644\"`). This matches GoReleaser's `uint32` type for `Mode` on archive/nfpm contents while letting users spell octal naturally in YAML.",
           "default": null,
           "type": [
-            "string",
+            "integer",
             "null"
-          ]
+          ],
+          "format": "uint32",
+          "minimum": 0.0
         },
         "mtime": {
           "description": "File modification time in RFC3339 format (e.g., \"2024-01-01T00:00:00Z\").",
@@ -6349,6 +6384,14 @@
         }
       }
     },
+    "HumanDuration": {
+      "description": "A typed duration value parsed from a humantime-style string in YAML.\n\nAccepts `\"10m\"`, `\"15s\"`, `\"1h30m\"`, `\"500ms\"`, etc. Used by notarize timeouts so the schema is typed and validation catches malformed values at config-load time instead of during the notarize stage.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/Duration"
+        }
+      ]
+    },
     "IncludeFilePath": {
       "description": "File path for a structured include.",
       "type": "object",
@@ -6634,11 +6677,15 @@
           ]
         },
         "timeout": {
-          "description": "Timeout in seconds for `xcrun notarytool submit --timeout`. Templates allowed.",
+          "description": "Timeout for `xcrun notarytool submit --timeout`. Humantime-style string (e.g. `\"10m\"`, `\"15s\"`, `\"1h\"`).",
           "default": null,
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HumanDuration"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "wait": {
@@ -6782,11 +6829,15 @@
           ]
         },
         "timeout": {
-          "description": "Timeout for notarization status polling. Default: \"10m\".",
+          "description": "Timeout for notarization status polling. Humantime-style string (e.g. `\"10m\"`, `\"15s\"`, `\"1h\"`). Default when omitted: `\"10m\"`.",
           "default": null,
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HumanDuration"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "wait": {
@@ -7899,12 +7950,14 @@
           ]
         },
         "umask": {
-          "description": "File permission umask (e.g. \"0o002\").",
+          "description": "File permission umask. Accepts a YAML int (`18`), an octal-prefixed string (`\"0o022\"`), or a leading-zero octal string (`\"022\"`).",
           "default": null,
           "type": [
-            "string",
+            "integer",
             "null"
-          ]
+          ],
+          "format": "uint32",
+          "minimum": 0.0
         },
         "vendor": {
           "description": "Package vendor name.",
@@ -11184,7 +11237,7 @@
           ]
         },
         "mode": {
-          "description": "File permissions mode (octal).",
+          "description": "File permissions mode. Accepts a YAML int (decimal) or an octal-prefixed string (`\"0o755\"`, `\"0755\"`). Stored as a `u32` after parsing — see [`StringOrU32`].",
           "default": null,
           "type": [
             "integer",

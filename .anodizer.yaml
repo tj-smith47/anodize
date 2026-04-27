@@ -55,7 +55,8 @@ defaults:
   # `binary` is omitted here — defaults supply only the cross-cutting fields,
   # the per-crate `builds[].binary` names the actual cargo bin target.
   builds:
-    flags: --release
+    flags:
+      - --release
   archives:
     format: tar.gz
     format_overrides:

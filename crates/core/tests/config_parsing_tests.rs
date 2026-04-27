@@ -251,13 +251,15 @@ fn test_parse_defaults_flags_valid() {
 project_name: test
 defaults:
   builds:
-    flags: "--release --locked"
+    flags:
+      - "--release"
+      - "--locked"
 crates: []
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(
         config.defaults.unwrap().builds.unwrap().flags,
-        Some("--release --locked".to_string())
+        Some(vec!["--release".to_string(), "--locked".to_string()])
     );
 }
 
@@ -269,13 +271,16 @@ fn test_parse_defaults_flags_omitted() {
 }
 
 #[test]
-fn test_parse_defaults_flags_empty_string() {
+fn test_parse_defaults_flags_empty_list() {
+    // Explicit `flags: []` is the canonical way to override a default to a
+    // debug build; per WAVE 5.1 (SCH-1) the legacy `flags: ""` string form
+    // is rejected in favour of typed lists.
     let yaml =
-        "project_name: test\ndefaults:\n  builds:\n    binary: \"\"\n    flags: \"\"\ncrates: []";
+        "project_name: test\ndefaults:\n  builds:\n    binary: \"\"\n    flags: []\ncrates: []";
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert_eq!(
         config.defaults.unwrap().builds.unwrap().flags,
-        Some(String::new())
+        Some(Vec::<String>::new())
     );
 }
 
@@ -719,11 +724,38 @@ crates:
     tag_template: "v{{ version }}"
     builds:
       - binary: app
-        flags: "--release --locked"
+        flags:
+          - "--release"
+          - "--locked"
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let build = &config.crates[0].builds.as_ref().unwrap()[0];
-    assert_eq!(build.flags, Some("--release --locked".to_string()));
+    assert_eq!(
+        build.flags,
+        Some(vec!["--release".to_string(), "--locked".to_string()])
+    );
+}
+
+#[test]
+fn test_parse_build_flags_string_form_rejected() {
+    // SCH-1 hard-break (DEC-5): the legacy `flags: "--release"` string form
+    // was dropped in WAVE 5.1. flags is now strictly a typed list so quoted
+    // shell args round-trip as discrete argv tokens.
+    let yaml = r#"
+project_name: test
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ version }}"
+    builds:
+      - binary: app
+        flags: "--release --locked"
+"#;
+    let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
+    assert!(
+        result.is_err(),
+        "string-form flags must be rejected (use a list)"
+    );
 }
 
 #[test]
@@ -2908,7 +2940,7 @@ cross = "auto"
 
 [defaults.builds]
 binary = ""
-flags = "--release"
+flags = ["--release"]
 
 [defaults.archives]
 format = "tar.gz"
@@ -2932,7 +2964,7 @@ tag_template = "v{{ .Version }}"
     assert_eq!(defaults.cross, Some(CrossStrategy::Auto));
     assert_eq!(
         defaults.builds.as_ref().unwrap().flags,
-        Some("--release".to_string())
+        Some(vec!["--release".to_string()])
     );
     let archives = defaults.archives.unwrap();
     assert_eq!(archives.format, Some("tar.gz".to_string()));
@@ -3254,7 +3286,12 @@ crates: []
         Some(anodizer_core::config::StringOrBool::Bool(true))
     );
     assert_eq!(cl.sort, Some("asc".to_string()));
-    assert_eq!(cl.header, Some("header".to_string()));
+    assert_eq!(
+        cl.header,
+        Some(anodizer_core::config::ContentSource::Inline(
+            "header".to_string()
+        ))
+    );
     assert_eq!(cl.abbrev, Some(10));
     assert!(cl.filters.is_some());
     assert!(cl.groups.is_some());
@@ -3314,7 +3351,8 @@ crates:
     tag_template: "v{{ version }}"
     builds:
       - binary: app
-        flags: "--release"
+        flags:
+          - "--release"
         features:
           - tls
         no_default_features: true
@@ -3325,7 +3363,7 @@ crates:
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let build = &config.crates[0].builds.as_ref().unwrap()[0];
-    assert_eq!(build.flags, Some("--release".to_string()));
+    assert_eq!(build.flags, Some(vec!["--release".to_string()]));
     assert_eq!(build.features.as_ref().unwrap(), &["tls"]);
     assert_eq!(build.no_default_features, Some(true));
     assert!(build.env.is_some());
@@ -3354,7 +3392,9 @@ defaults:
     - aarch64-apple-darwin
   cross: zigbuild
   builds:
-    flags: "--release --locked"
+    flags:
+      - "--release"
+      - "--locked"
   archives:
     format: tar.gz
     format_overrides:
@@ -3479,7 +3519,7 @@ crates:
     assert_eq!(defaults.cross, Some(CrossStrategy::Zigbuild));
     assert_eq!(
         defaults.builds.as_ref().unwrap().flags,
-        Some("--release --locked".to_string())
+        Some(vec!["--release".to_string(), "--locked".to_string()])
     );
 
     // Changelog
@@ -3556,7 +3596,7 @@ crates:
             file_info:
               owner: root
               group: root
-              mode: "0755"
+              mode: 0o755
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let content = &config.crates[0].nfpm.as_ref().unwrap()[0]
@@ -3566,7 +3606,7 @@ crates:
     let fi = content.file_info.as_ref().unwrap();
     assert_eq!(fi.owner, Some("root".to_string()));
     assert_eq!(fi.group, Some("root".to_string()));
-    assert_eq!(fi.mode, Some("0755".to_string()));
+    assert_eq!(fi.mode, Some(anodizer_core::config::StringOrU32(0o755)));
 }
 
 // ---- Default struct values tests ----

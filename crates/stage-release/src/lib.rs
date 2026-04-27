@@ -4351,7 +4351,14 @@ draft: true
         };
         let result = resolve_content_source(&source, &ctx);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("failed to read"));
+        // After hoisting to core::content_source the error message uses the
+        // anyhow `with_context` form; both old "failed to read" and new
+        // "read from_file" wording are acceptable signals.
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("read from_file") || msg.contains("failed to read"),
+            "unexpected error message: {msg}"
+        );
     }
 
     #[test]

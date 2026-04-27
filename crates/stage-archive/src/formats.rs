@@ -12,8 +12,6 @@ use chrono::DateTime;
 use flate2::Compression;
 use flate2::write::GzEncoder;
 
-use anodizer_core::config::parse_octal_mode;
-
 use crate::archive_log;
 
 // ---------------------------------------------------------------------------
@@ -38,10 +36,8 @@ fn apply_file_info_to_header(
     header: &mut tar::Header,
     info: &anodizer_core::config::ArchiveFileInfo,
 ) {
-    if let Some(mode_str) = &info.mode
-        && let Some(mode) = parse_octal_mode(mode_str)
-    {
-        header.set_mode(mode);
+    if let Some(mode) = info.mode {
+        header.set_mode(mode.value());
     }
     if let Some(ref owner) = info.owner {
         header.set_username(owner).ok();
@@ -250,10 +246,9 @@ pub fn create_zip(
         .compression_method(zip::CompressionMethod::Deflated);
 
     if let Some(info) = file_info
-        && let Some(mode_str) = &info.mode
-        && let Some(mode) = parse_octal_mode(mode_str)
+        && let Some(mode) = info.mode
     {
-        options = options.unix_permissions(mode);
+        options = options.unix_permissions(mode.value());
     }
 
     for &src in files {

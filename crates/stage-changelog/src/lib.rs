@@ -988,8 +988,21 @@ impl Stage for ChangelogStage {
         let include_filters: Vec<String> =
             filters.and_then(|f| f.include.clone()).unwrap_or_default();
         let groups: Vec<ChangelogGroup> = cfg.and_then(|c| c.groups.clone()).unwrap_or_default();
-        let header: Option<String> = cfg.and_then(|c| c.header.clone());
-        let footer: Option<String> = cfg.and_then(|c| c.footer.clone());
+        let header_src: Option<anodizer_core::config::ContentSource> =
+            cfg.and_then(|c| c.header.clone());
+        let footer_src: Option<anodizer_core::config::ContentSource> =
+            cfg.and_then(|c| c.footer.clone());
+        // Resolve the ContentSource (Inline / FromFile / FromUrl) into a raw
+        // string up front so the header/footer rendering pass below can stay
+        // focused on template-expansion of the resulting body.
+        let header: Option<String> = header_src
+            .as_ref()
+            .map(|src| anodizer_core::content_source::resolve(src, "changelog header", ctx))
+            .transpose()?;
+        let footer: Option<String> = footer_src
+            .as_ref()
+            .map(|src| anodizer_core::content_source::resolve(src, "changelog footer", ctx))
+            .transpose()?;
         let abbrev: i32 = cfg.and_then(|c| c.abbrev).unwrap_or(0);
         let format_template: Option<String> = cfg.and_then(|c| c.format.clone());
         let changelog_paths: Vec<String> = cfg.and_then(|c| c.paths.clone()).unwrap_or_default();
@@ -2779,7 +2792,9 @@ abbrev: 10
                         groups: None,
                     },
                 ]),
-                header: Some("# Changelog".to_string()),
+                header: Some(anodizer_core::config::ContentSource::Inline(
+                    "# Changelog".to_string(),
+                )),
                 abbrev: Some(7),
                 ..Default::default()
             }),

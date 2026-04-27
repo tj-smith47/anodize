@@ -552,7 +552,7 @@ impl Stage for ArchiveStage {
                     // user-supplied fields (owner, group, mtime, etc).
                     let mut binary_info = archive_cfg.builds_info.clone().unwrap_or_default();
                     if binary_info.mode.is_none() {
-                        binary_info.mode = Some("0755".to_string());
+                        binary_info.mode = Some(anodizer_core::config::StringOrU32(0o755));
                     }
                     let binary_info = render_file_info(&binary_info, ctx)?;
 
@@ -3657,7 +3657,7 @@ crates:
             info:
               owner: root
               group: root
-              mode: "0644"
+              mode: 0o644
           - src: "completions/*"
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
@@ -3671,7 +3671,7 @@ crates:
                     let info = info.as_ref().unwrap();
                     assert_eq!(info.owner.as_deref(), Some("root"));
                     assert_eq!(info.group.as_deref(), Some("root"));
-                    assert_eq!(info.mode.as_deref(), Some("0644"));
+                    assert_eq!(info.mode, Some(anodizer_core::config::StringOrU32(0o644)));
                 }
                 _ => panic!("expected Detailed variant for first entry"),
             }
@@ -3740,7 +3740,7 @@ crates:
         builds_info:
           owner: root
           group: root
-          mode: "0755"
+          mode: 0o755
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         if let ArchivesConfig::Configs(cfgs) = &config.crates[0].archives {
@@ -3750,7 +3750,7 @@ crates:
             let bi = cfgs[0].builds_info.as_ref().unwrap();
             assert_eq!(bi.owner.as_deref(), Some("root"));
             assert_eq!(bi.group.as_deref(), Some("root"));
-            assert_eq!(bi.mode.as_deref(), Some("0755"));
+            assert_eq!(bi.mode, Some(anodizer_core::config::StringOrU32(0o755)));
         } else {
             panic!("expected Configs variant");
         }
@@ -4261,7 +4261,7 @@ crates:
             info: Some(ArchiveFileInfo {
                 owner: Some("root".to_string()),
                 group: Some("root".to_string()),
-                mode: Some("0644".to_string()),
+                mode: Some(anodizer_core::config::StringOrU32(0o644)),
                 mtime: None,
             }),
             strip_parent: None,
@@ -4274,7 +4274,7 @@ crates:
         assert_eq!(resolved[0].dst.as_deref(), Some("licenses/LICENSE"));
         let info = resolved[0].info.as_ref().unwrap();
         assert_eq!(info.owner.as_deref(), Some("root"));
-        assert_eq!(info.mode.as_deref(), Some("0644"));
+        assert_eq!(info.mode, Some(anodizer_core::config::StringOrU32(0o644)));
     }
 
     // -----------------------------------------------------------------------
@@ -4479,7 +4479,7 @@ crates:
         let mut tar = tar::Builder::new(out_file);
 
         let info = ArchiveFileInfo {
-            mode: Some("0755".to_string()),
+            mode: Some(anodizer_core::config::StringOrU32(0o755)),
             owner: Some("deploy".to_string()),
             group: Some("staff".to_string()),
             mtime: None,
@@ -4523,7 +4523,7 @@ crates:
         let mut tar = tar::Builder::new(out_file);
 
         let info = ArchiveFileInfo {
-            mode: Some("0755".to_string()),
+            mode: Some(anodizer_core::config::StringOrU32(0o755)),
             owner: None,
             group: None,
             mtime: None,
@@ -4634,14 +4634,17 @@ crates:
         let info = ArchiveFileInfo {
             owner: Some("{{ .ProjectName }}".to_string()),
             group: Some("staff".to_string()),
-            mode: Some("0755".to_string()),
+            mode: Some(anodizer_core::config::StringOrU32(0o755)),
             mtime: Some("{{ .Version }}".to_string()),
         };
 
         let rendered = render_file_info(&info, &ctx).unwrap();
         assert_eq!(rendered.owner.as_deref(), Some("myapp"));
         assert_eq!(rendered.group.as_deref(), Some("staff"));
-        assert_eq!(rendered.mode.as_deref(), Some("0755")); // mode not rendered
+        assert_eq!(
+            rendered.mode,
+            Some(anodizer_core::config::StringOrU32(0o755))
+        ); // mode not rendered
         assert_eq!(rendered.mtime.as_deref(), Some("1.2.3"));
     }
 

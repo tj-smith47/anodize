@@ -157,7 +157,7 @@ pub(crate) fn build_command(
     crate_path: &str,
     target: &str,
     strategy: &CrossStrategy,
-    flags: Option<&str>,
+    flags: &[String],
     features: &[String],
     no_default_features: bool,
     env: &HashMap<String, String>,
@@ -179,12 +179,8 @@ pub(crate) fn build_command(
         target.to_string(),
     ]);
 
-    // Append flags (split on whitespace)
-    if let Some(f) = flags {
-        for part in f.split_whitespace() {
-            args.push(part.to_string());
-        }
-    }
+    // Append flags (one argv token per entry — quoted shell args survive).
+    args.extend(flags.iter().cloned());
 
     // Features
     if !features.is_empty() {
@@ -215,7 +211,7 @@ pub(crate) fn build_lib_command(
     crate_path: &str,
     target: &str,
     strategy: &CrossStrategy,
-    flags: Option<&str>,
+    flags: &[String],
     features: &[String],
     no_default_features: bool,
     env: &HashMap<String, String>,
@@ -236,12 +232,8 @@ pub(crate) fn build_lib_command(
         target.to_string(),
     ]);
 
-    // Append flags (split on whitespace)
-    if let Some(f) = flags {
-        for part in f.split_whitespace() {
-            args.push(part.to_string());
-        }
-    }
+    // Append flags (one argv token per entry).
+    args.extend(flags.iter().cloned());
 
     // Features
     if !features.is_empty() {
@@ -309,16 +301,13 @@ pub(crate) fn detect_crate_type(crate_path: &str) -> Option<String> {
 ///
 /// Returns a `&str` that borrows from the input flags string for custom
 /// profile names, or a static string for well-known profiles.
-fn detect_cargo_profile(flags: Option<&str>) -> &str {
-    let flags = match flags {
-        Some(f) => f,
-        None => return "debug",
-    };
-
-    let tokens: Vec<&str> = flags.split_whitespace().collect();
+fn detect_cargo_profile(flags: &[String]) -> &str {
+    if flags.is_empty() {
+        return "debug";
+    }
 
     // Check for --profile=<name> (equals form)
-    for token in &tokens {
+    for token in flags {
         if let Some(name) = token.strip_prefix("--profile=")
             && !name.is_empty()
         {
@@ -330,19 +319,19 @@ fn detect_cargo_profile(flags: Option<&str>) -> &str {
     }
 
     // Check for --profile <name> (space-separated form)
-    for i in 0..tokens.len() {
-        if tokens[i] == "--profile"
-            && let Some(&name) = tokens.get(i + 1)
+    for i in 0..flags.len() {
+        if flags[i] == "--profile"
+            && let Some(name) = flags.get(i + 1)
         {
-            return match name {
+            return match name.as_str() {
                 "dev" => "debug",
-                _ => name,
+                _ => name.as_str(),
             };
         }
     }
 
     // Check for --release flag
-    if tokens.contains(&"--release") {
+    if flags.iter().any(|f| f == "--release") {
         return "release";
     }
 
@@ -961,7 +950,7 @@ pub fn is_dynamically_linked(path: &Path) -> bool {
 /// If the Cargo.toml at `crate_path` has a `[workspace]` section with `members`,
 /// verify that the build flags contain `--package` or `-p`. Returns an error
 /// if the workspace is detected but no package flag is present.
-fn check_workspace_package(crate_path: &str, flags: Option<&str>) -> Result<()> {
+fn check_workspace_package(crate_path: &str, flags: &[String]) -> Result<()> {
     let cargo_toml_path = Path::new(crate_path).join("Cargo.toml");
     let content = match std::fs::read_to_string(&cargo_toml_path) {
         Ok(c) => c,
@@ -977,14 +966,11 @@ fn check_workspace_package(crate_path: &str, flags: Option<&str>) -> Result<()> 
         && ws.get("members").is_some()
     {
         // Check if flags contain --package or -p
-        let has_package = flags.is_some_and(|f| {
-            let tokens: Vec<&str> = f.split_whitespace().collect();
-            tokens.iter().any(|t| {
-                *t == "-p"
-                    || t.starts_with("--package")
-                    || t.starts_with("-p=")
-                    || t.starts_with("--package=")
-            })
+        let has_package = flags.iter().any(|t| {
+            t == "-p"
+                || t.starts_with("--package")
+                || t.starts_with("-p=")
+                || t.starts_with("--package=")
         });
         if !has_package {
             anyhow::bail!(
@@ -1251,7 +1237,7 @@ impl Stage for BuildStage {
         let default_strategy = defaults
             .and_then(|d| d.cross.clone())
             .unwrap_or(CrossStrategy::Auto);
-        let default_flags: Option<String> = default_builds.and_then(|b| b.flags.clone());
+        let default_flags: Option<Vec<String>> = default_builds.and_then(|b| b.flags.clone());
         let default_ignores: Vec<BuildIgnore> = default_builds
             .and_then(|b| b.ignore.clone())
             .unwrap_or_default();
@@ -1530,16 +1516,17 @@ impl Stage for BuildStage {
                     .clone()
                     .unwrap_or_else(|| default_strategy.clone());
 
-                // Flags: per-build, else global default, else "--release".
-                // Default to --release for production builds. Users can explicitly set
-                // `flags: ""` (empty string) in their config to get a debug build.
-                // This works because `Some("")` is not `None`, so `.or(Some("--release"))`
-                // will not override an explicit empty string.
-                let flags: Option<&str> = build
+                // Flags: per-build, else global default, else `["--release"]`.
+                // Default to `--release` for production builds. Users can
+                // explicitly set `flags: []` (empty list) in their config to
+                // get a debug build. `Some(vec![])` is distinct from `None`,
+                // so the fallback to `["--release"]` only fires when neither
+                // a per-build nor a default-builds flags list is configured.
+                let flags: Vec<String> = build
                     .flags
-                    .as_deref()
-                    .or(default_flags.as_deref())
-                    .or(Some("--release"));
+                    .clone()
+                    .or_else(|| default_flags.clone())
+                    .unwrap_or_else(|| vec!["--release".to_string()]);
 
                 // Features and no_default_features
                 let features: Vec<String> = build.features.clone().unwrap_or_default();
@@ -1566,7 +1553,7 @@ impl Stage for BuildStage {
 
                 // Workspace --package validation: if building from a workspace root,
                 // ensure --package is specified in the build flags.
-                check_workspace_package(&crate_cfg.path, flags)?;
+                check_workspace_package(&crate_cfg.path, &flags)?;
 
                 // Resolve no_unique_dist_dir: per-build overrides crate-level
                 let no_unique_dist_dir_val = if let Some(s) = build.no_unique_dist_dir.as_ref() {
@@ -1590,16 +1577,12 @@ impl Stage for BuildStage {
                     // Apply overrides: merge env, append flags, extend features
                     let matched_override =
                         find_matching_override(target, &build_overrides, &log, ctx.is_strict())?;
-                    let effective_flags: Option<String> = if let Some(ov) = matched_override {
-                        match (&flags, &ov.flags) {
-                            (Some(base), Some(extra)) => Some(format!("{} {}", base, extra)),
-                            (None, Some(extra)) => Some(extra.clone()),
-                            (Some(base), None) => Some(base.to_string()),
-                            (None, None) => None,
-                        }
-                    } else {
-                        flags.map(|f| f.to_string())
-                    };
+                    let mut effective_flags: Vec<String> = flags.clone();
+                    if let Some(ov) = matched_override
+                        && let Some(extra) = &ov.flags
+                    {
+                        effective_flags.extend(extra.iter().cloned());
+                    }
                     let effective_features: Vec<String> = if let Some(ov) = matched_override {
                         let mut f = features.clone();
                         if let Some(ref extra) = ov.features {
@@ -1610,29 +1593,27 @@ impl Stage for BuildStage {
                         features.clone()
                     };
 
-                    // template-render the flags string
-                    // through the template engine before splitting on whitespace.
-                    // This allows flags like `--cfg={{ .Os }}` to be resolved.
-                    // Filter out empty results after rendering.
-                    let effective_flags: Option<String> = match effective_flags {
-                        Some(f) => {
-                            let rendered = ctx
-                                .render_template(&f)
-                                .with_context(|| format!("build: render flags template '{f}'"))?;
-                            let trimmed = rendered.trim().to_string();
-                            if trimmed.is_empty() {
-                                None
-                            } else {
-                                Some(trimmed)
-                            }
-                        }
-                        None => None,
-                    };
+                    // Template-render each flag entry. Flags survive as
+                    // discrete argv tokens (no whitespace splitting), so
+                    // quoted values like `--cfg=feature="foo bar"` round-trip
+                    // correctly. Entries that render to an empty string are
+                    // dropped — equivalent to the prior `flags: ""` -> debug
+                    // escape hatch but per-entry instead of whole-string.
+                    let effective_flags: Vec<String> = effective_flags
+                        .into_iter()
+                        .map(|f| {
+                            ctx.render_template(&f)
+                                .with_context(|| format!("build: render flags template '{f}'"))
+                        })
+                        .collect::<Result<Vec<_>>>()?
+                        .into_iter()
+                        .filter(|s| !s.trim().is_empty())
+                        .collect();
 
                     // Determine the binary path
                     // Flags may contain --release, --profile release, or
                     // --profile=<name>; detect the effective cargo profile.
-                    let profile = detect_cargo_profile(effective_flags.as_deref());
+                    let profile = detect_cargo_profile(&effective_flags);
 
                     let is_wasm_target = target.contains("wasm32");
                     let (os, arch) = map_target(target);
@@ -1850,7 +1831,7 @@ impl Stage for BuildStage {
                             &crate_cfg.path,
                             target,
                             &strategy,
-                            effective_flags.as_deref(),
+                            &effective_flags,
                             &effective_features,
                             no_default_features,
                             &target_env,
@@ -1863,7 +1844,7 @@ impl Stage for BuildStage {
                             &crate_cfg.path,
                             target,
                             &strategy,
-                            effective_flags.as_deref(),
+                            &effective_flags,
                             &effective_features,
                             no_default_features,
                             &target_env,
@@ -2426,7 +2407,7 @@ mod tests {
             "crates/cfgd",
             "x86_64-unknown-linux-gnu",
             &CrossStrategy::Cargo,
-            Some("--release"),
+            &["--release".to_string()],
             &[],
             false,
             &Default::default(),
@@ -2449,7 +2430,7 @@ mod tests {
             "crates/cfgd",
             "aarch64-unknown-linux-gnu",
             &CrossStrategy::Zigbuild,
-            Some("--release"),
+            &["--release".to_string()],
             &[],
             false,
             &Default::default(),
@@ -2468,7 +2449,7 @@ mod tests {
             "crates/cfgd",
             "aarch64-unknown-linux-gnu",
             &CrossStrategy::Cross,
-            Some("--release"),
+            &["--release".to_string()],
             &[],
             false,
             &Default::default(),
@@ -2486,7 +2467,7 @@ mod tests {
             "crates/cfgd",
             "x86_64-unknown-linux-gnu",
             &CrossStrategy::Cargo,
-            Some("--release"),
+            &["--release".to_string()],
             &["tls".to_string(), "json".to_string()],
             false,
             &Default::default(),
@@ -2504,7 +2485,7 @@ mod tests {
             "crates/cfgd",
             "x86_64-unknown-linux-gnu",
             &CrossStrategy::Cargo,
-            Some("--release"),
+            &["--release".to_string()],
             &[],
             true,
             &Default::default(),
@@ -2536,7 +2517,7 @@ mod tests {
             "crates/mybin",
             "this-is-not-a-valid-triple",
             &CrossStrategy::Cargo,
-            Some("--release"),
+            &["--release".to_string()],
             &[],
             false,
             &Default::default(),
@@ -2555,7 +2536,7 @@ mod tests {
             ".",
             "x86_64-unknown-linux-gnu",
             &CrossStrategy::Cargo,
-            None,
+            &[],
             &[],
             false,
             &Default::default(),
@@ -2708,7 +2689,7 @@ mod tests {
             ".",
             "x86_64-unknown-linux-musl",
             &CrossStrategy::Cargo,
-            Some("--release"),
+            &["--release".to_string()],
             &[],
             false,
             &env,
@@ -2820,7 +2801,7 @@ crate_type = ["dylib"]
             "crates/my-lib",
             "x86_64-unknown-linux-gnu",
             &CrossStrategy::Cargo,
-            Some("--release"),
+            &["--release".to_string()],
             &[],
             false,
             &Default::default(),
@@ -2843,7 +2824,7 @@ crate_type = ["dylib"]
             "crates/my-lib",
             "wasm32-unknown-unknown",
             &CrossStrategy::Cargo,
-            None,
+            &[],
             &["wasm-bindgen".to_string()],
             true,
             &Default::default(),
@@ -2862,7 +2843,7 @@ crate_type = ["dylib"]
             ".",
             "aarch64-unknown-linux-gnu",
             &CrossStrategy::Zigbuild,
-            Some("--release"),
+            &["--release".to_string()],
             &[],
             false,
             &Default::default(),
@@ -2891,7 +2872,7 @@ crate_type = ["dylib"]
                 binary: Some("myapp".to_string()),
                 targets: Some(vec!["x86_64-unknown-linux-gnu".to_string()]),
                 reproducible: Some(true),
-                flags: Some("--release".to_string()),
+                flags: Some(vec!["--release".to_string()]),
                 ..Default::default()
             }]),
             ..Default::default()
@@ -2937,7 +2918,7 @@ crate_type = ["dylib"]
                 binary: Some("myapp".to_string()),
                 targets: Some(vec!["x86_64-unknown-linux-musl".to_string()]),
                 reproducible: Some(true),
-                flags: Some("--release".to_string()),
+                flags: Some(vec!["--release".to_string()]),
                 env: Some(target_env),
                 ..Default::default()
             }]),
@@ -2971,7 +2952,7 @@ crate_type = ["dylib"]
                 binary: Some("myapp".to_string()),
                 targets: Some(vec!["x86_64-unknown-linux-gnu".to_string()]),
                 reproducible: Some(false),
-                flags: Some("--release".to_string()),
+                flags: Some(vec!["--release".to_string()]),
                 ..Default::default()
             }]),
             ..Default::default()
@@ -3473,19 +3454,19 @@ crate_type = ["dylib"]
         let overrides = vec![
             BuildOverride {
                 targets: vec!["x86_64-*".to_string()],
-                flags: Some("--release".to_string()),
+                flags: Some(vec!["--release".to_string()]),
                 ..Default::default()
             },
             BuildOverride {
                 targets: vec!["*-linux-*".to_string()],
-                flags: Some("--opt-level=3".to_string()),
+                flags: Some(vec!["--opt-level=3".to_string()]),
                 ..Default::default()
             },
         ];
         let result =
             find_matching_override("x86_64-unknown-linux-gnu", &overrides, &log, false).unwrap();
         assert!(result.is_some());
-        assert_eq!(result.unwrap().flags, Some("--release".to_string()));
+        assert_eq!(result.unwrap().flags, Some(vec!["--release".to_string()]));
     }
 
     #[test]
@@ -3533,7 +3514,7 @@ crate_type = ["dylib"]
         let log = test_logger();
         let overrides = vec![BuildOverride {
             targets: vec!["[unclosed".to_string()],
-            flags: Some("--bad".to_string()),
+            flags: Some(vec!["--bad".to_string()]),
             ..Default::default()
         }];
         let result =
@@ -3550,7 +3531,7 @@ crate_type = ["dylib"]
             ".",
             "x86_64-unknown-linux-gnu",
             &CrossStrategy::Auto,
-            Some("--release"),
+            &["--release".to_string()],
             &[],
             false,
             &Default::default(),
@@ -3956,7 +3937,7 @@ crates:
             "[package]\nname = \"test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
         )
         .unwrap();
-        let result = check_workspace_package(tmp.path().to_str().unwrap(), None);
+        let result = check_workspace_package(tmp.path().to_str().unwrap(), &[]);
         assert!(result.is_ok());
     }
 
@@ -3969,7 +3950,8 @@ crates:
             "[workspace]\nmembers = [\"crates/a\", \"crates/b\"]\n",
         )
         .unwrap();
-        let result = check_workspace_package(tmp.path().to_str().unwrap(), Some("--release"));
+        let result =
+            check_workspace_package(tmp.path().to_str().unwrap(), &["--release".to_string()]);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("--package=<name>"));
     }
@@ -3981,7 +3963,7 @@ crates:
         std::fs::write(&cargo_toml, "[workspace]\nmembers = [\"crates/a\"]\n").unwrap();
         let result = check_workspace_package(
             tmp.path().to_str().unwrap(),
-            Some("--release --package=myapp"),
+            &["--release".to_string(), "--package=myapp".to_string()],
         );
         assert!(result.is_ok());
     }
@@ -3991,8 +3973,14 @@ crates:
         let tmp = tempfile::tempdir().unwrap();
         let cargo_toml = tmp.path().join("Cargo.toml");
         std::fs::write(&cargo_toml, "[workspace]\nmembers = [\"crates/a\"]\n").unwrap();
-        let result =
-            check_workspace_package(tmp.path().to_str().unwrap(), Some("--release -p myapp"));
+        let result = check_workspace_package(
+            tmp.path().to_str().unwrap(),
+            &[
+                "--release".to_string(),
+                "-p".to_string(),
+                "myapp".to_string(),
+            ],
+        );
         assert!(result.is_ok());
     }
 
@@ -4115,7 +4103,7 @@ crates:
             ".",
             "x86_64-unknown-linux-gnu",
             &CrossStrategy::Cargo,
-            Some("--release"),
+            &["--release".to_string()],
             &[],
             false,
             &Default::default(),

@@ -790,7 +790,7 @@ mod tests {
                 // defaults.builds has no `binary` — that's the whole point
                 // of path-mirror inheritance: per-crate supplies the binary.
                 binary: None,
-                flags: Some("--release --locked".to_string()),
+                flags: Some(vec!["--release".to_string(), "--locked".to_string()]),
                 ..Default::default()
             }),
             ..Default::default()
@@ -810,7 +810,10 @@ mod tests {
             Some("myapp".to_string()),
             "crate field should win"
         );
-        assert_eq!(builds[0].flags, Some("--release --locked".to_string()));
+        assert_eq!(
+            builds[0].flags,
+            Some(vec!["--release".to_string(), "--locked".to_string()])
+        );
     }
 
     // --------------- (I-5) Workspace-overlay path ---------------

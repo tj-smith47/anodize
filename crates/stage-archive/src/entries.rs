@@ -11,8 +11,6 @@ use std::path::PathBuf;
 
 use anyhow::{Context as _, Result};
 
-use anodizer_core::config::parse_octal_mode;
-
 use crate::{archive_log, formats};
 
 /// An entry to add to an archive, carrying source path, archive-internal name,
@@ -123,10 +121,9 @@ pub(crate) fn write_zip_entries<W: std::io::Write + std::io::Seek>(
         }
         let mut options = base_options;
         if let Some(ref info) = entry.info
-            && let Some(mode_str) = &info.mode
-            && let Some(mode) = parse_octal_mode(mode_str)
+            && let Some(mode) = info.mode
         {
-            options = options.unix_permissions(mode);
+            options = options.unix_permissions(mode.value());
         }
         let name = entry.archive_name.to_string_lossy().to_string();
         zip.start_file(&name, options)

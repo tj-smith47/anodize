@@ -166,133 +166,14 @@ pub(crate) fn resolve_release_mode(mode: Option<&str>) -> Result<String> {
     }
 }
 
-/// Resolve a `ContentSource` to its string content.
-///
-/// - Inline: returns the string directly.
-/// - FromFile: template-renders the path, reads the file from disk.
-/// - FromUrl: template-renders URL and header values, fetches via HTTP GET
-///   with the supplied headers and retries (3 attempts, 500ms * 2^n backoff)
-///   on transient network errors and 5xx responses. 4xx responses fail fast.
-///
-/// GoReleaser Pro parity: header/footer from_url supports `headers:` map for
-/// authenticated private mirrors; URL and both sides of the headers map are
-/// template-rendered.
+/// Resolve a `ContentSource` for the release block (header/footer/body).
+/// Thin wrapper that hands off to [`anodizer_core::content_source::resolve`]
+/// with a release-specific label so error messages identify the source.
 pub(crate) fn resolve_content_source(
     source: &ContentSource,
     ctx: &anodizer_core::context::Context,
 ) -> Result<String> {
-    match source {
-        ContentSource::Inline(s) => Ok(s.clone()),
-        ContentSource::FromFile { from_file } => {
-            let rendered_path = ctx
-                .render_template(from_file)
-                .with_context(|| format!("render from_file path: {}", from_file))?;
-            std::fs::read_to_string(&rendered_path)
-                .map_err(|e| anyhow::anyhow!("failed to read {}: {}", rendered_path, e))
-        }
-        ContentSource::FromUrl { from_url, headers } => {
-            let rendered_url = ctx
-                .render_template(from_url)
-                .with_context(|| format!("render from_url: {}", from_url))?;
-
-            // Render header values (keys are literal per GoReleaser docs).
-            // Reject `\r`/`\n` anywhere in a rendered value — a template
-            // interpolating user-tainted data could otherwise inject a new
-            // header line (CRLF injection). Also reject in literal keys as
-            // defense-in-depth.
-            let mut rendered_headers: Vec<(String, String)> = Vec::new();
-            if let Some(map) = headers {
-                for (k, v) in map {
-                    if k.contains('\r') || k.contains('\n') {
-                        anyhow::bail!(
-                            "release from_url header key contains CR/LF (possible injection): {:?}",
-                            k
-                        );
-                    }
-                    let rendered_v = ctx.render_template(v).with_context(|| {
-                        format!("render header value for '{}' at URL {}", k, rendered_url)
-                    })?;
-                    if rendered_v.contains('\r') || rendered_v.contains('\n') {
-                        anyhow::bail!(
-                            "release from_url header '{}' rendered to a value containing \
-                             CR/LF (possible injection): {:?}",
-                            k,
-                            rendered_v
-                        );
-                    }
-                    rendered_headers.push((k.clone(), rendered_v));
-                }
-            }
-
-            let client = anodizer_core::http::blocking_client(std::time::Duration::from_secs(30))?;
-
-            // Retry: 3 attempts, 500ms base, 2s cap. Retry on request errors +
-            // 5xx; bail immediately on 4xx via ControlFlow::Break.
-            use anodizer_core::retry::{RetryPolicy, retry_sync};
-            use std::ops::ControlFlow;
-            const POLICY: RetryPolicy = RetryPolicy {
-                max_attempts: 3,
-                base_delay: std::time::Duration::from_millis(500),
-                max_delay: std::time::Duration::from_secs(2),
-            };
-            retry_sync(&POLICY, |attempt| {
-                let mut req = client.get(&rendered_url);
-                for (k, v) in &rendered_headers {
-                    req = req.header(k.as_str(), v.as_str());
-                }
-                match req.send() {
-                    Ok(response) => {
-                        let status = response.status();
-                        if status.is_success() {
-                            // Enforce a 256 KiB body cap on from_url responses
-                            // so a runaway server can't exhaust memory — release
-                            // header/footer bodies are small markdown snippets.
-                            const MAX_BODY: usize = 256 * 1024;
-                            match response.bytes() {
-                                Ok(bytes) => {
-                                    if bytes.len() > MAX_BODY {
-                                        return Err(ControlFlow::Break(anyhow::anyhow!(
-                                            "from_url {} body is {} bytes, exceeds \
-                                             {} KiB limit",
-                                            rendered_url,
-                                            bytes.len(),
-                                            MAX_BODY / 1024,
-                                        )));
-                                    }
-                                    match String::from_utf8(bytes.to_vec()) {
-                                        Ok(text) => Ok(text),
-                                        Err(e) => Err(ControlFlow::Break(anyhow::anyhow!(e))),
-                                    }
-                                }
-                                Err(e) => Err(ControlFlow::Break(anyhow::anyhow!(e))),
-                            }
-                        } else if status.is_client_error() {
-                            Err(ControlFlow::Break(anyhow::anyhow!(
-                                "content URL {} returned HTTP {} (no retry on 4xx)",
-                                rendered_url,
-                                status
-                            )))
-                        } else {
-                            Err(ControlFlow::Continue(anyhow::anyhow!(
-                                "content URL {} returned HTTP {} (attempt {}/{})",
-                                rendered_url,
-                                status,
-                                attempt,
-                                POLICY.max_attempts
-                            )))
-                        }
-                    }
-                    Err(e) => Err(ControlFlow::Continue(anyhow::anyhow!(
-                        "fetch {} failed (attempt {}/{}): {}",
-                        rendered_url,
-                        attempt,
-                        POLICY.max_attempts,
-                        e
-                    ))),
-                }
-            })
-        }
-    }
+    anodizer_core::content_source::resolve(source, "release header/footer", ctx)
 }
 
 /// Compose the final release body based on the release mode.

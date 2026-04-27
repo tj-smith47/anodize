@@ -122,29 +122,13 @@ struct NfpmYamlFileInfo {
     owner: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     group: Option<String>,
-    #[serde(
-        skip_serializing_if = "Option::is_none",
-        serialize_with = "serialize_octal_mode"
-    )]
-    mode: Option<String>,
+    /// File permission mode as a YAML integer so nfpm unmarshals into Go's
+    /// `fs.FileMode`. Source `FileInfo.mode` is already a `u32` post-WAVE 5.1
+    /// (SCH-3), so this maps straight through.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mode: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     mtime: Option<String>,
-}
-
-/// Serialize an octal mode string (e.g. "0755") as a YAML integer so nfpm
-/// can unmarshal it into Go's fs.FileMode.
-fn serialize_octal_mode<S: serde::Serializer>(
-    val: &Option<String>,
-    ser: S,
-) -> std::result::Result<S::Ok, S::Error> {
-    match val {
-        Some(s) => {
-            let n = u32::from_str_radix(s.trim_start_matches('0'), 8)
-                .map_err(serde::ser::Error::custom)?;
-            ser.serialize_u32(n)
-        }
-        None => ser.serialize_none(),
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -402,7 +386,7 @@ pub fn generate_nfpm_yaml_with_env(
                     file_info: Some(NfpmYamlFileInfo {
                         owner: None,
                         group: None,
-                        mode: Some("0755".to_string()),
+                        mode: Some(0o755),
                         mtime: None,
                     }),
                     packager: None,
@@ -422,7 +406,7 @@ pub fn generate_nfpm_yaml_with_env(
                 file_info: entry.file_info.as_ref().map(|fi| NfpmYamlFileInfo {
                     owner: fi.owner.clone(),
                     group: fi.group.clone(),
-                    mode: fi.mode.clone(),
+                    mode: fi.mode.map(|m| m.value()),
                     mtime: fi.mtime.clone(),
                 }),
                 packager: entry.packager.clone(),
@@ -492,10 +476,10 @@ pub fn generate_nfpm_yaml_with_env(
         // only add library content entries when actual
         // library artifacts are present. The libdirs config specifies
         // *destination directories* for actual artifacts, not synthetic paths.
-        let lib_groups: &[(&Option<String>, &[String], &str)] = &[
-            (&header_dir, &library_paths.headers, "0644"),
-            (&carchive_dir, &library_paths.c_archives, "0644"),
-            (&cshared_dir, &library_paths.c_shared, "0755"),
+        let lib_groups: &[(&Option<String>, &[String], u32)] = &[
+            (&header_dir, &library_paths.headers, 0o644),
+            (&carchive_dir, &library_paths.c_archives, 0o644),
+            (&cshared_dir, &library_paths.c_shared, 0o755),
         ];
         for (dir_opt, paths, mode) in lib_groups {
             if let Some(dir) = dir_opt {
@@ -512,7 +496,7 @@ pub fn generate_nfpm_yaml_with_env(
                         file_info: Some(NfpmYamlFileInfo {
                             owner: None,
                             group: None,
-                            mode: Some(mode.to_string()),
+                            mode: Some(*mode),
                             mtime: None,
                         }),
                         packager: None,
@@ -620,7 +604,7 @@ pub fn generate_nfpm_yaml_with_env(
         section: config.section.clone(),
         priority: config.priority.clone(),
         meta: config.meta,
-        umask: config.umask.clone(),
+        umask: config.umask.map(|u| format!("0o{:03o}", u.value())),
         mtime: config.mtime.clone(),
         scripts,
         recommends: config.recommends.clone().unwrap_or_default(),
@@ -2015,7 +1999,7 @@ mod tests {
                 file_info: Some(NfpmFileInfo {
                     owner: Some("root".to_string()),
                     group: Some("root".to_string()),
-                    mode: Some("0644".to_string()),
+                    mode: Some(anodizer_core::config::StringOrU32(0o644)),
                     ..Default::default()
                 }),
                 packager: None,
@@ -2152,7 +2136,7 @@ crates:
         let fi = contents[0].file_info.as_ref().unwrap();
         assert_eq!(fi.owner.as_deref(), Some("root"));
         assert_eq!(fi.group.as_deref(), Some("wheel"));
-        assert_eq!(fi.mode.as_deref(), Some("0755"));
+        assert_eq!(fi.mode, Some(anodizer_core::config::StringOrU32(0o755)));
     }
 
     #[test]
@@ -2256,7 +2240,7 @@ crates:
                     file_info: Some(NfpmFileInfo {
                         owner: Some("root".to_string()),
                         group: Some("admin".to_string()),
-                        mode: Some("0640".to_string()),
+                        mode: Some(anodizer_core::config::StringOrU32(0o640)),
                         ..Default::default()
                     }),
                     packager: None,
@@ -3217,7 +3201,7 @@ crates:
             section: Some("utils".to_string()),
             priority: Some("optional".to_string()),
             meta: Some(true),
-            umask: Some("0o002".to_string()),
+            umask: Some(anodizer_core::config::StringOrU32(0o002)),
             mtime: Some("2023-01-01T00:00:00Z".to_string()),
             ..Default::default()
         };
@@ -3309,7 +3293,7 @@ crates:
                 file_info: Some(NfpmFileInfo {
                     owner: Some("root".to_string()),
                     group: Some("root".to_string()),
-                    mode: Some("0755".to_string()),
+                    mode: Some(anodizer_core::config::StringOrU32(0o755)),
                     mtime: Some("2023-01-01T00:00:00Z".to_string()),
                 }),
                 packager: None,
@@ -3843,7 +3827,7 @@ crates:
         assert_eq!(nfpm.section.as_deref(), Some("utils"));
         assert_eq!(nfpm.priority.as_deref(), Some("optional"));
         assert_eq!(nfpm.meta, Some(true));
-        assert_eq!(nfpm.umask.as_deref(), Some("0o002"));
+        assert_eq!(nfpm.umask.map(|u| u.value()), Some(0o002));
         assert_eq!(nfpm.mtime.as_deref(), Some("2023-01-01T00:00:00Z"));
     }
 
@@ -4118,7 +4102,7 @@ crates:
             section: Some("devel".to_string()),
             priority: Some("required".to_string()),
             meta: Some(false),
-            umask: Some("0o022".to_string()),
+            umask: Some(anodizer_core::config::StringOrU32(0o022)),
             mtime: Some("2024-06-01T12:00:00Z".to_string()),
             rpm: Some(NfpmRpmConfig {
                 summary: Some("RPM summary".to_string()),
@@ -5542,7 +5526,7 @@ crates:
                 file_info: Some(NfpmFileInfo {
                     owner: Some("{{ .Env.PKG_OWNER }}".to_string()),
                     group: Some("{{ .Env.PKG_GROUP }}".to_string()),
-                    mode: Some("0644".to_string()),
+                    mode: Some(anodizer_core::config::StringOrU32(0o644)),
                     ..Default::default()
                 }),
                 packager: None,
@@ -5601,7 +5585,7 @@ crates:
                 file_info: Some(NfpmFileInfo {
                     owner: Some("root".to_string()),
                     group: Some("wheel".to_string()),
-                    mode: Some("0644".to_string()),
+                    mode: Some(anodizer_core::config::StringOrU32(0o644)),
                     ..Default::default()
                 }),
                 packager: None,

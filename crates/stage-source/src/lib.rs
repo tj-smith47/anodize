@@ -294,7 +294,7 @@ fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<PathBuf> {
                         header.set_groupname(group).ok();
                     }
                     if let Some(mode) = info.mode {
-                        header.set_mode(mode);
+                        header.set_mode(mode.value());
                     }
                     if let Some(ref mtime_str) = info.mtime {
                         if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(mtime_str) {
@@ -2297,7 +2297,7 @@ dependencies = [
             info: Some(SourceFileInfo {
                 owner: Some("deploy".to_string()),
                 group: Some("staff".to_string()),
-                mode: Some(0o644),
+                mode: Some(anodizer_core::config::StringOrU32(0o644)),
                 mtime: Some("2024-01-01T00:00:00Z".to_string()),
             }),
         }];

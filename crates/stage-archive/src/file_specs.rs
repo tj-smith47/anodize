@@ -50,7 +50,7 @@ pub(crate) fn render_file_info(
             .as_deref()
             .map(|s| ctx.render_template(s))
             .transpose()?,
-        mode: info.mode.clone(),
+        mode: info.mode,
         mtime: info
             .mtime
             .as_deref()

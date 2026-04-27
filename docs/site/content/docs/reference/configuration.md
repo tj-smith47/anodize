@@ -173,10 +173,10 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `ai` | ChangelogAiConfig | — | AI-powered changelog enhancement configuration. |
 | `divider` | string | — | Divider string inserted between changelog groups (e.g. `"---"`). Supports templates. |
 | `filters` | ChangelogFilters | — | Commit message filters to include or exclude from the changelog. |
-| `footer` | string | — | Text appended to the changelog (inline string or path). |
+| `footer` | ContentSource | — | Text appended to the changelog. Same shape as `header`. |
 | `format` | string | — | Template for each changelog commit line. Available variables: SHA (full hash), ShortSHA (abbreviated), Message (commit subject), AuthorName, AuthorEmail, Login (per-commit GitHub username, `github` backend only), Logins (comma-separated list of all GitHub usernames in the release, `github` backend only). Default: `"{{ ShortSHA }} {{ Message }}"` |
 | `groups` | list of ChangelogGroup | — | Groups for organizing changelog entries by commit message prefix. |
-| `header` | string | — | Text prepended to the changelog (inline string or path). |
+| `header` | ContentSource | — | Text prepended to the changelog. Inline string, `from_file: <path>`, or `from_url: <url>` — symmetric with the release block's header/footer so users can compose headers from a templated file or remote endpoint (GoReleaser uses a plain string here; anodizer extends to ContentSource for consistency with `release.header`). |
 | `paths` | list of string | — | File paths to filter commits by. Only commits touching files under these paths are included. Works with `use: git` for precise per-commit filtering. With `use: github`, only the first path is used for API queries; multi-path filtering is coarse. Supports template rendering. |
 | `skip` | StringOrBool | — | Skip changelog generation. Accepts bool or template string (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional skip). |
 | `sort` | string | — | Sort order for changelog entries: "asc" or "desc" (default: "asc"). |

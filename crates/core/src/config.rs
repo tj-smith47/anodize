@@ -1113,8 +1113,8 @@ pub struct BuildOverride {
     /// Extra environment variables to set for matching targets.
     #[serde(default)]
     pub env: Option<Vec<String>>,
-    /// Extra flags to append for matching targets.
-    pub flags: Option<String>,
+    /// Extra flags to append for matching targets, one per list entry.
+    pub flags: Option<Vec<String>>,
     /// Extra features to enable for matching targets.
     pub features: Option<Vec<String>>,
 }
@@ -1300,8 +1300,10 @@ pub struct BuildConfig {
     pub env: Option<HashMap<String, HashMap<String, String>>>,
     /// Copy the binary from another build ID instead of building it.
     pub copy_from: Option<String>,
-    /// Extra flags passed to cargo build (e.g., "--locked").
-    pub flags: Option<String>,
+    /// Extra flags passed to cargo build, one per list entry (e.g., `["--release", "--locked"]`).
+    /// Each entry is template-rendered then passed verbatim as a single argv token,
+    /// so quoted shell arguments (`--cfg=feature="foo bar"`) survive intact.
+    pub flags: Option<Vec<String>>,
     /// When true, enable reproducible builds by stripping timestamps.
     pub reproducible: Option<bool>,
     /// Per-build hooks executed before and after compilation.
@@ -1631,8 +1633,11 @@ pub struct FileInfo {
     pub owner: Option<String>,
     /// File group name (e.g., "root").
     pub group: Option<String>,
-    /// File permission mode in octal (e.g., "0755" or "0o755").
-    pub mode: Option<String>,
+    /// File permission mode. Accepts a YAML int (decimal, e.g. `420` for
+    /// `0o644`) or an octal-prefixed string (`"0o644"`, `"0644"`). This
+    /// matches GoReleaser's `uint32` type for `Mode` on archive/nfpm contents
+    /// while letting users spell octal naturally in YAML.
+    pub mode: Option<StringOrU32>,
     /// File modification time in RFC3339 format (e.g., "2024-01-01T00:00:00Z").
     pub mtime: Option<String>,
 }
@@ -2824,12 +2829,10 @@ pub struct ChocolateyConfig {
     pub docs_url: Option<String>,
     /// Bug tracker URL.
     pub bug_tracker_url: Option<String>,
-    /// Space-separated tags for the Chocolatey gallery.
-    /// Accepts either a space-separated string (GoReleaser compat) or an array.
-    #[serde(
-        deserialize_with = "deserialize_space_separated_string_or_vec_opt",
-        default
-    )]
+    /// Tags for the Chocolatey gallery (joined with single spaces in the
+    /// emitted nuspec). Always a typed list — the legacy
+    /// space-separated-string form was dropped in WAVE 5.1 (DEC-11) for
+    /// IDE-completion friendliness and to remove whitespace ambiguity.
     pub tags: Option<Vec<String>>,
     /// Short summary of the package.
     pub summary: Option<String>,
@@ -3377,8 +3380,9 @@ pub struct NfpmConfig {
     pub priority: Option<String>,
     /// Whether this is a meta-package (no files, only dependencies).
     pub meta: Option<bool>,
-    /// File permission umask (e.g. "0o002").
-    pub umask: Option<String>,
+    /// File permission umask. Accepts a YAML int (`18`), an octal-prefixed
+    /// string (`"0o022"`), or a leading-zero octal string (`"022"`).
+    pub umask: Option<StringOrU32>,
     /// Default modification time for files in the package.
     pub mtime: Option<String>,
     /// RPM-specific configuration.
@@ -4281,8 +4285,9 @@ pub struct MacOSNotarizeApiConfig {
     pub key: Option<String>,
     /// API key ID. Templates allowed.
     pub key_id: Option<String>,
-    /// Timeout for notarization status polling. Default: "10m".
-    pub timeout: Option<String>,
+    /// Timeout for notarization status polling. Humantime-style string
+    /// (e.g. `"10m"`, `"15s"`, `"1h"`). Default when omitted: `"10m"`.
+    pub timeout: Option<HumanDuration>,
     /// Whether to wait for notarization to complete.
     pub wait: Option<bool>,
 }
@@ -4327,8 +4332,9 @@ pub struct MacOSNativeNotarizeConfig {
     pub profile_name: Option<String>,
     /// Whether to wait for notarization to complete.
     pub wait: Option<bool>,
-    /// Timeout in seconds for `xcrun notarytool submit --timeout`. Templates allowed.
-    pub timeout: Option<String>,
+    /// Timeout for `xcrun notarytool submit --timeout`. Humantime-style
+    /// string (e.g. `"10m"`, `"15s"`, `"1h"`).
+    pub timeout: Option<HumanDuration>,
 }
 
 // ---------------------------------------------------------------------------
@@ -4358,8 +4364,10 @@ pub struct SourceFileInfo {
     pub owner: Option<String>,
     /// File group.
     pub group: Option<String>,
-    /// File permissions mode (octal).
-    pub mode: Option<u32>,
+    /// File permissions mode. Accepts a YAML int (decimal) or an
+    /// octal-prefixed string (`"0o755"`, `"0755"`). Stored as a `u32` after
+    /// parsing — see [`StringOrU32`].
+    pub mode: Option<StringOrU32>,
     /// Modification time in RFC3339 format (supports templates).
     pub mtime: Option<String>,
 }
@@ -4571,10 +4579,14 @@ pub struct ChangelogConfig {
     pub filters: Option<ChangelogFilters>,
     /// Groups for organizing changelog entries by commit message prefix.
     pub groups: Option<Vec<ChangelogGroup>>,
-    /// Text prepended to the changelog (inline string or path).
-    pub header: Option<String>,
-    /// Text appended to the changelog (inline string or path).
-    pub footer: Option<String>,
+    /// Text prepended to the changelog. Inline string, `from_file: <path>`,
+    /// or `from_url: <url>` — symmetric with the release block's header/footer
+    /// so users can compose headers from a templated file or remote endpoint
+    /// (GoReleaser uses a plain string here; anodizer extends to ContentSource
+    /// for consistency with `release.header`).
+    pub header: Option<ContentSource>,
+    /// Text appended to the changelog. Same shape as `header`.
+    pub footer: Option<ContentSource>,
     /// Skip changelog generation. Accepts bool or template string
     /// (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional skip).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
@@ -5874,6 +5886,220 @@ where
     deserializer.deserialize_any(StringOrBoolVisitor)
 }
 
+/// A typed duration value parsed from a humantime-style string in YAML.
+///
+/// Accepts `"10m"`, `"15s"`, `"1h30m"`, `"500ms"`, etc. Used by notarize
+/// timeouts so the schema is typed and validation catches malformed values
+/// at config-load time instead of during the notarize stage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct HumanDuration(
+    #[serde(serialize_with = "serialize_human_duration")] pub std::time::Duration,
+);
+
+impl HumanDuration {
+    /// Get the underlying `Duration` value.
+    pub fn duration(&self) -> std::time::Duration {
+        self.0
+    }
+
+    /// Format the duration back to its canonical string form (`{seconds}s` or
+    /// `{minutes}m{seconds}s` depending on whole-minute alignment). Matches
+    /// the form `xcrun notarytool --timeout` accepts (a unit-suffixed integer).
+    pub fn as_humantime_string(&self) -> String {
+        let total_secs = self.0.as_secs();
+        if total_secs == 0 {
+            // Sub-second; fall back to ms.
+            return format!("{}ms", self.0.as_millis());
+        }
+        let hours = total_secs / 3600;
+        let mins = (total_secs % 3600) / 60;
+        let secs = total_secs % 60;
+        let mut out = String::new();
+        if hours > 0 {
+            out.push_str(&format!("{hours}h"));
+        }
+        if mins > 0 {
+            out.push_str(&format!("{mins}m"));
+        }
+        if secs > 0 || out.is_empty() {
+            out.push_str(&format!("{secs}s"));
+        }
+        out
+    }
+}
+
+impl<'de> Deserialize<'de> for HumanDuration {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        use serde::de::{self, Visitor};
+
+        struct DurVisitor;
+
+        impl<'de> Visitor<'de> for DurVisitor {
+            type Value = HumanDuration;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(
+                    "a duration string with unit suffix (e.g. \"10m\", \"15s\", \"1h30m\", \"500ms\")",
+                )
+            }
+
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                parse_humantime_duration(v)
+                    .map(HumanDuration)
+                    .map_err(E::custom)
+            }
+
+            fn visit_string<E: de::Error>(self, v: String) -> Result<Self::Value, E> {
+                self.visit_str(&v)
+            }
+        }
+
+        deserializer.deserialize_str(DurVisitor)
+    }
+}
+
+fn serialize_human_duration<S: serde::Serializer>(
+    d: &std::time::Duration,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(&HumanDuration(*d).as_humantime_string())
+}
+
+/// Parse a humantime-style duration string. Recognizes `ms`, `s`, `m`, `h`,
+/// `d` units and concatenated forms like `"1h30m"`. Whitespace between
+/// components is tolerated.
+fn parse_humantime_duration(input: &str) -> Result<std::time::Duration, String> {
+    let s = input.trim();
+    if s.is_empty() {
+        return Err("empty duration string".to_string());
+    }
+    let mut total = std::time::Duration::ZERO;
+    let mut number_buf = String::new();
+    let mut had_any = false;
+    let mut iter = s.chars().peekable();
+    while let Some(&c) = iter.peek() {
+        if c.is_whitespace() {
+            iter.next();
+            continue;
+        }
+        if c.is_ascii_digit() {
+            number_buf.push(c);
+            iter.next();
+            continue;
+        }
+        if number_buf.is_empty() {
+            return Err(format!("expected digit before unit in '{input}'"));
+        }
+        // Read unit (1 or 2 chars: ms, s, m, h, d).
+        let mut unit = String::new();
+        unit.push(c);
+        iter.next();
+        if let Some(&next) = iter.peek()
+            && unit == "m"
+            && next == 's'
+        {
+            unit.push('s');
+            iter.next();
+        }
+        let n: u64 = number_buf
+            .parse()
+            .map_err(|e| format!("invalid number '{number_buf}' in '{input}': {e}"))?;
+        let segment = match unit.as_str() {
+            "ms" => std::time::Duration::from_millis(n),
+            "s" => std::time::Duration::from_secs(n),
+            "m" => std::time::Duration::from_secs(n * 60),
+            "h" => std::time::Duration::from_secs(n * 3600),
+            "d" => std::time::Duration::from_secs(n * 86_400),
+            other => return Err(format!("unknown duration unit '{other}' in '{input}'")),
+        };
+        total += segment;
+        number_buf.clear();
+        had_any = true;
+    }
+    if !number_buf.is_empty() {
+        return Err(format!(
+            "trailing number '{number_buf}' without a unit in '{input}'"
+        ));
+    }
+    if !had_any {
+        return Err(format!("no duration components found in '{input}'"));
+    }
+    Ok(total)
+}
+
+/// A value that can be either a `u32` or a string parsed as octal/decimal.
+///
+/// Used by `NfpmConfig.umask` (and any future field that GoReleaser specifies
+/// as `int OR string` in YAML — the parser canonicalizes both forms to a
+/// `u32`). Accepts: `0o022`, `"0o022"`, `"022"`, `"18"`, `18`. Bare numeric
+/// YAML values are interpreted as decimal; YAML-string forms accept the
+/// `0o`/`0O` prefix to spell octal explicitly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(transparent)]
+pub struct StringOrU32(#[serde(deserialize_with = "deserialize_u32_from_string_or_int")] pub u32);
+
+impl StringOrU32 {
+    /// Get the underlying `u32` value.
+    pub fn value(&self) -> u32 {
+        self.0
+    }
+}
+
+/// Deserialize a `u32` from either a YAML int or a string in octal/decimal.
+fn deserialize_u32_from_string_or_int<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::{self, Visitor};
+
+    struct U32Visitor;
+
+    impl<'de> Visitor<'de> for U32Visitor {
+        type Value = u32;
+
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("a u32 integer or a string parseable as octal/decimal (e.g. 18, \"0o022\", \"022\")")
+        }
+
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
+            u32::try_from(v).map_err(|_| E::custom(format!("value {v} does not fit in u32")))
+        }
+
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
+            u32::try_from(v).map_err(|_| E::custom(format!("value {v} does not fit in u32")))
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            let trimmed = v.trim();
+            if let Some(rest) = trimmed
+                .strip_prefix("0o")
+                .or_else(|| trimmed.strip_prefix("0O"))
+            {
+                return u32::from_str_radix(rest, 8)
+                    .map_err(|e| E::custom(format!("invalid octal '{v}': {e}")));
+            }
+            // Bare leading-zero strings (e.g. "022") are octal — match the
+            // typical convention for unix file mode strings.
+            if trimmed.starts_with('0') && trimmed.len() > 1 {
+                return u32::from_str_radix(trimmed, 8)
+                    .map_err(|e| E::custom(format!("invalid octal '{v}': {e}")));
+            }
+            trimmed
+                .parse::<u32>()
+                .map_err(|e| E::custom(format!("invalid u32 '{v}': {e}")))
+        }
+
+        fn visit_string<E: de::Error>(self, v: String) -> Result<Self::Value, E> {
+            self.visit_str(&v)
+        }
+    }
+
+    deserializer.deserialize_any(U32Visitor)
+}
+
 /// Custom deserializer for `Option<Vec<String>>` that accepts either a single
 /// string or an array of strings. Used by `BlobConfig.cache_control`.
 fn deserialize_string_or_vec_opt<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
@@ -5917,64 +6143,6 @@ where
     }
 
     deserializer.deserialize_any(StringOrVecVisitor)
-}
-
-/// Custom deserializer for `Option<Vec<String>>` that accepts either a
-/// space-separated string (split into individual tags) or an array of strings.
-/// Used by `ChocolateyConfig.tags` for GoReleaser compatibility where tags
-/// are a single space-delimited string.
-fn deserialize_space_separated_string_or_vec_opt<'de, D>(
-    deserializer: D,
-) -> Result<Option<Vec<String>>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    use serde::de::{self, Visitor};
-
-    struct SpaceSepOrVecVisitor;
-
-    impl<'de> Visitor<'de> for SpaceSepOrVecVisitor {
-        type Value = Option<Vec<String>>;
-
-        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str("a space-separated string, a list of strings, or null")
-        }
-
-        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
-            let tags: Vec<String> = v.split_whitespace().map(|s| s.to_owned()).collect();
-            if tags.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(tags))
-            }
-        }
-
-        fn visit_string<E: de::Error>(self, v: String) -> Result<Self::Value, E> {
-            self.visit_str(&v)
-        }
-
-        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
-            let mut items = Vec::new();
-            while let Some(item) = seq.next_element::<String>()? {
-                items.push(item);
-            }
-            if items.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(items))
-            }
-        }
-
-        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
-            Ok(None)
-        }
-
-        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
-            Ok(None)
-        }
-    }
-
-    deserializer.deserialize_any(SpaceSepOrVecVisitor)
 }
 
 // ---------------------------------------------------------------------------
@@ -6640,8 +6808,53 @@ crates:
 "##;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let cl = config.changelog.as_ref().unwrap();
-        assert_eq!(cl.header, Some("# My Release Notes".to_string()));
-        assert_eq!(cl.footer, Some("---\nGenerated by anodizer".to_string()));
+        assert_eq!(
+            cl.header,
+            Some(ContentSource::Inline("# My Release Notes".to_string()))
+        );
+        assert_eq!(
+            cl.footer,
+            Some(ContentSource::Inline(
+                "---\nGenerated by anodizer".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn test_changelog_header_from_file_and_url() {
+        let yaml = r#"
+project_name: test
+changelog:
+  header:
+    from_file: ./HEADER.md
+  footer:
+    from_url: https://example.com/footer.md
+    headers:
+      Accept: text/markdown
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let cl = config.changelog.as_ref().unwrap();
+        match cl.header.as_ref().unwrap() {
+            ContentSource::FromFile { from_file } => assert_eq!(from_file, "./HEADER.md"),
+            other => panic!("expected FromFile, got {other:?}"),
+        }
+        match cl.footer.as_ref().unwrap() {
+            ContentSource::FromUrl { from_url, headers } => {
+                assert_eq!(from_url, "https://example.com/footer.md");
+                assert_eq!(
+                    headers
+                        .as_ref()
+                        .and_then(|m| m.get("Accept"))
+                        .map(String::as_str),
+                    Some("text/markdown")
+                );
+            }
+            other => panic!("expected FromUrl, got {other:?}"),
+        }
     }
 
     #[test]
@@ -8360,8 +8573,10 @@ name = "tool"
     }
 
     #[test]
-    fn test_chocolatey_tags_space_separated_string() {
-        // GoReleaser uses a plain space-separated string for tags.
+    fn test_chocolatey_tags_space_separated_string_rejected() {
+        // SCH-15 / DEC-11 hard-break: the legacy space-separated string form
+        // is rejected; tags must be a typed list. Joining for the nuspec
+        // emit happens at stage time on a trusted Vec<String>.
         let yaml = r#"
 project_name: test
 crates:
@@ -8374,6 +8589,31 @@ crates:
           owner: myorg
           name: mytool
         tags: "cli tool automation"
+"#;
+        let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
+        assert!(
+            result.is_err(),
+            "string-form chocolatey tags must be rejected (use a list)"
+        );
+    }
+
+    #[test]
+    fn test_chocolatey_tags_list_form() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: mytool
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      chocolatey:
+        project_repo:
+          owner: myorg
+          name: mytool
+        tags:
+          - cli
+          - tool
+          - automation
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let choco = config.crates[0]
@@ -8395,7 +8635,10 @@ crates:
     }
 
     #[test]
-    fn test_chocolatey_tags_empty_string_is_none() {
+    fn test_chocolatey_tags_empty_list_is_some_empty() {
+        // Post-SCH-15: typed list. An explicit empty list parses as
+        // `Some(vec![])` (DEC-11 hard-break — old empty-string ergonomics
+        // are gone).
         let yaml = r#"
 project_name: test
 crates:
@@ -8407,7 +8650,7 @@ crates:
         project_repo:
           owner: myorg
           name: mytool
-        tags: ""
+        tags: []
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let choco = config.crates[0]
@@ -8418,7 +8661,7 @@ crates:
             .as_ref()
             .unwrap();
 
-        assert!(choco.tags.is_none());
+        assert_eq!(choco.tags, Some(Vec::<String>::new()));
     }
 
     // ---- WingetConfig tests ----
@@ -9315,7 +9558,8 @@ defaults:
           - "x86_64-*"
         features:
           - simd
-        flags: "--release"
+        flags:
+          - "--release"
         env:
           - CC=gcc
       - targets:
@@ -9330,7 +9574,7 @@ crates: []
         assert_eq!(overrides.len(), 2);
         assert_eq!(overrides[0].targets, vec!["x86_64-*"]);
         assert_eq!(overrides[0].features, Some(vec!["simd".to_string()]));
-        assert_eq!(overrides[0].flags, Some("--release".to_string()));
+        assert_eq!(overrides[0].flags, Some(vec!["--release".to_string()]));
         assert!(
             overrides[0]
                 .env

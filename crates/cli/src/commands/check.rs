@@ -808,7 +808,9 @@ mod tests {
         config.changelog = Some(ChangelogConfig {
             skip: Some(anodizer_core::config::StringOrBool::Bool(true)),
             sort: Some("desc".to_string()),
-            header: Some("header".to_string()),
+            header: Some(anodizer_core::config::ContentSource::Inline(
+                "header".to_string(),
+            )),
             groups: Some(vec![ChangelogGroup {
                 title: "Features".to_string(),
                 regexp: Some("^feat".to_string()),
