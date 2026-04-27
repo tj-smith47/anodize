@@ -74,7 +74,7 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `bluesky` | BlueskyAnnounce | — | Bluesky announcement configuration. |
 | `discord` | DiscordAnnounce | — | Discord announcement configuration. |
 | `discourse` | DiscourseAnnounce | — | Discourse announcement configuration. |
-| `email` | EmailAnnounce | — | Email announcement configuration. |
+| `email` | EmailAnnounce | — | Email announcement configuration. SCH-34 (WAVE 5.6) — accepts the historical `smtp:` key as an alias because GR itself renamed `smtp:` -> `email:` in v1.21+ and kept the alias for migration. Mirroring GR's own alias keeps "use what GR uses today" consistent without forcing a re-yaml of legacy GR configs. |
 | `linkedin` | LinkedInAnnounce | — | LinkedIn announcement configuration. |
 | `mastodon` | MastodonAnnounce | — | Mastodon announcement configuration. |
 | `mattermost` | MattermostAnnounce | — | Mattermost announcement configuration. |
@@ -383,7 +383,7 @@ Cannot be combined with `url.template:` — set one or the other. If both are pr
 | `license` | string | — | License for LSM metadata. |
 | `maintainer` | string | — | Maintainer for LSM metadata. |
 | `name` | string | — | Display name embedded in the self-extracting archive. |
-| `name_template` | string | — | Output filename template (default includes project, version, os, arch). |
+| `name_template` | string | — | Output filename template (default includes project, version, os, arch). SCH-11 (WAVE 5.6) accepts the GR-canonical `filename:` key as an alias for the historical anodizer `name_template:` spelling. |
 | `script` | string | — | Startup script to run when the archive is extracted and executed. Required — the archive will not be created without this. |
 | `skip` | StringOrBool | — | Skip this config. Accepts bool or template string. |
 

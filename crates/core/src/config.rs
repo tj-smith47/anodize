@@ -5037,7 +5037,12 @@ pub struct AnnounceConfig {
     pub teams: Option<TeamsAnnounce>,
     /// Mattermost announcement configuration.
     pub mattermost: Option<MattermostAnnounce>,
-    /// Email announcement configuration.
+    /// Email announcement configuration. SCH-34 (WAVE 5.6) — accepts the
+    /// historical `smtp:` key as an alias because GR itself renamed
+    /// `smtp:` -> `email:` in v1.21+ and kept the alias for migration.
+    /// Mirroring GR's own alias keeps "use what GR uses today" consistent
+    /// without forcing a re-yaml of legacy GR configs.
+    #[serde(alias = "smtp")]
     pub email: Option<EmailAnnounce>,
     /// Reddit announcement configuration.
     pub reddit: Option<RedditAnnounce>,
@@ -6207,6 +6212,9 @@ pub struct MakeselfConfig {
     /// Build IDs filter: only include artifacts whose `id` is in this list.
     pub ids: Option<Vec<String>>,
     /// Output filename template (default includes project, version, os, arch).
+    /// SCH-11 (WAVE 5.6) accepts the GR-canonical `filename:` key as an alias
+    /// for the historical anodizer `name_template:` spelling.
+    #[serde(alias = "filename")]
     pub name_template: Option<String>,
     /// Display name embedded in the self-extracting archive.
     pub name: Option<String>,
@@ -8630,6 +8638,115 @@ name = "tool"
         assert_eq!(choco.description, Some("A tool".to_string()));
         let repo = choco.repository.as_ref().unwrap();
         assert_eq!(repo.owner.as_deref(), Some("org"));
+    }
+
+    // ---- WAVE 5.6 alias tests (SCH-5/11/34) ----
+
+    #[test]
+    fn test_top_level_plural_canonical_keys_parse() {
+        // SCH-5 verification — the plural canonical keys (nfpms, dmgs,
+        // msis, flatpaks) are anodizer's only spelling. Singular forms
+        // would be rejected as unknown fields when present at top level.
+        let yaml = r#"
+project_name: test
+defaults:
+  nfpms:
+    formats: [deb]
+  dmgs:
+    name: test
+  msis:
+    name: test
+  flatpaks:
+    runtime: org.freedesktop.Platform
+crates: []
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let d = config.defaults.unwrap();
+        assert!(d.nfpms.is_some());
+        assert!(d.dmgs.is_some());
+        assert!(d.msis.is_some());
+        assert!(d.flatpaks.is_some());
+    }
+
+    #[test]
+    fn test_makeself_filename_alias_for_name_template() {
+        // SCH-11: GR-canonical `filename:` aliases anodizer's
+        // `name_template:` so configs copied from GR docs parse.
+        let yaml = r#"
+project_name: test
+makeselfs:
+  - id: default
+    filename: "myapp-{{ .Version }}.run"
+    script: install.sh
+crates: []
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(
+            config.makeselfs[0].name_template.as_deref(),
+            Some("myapp-{{ .Version }}.run")
+        );
+    }
+
+    #[test]
+    fn test_makeself_canonical_name_template_still_works() {
+        let yaml = r#"
+project_name: test
+makeselfs:
+  - id: default
+    name_template: "myapp.run"
+    script: install.sh
+crates: []
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(
+            config.makeselfs[0].name_template.as_deref(),
+            Some("myapp.run")
+        );
+    }
+
+    #[test]
+    fn test_announce_smtp_aliases_email() {
+        // SCH-34: mirrors GR's own smtp -> email rename (GR keeps both as
+        // alias; anodizer matches).
+        let yaml = r#"
+project_name: test
+announce:
+  smtp:
+    enabled: true
+    host: smtp.example.com
+    port: 587
+    username: user
+    from: from@example.com
+    to: ["to@example.com"]
+    subject_template: "Release {{ .Version }}"
+    body_template: "Body"
+crates: []
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(
+            config.announce.unwrap().email.is_some(),
+            "smtp: should alias to email:"
+        );
+    }
+
+    #[test]
+    fn test_announce_canonical_email_still_works() {
+        let yaml = r#"
+project_name: test
+announce:
+  email:
+    enabled: true
+    host: smtp.example.com
+    port: 587
+    username: user
+    from: from@example.com
+    to: ["to@example.com"]
+    subject_template: "Release {{ .Version }}"
+    body_template: "Body"
+crates: []
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(config.announce.unwrap().email.is_some());
     }
 
     // ---- WAVE 5.5 hard-break tests (SCH-4/13/16/21/30, DEC-12/13) ----

@@ -529,7 +529,7 @@
           ]
         },
         "email": {
-          "description": "Email announcement configuration.",
+          "description": "Email announcement configuration. SCH-34 (WAVE 5.6) — accepts the historical `smtp:` key as an alias because GR itself renamed `smtp:` -> `email:` in v1.21+ and kept the alias for migration. Mirroring GR's own alias keeps \"use what GR uses today\" consistent without forcing a re-yaml of legacy GR configs.",
           "default": null,
           "anyOf": [
             {
@@ -6804,7 +6804,7 @@
           ]
         },
         "name_template": {
-          "description": "Output filename template (default includes project, version, os, arch).",
+          "description": "Output filename template (default includes project, version, os, arch). SCH-11 (WAVE 5.6) accepts the GR-canonical `filename:` key as an alias for the historical anodizer `name_template:` spelling.",
           "default": null,
           "type": [
             "string",
