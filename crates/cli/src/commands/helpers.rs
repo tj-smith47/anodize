@@ -346,13 +346,38 @@ pub fn resolve_git_context(
     Ok(())
 }
 
+/// Combine `defaults.env` and top-level `config.env` into a single list with
+/// deterministic precedence: defaults entries come first so any same-keyed
+/// entry in `config.env` clobbers the defaults version on the
+/// last-one-wins-per-key application path inside `setup_env`.
+///
+/// Returns `None` when both inputs are `None`. Returns the cloned non-None
+/// input when only one side is set.
+fn merge_env_with_defaults(
+    defaults_env: Option<&Vec<String>>,
+    config_env: Option<&Vec<String>>,
+) -> Option<Vec<String>> {
+    match (defaults_env, config_env) {
+        (None, None) => None,
+        (Some(d), None) => Some(d.clone()),
+        (None, Some(c)) => Some(c.clone()),
+        (Some(d), Some(c)) => {
+            let mut v = Vec::with_capacity(d.len() + c.len());
+            v.extend(d.iter().cloned());
+            v.extend(c.iter().cloned());
+            Some(v)
+        }
+    }
+}
+
 /// Load process environment variables, `.env` files, and user-defined env vars
 /// into the context's template variables.
 ///
 /// Loading order (later wins):
 /// 1. All process environment variables (`std::env::vars()`)
 /// 2. Variables from `.env` files specified in config
-/// 3. Explicit `env:` map entries from config
+/// 3. Explicit `env:` map entries — `defaults.env` first, then `config.env`
+///    (so per-config entries override defaults on duplicate keys)
 ///
 /// This ensures config-defined env vars always take precedence over process
 /// environment, matching GoReleaser's behavior where all process env vars are
@@ -403,7 +428,11 @@ pub fn setup_env(
 
     // Populate user-defined env vars into template context (highest priority).
     // GoReleaser renders env values through the template engine.
-    if let Some(ref env_list) = config.env {
+    let merged_env = merge_env_with_defaults(
+        config.defaults.as_ref().and_then(|d| d.env.as_ref()),
+        config.env.as_ref(),
+    );
+    if let Some(ref env_list) = merged_env {
         let rendered_pairs =
             anodizer_core::config::render_env_entries(env_list, |v| ctx.render_template(v))
                 .with_context(|| "config.env: parse and render entries")?;
@@ -1448,6 +1477,116 @@ mod tests {
                 "invalid ANODIZER_FORCE_TOKEN should fall back to env detection"
             );
             assert_eq!(ctx.options.token.as_deref(), Some("glpat-detected"));
+        });
+    }
+
+    // ---- merge_env_with_defaults --------------------------------------
+
+    #[test]
+    fn test_merge_env_with_defaults_both_none_yields_none() {
+        assert!(merge_env_with_defaults(None, None).is_none());
+    }
+
+    #[test]
+    fn test_merge_env_with_defaults_only_defaults_yields_defaults() {
+        let d = vec!["FOO=defaults".to_string()];
+        let merged = merge_env_with_defaults(Some(&d), None).unwrap();
+        assert_eq!(merged, vec!["FOO=defaults".to_string()]);
+    }
+
+    #[test]
+    fn test_merge_env_with_defaults_only_config_yields_config() {
+        let c = vec!["BAR=top".to_string()];
+        let merged = merge_env_with_defaults(None, Some(&c)).unwrap();
+        assert_eq!(merged, vec!["BAR=top".to_string()]);
+    }
+
+    #[test]
+    fn test_merge_env_with_defaults_disjoint_keys_concat() {
+        // defaults.env contributes when no per-config entry shadows it.
+        let d = vec!["FOO=defaults".to_string()];
+        let c = vec!["BAR=top".to_string()];
+        let merged = merge_env_with_defaults(Some(&d), Some(&c)).unwrap();
+        assert_eq!(
+            merged,
+            vec!["FOO=defaults".to_string(), "BAR=top".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_merge_env_with_defaults_top_level_wins_on_collision() {
+        // Defaults provide FOO=a, top-level overrides with FOO=b.
+        // Order is defaults-first so the per-key last-write-wins inside
+        // setup_env produces FOO=b.
+        let d = vec!["FOO=a".to_string()];
+        let c = vec!["FOO=b".to_string()];
+        let merged = merge_env_with_defaults(Some(&d), Some(&c)).unwrap();
+        // Both entries appear; the consumer (setup_env) iterates in order
+        // and the last write to a key wins.
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0], "FOO=a");
+        assert_eq!(merged[1], "FOO=b");
+    }
+
+    // ---- defaults.env wired into setup_env ------------------------------
+
+    use anodizer_core::config::Defaults;
+    use serial_test::serial;
+
+    #[test]
+    #[serial]
+    fn test_setup_env_inherits_defaults_env_when_crate_unset() {
+        with_clean_token_env(|| {
+            unsafe { std::env::remove_var("DEFAULTS_ENV_INHERITED") };
+            let config = Config {
+                defaults: Some(Defaults {
+                    env: Some(vec!["DEFAULTS_ENV_INHERITED=defaults".to_string()]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            let mut ctx = Context::new(config.clone(), ContextOptions::default());
+            let log =
+                anodizer_core::log::StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
+            setup_env(&mut ctx, &config, &log).expect("setup_env should succeed");
+            assert_eq!(
+                ctx.template_vars()
+                    .all_config_env()
+                    .get("DEFAULTS_ENV_INHERITED")
+                    .map(|s| s.as_str()),
+                Some("defaults"),
+                "defaults.env entry should populate the template context",
+            );
+            unsafe { std::env::remove_var("DEFAULTS_ENV_INHERITED") };
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn test_setup_env_top_level_env_wins_over_defaults_env() {
+        with_clean_token_env(|| {
+            unsafe { std::env::remove_var("DEFAULTS_ENV_OVERRIDE") };
+            let config = Config {
+                defaults: Some(Defaults {
+                    env: Some(vec!["DEFAULTS_ENV_OVERRIDE=a".to_string()]),
+                    ..Default::default()
+                }),
+                env: Some(vec!["DEFAULTS_ENV_OVERRIDE=b".to_string()]),
+                ..Default::default()
+            };
+            let mut ctx = Context::new(config.clone(), ContextOptions::default());
+            let log =
+                anodizer_core::log::StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
+            setup_env(&mut ctx, &config, &log).expect("setup_env should succeed");
+            assert_eq!(
+                ctx.template_vars()
+                    .all_config_env()
+                    .get("DEFAULTS_ENV_OVERRIDE")
+                    .map(|s| s.as_str()),
+                Some("b"),
+                "top-level config.env should override defaults.env on duplicate key",
+            );
+            unsafe { std::env::remove_var("DEFAULTS_ENV_OVERRIDE") };
         });
     }
 }
