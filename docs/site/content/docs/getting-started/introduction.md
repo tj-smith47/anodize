@@ -47,7 +47,7 @@ crates:
     publish:
       cargo: {}
       homebrew:
-        tap:
+        repository:
           owner: myorg
           name: homebrew-tap
 ```

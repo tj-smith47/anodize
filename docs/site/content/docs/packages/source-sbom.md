@@ -237,14 +237,14 @@ The config accepts both singular `sbom` (single object) and plural `sboms` (arra
 
 ### Disabling an SBOM config
 
-Disable with a boolean or a template expression:
+Skip with a boolean or a template expression:
 
 ```yaml
 sboms:
   - id: default
-    disable: true
+    skip: true
   - id: conditional
-    disable: "{{ if Env.SKIP_SBOM }}true{{ endif }}"
+    skip: "{{ if Env.SKIP_SBOM }}true{{ endif }}"
 ```
 
 ---

@@ -14,7 +14,7 @@ crates:
   - name: myapp
     publish:
       homebrew:
-        tap:
+        repository:
           owner: myorg
           name: homebrew-tap
 ```
@@ -23,8 +23,8 @@ crates:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `tap.owner` | string | — | GitHub owner of the tap repo |
-| `tap.name` | string | — | Tap repository name |
+| `repository.owner` | string | — | GitHub owner of the tap repo |
+| `repository.name` | string | — | Tap repository name |
 | `folder` | string | `Formula` | Folder within the tap repo |
 | `description` | string | none | Formula description |
 | `license` | string | none | License identifier |
@@ -44,7 +44,7 @@ Anodizer generates a formula with:
 ```yaml
 publish:
   homebrew:
-    tap:
+    repository:
       owner: myorg
       name: homebrew-tap
     folder: Formula

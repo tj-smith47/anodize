@@ -14,7 +14,7 @@ crates:
   - name: myapp
     publish:
       chocolatey:
-        project_repo:
+        repository:
           owner: myorg
           name: myapp
         license: MIT
@@ -26,8 +26,8 @@ crates:
 |-------|------|---------|-------------|
 | `name` | string | crate name | Override the Chocolatey package name |
 | `ids` | string[] | none | Build ID filter: only include artifacts whose `id` is in this list |
-| `project_repo.owner` | string | **required** | GitHub owner of the project repository |
-| `project_repo.name` | string | **required** | GitHub repository name |
+| `repository.owner` | string | **required** | GitHub owner of the project repository |
+| `repository.name` | string | **required** | GitHub repository name |
 | `package_source_url` | string | none | URL shown as the package source in the Chocolatey gallery |
 | `owners` | string | none | Chocolatey gallery package owner username |
 | `title` | string | package name | Display title in the gallery (supports templates) |
@@ -98,7 +98,7 @@ crates:
     publish:
       chocolatey:
         name: myapp
-        project_repo:
+        repository:
           owner: myorg
           name: myapp
         title: "My App"

@@ -14,7 +14,7 @@ crates:
   - name: myapp
     publish:
       scoop:
-        bucket:
+        repository:
           owner: myorg
           name: scoop-bucket
 ```
@@ -23,8 +23,8 @@ crates:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `bucket.owner` | string | — | GitHub owner of the bucket repo |
-| `bucket.name` | string | — | Bucket repository name |
+| `repository.owner` | string | — | GitHub owner of the bucket repo |
+| `repository.name` | string | — | Bucket repository name |
 | `description` | string | none | Manifest description |
 | `license` | string | none | License identifier |
 

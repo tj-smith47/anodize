@@ -54,5 +54,5 @@ defaults:
 ```yaml
 defaults:
   checksum:
-    disable: true
+    skip: true
 ```

@@ -39,7 +39,7 @@ crates:
 crates:
   - name: myapp
     docker_digest:
-      disable: true
+      skip: true
 ```
 
 ## Using digests

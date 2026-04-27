@@ -14,7 +14,7 @@ crates:
   - name: myapp
     publish:
       winget:
-        manifests_repo:
+        repository:
           owner: myorg
           name: winget-pkgs
         publisher: "My Organization"

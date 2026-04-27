@@ -166,7 +166,7 @@ crates:
       #   no_verify: false
       #   features: [telemetry]
       homebrew:
-        tap:
+        repository:
           owner: tj-smith47
           name: homebrew-tap
         directory: Formula
@@ -177,7 +177,7 @@ crates:
         test: |
           system "#{bin}/cfgd", "--version"
       scoop:
-        bucket:
+        repository:
           owner: tj-smith47
           name: scoop-bucket
         description: "Declarative machine configuration management"
@@ -479,15 +479,15 @@ format_overrides:
 | `cargo.offline` | bool | `false` | Pass `--offline` |
 | `cargo.frozen` | bool | `false` | Pass `--frozen` |
 | `cargo.skip` | bool or string | `false` | Peer-publisher skip (template-aware: `true`/`false`/`"auto"`) |
-| `homebrew.tap.owner` | string | -- | Homebrew tap repo owner |
-| `homebrew.tap.name` | string | -- | Homebrew tap repo name |
+| `homebrew.repository.owner` | string | -- | Homebrew tap repo owner |
+| `homebrew.repository.name` | string | -- | Homebrew tap repo name |
 | `homebrew.folder` | string | `Formula` | Formula directory in tap |
 | `homebrew.description` | string | -- | Formula description |
 | `homebrew.license` | string | -- | Formula license |
 | `homebrew.install` | string | -- | Homebrew install script |
 | `homebrew.test` | string | -- | Homebrew test script |
-| `scoop.bucket.owner` | string | -- | Scoop bucket repo owner |
-| `scoop.bucket.name` | string | -- | Scoop bucket repo name |
+| `scoop.repository.owner` | string | -- | Scoop bucket repo owner |
+| `scoop.repository.name` | string | -- | Scoop bucket repo name |
 | `scoop.description` | string | -- | Scoop manifest description |
 | `scoop.license` | string | -- | Scoop manifest license |
 

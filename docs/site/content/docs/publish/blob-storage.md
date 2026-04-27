@@ -145,7 +145,7 @@ crates:
         include_meta: true
         extra_files:
           - glob: dist/checksums.txt
-        disable: "{{ if IsSnapshot }}true{{ endif }}"
+        skip: "{{ if IsSnapshot }}true{{ endif }}"
 ```
 
 ```yaml

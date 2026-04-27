@@ -14,13 +14,13 @@ crates:
   - name: kubectl-mytool
     publish:
       krew:
-        manifests_repo:
+        repository:
           owner: myorg
           name: krew-index
         short_description: "A kubectl plugin for managing things"
 ```
 
-Both `manifests_repo` (or `repository`) and `short_description` are required. The publisher will error if either is missing.
+Both `repository` and `short_description` are required. The publisher will error if either is missing.
 
 ## Krew config fields
 
@@ -28,9 +28,7 @@ Both `manifests_repo` (or `repository`) and `short_description` are required. Th
 |-------|------|---------|-------------|
 | `name` | string | crate name | Override the plugin name in the manifest |
 | `ids` | list of strings | all | Build IDs filter: only include artifacts whose `id` is in this list |
-| `manifests_repo.owner` | string | -- | GitHub owner of the krew-index fork |
-| `manifests_repo.name` | string | -- | Repository name of the krew-index fork |
-| `repository` | object | none | Unified repository config (preferred over `manifests_repo`) -- supports `owner`, `name`, `token`, `branch`, `git`, and `pull_request` |
+| `repository` | object | **required** | Unified repository config — supports `owner`, `name`, `token`, `branch`, `git`, and `pull_request` |
 | `commit_author` | object | none | Commit author name, email, and optional signing config |
 | `commit_msg_template` | string | auto | Custom commit message template |
 | `description` | string | **required** | Full description of the kubectl plugin |
@@ -125,7 +123,7 @@ Use `url_template` to override the default release download URLs:
 ```yaml
 krew:
   url_template: "https://cdn.example.com/{{ ProjectName }}/{{ Version }}/{{ ProjectName }}-{{ Os }}-{{ Arch }}.tar.gz"
-  manifests_repo:
+  repository:
     owner: myorg
     name: krew-index
   short_description: "A kubectl plugin"
@@ -139,7 +137,7 @@ crates:
   - name: kubectl-mytool
     publish:
       krew:
-        manifests_repo:
+        repository:
           owner: myorg
           name: krew-index
         short_description: "Manage Kubernetes resources efficiently"
