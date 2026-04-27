@@ -99,12 +99,10 @@ impl Stage for PublishStage {
         // Package managers often reference release artifacts by URL+digest, so
         // those URLs must be live before the manifests are published.
         //
-        // crates.io remains first — it's the authoritative Rust registry and
-        // must succeed before anything downstream runs. `aur_source`/`aur_sources`
+        // crates.io is dispatched first (after the macro definitions below)
+        // and is fatal — it's the authoritative Rust registry and must
+        // succeed before anything downstream runs. `aur_source`/`aur_sources`
         // run last to match GoReleaser.
-
-        // 1. crates.io (cargo) — fatal (authoritative registry).
-        publish_to_cargo(ctx, &selected, &log)?;
 
         // ---- Infrastructure publishers (run before package managers) ----
 
@@ -122,93 +120,130 @@ impl Stage for PublishStage {
 
         // ---- Package-manager publishers (consume URLs from releases above) ----
         //
-        // Each block honors a CLI-level `--skip=<name>` flag (FOLL-1).
-        // Names match the GoReleaser convention: `brew`, `scoop`, `choco`,
-        // `winget`, `aur`, `krew`, `nix` (cargo is honored inside
-        // `publish_to_cargo` itself).
+        // Every entry below is dispatched through one of two macros so the
+        // skip gate, log line, and label are produced uniformly:
+        //
+        //   per_crate!  — fan out per `selected` crate that has the publisher
+        //                  configured. Predicate filters `PublishConfig`.
+        //   top_level!  — single top-level call (no per-crate fan-out).
+        //
+        // Skip names match GoReleaser convention: `brew`, `scoop`, `choco`,
+        // `winget`, `aur`, `krew`, `nix`, `cargo`. The skip gate fires from
+        // here for every publisher (cargo included) so the user sees a single
+        // uniform "X: skipped via --skip=X" line regardless of which publisher
+        // owns the actual subprocess. `--skip=brew` and `--skip=aur` each gate
+        // two related sub-publishers (formula+casks, binary+source).
 
-        // 8. Homebrew — one call per crate that has a homebrew config.
-        if !ctx.should_skip("brew") {
-            for crate_name in &crates_with_publisher(ctx, &selected, |p| p.homebrew.is_some()) {
-                try_publish!("homebrew", publish_to_homebrew(ctx, crate_name, &log));
-            }
-        } else {
-            log.status("homebrew: skipped via --skip=brew");
+        // Dispatcher helpers — collapse per-publisher boilerplate.
+        // Each macro:
+        //   1. checks `ctx.should_skip($skip_name)`,
+        //   2. emits "{label}: skipped via --skip={skip_name}" if skipped,
+        //   3. otherwise runs the publisher and routes errors through
+        //      `try_publish!` (collected for end-of-stage aggregation).
+        macro_rules! per_crate {
+            ($skip:expr, $label:expr, $pred:expr, $run:expr) => {{
+                if ctx.should_skip($skip) {
+                    log.status(&format!("{}: skipped via --skip={}", $label, $skip));
+                } else {
+                    for crate_name in &crates_with_publisher(ctx, &selected, $pred) {
+                        try_publish!($label, $run(ctx, crate_name, &log));
+                    }
+                }
+            }};
+        }
+        macro_rules! top_level {
+            ($skip:expr, $label:expr, $run:expr) => {{
+                if ctx.should_skip($skip) {
+                    log.status(&format!("{}: skipped via --skip={}", $label, $skip));
+                } else {
+                    try_publish!($label, $run(ctx, &log));
+                }
+            }};
         }
 
-        // 9. Scoop — one call per crate that has a scoop config.
-        if !ctx.should_skip("scoop") {
-            for crate_name in &crates_with_publisher(ctx, &selected, |p| p.scoop.is_some()) {
-                try_publish!("scoop", publish_to_scoop(ctx, crate_name, &log));
-            }
+        // Cargo (crates.io) — top-level by virtue of doing its own crate
+        // walk + topo sort internally. Fatal: any error aborts the stage,
+        // matching the "authoritative registry must succeed first" rule.
+        if ctx.should_skip("cargo") {
+            log.status("cargo: skipped via --skip=cargo");
         } else {
-            log.status("scoop: skipped via --skip=scoop");
+            publish_to_cargo(ctx, &selected, &log)?;
         }
 
-        // 10. Chocolatey — one call per crate that has a chocolatey config.
-        if !ctx.should_skip("choco") {
-            for crate_name in &crates_with_publisher(ctx, &selected, |p| p.chocolatey.is_some()) {
-                try_publish!("chocolatey", publish_to_chocolatey(ctx, crate_name, &log));
-            }
-        } else {
-            log.status("chocolatey: skipped via --skip=choco");
-        }
+        // 8. Homebrew formulae — per-crate.
+        per_crate!(
+            "brew",
+            "homebrew",
+            |p: &PublishConfig| p.homebrew.is_some(),
+            publish_to_homebrew
+        );
 
-        // 11. WinGet — one call per crate that has a winget config.
-        if !ctx.should_skip("winget") {
-            for crate_name in &crates_with_publisher(ctx, &selected, |p| p.winget.is_some()) {
-                try_publish!("winget", publish_to_winget(ctx, crate_name, &log));
-            }
-        } else {
-            log.status("winget: skipped via --skip=winget");
-        }
+        // 9. Scoop — per-crate.
+        per_crate!(
+            "scoop",
+            "scoop",
+            |p: &PublishConfig| p.scoop.is_some(),
+            publish_to_scoop
+        );
 
-        // 12. AUR — one call per crate that has an aur config.
-        if !ctx.should_skip("aur") {
-            for crate_name in &crates_with_publisher(ctx, &selected, |p| p.aur.is_some()) {
-                try_publish!("aur", publish_to_aur(ctx, crate_name, &log));
-            }
-        } else {
-            log.status("aur: skipped via --skip=aur");
-        }
+        // 10. Chocolatey — per-crate.
+        per_crate!(
+            "choco",
+            "chocolatey",
+            |p: &PublishConfig| p.chocolatey.is_some(),
+            publish_to_chocolatey
+        );
 
-        // 13. Krew — one call per crate that has a krew config.
-        if !ctx.should_skip("krew") {
-            for crate_name in &crates_with_publisher(ctx, &selected, |p| p.krew.is_some()) {
-                try_publish!("krew", publish_to_krew(ctx, crate_name, &log));
-            }
-        } else {
-            log.status("krew: skipped via --skip=krew");
-        }
+        // 11. WinGet — per-crate.
+        per_crate!(
+            "winget",
+            "winget",
+            |p: &PublishConfig| p.winget.is_some(),
+            publish_to_winget
+        );
 
-        // 14. Nix — one call per crate that has a nix config.
-        if !ctx.should_skip("nix") {
-            for crate_name in &crates_with_publisher(ctx, &selected, |p| p.nix.is_some()) {
-                try_publish!("nix", publish_to_nix(ctx, crate_name, &log));
-            }
-        } else {
-            log.status("nix: skipped via --skip=nix");
-        }
+        // 12. AUR (binary) — per-crate. Shares `--skip=aur` with aur-source.
+        per_crate!(
+            "aur",
+            "aur",
+            |p: &PublishConfig| p.aur.is_some(),
+            publish_to_aur
+        );
+
+        // 13. Krew — per-crate.
+        per_crate!(
+            "krew",
+            "krew",
+            |p: &PublishConfig| p.krew.is_some(),
+            publish_to_krew
+        );
+
+        // 14. Nix — per-crate.
+        per_crate!(
+            "nix",
+            "nix",
+            |p: &PublishConfig| p.nix.is_some(),
+            publish_to_nix
+        );
 
         // 15. Homebrew Casks — top-level publisher (GoReleaser parity).
-        if !ctx.should_skip("brew") {
-            try_publish!(
-                "homebrew-casks",
-                publish_top_level_homebrew_casks(ctx, &log)
-            );
-        }
+        // Shares `--skip=brew` with the per-crate formula publisher above; the
+        // skip emits twice (once for "homebrew", once for "homebrew-casks") so
+        // operators see exactly which surface was suppressed.
+        top_level!("brew", "homebrew-casks", publish_top_level_homebrew_casks);
 
         // ---- AUR source last (GoReleaser parity) ----
 
         // 16. AUR source packages — per-crate publisher.
-        if !ctx.should_skip("aur") {
-            for crate_name in &crates_with_publisher(ctx, &selected, |p| p.aur_source.is_some()) {
-                try_publish!("aur-source", publish_to_aur_source(ctx, crate_name, &log));
-            }
+        per_crate!(
+            "aur",
+            "aur-source",
+            |p: &PublishConfig| p.aur_source.is_some(),
+            publish_to_aur_source
+        );
 
-            // 17. AUR source packages — top-level array (GoReleaser `aur_sources`).
-            try_publish!("aur-sources", publish_top_level_aur_sources(ctx, &log));
-        }
+        // 17. AUR source packages — top-level array (GoReleaser `aur_sources`).
+        top_level!("aur", "aur-sources", publish_top_level_aur_sources);
 
         if errors.is_empty() {
             Ok(())

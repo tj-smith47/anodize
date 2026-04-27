@@ -975,9 +975,10 @@ pub struct PublishDefaults {
     pub homebrew: Option<HomebrewConfig>,
     /// Default crates.io publish settings, merged into per-crate `publish.cargo`.
     ///
-    /// TODO(WAVE-?): allow per-crate `publish.cargo` to be `OneOrMany<CargoPublishConfig>`
-    /// once we expand the OneOrMany pattern across all publishers; today every
-    /// per-crate publisher field is single-struct, so defaults are too.
+    /// TODO(WAVE-6): allow per-crate `publish.cargo` to be `OneOrMany<CargoPublishConfig>`
+    /// once WAVE 6 (YAML migration / defaults block expansion) generalises the
+    /// `OneOrMany` pattern across all publishers; today every per-crate publisher
+    /// field is single-struct, so defaults are too.
     pub cargo: Option<CargoPublishConfig>,
     /// Default Scoop manifest settings.
     pub scoop: Option<ScoopConfig>,

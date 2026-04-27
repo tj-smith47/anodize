@@ -457,11 +457,28 @@ format_overrides:
 
 ### `crates[].publish`
 
+> **WAVE 3 (2026-04-27):** the legacy `crates: true` / `crates: { enabled: ... }` shorthand was removed (DEC-1, ITEM-3). Use `cargo: {}` to opt in (presence is the trigger; no `enabled` field). Use `cargo: { skip: true }` to opt out without removing the block.
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `crates` | bool or object | `false` | Publish to crates.io |
-| `crates.enabled` | bool | -- | Enable crates.io publishing (object form) |
-| `crates.index_timeout` | int | `300` | Seconds to wait for crates.io index propagation (object form) |
+| `cargo` | object | -- | Publish to crates.io (presence opts in; see fields below) |
+| `cargo.registry` | string | -- | Registry name from `~/.cargo/config.toml` (alternate registry) |
+| `cargo.index` | string | -- | Registry index URL (overrides `registry`) |
+| `cargo.index_timeout` | int | `300` | Seconds to wait for crates.io sparse-index propagation between dependent crates |
+| `cargo.no_verify` | bool | `false` | Pass `--no-verify` to skip the local build verification |
+| `cargo.allow_dirty` | bool | `true` | Pass `--allow-dirty` (default-on because the anodizer tag step bumps `Cargo.toml`/`Cargo.lock`) |
+| `cargo.features` | string[] | -- | Cargo feature list, joined with `,` and passed as `--features <list>` |
+| `cargo.all_features` | bool | `false` | Pass `--all-features` |
+| `cargo.no_default_features` | bool | `false` | Pass `--no-default-features` |
+| `cargo.target` | string | -- | Pass `--target <triple>` |
+| `cargo.target_dir` | string | -- | Pass `--target-dir <path>` |
+| `cargo.jobs` | int | -- | Pass `--jobs <n>` (parallel build jobs) |
+| `cargo.keep_going` | bool | `false` | Pass `--keep-going` |
+| `cargo.manifest_path` | string | -- | Pass `--manifest-path <Cargo.toml>` |
+| `cargo.locked` | bool | `false` | Pass `--locked` (require `Cargo.lock` to be up to date) |
+| `cargo.offline` | bool | `false` | Pass `--offline` |
+| `cargo.frozen` | bool | `false` | Pass `--frozen` |
+| `cargo.skip` | bool or string | `false` | Peer-publisher skip (template-aware: `true`/`false`/`"auto"`) |
 | `homebrew.tap.owner` | string | -- | Homebrew tap repo owner |
 | `homebrew.tap.name` | string | -- | Homebrew tap repo name |
 | `homebrew.folder` | string | `Formula` | Formula directory in tap |

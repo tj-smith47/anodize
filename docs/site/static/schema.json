@@ -9119,7 +9119,7 @@
           ]
         },
         "cargo": {
-          "description": "Default crates.io publish settings, merged into per-crate `publish.cargo`.\n\nTODO(WAVE-?): allow per-crate `publish.cargo` to be `OneOrMany<CargoPublishConfig>` once we expand the OneOrMany pattern across all publishers; today every per-crate publisher field is single-struct, so defaults are too.",
+          "description": "Default crates.io publish settings, merged into per-crate `publish.cargo`.\n\nTODO(WAVE-6): allow per-crate `publish.cargo` to be `OneOrMany<CargoPublishConfig>` once WAVE 6 (YAML migration / defaults block expansion) generalises the `OneOrMany` pattern across all publishers; today every per-crate publisher field is single-struct, so defaults are too.",
           "default": null,
           "anyOf": [
             {

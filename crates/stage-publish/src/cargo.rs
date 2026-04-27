@@ -363,9 +363,12 @@ fn read_cargo_toml_version(crate_path: &str) -> Option<String> {
 }
 
 pub fn publish_to_cargo(ctx: &mut Context, selected: &[String], log: &StageLogger) -> Result<()> {
-    // Honor the CLI-level `--skip=cargo` flag (FOLL-1).
+    // Defensive guard: the `--skip=cargo` gate (FOLL-1) lives in the
+    // dispatcher in `lib.rs::PublishStage::run` so every publisher emits its
+    // skip log uniformly. Re-checking here protects future direct callers
+    // (tests, CLI sub-commands) from accidentally bypassing the gate. No log
+    // is emitted on this path — the dispatcher already logged it.
     if ctx.should_skip("cargo") {
-        log.status("cargo: skipped via --skip=cargo");
         return Ok(());
     }
     // When a crate depends on another crate in the same workspace that
@@ -656,32 +659,50 @@ mod tests {
             ..Default::default()
         };
         let cmd = publish_command("my-crate", Some(&cfg));
-        // Sanity: every flag is present.
-        for flag in [
-            "--registry",
-            "--index",
-            "--no-verify",
-            "--allow-dirty",
-            "--features",
-            "--all-features",
-            "--no-default-features",
-            "--target",
-            "--target-dir",
-            "--jobs",
-            "--keep-going",
-            "--manifest-path",
-            "--locked",
-            "--offline",
-            "--frozen",
-        ] {
+
+        // Helper: assert the flag is present and (for value-bearing flags)
+        // the immediately-next argv slot holds the expected value. Catches
+        // bugs where two adjacent flag/value pairs swap.
+        let assert_value = |flag: &str, expected: &str| {
+            let pos = cmd
+                .iter()
+                .position(|s| s == flag)
+                .unwrap_or_else(|| panic!("missing flag {flag}: {cmd:?}"));
+            assert_eq!(
+                cmd[pos + 1],
+                expected,
+                "{flag} value mismatch (full cmd: {cmd:?})"
+            );
+        };
+        let assert_present = |flag: &str| {
             assert!(
                 cmd.iter().any(|s| s == flag),
                 "missing flag {flag}: {cmd:?}"
             );
+        };
+
+        // Value-bearing flags — assert flag + adjacent value at pos+1.
+        assert_value("--registry", "alt-registry");
+        assert_value("--index", "https://example.com/idx");
+        assert_value("--features", "a,b"); // features are comma-joined
+        assert_value("--target", "x86_64-unknown-linux-gnu");
+        assert_value("--target-dir", "/tmp/td");
+        assert_value("--jobs", "4");
+        assert_value("--manifest-path", "./Cargo.toml");
+
+        // Boolean flags — only need to assert presence (no following value).
+        for flag in [
+            "--no-verify",
+            "--allow-dirty",
+            "--all-features",
+            "--no-default-features",
+            "--keep-going",
+            "--locked",
+            "--offline",
+            "--frozen",
+        ] {
+            assert_present(flag);
         }
-        // Features are comma-joined.
-        let features_idx = cmd.iter().position(|s| s == "--features").unwrap();
-        assert_eq!(cmd[features_idx + 1], "a,b");
     }
 
     #[test]

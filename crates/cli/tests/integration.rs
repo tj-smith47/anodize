@@ -1499,8 +1499,13 @@ crates:
         .unwrap();
 
     let stderr = String::from_utf8_lossy(&output.stderr);
+    // The validator emits a single, well-known phrase on rejection (see
+    // `core::context::validate_skip_values`). Substring-matching on
+    // "invalid" / "unknown" is too loose because the dry-run pipeline
+    // legitimately prints target triples like `x86_64-unknown-linux-gnu` to
+    // stderr and would false-positive on this Linux host.
     assert!(
-        !stderr.to_lowercase().contains("invalid") && !stderr.to_lowercase().contains("unknown"),
+        !stderr.contains("invalid --skip value"),
         "--skip=brew should be accepted, got:\n{}",
         stderr
     );
@@ -1539,8 +1544,10 @@ crates:
         .unwrap();
 
     let stderr = String::from_utf8_lossy(&output.stderr);
+    // See note on `test_skip_brew_accepted` for why this checks the exact
+    // validator phrase rather than substring-matching "invalid"/"unknown".
     assert!(
-        !stderr.to_lowercase().contains("invalid") && !stderr.to_lowercase().contains("unknown"),
+        !stderr.contains("invalid --skip value"),
         "--skip=choco should be accepted, got:\n{}",
         stderr
     );
@@ -1579,8 +1586,10 @@ crates:
         .unwrap();
 
     let stderr = String::from_utf8_lossy(&output.stderr);
+    // See note on `test_skip_brew_accepted` for why this checks the exact
+    // validator phrase rather than substring-matching "invalid"/"unknown".
     assert!(
-        !stderr.to_lowercase().contains("invalid") && !stderr.to_lowercase().contains("unknown"),
+        !stderr.contains("invalid --skip value"),
         "--skip=cargo should be accepted, got:\n{}",
         stderr
     );
@@ -1619,8 +1628,10 @@ crates:
         .unwrap();
 
     let stderr = String::from_utf8_lossy(&output.stderr);
+    // See note on `test_skip_brew_accepted` for why this checks the exact
+    // validator phrase rather than substring-matching "invalid"/"unknown".
     assert!(
-        !stderr.to_lowercase().contains("invalid") && !stderr.to_lowercase().contains("unknown"),
+        !stderr.contains("invalid --skip value"),
         "--skip=krew should be accepted, got:\n{}",
         stderr
     );
@@ -1663,10 +1674,11 @@ crates:
         "--skip=homebrew should be rejected (use --skip=brew); command unexpectedly succeeded"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
+    // Match the validator's exact phrase. The looser substring search on
+    // "invalid"/"unknown"/"valid" false-positives because dry-run output
+    // contains target triples like `x86_64-unknown-linux-gnu`.
     assert!(
-        stderr.to_lowercase().contains("invalid")
-            || stderr.to_lowercase().contains("unknown")
-            || stderr.to_lowercase().contains("valid"),
+        stderr.contains("invalid --skip value"),
         "--skip=homebrew rejection should mention invalidity, got:\n{}",
         stderr
     );
@@ -1709,10 +1721,10 @@ crates:
         "--skip=chocolatey should be rejected (use --skip=choco); command unexpectedly succeeded"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
+    // Match the validator's exact phrase (see note on
+    // `test_skip_homebrew_alias_rejected`).
     assert!(
-        stderr.to_lowercase().contains("invalid")
-            || stderr.to_lowercase().contains("unknown")
-            || stderr.to_lowercase().contains("valid"),
+        stderr.contains("invalid --skip value"),
         "--skip=chocolatey rejection should mention invalidity, got:\n{}",
         stderr
     );
@@ -1755,10 +1767,10 @@ crates:
         "--skip=crates should be rejected (use --skip=cargo, DEC-1); command unexpectedly succeeded"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
+    // Match the validator's exact phrase (see note on
+    // `test_skip_homebrew_alias_rejected`).
     assert!(
-        stderr.to_lowercase().contains("invalid")
-            || stderr.to_lowercase().contains("unknown")
-            || stderr.to_lowercase().contains("valid"),
+        stderr.contains("invalid --skip value"),
         "--skip=crates rejection should mention invalidity, got:\n{}",
         stderr
     );
