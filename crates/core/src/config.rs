@@ -3488,16 +3488,24 @@ pub struct NfpmScripts {
 /// Backward-compatible alias — nFPM contents share the same `FileInfo` struct.
 pub type NfpmFileInfo = FileInfo;
 
-/// A single file/directory entry in an nFPM package's `contents` list.
+/// A single file/directory entry in an nFPM (or SRPM) package's `contents`
+/// list. SCH-8 (WAVE 5.4) merged the formerly-separate `NfpmContentConfig`
+/// (used for SRPM) into this struct — `source` / `destination` / `type` are
+/// accepted as aliases for `src` / `dst` / the renamed `type` so srpm-style
+/// keys still parse.
 ///
 /// `Default` is intentionally **not** derived because `src` and `dst` are
 /// required fields with no meaningful defaults — forcing callers to provide
 /// them explicitly prevents accidentally packaging empty paths.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct NfpmContent {
-    /// Source path on the build machine (supports glob patterns).
+    /// Source path on the build machine (supports glob patterns). Aliased
+    /// as `source` for SRPM-style call sites.
+    #[serde(alias = "source")]
     pub src: String,
-    /// Destination path inside the package (absolute path).
+    /// Destination path inside the package (absolute path). Aliased as
+    /// `destination` for SRPM-style call sites.
+    #[serde(alias = "destination")]
     pub dst: String,
     /// Content entry type: "config", "config|noreplace", "doc", "dir", "symlink", "ghost", or empty for regular file.
     #[serde(rename = "type")]
@@ -3731,6 +3739,17 @@ pub struct NfpmIpkAlternative {
     pub link_name: Option<String>,
 }
 
+/// Unified signature configuration for nFPM (deb/rpm/apk) and SRPM packages.
+///
+/// SCH-9 (WAVE 5.4) merged the formerly-separate `SrpmSignatureConfig`
+/// (`key_file` + `passphrase`) into this struct because SRPM's surface was
+/// a strict subset. The legacy SRPM `passphrase:` key is accepted as a
+/// serde alias for `key_passphrase:` so both spellings parse.
+///
+/// GR keeps three distinct signature types (`NFPMRPMSignature`,
+/// `NFPMDebSignature`, `NFPMAPKSignature`) with overlapping but slightly
+/// different fields. Anodizer's union here predates SCH-9 — keeping the
+/// union avoids a 3-struct cascade where 90% of fields overlap.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct NfpmSignatureConfig {
@@ -3738,7 +3757,10 @@ pub struct NfpmSignatureConfig {
     pub key_file: Option<String>,
     /// Key ID to use for signing.
     pub key_id: Option<String>,
-    /// Passphrase for the signing key.
+    /// Passphrase for the signing key. Falls back to `NFPM_PASSPHRASE` /
+    /// `SRPM_PASSPHRASE` env vars in their respective stages. The legacy
+    /// SRPM `passphrase:` key is accepted as an alias.
+    #[serde(alias = "passphrase")]
     pub key_passphrase: Option<String>,
     /// Public key name for APK signatures (defaults to `<maintainer email>.rsa.pub`).
     pub key_name: Option<String>,
@@ -6359,10 +6381,14 @@ pub struct SrpmConfig {
     pub compression: Option<String>,
     /// Documentation files to include.
     pub docs: Option<Vec<String>>,
-    /// Additional contents to include in the source RPM.
-    pub contents: Option<Vec<NfpmContentConfig>>,
-    /// RPM signature configuration.
-    pub signature: Option<SrpmSignatureConfig>,
+    /// Additional contents to include in the source RPM. Shares the unified
+    /// [`NfpmContent`] type with nFPM contents (SCH-8 / DEC-5 hard-break in
+    /// WAVE 5.4); SRPM-style `source:` / `destination:` / `type:` keys are
+    /// still accepted via serde aliases.
+    pub contents: Option<Vec<NfpmContent>>,
+    /// RPM signature configuration. Shares the unified
+    /// [`NfpmSignatureConfig`] type with nFPM (SCH-9 / WAVE 5.4).
+    pub signature: Option<NfpmSignatureConfig>,
     /// Build IDs whose binaries are bundled into the source RPM. When set,
     /// only artifacts produced by builds with these IDs are packaged.
     /// Mirrors GR `NFPM.Builds`.
@@ -6395,31 +6421,13 @@ pub struct SrpmConfig {
     pub skip: Option<StringOrBool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
-pub struct SrpmSignatureConfig {
-    /// Path to the GPG key file for signing.
-    pub key_file: Option<String>,
-    /// Passphrase for the GPG key. Falls back to `SRPM_PASSPHRASE` env var.
-    pub passphrase: Option<String>,
-}
+// SCH-9 (WAVE 5.4): the legacy `SrpmSignatureConfig` was merged into the
+// unified [`NfpmSignatureConfig`] above. The SRPM-style `passphrase:` key
+// remains accepted as a serde alias for `key_passphrase:`.
 
-/// NfpmContentConfig is reused for SRPM contents (shared shape with nFPM).
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
-pub struct NfpmContentConfig {
-    /// Source file path.
-    #[serde(alias = "src")]
-    pub source: Option<String>,
-    /// Destination path in the package.
-    #[serde(alias = "dst")]
-    pub destination: String,
-    /// Content type: symlink, ghost, config, dir, tree.
-    #[serde(rename = "type")]
-    pub type_: Option<String>,
-    /// Target packager (e.g., "rpm", "deb").
-    pub packager: Option<String>,
-}
+// SCH-8 (WAVE 5.4): the legacy `NfpmContentConfig` (SRPM-only mirror) was
+// merged into [`NfpmContent`]. The unified type accepts both the canonical
+// `src` / `dst` keys and the SRPM-style `source` / `destination` aliases.
 
 // ---------------------------------------------------------------------------
 // MilestoneConfig
@@ -8767,6 +8775,77 @@ crates:
             result.is_err(),
             "string-form chocolatey tags must be rejected (use a list)"
         );
+    }
+
+    // ---- WAVE 5.4 DRY-merge tests ----
+
+    #[test]
+    fn test_nfpm_content_unified_with_srpm_aliases() {
+        // SCH-8 (WAVE 5.4): NfpmContentConfig was merged into NfpmContent.
+        // The SRPM-style `source` / `destination` keys are accepted as
+        // serde aliases so existing srpm contents YAML still parses.
+        let yaml = r#"
+project_name: test
+srpm:
+  enabled: true
+  contents:
+    - source: ./LICENSE
+      destination: /usr/share/doc/myapp/LICENSE
+      type: doc
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let contents = config.srpm.as_ref().unwrap().contents.as_ref().unwrap();
+        assert_eq!(contents.len(), 1);
+        assert_eq!(contents[0].src, "./LICENSE");
+        assert_eq!(contents[0].dst, "/usr/share/doc/myapp/LICENSE");
+        assert_eq!(contents[0].content_type.as_deref(), Some("doc"));
+    }
+
+    #[test]
+    fn test_nfpm_content_canonical_keys_in_srpm() {
+        // Canonical `src` / `dst` keys also work in srpm contents.
+        let yaml = r#"
+project_name: test
+srpm:
+  enabled: true
+  contents:
+    - src: ./README.md
+      dst: /usr/share/doc/myapp/README.md
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let contents = config.srpm.as_ref().unwrap().contents.as_ref().unwrap();
+        assert_eq!(contents[0].src, "./README.md");
+    }
+
+    #[test]
+    fn test_nfpm_signature_unified_passphrase_alias() {
+        // SCH-9 (WAVE 5.4): SrpmSignatureConfig merged into NfpmSignatureConfig.
+        // The legacy `passphrase:` key on srpm.signature aliases to the
+        // canonical `key_passphrase:` so existing YAML keeps working.
+        let yaml = r#"
+project_name: test
+srpm:
+  enabled: true
+  signature:
+    key_file: /keys/srpm.gpg
+    passphrase: "s3cret"
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let sig = config.srpm.as_ref().unwrap().signature.as_ref().unwrap();
+        assert_eq!(sig.key_file.as_deref(), Some("/keys/srpm.gpg"));
+        assert_eq!(sig.key_passphrase.as_deref(), Some("s3cret"));
     }
 
     #[test]

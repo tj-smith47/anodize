@@ -241,7 +241,7 @@ impl Stage for SrpmStage {
 
             // read SRPM_PASSPHRASE env var when no
             // passphrase is configured inline.
-            if let Some(ref passphrase) = sig.passphrase {
+            if let Some(ref passphrase) = sig.key_passphrase {
                 rpmbuild_cmd.env("GPG_PASSPHRASE", passphrase);
             } else if let Ok(passphrase) = std::env::var("SRPM_PASSPHRASE")
                 && !passphrase.is_empty()

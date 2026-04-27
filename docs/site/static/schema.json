@@ -7998,7 +7998,7 @@
       }
     },
     "NfpmContent": {
-      "description": "A single file/directory entry in an nFPM package's `contents` list.\n\n`Default` is intentionally **not** derived because `src` and `dst` are required fields with no meaningful defaults — forcing callers to provide them explicitly prevents accidentally packaging empty paths.",
+      "description": "A single file/directory entry in an nFPM (or SRPM) package's `contents` list. SCH-8 (WAVE 5.4) merged the formerly-separate `NfpmContentConfig` (used for SRPM) into this struct — `source` / `destination` / `type` are accepted as aliases for `src` / `dst` / the renamed `type` so srpm-style keys still parse.\n\n`Default` is intentionally **not** derived because `src` and `dst` are required fields with no meaningful defaults — forcing callers to provide them explicitly prevents accidentally packaging empty paths.",
       "type": "object",
       "required": [
         "dst",
@@ -8006,7 +8006,7 @@
       ],
       "properties": {
         "dst": {
-          "description": "Destination path inside the package (absolute path).",
+          "description": "Destination path inside the package (absolute path). Aliased as `destination` for SRPM-style call sites.",
           "type": "string"
         },
         "expand": {
@@ -8035,46 +8035,11 @@
           ]
         },
         "src": {
-          "description": "Source path on the build machine (supports glob patterns).",
+          "description": "Source path on the build machine (supports glob patterns). Aliased as `source` for SRPM-style call sites.",
           "type": "string"
         },
         "type": {
           "description": "Content entry type: \"config\", \"config|noreplace\", \"doc\", \"dir\", \"symlink\", \"ghost\", or empty for regular file.",
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      }
-    },
-    "NfpmContentConfig": {
-      "description": "NfpmContentConfig is reused for SRPM contents (shared shape with nFPM).",
-      "type": "object",
-      "properties": {
-        "destination": {
-          "description": "Destination path in the package.",
-          "default": "",
-          "type": "string"
-        },
-        "packager": {
-          "description": "Target packager (e.g., \"rpm\", \"deb\").",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "source": {
-          "description": "Source file path.",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "type": {
-          "description": "Content type: symlink, ghost, config, dir, tree.",
-          "default": null,
           "type": [
             "string",
             "null"
@@ -8559,6 +8524,7 @@
       }
     },
     "NfpmSignatureConfig": {
+      "description": "Unified signature configuration for nFPM (deb/rpm/apk) and SRPM packages.\n\nSCH-9 (WAVE 5.4) merged the formerly-separate `SrpmSignatureConfig` (`key_file` + `passphrase`) into this struct because SRPM's surface was a strict subset. The legacy SRPM `passphrase:` key is accepted as a serde alias for `key_passphrase:` so both spellings parse.\n\nGR keeps three distinct signature types (`NFPMRPMSignature`, `NFPMDebSignature`, `NFPMAPKSignature`) with overlapping but slightly different fields. Anodizer's union here predates SCH-9 — keeping the union avoids a 3-struct cascade where 90% of fields overlap.",
       "type": "object",
       "properties": {
         "key_file": {
@@ -8586,7 +8552,7 @@
           ]
         },
         "key_passphrase": {
-          "description": "Passphrase for the signing key.",
+          "description": "Passphrase for the signing key. Falls back to `NFPM_PASSPHRASE` / `SRPM_PASSPHRASE` env vars in their respective stages. The legacy SRPM `passphrase:` key is accepted as an alias.",
           "default": null,
           "type": [
             "string",
@@ -11315,14 +11281,14 @@
           ]
         },
         "contents": {
-          "description": "Additional contents to include in the source RPM.",
+          "description": "Additional contents to include in the source RPM. Shares the unified [`NfpmContent`] type with nFPM contents (SCH-8 / DEC-5 hard-break in WAVE 5.4); SRPM-style `source:` / `destination:` / `type:` keys are still accepted via serde aliases.",
           "default": null,
           "type": [
             "array",
             "null"
           ],
           "items": {
-            "$ref": "#/definitions/NfpmContentConfig"
+            "$ref": "#/definitions/NfpmContent"
           }
         },
         "description": {
@@ -11468,11 +11434,11 @@
           ]
         },
         "signature": {
-          "description": "RPM signature configuration.",
+          "description": "RPM signature configuration. Shares the unified [`NfpmSignatureConfig`] type with nFPM (SCH-9 / WAVE 5.4).",
           "default": null,
           "anyOf": [
             {
-              "$ref": "#/definitions/SrpmSignatureConfig"
+              "$ref": "#/definitions/NfpmSignatureConfig"
             },
             {
               "type": "null"
@@ -11525,27 +11491,6 @@
         },
         "version_metadata": {
           "description": "Build metadata appended to the version (e.g. git commit hash). Mirrors GR `NFPM.VersionMetadata`.",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      }
-    },
-    "SrpmSignatureConfig": {
-      "type": "object",
-      "properties": {
-        "key_file": {
-          "description": "Path to the GPG key file for signing.",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "passphrase": {
-          "description": "Passphrase for the GPG key. Falls back to `SRPM_PASSPHRASE` env var.",
           "default": null,
           "type": [
             "string",

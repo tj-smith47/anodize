@@ -534,7 +534,7 @@ Top-level notarization configuration supporting both cross-platform (`rcodesign`
 | `bins` | list of string | — | Build IDs whose binaries are bundled into the source RPM. When set, only artifacts produced by builds with these IDs are packaged. Mirrors GR `NFPM.Builds`. |
 | `build_host` | string | — | Override the build host recorded in the RPM header. Useful for reproducible builds where the actual hostname leaks build-env detail. |
 | `compression` | string | — | Compression algorithm (gzip, xz, zstd, none). |
-| `contents` | list of NfpmContentConfig | — | Additional contents to include in the source RPM. |
+| `contents` | list of NfpmContent | — | Additional contents to include in the source RPM. Shares the unified [`NfpmContent`] type with nFPM contents (SCH-8 / DEC-5 hard-break in WAVE 5.4); SRPM-style `source:` / `destination:` / `type:` keys are still accepted via serde aliases. |
 | `description` | string | — | Package description. |
 | `docs` | list of string | — | Documentation files to include. |
 | `enabled` | bool | — | Enable source RPM generation. Default: false. |
@@ -552,7 +552,7 @@ Top-level notarization configuration supporting both cross-platform (`rcodesign`
 | `prerelease` | string | — | Prerelease suffix appended to the version (e.g. `rc1`, `beta2`). Mirrors GR `NFPM.Prerelease`. |
 | `pretrans` | string | — | `%pretrans` scriptlet — executed on the package transaction *before* any package in the transaction is installed. Path to a script file. |
 | `section` | string | — | RPM section. |
-| `signature` | SrpmSignatureConfig | — | RPM signature configuration. |
+| `signature` | NfpmSignatureConfig | — | RPM signature configuration. Shares the unified [`NfpmSignatureConfig`] type with nFPM (SCH-9 / WAVE 5.4). |
 | `skip` | StringOrBool | — | Skip this config. Accepts bool or template string. |
 | `spec_file` | string | — | Path to the RPM spec file template. |
 | `summary` | string | — | Summary line. |
