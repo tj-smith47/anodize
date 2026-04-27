@@ -39,12 +39,7 @@ pub fn validate_slug(slug: &str) -> Result<()> {
 /// non-printable bytes, very short) so we surface the misconfiguration before
 /// the API rejects us with an opaque 401.
 pub fn validate_token_shape(token: &str) -> Result<()> {
-    if token.len() < 16 {
-        anyhow::bail!(
-            "opencollective: OPENCOLLECTIVE_TOKEN looks too short ({} chars)",
-            token.len()
-        );
-    }
+    crate::util::validate_token_min_length("opencollective", "OPENCOLLECTIVE_TOKEN", token, 16)?;
     if token.chars().any(|c| c.is_whitespace() || c.is_control()) {
         anyhow::bail!(
             "opencollective: OPENCOLLECTIVE_TOKEN contains whitespace or control characters \

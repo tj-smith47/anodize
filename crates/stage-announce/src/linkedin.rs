@@ -10,13 +10,7 @@ const API_BASE: &str = "https://api.linkedin.com";
 /// that are obviously not credentials so that an early bail beats a 401
 /// from the API.
 pub fn validate_token_shape(token: &str) -> Result<()> {
-    if token.len() < 16 {
-        anyhow::bail!(
-            "announce.linkedin: LINKEDIN_ACCESS_TOKEN looks too short ({} chars) \
-             — LinkedIn tokens are typically 100+ characters",
-            token.len()
-        );
-    }
+    crate::util::validate_token_min_length("linkedin", "LINKEDIN_ACCESS_TOKEN", token, 16)?;
     let dot_segments = token.split('.').count();
     if dot_segments == 3 {
         for (idx, seg) in token.split('.').enumerate() {
