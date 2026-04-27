@@ -641,22 +641,7 @@ fn propagate_dependents(crates: &[CrateConfig], changed: Vec<String>) -> Vec<Str
 
 /// Check if workspace-level files (Cargo.toml, Cargo.lock) changed since tag.
 fn check_workspace_files_changed(tag: &str) -> Result<bool> {
-    let output = std::process::Command::new("git")
-        .args([
-            "diff",
-            "--name-only",
-            &format!("{}..HEAD", tag),
-            "--",
-            "Cargo.toml",
-            "Cargo.lock",
-        ])
-        .output()?;
-    if output.status.success() {
-        Ok(!String::from_utf8_lossy(&output.stdout).trim().is_empty())
-    } else {
-        // If git command fails (e.g. not a git repo), assume no changes
-        Ok(false)
-    }
+    anodizer_core::git::paths_changed_since_tag(tag, &["Cargo.toml", "Cargo.lock"])
 }
 
 /// Resolve a workspace by name from the config. Returns an error if

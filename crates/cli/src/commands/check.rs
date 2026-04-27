@@ -462,12 +462,7 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
                     .push("docker is not installed but docker sections are configured".to_string());
             } else {
                 // Check for docker buildx
-                let buildx_ok = std::process::Command::new("docker")
-                    .args(["buildx", "version"])
-                    .output()
-                    .map(|o| o.status.success())
-                    .unwrap_or(false);
-                if !buildx_ok {
+                if !anodizer_core::docker_detect::buildx_available() {
                     warnings.push(
                         "docker buildx is not available but docker sections are configured"
                             .to_string(),

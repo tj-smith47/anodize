@@ -55,29 +55,7 @@ const TOOLS: &[ToolCheck] = &[
     },
 ];
 
-fn tool_available(name: &str) -> bool {
-    std::process::Command::new(name)
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
-fn tool_version(name: &str) -> Option<String> {
-    let output = std::process::Command::new(name)
-        .arg("--version")
-        .output()
-        .ok()?;
-    if output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        // Take the first line and trim it
-        Some(stdout.lines().next().unwrap_or("").trim().to_string())
-    } else {
-        None
-    }
-}
+use anodizer_core::tool_detect::{tool_available, tool_version};
 
 pub fn run() -> Result<()> {
     let log = StageLogger::new("healthcheck", Verbosity::Normal);

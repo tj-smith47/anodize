@@ -1,5 +1,3 @@
-use std::process::Command;
-
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::config::PublisherConfig;
 use anodizer_core::log::StageLogger;
@@ -205,8 +203,7 @@ pub fn run_publishers(
                 if shell_args.is_empty() {
                     anyhow::bail!("publisher: empty command after parsing: {}", full_cmd);
                 }
-                let mut cmd = Command::new(&shell_args[0]);
-                cmd.args(&shell_args[1..]);
+                let mut cmd = anodizer_core::user_command::whitelisted(&shell_args);
 
                 if let Some(ref dir) = publisher.dir {
                     let rendered_dir =
@@ -214,23 +211,6 @@ pub fn run_publishers(
                     cmd.current_dir(rendered_dir);
                 }
 
-                // restrict environment to a small
-                // whitelist to prevent accidental leakage of tokens/credentials.
-                cmd.env_clear();
-                for key in &[
-                    "HOME",
-                    "USER",
-                    "USERPROFILE",
-                    "TMPDIR",
-                    "TMP",
-                    "TEMP",
-                    "PATH",
-                    "SYSTEMROOT",
-                ] {
-                    if let Ok(val) = std::env::var(key) {
-                        cmd.env(key, val);
-                    }
-                }
                 if let Some(ref env_list) = publisher.env {
                     let rendered = anodizer_core::config::render_env_entries(env_list, |v| {
                         template::render(v, base_vars)

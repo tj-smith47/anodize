@@ -9,6 +9,17 @@ focus on the few touch-points that actually shell out.
 
 - `crates/core/src/git.rs` — git porcelain (`clone`, `tag`, `push`, ...).
 - `crates/core/src/hooks.rs` — user-defined `before:` / `after:` hook execution.
+- `crates/core/src/cargo_lock.rs` — `cargo update --workspace` invoked by the
+  `tag` command after a version bump.
+- `crates/core/src/docker_detect.rs` — `docker buildx version` probe used by
+  the `check` command.
+- `crates/core/src/tool_detect.rs` — generic `<tool> --version` probe used by
+  the `healthcheck` command.
+- `crates/core/src/partial.rs` — `rustc -vV` probe for host-target detection
+  (consumed by `partial.by` resolution).
+- `crates/core/src/user_command.rs` — sandboxed `Command` constructor for
+  user-supplied commands (`publisher.cmd`); env is whitelisted to prevent
+  credential leakage.
 - `crates/stage-*/**` — stage crates that wrap a single external tool:
   - `stage-build` (cargo, rustup, cross)
   - `stage-archive` (tar, zip, sbom inputs)
@@ -23,6 +34,8 @@ focus on the few touch-points that actually shell out.
   - `stage-source` (git archive)
   - `stage-makeself` (makeself)
   - `stage-publish/aur*` (git over ssh for AUR)
+  - `stage-publish/cargo` (cargo publish, cargo package, cargo logout)
+  - `stage-publish/nix` (nix-instantiate, nix-build, git for the nix repo)
   - `stage-changelog` (git log)
   - `stage-upx` (upx)
   - `stage-srpm` (rpmbuild)
@@ -32,8 +45,9 @@ focus on the few touch-points that actually shell out.
 
 ## Forbid-list (must NOT call `Command::new` directly)
 
-- `crates/cli/**` — orchestration only; delegate to a stage or `core::git`.
-- `crates/core/**` (apart from `git.rs` and `hooks.rs`) — keep core
+- `crates/cli/**` — orchestration only; delegate to a stage or `core::git`
+  (or one of the other allow-listed `core::<tool>_*` helpers).
+- `crates/core/**` (apart from the allow-listed modules above) — keep core
   pure / library-grade. If you need a new shell-out, extract a helper module
   next to `git.rs` and add it to the allow-list above.
 - Any new crate that doesn't appear in the allow-list above.
@@ -46,9 +60,9 @@ opaque to clippy / unsafe / panic-safety review. Confining `Command::new`
 to a handful of named modules means the security-relevant surface is small
 and reviewable.
 
-The current count (audit 2026-04-18): **35 files / 171 call sites**, all
-inside the allow-list above. Drift to a forbidden module is a
-review-blocker.
+The current count (audit 2026-04-27, post-batch-E lift): **35 files
+/ 192 call sites**, all inside the allow-list above. Drift to a
+forbidden module is a review-blocker.
 
 ## Enforcement
 

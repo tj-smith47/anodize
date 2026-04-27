@@ -1,8 +1,10 @@
 pub mod artifact;
+pub mod cargo_lock;
 pub mod config;
 pub mod content_source;
 pub mod context;
 pub mod defaults_merge;
+pub mod docker_detect;
 pub mod env_expand;
 pub mod extrafiles;
 pub mod git;
@@ -22,7 +24,9 @@ pub mod target;
 pub mod template;
 mod template_preprocess;
 pub mod templated_files;
+pub mod tool_detect;
 pub mod url;
+pub mod user_command;
 pub mod util;
 
 #[cfg(feature = "test-helpers")]

@@ -188,23 +188,12 @@ pub(super) fn find_last_tag_for_prefix(
     workspace_root: &std::path::Path,
     prefix: &str,
 ) -> Result<Option<String>> {
-    use std::process::Command;
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(workspace_root)
-        .args(["tag", "--list", "--sort=-v:refname"])
-        .arg(format!("{}*", prefix))
-        .output()?;
-    if !out.status.success() {
-        return Ok(None);
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
-    for line in text.lines() {
-        let line = line.trim();
+    let tags = anodizer_core::git::list_tags_with_prefix(workspace_root, prefix)?;
+    for line in tags {
         if let Some(rest) = line.strip_prefix(prefix)
             && semver::Version::parse(rest).is_ok()
         {
-            return Ok(Some(line.to_string()));
+            return Ok(Some(line));
         }
     }
     Ok(None)
@@ -217,36 +206,12 @@ fn git_log_subjects(
     from: &str,
     rel_path: &str,
 ) -> Result<Vec<String>> {
-    use std::process::Command;
     let range = if from.is_empty() {
         "HEAD".to_string()
     } else {
         format!("{}..HEAD", from)
     };
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(workspace_root)
-        .args([
-            "-c",
-            "log.showSignature=false",
-            "log",
-            "--pretty=format:%B%x1e",
-            &range,
-            "--",
-            rel_path,
-        ])
-        .output()?;
-    if !out.status.success() {
-        // Range may not exist yet (no last_tag, path not in history).
-        return Ok(Vec::new());
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
-    let commits: Vec<String> = text
-        .split('\x1e')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
-    Ok(commits)
+    anodizer_core::git::log_subjects_for_range(workspace_root, &range, rel_path)
 }
 
 #[cfg(test)]

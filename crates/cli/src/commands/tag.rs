@@ -443,11 +443,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
             // Without this, the tagged commit has Cargo.toml at the new version
             // but Cargo.lock at the old version, causing `cargo test` (from
             // before hooks) to update Cargo.lock and dirty the tree.
-            let lock_updated = std::process::Command::new("cargo")
-                .args(["update", "--workspace"])
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false);
+            let lock_updated = anodizer_core::cargo_lock::cargo_update_workspace(None);
             if !lock_updated {
                 log.warn(
                     "version-sync: `cargo update --workspace` failed; Cargo.lock may be stale",
@@ -553,12 +549,7 @@ fn apply_workspace_bump(
 
     apply_plan(workspace_root, &rows, false, log)?;
 
-    let lock_updated = std::process::Command::new("cargo")
-        .args(["update", "--workspace"])
-        .current_dir(workspace_root)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
+    let lock_updated = anodizer_core::cargo_lock::cargo_update_workspace(Some(workspace_root));
     if !lock_updated {
         log.warn("version-sync: `cargo update --workspace` failed; Cargo.lock may be stale");
     }

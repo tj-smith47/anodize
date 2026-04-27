@@ -1,5 +1,9 @@
 ## Changelog
 
+* 891c4a9535278e3bda8925b0c8c5d3d2803322f5 wire defaults.env into per-crate env resolution
+* 98429c93b12f1a3a32a799d124f986517ffd2e66 close validation gaps in defaults block (format_overrides + deny_unknown_fields)
+* 01c7926050434362f5b8861848ff51c220157f52 hoist tokio runtime out of loop to eliminate Option-init dance
+* 4f2733016d2c9d780a2d5593193af0c535d02e1b route stage warnings through StageLogger / tracing instead of eprintln
 * f4d41c85d81b714f3e4ccdb8801f98d7788ed51a drop residual journal comments + GR-historical vocab in dogfooding matrix
 * c49b1550c5ef6230bf2aeba180f4a3971d2f4305 skip default-inherited builds for library crates with no bin target
 * 43fa1b4cbe55685b6e842f4e5a6181b7fdeec57e collapse resolve_repo_owner_name to single arg + drop dead Result wrapper

@@ -136,8 +136,6 @@ fn commit_plan(
     opts: &BumpOpts,
     log: &StageLogger,
 ) -> Result<()> {
-    use std::process::Command;
-
     let mut staged: Vec<PathBuf> = Vec::new();
     for row in rows {
         for path in &row.edited_files {
@@ -201,20 +199,7 @@ fn commit_plan(
 
     for path in &staged {
         let rel = path.strip_prefix(workspace_root).unwrap_or(path.as_path());
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(workspace_root)
-            .arg("add")
-            .arg(rel)
-            .output()
-            .context("failed to invoke git add")?;
-        if !out.status.success() {
-            bail!(
-                "git add {} failed: {}",
-                rel.display(),
-                String::from_utf8_lossy(&out.stderr).trim()
-            );
-        }
+        anodizer_core::git::add_path_in(workspace_root, rel)?;
     }
 
     let message = opts
@@ -222,19 +207,7 @@ fn commit_plan(
         .clone()
         .unwrap_or_else(|| default_commit_message(rows));
 
-    let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(workspace_root).arg("commit");
-    if opts.sign {
-        cmd.arg("-S");
-    }
-    cmd.arg("-m").arg(&message);
-    let out = cmd.output().context("failed to invoke git commit")?;
-    if !out.status.success() {
-        bail!(
-            "git commit failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
+    anodizer_core::git::commit_in(workspace_root, &message, opts.sign)?;
     log.verbose(&format!("created commit: {}", message));
     Ok(())
 }

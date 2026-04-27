@@ -1268,6 +1268,138 @@ pub fn is_shallow_clone() -> bool {
     std::path::Path::new(&git_dir).join("shallow").exists()
 }
 
+// ---------------------------------------------------------------------------
+// Helpers consumed by `cli/commands/bump`, `cli/commands/release`, and
+// `cli/commands/tag`. Centralised here so all `Command::new("git")` sites
+// live inside the module-boundaries allow-list.
+// ---------------------------------------------------------------------------
+
+/// `git -C <workspace_root> tag --list --sort=-v:refname '<prefix>*'` —
+/// return the list of refs whose name starts with `prefix`, ordered by
+/// reverse semver. Returns `Ok(Vec::new())` when git fails (no repo,
+/// no tags) so callers can treat absence as a non-error.
+pub fn list_tags_with_prefix(
+    workspace_root: &std::path::Path,
+    prefix: &str,
+) -> Result<Vec<String>> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .args(["tag", "--list", "--sort=-v:refname"])
+        .arg(format!("{prefix}*"))
+        .output()?;
+    if !out.status.success() {
+        return Ok(Vec::new());
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    Ok(text
+        .lines()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect())
+}
+
+/// `git -C <workspace_root> -c log.showSignature=false log
+/// --pretty=format:%B%x1e <range> -- <rel_path>` — list commit message
+/// bodies (subject+body) for commits in `range` touching `rel_path`,
+/// using the `\x1e` (RS) byte as a between-commits separator so multi-line
+/// bodies survive parsing.
+///
+/// `range` is the git revision range as a string (e.g. `"HEAD"`,
+/// `"v0.3.0..HEAD"`); the empty string is invalid (caller must pre-filter).
+/// Returns `Ok(Vec::new())` when git fails so callers treat
+/// "range doesn't exist yet" as a non-error.
+pub fn log_subjects_for_range(
+    workspace_root: &std::path::Path,
+    range: &str,
+    rel_path: &str,
+) -> Result<Vec<String>> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .args([
+            "-c",
+            "log.showSignature=false",
+            "log",
+            "--pretty=format:%B%x1e",
+            range,
+            "--",
+            rel_path,
+        ])
+        .output()?;
+    if !out.status.success() {
+        // Range may not exist yet (no last_tag, path not in history).
+        return Ok(Vec::new());
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    Ok(text
+        .split('\x1e')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect())
+}
+
+/// `git -C <workspace_root> add <rel>` — stage a single relative path.
+pub fn add_path_in(workspace_root: &std::path::Path, rel: &std::path::Path) -> Result<()> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(workspace_root)
+        .arg("add")
+        .arg(rel)
+        .output()
+        .context("failed to invoke git add")?;
+    if !out.status.success() {
+        bail!(
+            "git add {} failed: {}",
+            rel.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+/// `git -C <workspace_root> commit [-S] -m <message>` — create a commit
+/// with the given message, optionally GPG-signed.
+pub fn commit_in(workspace_root: &std::path::Path, message: &str, sign: bool) -> Result<()> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(workspace_root).arg("commit");
+    if sign {
+        cmd.arg("-S");
+    }
+    cmd.arg("-m").arg(message);
+    let out = cmd.output().context("failed to invoke git commit")?;
+    if !out.status.success() {
+        bail!(
+            "git commit failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+/// `git diff --name-only <tag>..HEAD -- <paths>...` — return `true` when
+/// any of the named paths changed between `tag` and `HEAD`. Returns
+/// `Ok(false)` when git fails (e.g. not a git repo) so callers can treat
+/// the absence-of-info case as "no changes".
+pub fn paths_changed_since_tag(tag: &str, paths: &[&str]) -> Result<bool> {
+    let mut args: Vec<String> = vec![
+        "diff".to_string(),
+        "--name-only".to_string(),
+        format!("{tag}..HEAD"),
+        "--".to_string(),
+    ];
+    for p in paths {
+        args.push((*p).to_string());
+    }
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = Command::new("git").args(&arg_refs).output()?;
+    if output.status.success() {
+        Ok(!String::from_utf8_lossy(&output.stdout).trim().is_empty())
+    } else {
+        Ok(false)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
