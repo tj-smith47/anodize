@@ -858,6 +858,7 @@ mod tests {
                 }),
                 nix: None,
                 aur_source: None,
+                homebrew_cask: None,
             }),
             ..Default::default()
         }];

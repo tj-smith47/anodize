@@ -132,7 +132,7 @@ pub struct Config {
     /// `homebrew_casks` is a top-level array with its own
     /// repository, commit_author, directory, skip_upload, hooks, dependencies,
     /// conflicts, completions, manpages, structured uninstall/zap, etc.
-    pub homebrew_casks: Option<Vec<TopLevelHomebrewCaskConfig>>,
+    pub homebrew_casks: Option<Vec<HomebrewCaskConfig>>,
     /// Automatic semantic version tagging configuration.
     pub tag: Option<TagConfig>,
     /// Git-level tag discovery and sorting settings.
@@ -973,6 +973,11 @@ pub struct Defaults {
 pub struct PublishDefaults {
     /// Default Homebrew formula settings.
     pub homebrew: Option<HomebrewConfig>,
+    /// Default Homebrew Cask settings, merged into per-crate `publish.homebrew_cask`.
+    ///
+    /// Uses the unified `HomebrewCaskConfig` (WAVE 4). Single-struct per DEC-3;
+    /// TODO(WAVE-6): expand to OneOrMany<HomebrewCaskConfig>.
+    pub homebrew_cask: Option<HomebrewCaskConfig>,
     /// Default crates.io publish settings, merged into per-crate `publish.cargo`.
     ///
     /// TODO(WAVE-6): allow per-crate `publish.cargo` to be `OneOrMany<CargoPublishConfig>`
@@ -2218,6 +2223,13 @@ pub struct PublishConfig {
     pub cargo: Option<CargoPublishConfig>,
     /// Homebrew formula publishing configuration.
     pub homebrew: Option<HomebrewConfig>,
+    /// Homebrew Cask publishing configuration (macOS .app bundles).
+    ///
+    /// Uses the unified `HomebrewCaskConfig` which carries all fields from both
+    /// the per-crate cask config and the top-level `homebrew_casks:` config.
+    ///
+    /// TODO(WAVE-6): expand to OneOrMany<HomebrewCaskConfig>
+    pub homebrew_cask: Option<HomebrewCaskConfig>,
     /// Scoop manifest publishing configuration.
     pub scoop: Option<ScoopConfig>,
     /// Chocolatey package publishing configuration.
@@ -2424,64 +2436,26 @@ impl HomebrewConflict {
     }
 }
 
-/// Homebrew Cask configuration for macOS .app bundles.
+/// Unified Homebrew Cask configuration (WAVE 4).
+///
+/// Used at both call-sites:
+/// - `homebrew_casks:` — top-level array (GoReleaser parity); carries `repository`,
+///   `commit_author`, `directory`, `ids`, `url`, structured `uninstall`/`zap`, etc.
+/// - `crates[].publish.homebrew_cask:` — per-crate override; same shape, with
+///   `url_template` as the simpler URL alternative.
+///
+/// Fields from both original types are present; any field may be `None` at either
+/// call-site. The union avoids a two-type bifurcation while keeping both axes.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct HomebrewCaskConfig {
-    /// Override the cask name (default: crate name).
+    // ----- Identity -----
+    /// Cask name (default: crate / project name).
     pub name: Option<String>,
     /// Alternative cask names (aliases).
     pub alternative_names: Option<Vec<String>>,
-    /// macOS .app bundle name (e.g. "MyApp.app").
-    pub app: Option<String>,
-    /// Binary stubs to create in /usr/local/bin (paths inside the .app bundle).
-    pub binaries: Option<Vec<String>>,
-    /// Cask description.
-    pub description: Option<String>,
-    /// Project homepage URL.
-    pub homepage: Option<String>,
-    /// URL template for the .dmg/.zip download.
-    pub url_template: Option<String>,
-    /// Custom caveats shown after install.
-    pub caveats: Option<String>,
-    /// Zap stanza for complete uninstall cleanup.
-    pub zap: Option<Vec<String>>,
-    /// Uninstall stanza directives.
-    pub uninstall: Option<Vec<String>>,
-    /// Arbitrary Ruby code inserted into the cask block.
-    pub custom_block: Option<String>,
-    /// Homebrew service definition.
-    pub service: Option<String>,
-    /// License identifier (SPDX).
-    pub license: Option<String>,
-    /// Manual page references to install.
-    pub manpages: Option<Vec<String>>,
-    /// Shell completion definitions.
-    pub completions: Option<HomebrewCaskCompletions>,
-    /// Cask dependencies (other casks or formulae).
-    pub dependencies: Option<Vec<HomebrewCaskDependencyEntry>>,
-    /// Conflicting casks or formulae.
-    pub conflicts: Option<Vec<HomebrewCaskConflictEntry>>,
-    /// Pre/post install/uninstall hooks.
-    pub hooks: Option<HomebrewCaskHooks>,
-    /// Skip publishing the cask. `"true"` always skips; `"auto"` skips
-    /// for prerelease versions. Accepts bool or template string.
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub skip_upload: Option<StringOrBool>,
-}
 
-// ---------------------------------------------------------------------------
-// Top-level Homebrew Cask config (GoReleaser `homebrew_casks` parity)
-// ---------------------------------------------------------------------------
-
-/// Top-level Homebrew Cask configuration.
-/// GoReleaser has `homebrew_casks` as a top-level config array with its own
-/// repository, commit_author, directory, skip_upload, etc.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default, deny_unknown_fields)]
-pub struct TopLevelHomebrewCaskConfig {
-    /// Cask name (default: project name).
-    pub name: Option<String>,
+    // ----- Tap repository (top-level axis) -----
     /// Unified repository config for the Homebrew tap.
     pub repository: Option<RepositoryConfig>,
     /// Commit author with optional signing.
@@ -2491,48 +2465,69 @@ pub struct TopLevelHomebrewCaskConfig {
     pub commit_msg_template: Option<String>,
     /// Subdirectory in the tap repo for cask placement (default: "Casks").
     pub directory: Option<String>,
+
+    // ----- Artifact selection -----
+    /// Build IDs filter: only include artifacts from builds whose `id` is in this list.
+    pub ids: Option<Vec<String>>,
+
+    // ----- Download URL -----
+    /// Simple URL template for the .dmg/.zip download (per-crate shorthand).
+    /// Prefer `url:` for the structured form used at the top-level axis.
+    pub url_template: Option<String>,
+    /// Structured download URL configuration (top-level axis).
+    pub url: Option<HomebrewCaskURL>,
+
+    // ----- macOS bundle -----
+    /// macOS .app bundle name (e.g. "MyApp.app").
+    pub app: Option<String>,
+    /// Binary stubs to create in /usr/local/bin (paths inside the .app bundle).
+    pub binaries: Option<Vec<String>>,
+
+    // ----- Metadata -----
     /// Cask description.
     pub description: Option<String>,
     /// Project homepage URL.
     pub homepage: Option<String>,
+    /// License identifier (SPDX).
+    pub license: Option<String>,
+    /// Custom caveats shown after install.
+    pub caveats: Option<String>,
+
+    // ----- Ruby block -----
+    /// Arbitrary Ruby code inserted into the cask block.
+    pub custom_block: Option<String>,
+    /// Homebrew service definition.
+    pub service: Option<String>,
+
+    // ----- Completions / manpages -----
+    /// Manual page references to install.
+    pub manpages: Option<Vec<String>>,
+    /// Shell completion definitions.
+    pub completions: Option<HomebrewCaskCompletions>,
+    /// Auto-generate shell completions from an executable.
+    pub generate_completions_from_executable: Option<HomebrewCaskGeneratedCompletions>,
+
+    // ----- Dependencies / conflicts -----
+    /// Cask dependencies (other casks or formulae).
+    pub dependencies: Option<Vec<HomebrewCaskDependencyEntry>>,
+    /// Conflicting casks or formulae.
+    pub conflicts: Option<Vec<HomebrewCaskConflictEntry>>,
+
+    // ----- Lifecycle hooks -----
+    /// Pre/post install/uninstall hooks.
+    pub hooks: Option<HomebrewCaskHooks>,
+
+    // ----- Uninstall / zap -----
+    /// Structured uninstall stanza configuration.
+    pub uninstall: Option<HomebrewCaskUninstall>,
+    /// Deep uninstall (zap) stanza configuration.
+    pub zap: Option<HomebrewCaskUninstall>,
+
+    // ----- Publishing control -----
     /// Skip publishing the cask. `"true"` always skips; `"auto"` skips
     /// for prerelease versions. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip_upload: Option<StringOrBool>,
-    /// Custom Ruby code block inserted into the cask definition.
-    pub custom_block: Option<String>,
-    /// Build IDs filter: only include artifacts from builds whose `id` is in this list.
-    pub ids: Option<Vec<String>>,
-    /// Homebrew service block content.
-    pub service: Option<String>,
-    /// Binary stubs to create in /usr/local/bin.
-    pub binaries: Option<Vec<String>>,
-    /// Manpage file paths (glob patterns supported).
-    pub manpages: Option<Vec<String>>,
-    /// Custom caveats shown after install.
-    pub caveats: Option<String>,
-    /// SPDX license identifier.
-    pub license: Option<String>,
-    /// Download URL configuration.
-    pub url: Option<HomebrewCaskURL>,
-    /// Shell completion file paths.
-    pub completions: Option<HomebrewCaskCompletions>,
-    /// Cask/formula dependencies.
-    pub dependencies: Option<Vec<HomebrewCaskDependencyEntry>>,
-    /// Conflicting casks/formulas.
-    pub conflicts: Option<Vec<HomebrewCaskConflictEntry>>,
-    /// Pre/post install/uninstall hooks.
-    pub hooks: Option<HomebrewCaskHooks>,
-    /// Uninstall stanza configuration.
-    pub uninstall: Option<HomebrewCaskUninstall>,
-    /// Deep uninstall (zap) stanza configuration.
-    pub zap: Option<HomebrewCaskUninstall>,
-    /// Auto-generate shell completions from an executable.
-    pub generate_completions_from_executable: Option<HomebrewCaskGeneratedCompletions>,
-    /// macOS .app bundle name (e.g. "MyApp.app").
-    pub app: Option<String>,
-    /// Alternative cask names (aliases).
-    pub alternative_names: Option<Vec<String>>,
 }
 
 /// Structured URL configuration for Homebrew Cask downloads.

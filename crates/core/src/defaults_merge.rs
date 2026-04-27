@@ -447,6 +447,7 @@ fn docker_v2_identity(c: &DockerV2Config) -> Option<String> {
 
 fn merge_publish_defaults(target: &mut PublishConfig, defaults: &PublishDefaults) {
     deep_merge_option(&mut target.homebrew, defaults.homebrew.as_ref());
+    deep_merge_option(&mut target.homebrew_cask, defaults.homebrew_cask.as_ref());
     deep_merge_option(&mut target.cargo, defaults.cargo.as_ref());
     deep_merge_option(&mut target.scoop, defaults.scoop.as_ref());
     deep_merge_option(&mut target.winget, defaults.winget.as_ref());
@@ -465,7 +466,8 @@ fn merge_publish_defaults(target: &mut PublishConfig, defaults: &PublishDefaults
 mod tests {
     use super::*;
     use crate::config::{
-        ArchiveConfig, ArchivesConfig, ChecksumConfig, CrossStrategy, HomebrewConfig, StringOrBool,
+        ArchiveConfig, ArchivesConfig, ChecksumConfig, CrossStrategy, HomebrewCaskConfig,
+        HomebrewConfig, StringOrBool,
     };
 
     fn make_crate(name: &str) -> CrateConfig {
@@ -962,5 +964,137 @@ mod tests {
         } else {
             panic!("expected Configs variant");
         }
+    }
+
+    // --------------- HomebrewCask publisher defaults (WAVE 4) ---------------
+
+    #[test]
+    fn homebrew_cask_top_level_yaml_parses_with_unified_type() {
+        // top-level `homebrew_casks:` must parse with the unified HomebrewCaskConfig.
+        let yaml = r#"
+project_name: myapp
+homebrew_casks:
+  - name: myapp
+    description: "My app cask"
+    homepage: "https://example.com"
+    repository:
+      owner: myorg
+      name: homebrew-tap
+    directory: Casks
+    skip_upload: "auto"
+"#;
+        let cfg: crate::config::Config = serde_yaml_ng::from_str(yaml)
+            .expect("homebrew_casks with unified HomebrewCaskConfig should parse");
+        let casks = cfg
+            .homebrew_casks
+            .expect("homebrew_casks should be present");
+        assert_eq!(casks.len(), 1);
+        assert_eq!(casks[0].name.as_deref(), Some("myapp"));
+        assert_eq!(casks[0].description.as_deref(), Some("My app cask"));
+        assert_eq!(casks[0].directory.as_deref(), Some("Casks"));
+    }
+
+    #[test]
+    fn homebrew_cask_per_crate_yaml_parses_with_unified_type() {
+        // per-crate `publish.homebrew_cask:` must parse with the unified HomebrewCaskConfig.
+        let yaml = r#"
+project_name: myapp
+crates:
+  - name: myapp
+    path: .
+    tag_template: "v{{ .Version }}"
+    publish:
+      homebrew_cask:
+        name: myapp
+        url_template: "https://releases.example.com/{{ .Version }}/myapp_{{ .Os }}_{{ .Arch }}.dmg"
+        app: "MyApp.app"
+        caveats: "Check the docs."
+"#;
+        let cfg: crate::config::Config = serde_yaml_ng::from_str(yaml)
+            .expect("per-crate publish.homebrew_cask with unified type should parse");
+        let crate_publish = cfg.crates[0]
+            .publish
+            .as_ref()
+            .expect("publish block should be present");
+        let cask = crate_publish
+            .homebrew_cask
+            .as_ref()
+            .expect("homebrew_cask should be present");
+        assert_eq!(cask.name.as_deref(), Some("myapp"));
+        assert_eq!(cask.app.as_deref(), Some("MyApp.app"));
+        assert_eq!(cask.caveats.as_deref(), Some("Check the docs."));
+    }
+
+    #[test]
+    fn homebrew_cask_defaults_merge_into_per_crate_publish_when_unset() {
+        let defaults = Defaults {
+            publish: Some(PublishDefaults {
+                homebrew_cask: Some(HomebrewCaskConfig {
+                    homepage: Some("https://default.example.com".to_string()),
+                    license: Some("MIT".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        // Per-crate has no publish.homebrew_cask at all.
+        let mut crate_cfg = make_crate("mycrate");
+
+        apply_to_crate(&defaults, &mut crate_cfg);
+
+        let publish = crate_cfg.publish.expect("publish block should be created");
+        let cask = publish
+            .homebrew_cask
+            .expect("publish.homebrew_cask should be inherited from defaults");
+        assert_eq!(
+            cask.homepage.as_deref(),
+            Some("https://default.example.com"),
+            "homepage should be filled from defaults"
+        );
+        assert_eq!(
+            cask.license.as_deref(),
+            Some("MIT"),
+            "license should be filled from defaults"
+        );
+    }
+
+    #[test]
+    fn homebrew_cask_defaults_fill_missing_fields_but_per_crate_wins_on_collision() {
+        let defaults = Defaults {
+            publish: Some(PublishDefaults {
+                homebrew_cask: Some(HomebrewCaskConfig {
+                    homepage: Some("https://default.example.com".to_string()),
+                    license: Some("MIT".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        // Per-crate explicitly sets homepage; license is unset.
+        let mut crate_cfg = make_crate("mycrate");
+        crate_cfg.publish = Some(PublishConfig {
+            homebrew_cask: Some(HomebrewCaskConfig {
+                homepage: Some("https://crate.example.com".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+
+        apply_to_crate(&defaults, &mut crate_cfg);
+
+        let publish = crate_cfg.publish.unwrap();
+        let cask = publish.homebrew_cask.unwrap();
+        assert_eq!(
+            cask.homepage.as_deref(),
+            Some("https://crate.example.com"),
+            "per-crate homepage should win over defaults"
+        );
+        assert_eq!(
+            cask.license.as_deref(),
+            Some("MIT"),
+            "license should be filled from defaults (per-crate left it unset)"
+        );
     }
 }

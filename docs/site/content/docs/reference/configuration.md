@@ -35,7 +35,7 @@ List of `KEY=VALUE` strings (matches GoReleaser): `env: ["MY_VAR=hello", "DEPLOY
 | `gitea_urls` | GiteaUrlsConfig | — | Custom Gitea API/download URLs for self-hosted Gitea installations. |
 | `github_urls` | GitHubUrlsConfig | — | Custom GitHub API/upload/download URLs for GitHub Enterprise installations. |
 | `gitlab_urls` | GitLabUrlsConfig | — | Custom GitLab API/download URLs for self-hosted GitLab installations. |
-| `homebrew_casks` | list of TopLevelHomebrewCaskConfig | — | Top-level Homebrew Cask configurations. `homebrew_casks` is a top-level array with its own repository, commit_author, directory, skip_upload, hooks, dependencies, conflicts, completions, manpages, structured uninstall/zap, etc. |
+| `homebrew_casks` | list of HomebrewCaskConfig | — | Top-level Homebrew Cask configurations. `homebrew_casks` is a top-level array with its own repository, commit_author, directory, skip_upload, hooks, dependencies, conflicts, completions, manpages, structured uninstall/zap, etc. |
 | `includes` | list of IncludeSpec | — | Additional config files to merge into this config. Supports plain string paths, `from_file:` for structured file paths, and `from_url:` for fetching configs from URLs with optional headers. |
 | `makeselfs` | list of MakeselfConfig | `[]` | Makeself self-extracting archive configurations. |
 | `metadata` | MetadataConfig | — | Project metadata configuration (applied to metadata.json output files). |
@@ -331,33 +331,38 @@ Custom GitLab API/download URLs for self-hosted GitLab installations. Matches Go
 | `use_package_registry` | bool | — | When true, use the GitLab Package Registry for uploads instead of Generic Packages. |
 
 ## `homebrew_casks`
-Top-level Homebrew Cask configuration. GoReleaser has `homebrew_casks` as a top-level config array with its own repository, commit_author, directory, skip_upload, etc.
+Unified Homebrew Cask configuration (WAVE 4).
+
+Used at both call-sites: - `homebrew_casks:` — top-level array (GoReleaser parity); carries `repository`, `commit_author`, `directory`, `ids`, `url`, structured `uninstall`/`zap`, etc. - `crates[].publish.homebrew_cask:` — per-crate override; same shape, with `url_template` as the simpler URL alternative.
+
+Fields from both original types are present; any field may be `None` at either call-site. The union avoids a two-type bifurcation while keeping both axes.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `alternative_names` | list of string | — | Alternative cask names (aliases). |
 | `app` | string | — | macOS .app bundle name (e.g. "MyApp.app"). |
-| `binaries` | list of string | — | Binary stubs to create in /usr/local/bin. |
+| `binaries` | list of string | — | Binary stubs to create in /usr/local/bin (paths inside the .app bundle). |
 | `caveats` | string | — | Custom caveats shown after install. |
 | `commit_author` | CommitAuthorConfig | — | Commit author with optional signing. |
 | `commit_msg_template` | string | — | Custom commit message template. Default: "Brew cask update for {{ .ProjectName }} version {{ .Tag }}" |
-| `completions` | HomebrewCaskCompletions | — | Shell completion file paths. |
-| `conflicts` | list of HomebrewCaskConflictEntry | — | Conflicting casks/formulas. |
-| `custom_block` | string | — | Custom Ruby code block inserted into the cask definition. |
-| `dependencies` | list of HomebrewCaskDependencyEntry | — | Cask/formula dependencies. |
+| `completions` | HomebrewCaskCompletions | — | Shell completion definitions. |
+| `conflicts` | list of HomebrewCaskConflictEntry | — | Conflicting casks or formulae. |
+| `custom_block` | string | — | Arbitrary Ruby code inserted into the cask block. |
+| `dependencies` | list of HomebrewCaskDependencyEntry | — | Cask dependencies (other casks or formulae). |
 | `description` | string | — | Cask description. |
 | `directory` | string | — | Subdirectory in the tap repo for cask placement (default: "Casks"). |
 | `generate_completions_from_executable` | HomebrewCaskGeneratedCompletions | — | Auto-generate shell completions from an executable. |
 | `homepage` | string | — | Project homepage URL. |
 | `hooks` | HomebrewCaskHooks | — | Pre/post install/uninstall hooks. |
 | `ids` | list of string | — | Build IDs filter: only include artifacts from builds whose `id` is in this list. |
-| `license` | string | — | SPDX license identifier. |
-| `manpages` | list of string | — | Manpage file paths (glob patterns supported). |
-| `name` | string | — | Cask name (default: project name). |
+| `license` | string | — | License identifier (SPDX). |
+| `manpages` | list of string | — | Manual page references to install. |
+| `name` | string | — | Cask name (default: crate / project name). |
 | `repository` | RepositoryConfig | — | Unified repository config for the Homebrew tap. |
-| `service` | string | — | Homebrew service block content. |
+| `service` | string | — | Homebrew service definition. |
 | `skip_upload` | StringOrBool | — | Skip publishing the cask. `"true"` always skips; `"auto"` skips for prerelease versions. Accepts bool or template string. |
-| `uninstall` | HomebrewCaskUninstall | — | Uninstall stanza configuration. |
-| `url` | HomebrewCaskURL | — | Download URL configuration. |
+| `uninstall` | HomebrewCaskUninstall | — | Structured uninstall stanza configuration. |
+| `url` | HomebrewCaskURL | — | Structured download URL configuration (top-level axis). |
+| `url_template` | string | — | Simple URL template for the .dmg/.zip download (per-crate shorthand). Prefer `url:` for the structured form used at the top-level axis. |
 | `zap` | HomebrewCaskUninstall | — | Deep uninstall (zap) stanza configuration. |
 
 ## `makeselfs`

@@ -615,6 +615,10 @@ fn generate_cask_from_context(
         .filter(|s| !s.is_empty())
         .collect();
 
+    // Convert structured uninstall/zap config to directive strings for template rendering.
+    let uninstall_directives = build_uninstall_directives(cask_cfg.uninstall.as_ref());
+    let zap_directives = build_uninstall_directives(cask_cfg.zap.as_ref());
+
     let params = CaskParams {
         name: cask_name,
         display_name,
@@ -630,8 +634,8 @@ fn generate_cask_from_context(
         app: cask_cfg.app.as_deref(),
         binaries: cask_cfg.binaries.as_deref().unwrap_or(&empty_vec),
         caveats: cask_cfg.caveats.as_deref(),
-        zap: cask_cfg.zap.as_deref().unwrap_or(&empty_vec),
-        uninstall: cask_cfg.uninstall.as_deref().unwrap_or(&empty_vec),
+        zap: &zap_directives,
+        uninstall: &uninstall_directives,
         custom_block: cask_cfg.custom_block.as_deref(),
         service: cask_cfg.service.as_deref(),
         manpages: cask_cfg.manpages.as_deref().unwrap_or(&empty_vec),
@@ -4231,12 +4235,10 @@ mod tests {
 
     #[test]
     fn test_top_level_cask_skip_upload() {
-        use anodizer_core::config::{
-            Config, RepositoryConfig, StringOrBool, TopLevelHomebrewCaskConfig,
-        };
+        use anodizer_core::config::{Config, HomebrewCaskConfig, RepositoryConfig, StringOrBool};
         use anodizer_core::context::{Context, ContextOptions};
         let mut config = Config::default();
-        config.homebrew_casks = Some(vec![TopLevelHomebrewCaskConfig {
+        config.homebrew_casks = Some(vec![HomebrewCaskConfig {
             name: Some("myapp".to_string()),
             skip_upload: Some(StringOrBool::Bool(true)),
             repository: Some(RepositoryConfig {
@@ -4259,11 +4261,11 @@ mod tests {
 
     #[test]
     fn test_top_level_cask_dry_run() {
-        use anodizer_core::config::{Config, RepositoryConfig, TopLevelHomebrewCaskConfig};
+        use anodizer_core::config::{Config, HomebrewCaskConfig, RepositoryConfig};
         use anodizer_core::context::{Context, ContextOptions};
         let config = Config {
             project_name: "myapp".to_string(),
-            homebrew_casks: Some(vec![TopLevelHomebrewCaskConfig {
+            homebrew_casks: Some(vec![HomebrewCaskConfig {
                 name: Some("myapp".to_string()),
                 repository: Some(RepositoryConfig {
                     owner: Some("org".to_string()),
@@ -4288,11 +4290,11 @@ mod tests {
 
     #[test]
     fn test_top_level_cask_requires_repository() {
-        use anodizer_core::config::{Config, TopLevelHomebrewCaskConfig};
+        use anodizer_core::config::{Config, HomebrewCaskConfig};
         use anodizer_core::context::{Context, ContextOptions};
         let config = Config {
             project_name: "myapp".to_string(),
-            homebrew_casks: Some(vec![TopLevelHomebrewCaskConfig {
+            homebrew_casks: Some(vec![HomebrewCaskConfig {
                 name: Some("myapp".to_string()),
                 repository: None,
                 ..Default::default()
@@ -4356,8 +4358,8 @@ mod tests {
 
     #[test]
     fn test_top_level_cask_default_directory() {
-        use anodizer_core::config::{RepositoryConfig, TopLevelHomebrewCaskConfig};
-        let cfg = TopLevelHomebrewCaskConfig {
+        use anodizer_core::config::{HomebrewCaskConfig, RepositoryConfig};
+        let cfg = HomebrewCaskConfig {
             repository: Some(RepositoryConfig {
                 owner: Some("org".to_string()),
                 name: Some("tap".to_string()),
@@ -4370,9 +4372,8 @@ mod tests {
 
     #[test]
     fn test_top_level_cask_default_commit_msg() {
-        #[allow(unused_imports)]
-        use anodizer_core::config::{RepositoryConfig, TopLevelHomebrewCaskConfig};
-        let cfg = TopLevelHomebrewCaskConfig {
+        use anodizer_core::config::{HomebrewCaskConfig, RepositoryConfig};
+        let cfg = HomebrewCaskConfig {
             name: Some("myapp".to_string()),
             repository: Some(RepositoryConfig {
                 owner: Some("org".to_string()),
