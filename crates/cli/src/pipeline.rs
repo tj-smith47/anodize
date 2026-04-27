@@ -1415,7 +1415,6 @@ defaults:
   targets:
     - x86_64-unknown-linux-gnu
   builds:
-    binary: ""
     ignore:
       - os: windows
         arch: arm64

@@ -251,7 +251,6 @@ fn test_parse_defaults_flags_valid() {
 project_name: test
 defaults:
   builds:
-    binary: ""
     flags: "--release --locked"
 crates: []
 "#;
@@ -823,8 +822,8 @@ crates:
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let builds = config.crates[0].builds.as_ref().unwrap();
     assert_eq!(builds.len(), 2);
-    assert_eq!(builds[0].binary, "app-cli");
-    assert_eq!(builds[1].binary, "app-server");
+    assert_eq!(builds[0].binary.as_deref(), Some("app-cli"));
+    assert_eq!(builds[1].binary.as_deref(), Some("app-server"));
     assert_eq!(
         builds[1].targets.as_ref().unwrap(),
         &["x86_64-unknown-linux-gnu"]
@@ -3310,7 +3309,6 @@ defaults:
     - aarch64-apple-darwin
   cross: zigbuild
   builds:
-    binary: ""
     flags: "--release --locked"
   archives:
     format: tar.gz
@@ -3463,7 +3461,7 @@ crates:
 
     // App builds
     let builds = app.builds.as_ref().unwrap();
-    assert_eq!(builds[0].binary, "app");
+    assert_eq!(builds[0].binary.as_deref(), Some("app"));
 
     // App archives
     if let ArchivesConfig::Configs(configs) = &app.archives {
@@ -3568,7 +3566,7 @@ fn test_crate_config_default_struct() {
 #[test]
 fn test_build_config_default_struct() {
     let config = BuildConfig::default();
-    assert_eq!(config.binary, "");
+    assert_eq!(config.binary, None);
     assert!(config.targets.is_none());
     assert!(config.features.is_none());
     assert!(config.no_default_features.is_none());

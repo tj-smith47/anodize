@@ -1395,7 +1395,7 @@ impl Stage for BuildStage {
                     // Library-only crates should not get a default --bin build.
                     if crate_has_binary_target(&crate_cfg.path) {
                         vec![BuildConfig {
-                            binary: crate_cfg.name.clone(),
+                            binary: Some(crate_cfg.name.clone()),
                             ..Default::default()
                         }]
                     } else {
@@ -1433,6 +1433,13 @@ impl Stage for BuildStage {
             );
 
             for build in &builds {
+                // Resolve binary name template — falls back to the crate's
+                // `name` field when not set so `defaults.builds` (the
+                // path-mirrored template) can omit it.
+                let binary_field: String = build
+                    .binary
+                    .clone()
+                    .unwrap_or_else(|| crate_cfg.name.clone());
                 // Skip builds marked with skip: true/template
                 let should_skip = match build.skip.as_ref() {
                     Some(s) => s
@@ -1440,7 +1447,7 @@ impl Stage for BuildStage {
                         .with_context(|| {
                             format!(
                                 "build: render skip template for build '{}'",
-                                build.id.as_deref().unwrap_or(&build.binary)
+                                build.id.as_deref().unwrap_or(&binary_field)
                             )
                         })?,
                     None => false,
@@ -1448,7 +1455,7 @@ impl Stage for BuildStage {
                 if should_skip {
                     log.status(&format!(
                         "skipping build '{}' (skip: true)",
-                        build.id.as_deref().unwrap_or(&build.binary)
+                        build.id.as_deref().unwrap_or(&binary_field)
                     ));
                     continue;
                 }
@@ -1457,7 +1464,7 @@ impl Stage for BuildStage {
                 // below so that per-target template variables (Os, Arch, Target)
                 // are available in the template. The raw template is used in log
                 // messages before the target loop.
-                let binary_name_raw = &build.binary;
+                let binary_name_raw = binary_field.as_str();
 
                 // Targets: per-build override (even if empty), else global defaults.
                 // An explicitly empty list (Some(vec![])) means "skip this build".
@@ -2572,7 +2579,7 @@ mod tests {
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
             builds: Some(vec![BuildConfig {
-                binary: "myapp".to_string(),
+                binary: Some("myapp".to_string()),
                 targets: Some(vec![]), // explicitly empty targets
                 ..Default::default()
             }]),
@@ -2612,7 +2619,7 @@ mod tests {
             path: tmp_dir.to_string_lossy().into_owned(),
             tag_template: "v{{ .Version }}".to_string(),
             builds: Some(vec![BuildConfig {
-                binary: "myapp".to_string(),
+                binary: Some("myapp".to_string()),
                 targets: Some(vec!["x86_64-unknown-linux-gnu".to_string()]),
                 copy_from: Some("nonexistent-binary".to_string()),
                 ..Default::default()
@@ -2662,7 +2669,7 @@ mod tests {
             path: tmp_dir.to_string_lossy().into_owned(),
             tag_template: "v{{ .Version }}".to_string(),
             builds: Some(vec![BuildConfig {
-                binary: "this-binary-does-not-exist".to_string(),
+                binary: Some("this-binary-does-not-exist".to_string()),
                 targets: Some(vec!["x86_64-unknown-linux-gnu".to_string()]),
                 ..Default::default()
             }]),
@@ -2881,7 +2888,7 @@ crate_type = ["dylib"]
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
             builds: Some(vec![BuildConfig {
-                binary: "myapp".to_string(),
+                binary: Some("myapp".to_string()),
                 targets: Some(vec!["x86_64-unknown-linux-gnu".to_string()]),
                 reproducible: Some(true),
                 flags: Some("--release".to_string()),
@@ -2927,7 +2934,7 @@ crate_type = ["dylib"]
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
             builds: Some(vec![BuildConfig {
-                binary: "myapp".to_string(),
+                binary: Some("myapp".to_string()),
                 targets: Some(vec!["x86_64-unknown-linux-musl".to_string()]),
                 reproducible: Some(true),
                 flags: Some("--release".to_string()),
@@ -2961,7 +2968,7 @@ crate_type = ["dylib"]
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
             builds: Some(vec![BuildConfig {
-                binary: "myapp".to_string(),
+                binary: Some("myapp".to_string()),
                 targets: Some(vec!["x86_64-unknown-linux-gnu".to_string()]),
                 reproducible: Some(false),
                 flags: Some("--release".to_string()),
@@ -4003,13 +4010,13 @@ crates:
             builds: Some(vec![
                 BuildConfig {
                     id: Some("dup".to_string()),
-                    binary: "myapp".to_string(),
+                    binary: Some("myapp".to_string()),
                     targets: Some(vec!["x86_64-unknown-linux-gnu".to_string()]),
                     ..Default::default()
                 },
                 BuildConfig {
                     id: Some("dup".to_string()),
-                    binary: "myapp2".to_string(),
+                    binary: Some("myapp2".to_string()),
                     targets: Some(vec!["x86_64-unknown-linux-gnu".to_string()]),
                     ..Default::default()
                 },
@@ -4044,7 +4051,7 @@ crates:
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
             builds: Some(vec![BuildConfig {
-                binary: "myapp".to_string(),
+                binary: Some("myapp".to_string()),
                 targets: Some(vec!["this-is-not-a-valid-triple".to_string()]),
                 ..Default::default()
             }]),
@@ -4078,7 +4085,7 @@ crates:
             path: ".".to_string(),
             tag_template: "v{{ .Version }}".to_string(),
             builds: Some(vec![BuildConfig {
-                binary: "myapp".to_string(),
+                binary: Some("myapp".to_string()),
                 skip: Some(StringOrBool::Bool(true)),
                 targets: Some(vec!["x86_64-unknown-linux-gnu".to_string()]),
                 ..Default::default()

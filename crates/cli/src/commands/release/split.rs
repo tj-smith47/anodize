@@ -706,7 +706,7 @@ mod tests {
                 name: "myapp".to_string(),
                 path: ".".to_string(),
                 builds: Some(vec![BuildConfig {
-                    binary: "myapp".to_string(),
+                    binary: Some("myapp".to_string()),
                     targets: Some(vec![
                         "x86_64-unknown-linux-gnu".to_string(),
                         "aarch64-apple-darwin".to_string(),
@@ -736,7 +736,7 @@ mod tests {
                     name: "a".to_string(),
                     path: ".".to_string(),
                     builds: Some(vec![BuildConfig {
-                        binary: "a".to_string(),
+                        binary: Some("a".to_string()),
                         targets: Some(vec!["x86_64-unknown-linux-gnu".to_string()]),
                         ..Default::default()
                     }]),
@@ -746,7 +746,7 @@ mod tests {
                     name: "b".to_string(),
                     path: ".".to_string(),
                     builds: Some(vec![BuildConfig {
-                        binary: "b".to_string(),
+                        binary: Some("b".to_string()),
                         targets: Some(vec!["x86_64-unknown-linux-gnu".to_string()]),
                         ..Default::default()
                     }]),

@@ -860,7 +860,12 @@ pub fn publish_to_nix(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
             let mut names: Vec<String> = _crate_cfg
                 .builds
                 .as_ref()
-                .map(|builds| builds.iter().map(|b| b.binary.clone()).collect::<Vec<_>>())
+                .map(|builds| {
+                    builds
+                        .iter()
+                        .filter_map(|b| b.binary.clone())
+                        .collect::<Vec<_>>()
+                })
                 .unwrap_or_default();
             // Deduplicate while preserving order.
             let mut seen = std::collections::HashSet::new();

@@ -232,7 +232,7 @@ CloudSmith publisher configuration. Pushes packages to CloudSmith repositories.
 ## `defaults`
 Workspace-level defaults that path-mirror the `CrateConfig` (and select top-level `Config`) shape. Each field here is folded into every resolved crate by `defaults_merge::apply_defaults` according to the deep-merge / merge-by-identity semantics documented in `defaults_merge`.
 
-Multi-publisher fields are single-struct here (one default per publisher); per-crate `publish.*` fields accept either a single struct or a list. The merge engine reconciles the two shapes when populating the resolved crate.
+Multi-publisher fields are single-struct on both sides today: defaults supplies one struct per publisher, and per-crate `publish.*` fields are also single-struct. WAVE 3 will introduce list-or-scalar via `OneOrMany<T>` on the per-crate side so a crate can declare multiple homebrew taps / scoop buckets / etc.; the defaults side stays single- struct and merges into the first per-crate entry by identity.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `app_bundles` | AppBundleConfig | — | Default app-bundle settings applied to all crates. |

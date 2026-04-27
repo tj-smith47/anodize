@@ -432,11 +432,28 @@ pub fn validate_release_backends(config: &Config) -> Result<(), String> {
     Ok(())
 }
 
-/// Marker tag for the axis-mismatch validation error class. Existing
+/// Marker prefix for the axis-mismatch validation error class. Existing
 /// validators in this module return `Result<(), String>` rather than a
 /// typed enum, so we expose this constant (instead of a `ConfigError`
 /// variant) for callers that want to recognise the error class
-/// programmatically. Future error-type unification can rename to
+/// programmatically.
+///
+/// The prefix is emitted at the start of every error returned by
+/// [`validate_defaults_axis`] (formatted as `"DefaultsAxisMismatch: …"`),
+/// so callers can match with `err.starts_with(ERR_DEFAULTS_AXIS_MISMATCH)`
+/// or `err.contains(ERR_DEFAULTS_AXIS_MISMATCH)` without depending on the
+/// exact human-readable wording.
+///
+/// ```ignore
+/// match validate_defaults_axis(&config) {
+///     Err(e) if e.starts_with(ERR_DEFAULTS_AXIS_MISMATCH) => {
+///         // handle the axis-mismatch error class
+///     }
+///     other => other?,
+/// }
+/// ```
+///
+/// Future error-type unification can rename to
 /// `ConfigError::DefaultsAxisMismatch` without changing call-sites that
 /// match on this prefix.
 pub const ERR_DEFAULTS_AXIS_MISMATCH: &str = "DefaultsAxisMismatch";
@@ -458,11 +475,11 @@ pub fn validate_defaults_axis(config: &Config) -> Result<(), String> {
     let has_workspace_block = defaults.workspaces.is_some();
 
     if has_crate_block && has_workspace_block {
-        return Err(
-            "defaults.crates and defaults.workspaces are mutually exclusive — \
-             pick the axis that matches the top-level config (`crates:` or `workspaces:`)"
-                .to_string(),
-        );
+        return Err(format!(
+            "{ERR_DEFAULTS_AXIS_MISMATCH}: defaults.crates and defaults.workspaces are \
+             mutually exclusive — pick the axis that matches the top-level config \
+             (`crates:` or `workspaces:`)",
+        ));
     }
 
     let top_uses_workspaces = config.workspaces.as_ref().is_some_and(|w| !w.is_empty());
@@ -470,8 +487,8 @@ pub fn validate_defaults_axis(config: &Config) -> Result<(), String> {
 
     if has_crate_block && !top_uses_crates {
         return Err(format!(
-            "defaults.crates is set but top-level `crates:` is {}; \
-             move defaults under `defaults.workspaces:` or remove the block",
+            "{ERR_DEFAULTS_AXIS_MISMATCH}: defaults.crates is set but top-level `crates:` \
+             is {}; move defaults under `defaults.workspaces:` or remove the block",
             if top_uses_workspaces {
                 "absent (top-level uses `workspaces:`)"
             } else {
@@ -481,8 +498,8 @@ pub fn validate_defaults_axis(config: &Config) -> Result<(), String> {
     }
     if has_workspace_block && !top_uses_workspaces {
         return Err(format!(
-            "defaults.workspaces is set but top-level `workspaces:` is {}; \
-             move defaults under `defaults.crates:` or remove the block",
+            "{ERR_DEFAULTS_AXIS_MISMATCH}: defaults.workspaces is set but top-level \
+             `workspaces:` is {}; move defaults under `defaults.crates:` or remove the block",
             if top_uses_crates {
                 "absent (top-level uses `crates:`)"
             } else {
@@ -866,9 +883,12 @@ where
 /// crate by `defaults_merge::apply_defaults` according to the deep-merge /
 /// merge-by-identity semantics documented in `defaults_merge`.
 ///
-/// Multi-publisher fields are single-struct here (one default per publisher);
-/// per-crate `publish.*` fields accept either a single struct or a list. The
-/// merge engine reconciles the two shapes when populating the resolved crate.
+/// Multi-publisher fields are single-struct on both sides today: defaults
+/// supplies one struct per publisher, and per-crate `publish.*` fields are
+/// also single-struct. WAVE 3 will introduce list-or-scalar via
+/// `OneOrMany<T>` on the per-crate side so a crate can declare multiple
+/// homebrew taps / scoop buckets / etc.; the defaults side stays single-
+/// struct and merges into the first per-crate entry by identity.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct Defaults {
@@ -958,6 +978,8 @@ pub struct PublishDefaults {
     /// WAVE 3 will rename the type from `CratesPublishConfig` to
     /// `CargoPublishConfig` and expose it under the `cargo:` key; for now the
     /// existing type is reused verbatim.
+    // TODO(WAVE-3): rename CratesPublishConfig → CargoPublishConfig and align
+    // the per-crate field name (PublishConfig.crates → PublishConfig.cargo).
     pub cargo: Option<CratesPublishConfig>,
     /// Default Scoop manifest settings.
     pub scoop: Option<ScoopConfig>,
@@ -1184,7 +1206,12 @@ pub struct BuildConfig {
     /// Unique identifier for this build, used to reference it from archives and other configs.
     pub id: Option<String>,
     /// Binary name to build (must match a Cargo binary target in the crate).
-    pub binary: String,
+    ///
+    /// Optional so that `defaults.builds` (a path-mirrored template that
+    /// applies to every crate) can omit `binary` — the per-crate `builds[]`
+    /// entry supplies it. When the binary is absent at the per-crate level
+    /// it falls back to the crate's `name` field.
+    pub binary: Option<String>,
     /// When true (or template evaluating to "true"), skip this build entirely.
     #[serde(default, deserialize_with = "deserialize_string_or_bool_opt")]
     pub skip: Option<StringOrBool>,
@@ -9119,7 +9146,6 @@ defaults:
     - x86_64-unknown-linux-gnu
     - aarch64-unknown-linux-gnu
   builds:
-    binary: ""
     ignore:
       - os: windows
         arch: arm64
@@ -9161,7 +9187,6 @@ crates: []
 project_name: test
 defaults:
   builds:
-    binary: ""
     overrides:
       - targets:
           - "x86_64-*"
@@ -9620,6 +9645,10 @@ crates: []
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let err = validate_defaults_axis(&config).unwrap_err();
         assert!(
+            err.starts_with(ERR_DEFAULTS_AXIS_MISMATCH),
+            "error should be tagged with the {ERR_DEFAULTS_AXIS_MISMATCH} marker prefix: {err}"
+        );
+        assert!(
             err.contains("defaults.crates"),
             "error should mention defaults.crates: {err}"
         );
@@ -9638,6 +9667,10 @@ crates:
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let err = validate_defaults_axis(&config).unwrap_err();
+        assert!(
+            err.starts_with(ERR_DEFAULTS_AXIS_MISMATCH),
+            "error should be tagged with the {ERR_DEFAULTS_AXIS_MISMATCH} marker prefix: {err}"
+        );
         assert!(
             err.contains("defaults.workspaces"),
             "error should mention defaults.workspaces: {err}"
@@ -9658,6 +9691,10 @@ crates:
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let err = validate_defaults_axis(&config).unwrap_err();
+        assert!(
+            err.starts_with(ERR_DEFAULTS_AXIS_MISMATCH),
+            "error should be tagged with the {ERR_DEFAULTS_AXIS_MISMATCH} marker prefix: {err}"
+        );
         assert!(
             err.contains("mutually exclusive"),
             "error should mention mutual exclusion: {err}"
@@ -9681,6 +9718,10 @@ crates: []
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let err = validate_defaults_axis(&config).unwrap_err();
+        assert!(
+            err.starts_with(ERR_DEFAULTS_AXIS_MISMATCH),
+            "error should be tagged with the {ERR_DEFAULTS_AXIS_MISMATCH} marker prefix: {err}"
+        );
         assert!(
             err.contains("workspaces"),
             "error should mention top-level workspaces: {err}"
@@ -10918,7 +10959,6 @@ defaults:
   targets:
     - x86_64-unknown-linux-gnu
   builds:
-    binary: ""
     overrides:
       - targets:
           - "x86_64-*"
@@ -11027,7 +11067,6 @@ crates:
       - binary: app
 defaults:
   builds:
-    binary: ""
     overrides:
       - targets: ["x86_64-unknown-linux-gnu"]
         env:

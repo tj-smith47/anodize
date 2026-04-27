@@ -193,7 +193,7 @@ mod tests {
             )],
             defaults: Some(Defaults {
                 builds: Some(anodizer_core::config::BuildConfig {
-                    binary: String::new(),
+                    binary: None,
                     ignore: Some(vec![anodizer_core::config::BuildIgnore {
                         os: "windows".to_string(),
                         arch: "amd64".to_string(),

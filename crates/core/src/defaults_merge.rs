@@ -40,6 +40,49 @@ use crate::config::{
 };
 
 // ---------------------------------------------------------------------------
+// Skip-block suppression (DEC-9)
+// ---------------------------------------------------------------------------
+//
+// Per DEC-9, any per-crate config block carrying `skip: true` (a `StringOrBool`
+// that evaluates to a truthy value) suppresses inheritance from the matching
+// `defaults.*` block entirely — the merge engine treats defaults as if they
+// were `None` for that block.
+//
+// Rather than adding a `is_skipped` accessor on every config struct that
+// happens to carry a `skip` field (24+ types and growing), we inspect the
+// serialized JSON form of the value and look for a `skip` key whose value is
+// truthy. This keeps the suppression rule uniform across every block — adding
+// a new `skip`-bearing config type requires no changes here.
+
+/// Returns `true` when the per-crate value's serialized JSON form has a
+/// `skip` field whose value evaluates to truthy (`true`, `"true"`, `"1"`).
+/// Returns `false` for any other shape — including values without a `skip`
+/// field, falsey skip values, and serialization failures (defaults inherit
+/// in those cases, matching prior behaviour).
+fn is_skipped<T: Serialize>(value: &T) -> bool {
+    let Ok(json) = serde_json::to_value(value) else {
+        return false;
+    };
+    json_skip_truthy(&json)
+}
+
+/// Returns `true` when `value` is an object containing a `skip` key whose
+/// value is a truthy bool / truthy string ("true" / "1").
+fn json_skip_truthy(value: &Json) -> bool {
+    let Some(obj) = value.as_object() else {
+        return false;
+    };
+    let Some(skip) = obj.get("skip") else {
+        return false;
+    };
+    match skip {
+        Json::Bool(b) => *b,
+        Json::String(s) => matches!(s.trim(), "true" | "1"),
+        _ => false,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
 
@@ -88,10 +131,13 @@ pub fn apply_to_crate(defaults: &Defaults, crate_cfg: &mut CrateConfig) {
     }
 
     // ---- Single-struct deep-merge fields ----
-    // Suppress inheritance when the per-crate block sets `skip: true` (DEC-9).
-    if !checksum_skipped(crate_cfg.checksum.as_ref()) {
-        deep_merge_option(&mut crate_cfg.checksum, defaults.checksum.as_ref());
-    }
+    // Per DEC-9, the per-crate block setting `skip: true` suppresses
+    // inheritance entirely — handled inside `deep_merge_option` via the
+    // generic `is_skipped` JSON inspector so every `skip`-bearing block
+    // (24+ today: checksum, source, upx, sign, notarize, sbom, snapcraft,
+    // dmg, msi, pkg, nsis, app_bundle, flatpak, docker_v2, ...) gets the
+    // same suppression behaviour.
+    deep_merge_option(&mut crate_cfg.checksum, defaults.checksum.as_ref());
 
     // ---- List-typed fields: append + merge-by-identity ----
     merge_archives(&mut crate_cfg.archives, defaults.archives.as_ref());
@@ -154,6 +200,10 @@ pub fn apply_to_crate(defaults: &Defaults, crate_cfg: &mut CrateConfig) {
 /// Deep-merge two struct-typed fields when the per-crate value is `Some`.
 /// On collision the per-crate value wins; defaults fill any field that the
 /// per-crate value left unset (`null` after JSON serialisation).
+///
+/// **Skip-suppression (DEC-9):** when the per-crate value's serialised form
+/// has a truthy `skip` field, defaults are not merged in — the user's intent
+/// is to disable the block, so inheriting fields would be wrong.
 fn deep_merge_option<T: Serialize + DeserializeOwned + Clone>(
     target: &mut Option<T>,
     defaults: Option<&T>,
@@ -166,6 +216,9 @@ fn deep_merge_option<T: Serialize + DeserializeOwned + Clone>(
             *target = Some(defaults_val.clone());
         }
         Some(crate_val) => {
+            if is_skipped(crate_val) {
+                return;
+            }
             deep_merge_struct_inplace(crate_val, defaults_val);
         }
     }
@@ -174,16 +227,42 @@ fn deep_merge_option<T: Serialize + DeserializeOwned + Clone>(
 /// Deep-merge `defaults` into `target` so any field the target left as
 /// `null` (i.e. `None` on the original Option) is filled from defaults.
 /// Other fields are left untouched.
+///
+/// Defaults merging is best-effort by design — a serialise / deserialise
+/// failure here leaves `target` unchanged rather than failing the whole
+/// pipeline. We still surface the failure on stderr so that genuinely broken
+/// configs surface in CI rather than silently dropping defaults.
 fn deep_merge_struct_inplace<T: Serialize + DeserializeOwned>(target: &mut T, defaults: &T) {
-    let Ok(mut crate_json) = serde_json::to_value(&*target) else {
-        return;
+    let type_name = std::any::type_name::<T>();
+    let mut crate_json = match serde_json::to_value(&*target) {
+        Ok(v) => v,
+        Err(err) => {
+            eprintln!(
+                "[defaults_merge] WARNING: failed to serialize target of type {type_name}: \
+                 {err}; defaults inheritance skipped for this field"
+            );
+            return;
+        }
     };
-    let Ok(defaults_json) = serde_json::to_value(defaults) else {
-        return;
+    let defaults_json = match serde_json::to_value(defaults) {
+        Ok(v) => v,
+        Err(err) => {
+            eprintln!(
+                "[defaults_merge] WARNING: failed to serialize defaults of type {type_name}: \
+                 {err}; defaults inheritance skipped for this field"
+            );
+            return;
+        }
     };
     deep_merge_json(&mut crate_json, &defaults_json);
-    if let Ok(merged) = serde_json::from_value::<T>(crate_json) {
-        *target = merged;
+    match serde_json::from_value::<T>(crate_json) {
+        Ok(merged) => *target = merged,
+        Err(err) => {
+            eprintln!(
+                "[defaults_merge] WARNING: failed to deserialize merged value of type \
+                 {type_name}: {err}; defaults inheritance skipped for this field"
+            );
+        }
     }
 }
 
@@ -235,8 +314,8 @@ fn merge_archives(target: &mut ArchivesConfig, defaults: Option<&ArchiveConfig>)
     }
 }
 
-fn archive_identity(a: &ArchiveConfig) -> String {
-    a.format.clone().unwrap_or_default()
+fn archive_identity(a: &ArchiveConfig) -> Option<String> {
+    a.format.clone()
 }
 
 // ---------------------------------------------------------------------------
@@ -246,7 +325,7 @@ fn archive_identity(a: &ArchiveConfig) -> String {
 fn merge_list_by_identity<T, F>(target: &mut Option<Vec<T>>, defaults: Option<&T>, identity: F)
 where
     T: Clone + Serialize + DeserializeOwned,
-    F: Fn(&T) -> String,
+    F: Fn(&T) -> Option<String>,
 {
     let Some(default_entry) = defaults else {
         return;
@@ -259,86 +338,107 @@ where
     }
 }
 
-/// Core "merge one defaults entry into a list" routine: if any list entry
-/// shares the same identity key as the default, deep-merge it (defaults
-/// fill gaps); otherwise append the default.
+/// Core "merge one defaults entry into a list" routine.
+///
+/// Behaviour (DEC-9):
+/// - **Empty list**: append the defaults entry.
+/// - **Identity match (`Some(x) == Some(x)`)**: deep-merge defaults into the
+///   FIRST matching per-crate entry only; subsequent matches are left
+///   untouched. This avoids fanning a single defaults entry into N existing
+///   entries that happen to share the same identity (e.g. through a
+///   typo-duplicated key).
+/// - **No identity match**: append the defaults entry after the per-crate
+///   entries.
+/// - **`None` identity**: never matches another `None` (two unkeyed entries
+///   stay distinct). Required to keep unrelated unkeyed entries from
+///   collapsing into the same defaults block.
+/// - **Skip-suppression**: any per-crate entry whose serialised form has a
+///   truthy `skip` field is skipped over for matching purposes — the
+///   user's intent is to disable that entry, not have it absorb defaults.
 fn merge_one_into_list<T, F>(list: &mut Vec<T>, default_entry: &T, identity: F)
 where
     T: Clone + Serialize + DeserializeOwned,
-    F: Fn(&T) -> String,
+    F: Fn(&T) -> Option<String>,
 {
     if list.is_empty() {
         list.push(default_entry.clone());
         return;
     }
     let default_id = identity(default_entry);
-    let mut merged_into_existing = false;
+    let mut handled = false;
     for entry in list.iter_mut() {
-        if identity(entry) == default_id {
-            deep_merge_struct_inplace(entry, default_entry);
-            merged_into_existing = true;
+        if !identity_matches(&identity(entry), &default_id) {
+            continue;
         }
+        // Identity match. Two cases:
+        // 1. Per-crate entry has `skip: true` → suppress inheritance entirely
+        //    (do not merge, do not append a duplicate).
+        // 2. Otherwise → deep-merge defaults into this entry.
+        if !is_skipped(entry) {
+            deep_merge_struct_inplace(entry, default_entry);
+        }
+        handled = true;
+        // Stop after the first match — defaults are a single entry and
+        // must not fan out into multiple per-crate entries even when
+        // several share the same identity key.
+        break;
     }
-    if !merged_into_existing {
+    if !handled {
         list.push(default_entry.clone());
     }
 }
 
-// ---------------------------------------------------------------------------
-// Skip-block suppression helpers (DEC-9: `skip: true` suppresses inheritance)
-// ---------------------------------------------------------------------------
-
-fn checksum_skipped(target: Option<&crate::config::ChecksumConfig>) -> bool {
-    target
-        .and_then(|c| c.skip.as_ref())
-        .is_some_and(crate::config::StringOrBool::as_bool)
+/// Identity match: two `Some(x)` with equal payloads match; everything else
+/// (including `None == None`) does not. Keeps unkeyed entries distinct.
+fn identity_matches(a: &Option<String>, b: &Option<String>) -> bool {
+    matches!((a, b), (Some(x), Some(y)) if x == y)
 }
 
 // ---------------------------------------------------------------------------
 // Identity functions per packaging type
 // ---------------------------------------------------------------------------
 
-fn nfpm_identity(c: &NfpmConfig) -> String {
-    // GoReleaser identity: id → package_name → empty positional.
+fn nfpm_identity(c: &NfpmConfig) -> Option<String> {
+    // GoReleaser identity: id → package_name → none (unkeyed).
     if let Some(ref id) = c.id {
-        return id.clone();
+        return Some(id.clone());
     }
     if let Some(ref pkg) = c.package_name {
-        return pkg.clone();
+        return Some(pkg.clone());
     }
-    String::new()
+    None
 }
 
-fn snapcraft_identity(c: &SnapcraftConfig) -> String {
-    c.name.clone().unwrap_or_default()
+fn snapcraft_identity(c: &SnapcraftConfig) -> Option<String> {
+    c.name.clone()
 }
 
-fn dmg_identity(c: &DmgConfig) -> String {
-    c.id.clone().unwrap_or_default()
+fn dmg_identity(c: &DmgConfig) -> Option<String> {
+    c.id.clone()
 }
 
-fn pkg_identity(c: &PkgConfig) -> String {
-    c.id.clone().unwrap_or_default()
+fn pkg_identity(c: &PkgConfig) -> Option<String> {
+    c.id.clone()
 }
 
-fn msi_identity(c: &MsiConfig) -> String {
-    c.id.clone().unwrap_or_default()
+fn msi_identity(c: &MsiConfig) -> Option<String> {
+    c.id.clone()
 }
 
-fn nsis_identity(c: &NsisConfig) -> String {
-    c.id.clone().unwrap_or_default()
+fn nsis_identity(c: &NsisConfig) -> Option<String> {
+    c.id.clone()
 }
 
-fn app_bundle_identity(c: &AppBundleConfig) -> String {
-    c.id.clone().unwrap_or_default()
+fn app_bundle_identity(c: &AppBundleConfig) -> Option<String> {
+    c.id.clone()
 }
 
-fn flatpak_identity(c: &FlatpakConfig) -> String {
-    c.id.clone().unwrap_or_default()
+fn flatpak_identity(c: &FlatpakConfig) -> Option<String> {
+    c.id.clone()
 }
 
-fn docker_v2_identity(c: &DockerV2Config) -> String {
-    c.id.clone().unwrap_or_default()
+fn docker_v2_identity(c: &DockerV2Config) -> Option<String> {
+    c.id.clone()
 }
 
 // ---------------------------------------------------------------------------
@@ -668,7 +768,9 @@ mod tests {
         use crate::config::BuildConfig;
         let defaults = Defaults {
             builds: Some(BuildConfig {
-                binary: String::new(),
+                // defaults.builds has no `binary` — that's the whole point
+                // of path-mirror inheritance: per-crate supplies the binary.
+                binary: None,
                 flags: Some("--release --locked".to_string()),
                 ..Default::default()
             }),
@@ -676,7 +778,7 @@ mod tests {
         };
         let mut crate_cfg = make_crate("a");
         crate_cfg.builds = Some(vec![BuildConfig {
-            binary: "myapp".to_string(),
+            binary: Some("myapp".to_string()),
             ..Default::default()
         }]);
 
@@ -684,7 +786,164 @@ mod tests {
 
         let builds = crate_cfg.builds.unwrap();
         assert_eq!(builds.len(), 1);
-        assert_eq!(builds[0].binary, "myapp", "crate field should win");
+        assert_eq!(
+            builds[0].binary,
+            Some("myapp".to_string()),
+            "crate field should win"
+        );
         assert_eq!(builds[0].flags, Some("--release --locked".to_string()));
+    }
+
+    // --------------- (I-5) Workspace-overlay path ---------------
+
+    #[test]
+    fn defaults_apply_to_workspace_crates() {
+        // `apply_defaults` must fold defaults into every crate inside
+        // `config.workspaces[].crates`, not just top-level `config.crates`.
+        // The CLI later replaces `config.crates` with the active workspace's
+        // crates via `apply_workspace_overlay`, so without this branch the
+        // workspace-axis pipeline would lose all defaults inheritance.
+        use crate::config::WorkspaceConfig;
+
+        let mut config = Config {
+            workspaces: Some(vec![WorkspaceConfig {
+                name: "ws1".to_string(),
+                crates: vec![make_crate("a")],
+                ..Default::default()
+            }]),
+            defaults: Some(Defaults {
+                cross: Some(CrossStrategy::Auto),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        apply_defaults(&mut config);
+
+        let workspaces = config.workspaces.expect("workspaces should remain Some");
+        assert_eq!(workspaces.len(), 1);
+        assert_eq!(workspaces[0].crates.len(), 1);
+        assert_eq!(
+            workspaces[0].crates[0].cross,
+            Some(CrossStrategy::Auto),
+            "defaults.cross should fold into workspace crates"
+        );
+    }
+
+    // --------------- (I-1) Generic skip suppression ---------------
+
+    #[test]
+    fn per_crate_skip_true_suppresses_arbitrary_block() {
+        // DEC-9 applies broadly: any block with `skip: true` blocks
+        // inheritance. Verify on a non-checksum block to prove the skip
+        // suppression is generic, not tied to a specific config type.
+        use crate::config::SnapcraftConfig;
+        let defaults = Defaults {
+            snapcrafts: Some(SnapcraftConfig {
+                name: Some("mysnap".to_string()),
+                summary: Some("DEFAULT-SUMMARY".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut crate_cfg = make_crate("a");
+        crate_cfg.snapcrafts = Some(vec![SnapcraftConfig {
+            name: Some("mysnap".to_string()),
+            skip: Some(StringOrBool::Bool(true)),
+            ..Default::default()
+        }]);
+
+        apply_to_crate(&defaults, &mut crate_cfg);
+
+        let snaps = crate_cfg.snapcrafts.unwrap();
+        assert_eq!(snaps.len(), 1, "skip:true should not append a duplicate");
+        assert_eq!(
+            snaps[0].summary, None,
+            "skip:true must suppress defaults.summary inheritance"
+        );
+    }
+
+    // --------------- (M-6) Single defaults entry, fan-out guard ---------------
+
+    #[test]
+    fn defaults_entry_does_not_fan_out_into_multiple_matching_entries() {
+        // Two unkeyed archives that happen to share an empty identity must
+        // NOT both absorb the same defaults entry. After the M-7 fix to
+        // identity functions returning Option<String>, neither matches the
+        // defaults (whose format is "tar.gz") so defaults are appended;
+        // re-run with matching identity to confirm only the first absorbs.
+        let defaults = Defaults {
+            archives: Some(ArchiveConfig {
+                format: Some("tar.gz".to_string()),
+                name_template: Some("DEFAULT".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut crate_cfg = make_crate("a");
+        crate_cfg.archives = ArchivesConfig::Configs(vec![
+            ArchiveConfig {
+                format: Some("tar.gz".to_string()),
+                ..Default::default()
+            },
+            ArchiveConfig {
+                format: Some("tar.gz".to_string()),
+                name_template: Some("EXISTING".to_string()),
+                ..Default::default()
+            },
+        ]);
+
+        apply_to_crate(&defaults, &mut crate_cfg);
+
+        if let ArchivesConfig::Configs(list) = &crate_cfg.archives {
+            assert_eq!(list.len(), 2, "should not append a third entry");
+            // First matching entry inherits the defaults name_template.
+            assert_eq!(list[0].name_template, Some("DEFAULT".to_string()));
+            // Second matching entry MUST stay untouched (no fan-out).
+            assert_eq!(list[1].name_template, Some("EXISTING".to_string()));
+        } else {
+            panic!("expected Configs variant");
+        }
+    }
+
+    // --------------- (M-7) Unkeyed entries stay distinct ---------------
+
+    #[test]
+    fn unkeyed_entries_stay_distinct_no_collapse() {
+        // Two archives with no `format` set both have identity `None`.
+        // They MUST NOT collapse into each other when defaults arrive —
+        // the defaults entry should append once, not merge into either.
+        let defaults = Defaults {
+            archives: Some(ArchiveConfig {
+                format: Some("tar.gz".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut crate_cfg = make_crate("a");
+        crate_cfg.archives = ArchivesConfig::Configs(vec![
+            ArchiveConfig {
+                format: None,
+                name_template: Some("FIRST".to_string()),
+                ..Default::default()
+            },
+            ArchiveConfig {
+                format: None,
+                name_template: Some("SECOND".to_string()),
+                ..Default::default()
+            },
+        ]);
+
+        apply_to_crate(&defaults, &mut crate_cfg);
+
+        if let ArchivesConfig::Configs(list) = &crate_cfg.archives {
+            // Two unkeyed entries + one defaults entry (different identity) = 3.
+            assert_eq!(list.len(), 3, "unkeyed entries must stay distinct");
+            assert_eq!(list[0].name_template, Some("FIRST".to_string()));
+            assert_eq!(list[1].name_template, Some("SECOND".to_string()));
+            assert_eq!(list[2].format, Some("tar.gz".to_string()));
+        } else {
+            panic!("expected Configs variant");
+        }
     }
 }

@@ -23,6 +23,10 @@ violations, user-reported issues.
 
 - [ ] 2026-04-27 code-review (WAVE 1.5): consider extracting parse_env_entries / split_env_entry / render_env_entries to crates/core/src/env.rs once WAVE 2 adds defaults env merging — currently 3 helpers + 7 tests sit in 10K-line config.rs.
 
+### WAVE 2 deferred — 2026-04-27 (1 SUGGEST)
+
+- [ ] 2026-04-27 code-review (WAVE 2): `apply_defaults` does not yet fold top-level `Config` fields (`source`, `upx`, `sign`, `binary_signs`, `docker_signs`, `notarize`, `sbom`, `makeselves`, `srpms`) — these live on `Config`, not `CrateConfig`, but path-mirror in `Defaults`. Decide in WAVE 3 or 5 whether to fold pre-pipeline (so the resolved `Config.<topfield>` reflects defaults) or leave `Defaults.<topfield>` as inert (per-crate `CrateConfig.<field>` is the only consumer). See `crates/core/src/defaults_merge.rs::apply_defaults` rustdoc.
+
 ### cfgd v0.3.5 dogfooding — 2026-04-19 (3 BLOCKER)
 
 Surfaced by reviewing the open winget + krew PRs anodizer created for cfgd v0.3.5 (microsoft/winget-pkgs#361032, kubernetes-sigs/krew-index#5595). Both PRs currently fail CI because of generator bugs in anodizer publishers. Fixes MUST land before cfgd can bump `ANODIZER_REV` and re-run the v0.3.5 pipeline (tags/releases already deleted on the cfgd side).

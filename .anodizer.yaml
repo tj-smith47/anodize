@@ -52,8 +52,9 @@ defaults:
     - aarch64-pc-windows-msvc
   cross: auto
   # WAVE 2: per-build settings (flags/ignore/overrides) live under defaults.builds.*
+  # `binary` is omitted here — defaults supply only the cross-cutting fields,
+  # the per-crate `builds[].binary` names the actual cargo bin target.
   builds:
-    binary: ""
     flags: --release
   archives:
     format: tar.gz

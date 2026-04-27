@@ -1969,9 +1969,12 @@
       "type": "object",
       "properties": {
         "binary": {
-          "description": "Binary name to build (must match a Cargo binary target in the crate).",
-          "default": "",
-          "type": "string"
+          "description": "Binary name to build (must match a Cargo binary target in the crate).\n\nOptional so that `defaults.builds` (a path-mirrored template that applies to every crate) can omit `binary` — the per-crate `builds[]` entry supplies it. When the binary is absent at the per-crate level it falls back to the crate's `name` field.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "command": {
           "description": "Override the cargo subcommand (default: auto-detected \"build\" or \"zigbuild\"). Enables e.g. `cargo auditable build` by setting `command: \"auditable build\"`.",
@@ -3421,7 +3424,7 @@
       ]
     },
     "Defaults": {
-      "description": "Workspace-level defaults that path-mirror the `CrateConfig` (and select top-level `Config`) shape. Each field here is folded into every resolved crate by `defaults_merge::apply_defaults` according to the deep-merge / merge-by-identity semantics documented in `defaults_merge`.\n\nMulti-publisher fields are single-struct here (one default per publisher); per-crate `publish.*` fields accept either a single struct or a list. The merge engine reconciles the two shapes when populating the resolved crate.",
+      "description": "Workspace-level defaults that path-mirror the `CrateConfig` (and select top-level `Config`) shape. Each field here is folded into every resolved crate by `defaults_merge::apply_defaults` according to the deep-merge / merge-by-identity semantics documented in `defaults_merge`.\n\nMulti-publisher fields are single-struct on both sides today: defaults supplies one struct per publisher, and per-crate `publish.*` fields are also single-struct. WAVE 3 will introduce list-or-scalar via `OneOrMany<T>` on the per-crate side so a crate can declare multiple homebrew taps / scoop buckets / etc.; the defaults side stays single- struct and merges into the first per-crate entry by identity.",
       "type": "object",
       "properties": {
         "app_bundles": {

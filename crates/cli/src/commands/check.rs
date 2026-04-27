@@ -168,14 +168,22 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
     // 4. copy_from references a binary in the same crate's builds
     for c in &config.crates {
         if let Some(builds) = &c.builds {
-            let binaries: HashSet<&str> = builds.iter().map(|b| b.binary.as_str()).collect();
-            for build in builds {
+            // Resolve each build's effective binary name; falls back to the
+            // crate name when the per-build `binary` field is omitted (e.g.
+            // when defaults supplied a template without `binary:`).
+            let effective: Vec<&str> = builds
+                .iter()
+                .map(|b| b.binary.as_deref().unwrap_or(c.name.as_str()))
+                .collect();
+            let binaries: HashSet<&str> = effective.iter().copied().collect();
+            for (idx, build) in builds.iter().enumerate() {
+                let bin = effective[idx];
                 if let Some(copy_from) = &build.copy_from
                     && !binaries.contains(copy_from.as_str())
                 {
                     errors.push(format!(
                         "crate '{}': build binary '{}' has copy_from '{}' which is not a binary in this crate",
-                        c.name, build.binary, copy_from
+                        c.name, bin, copy_from
                     ));
                 }
             }
@@ -221,8 +229,9 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
             if let Some(builds) = &c.builds {
                 for b in builds {
                     if let Some(targets) = &b.targets {
+                        let bin = b.binary.as_deref().unwrap_or(c.name.as_str());
                         for t in targets {
-                            check_triple(t, &format!("crate '{}' build '{}'", c.name, b.binary));
+                            check_triple(t, &format!("crate '{}' build '{}'", c.name, bin));
                         }
                     }
                 }
@@ -763,11 +772,11 @@ mod tests {
         let mut c = make_crate("a", "a-v{{ .Version }}", None);
         c.builds = Some(vec![
             BuildConfig {
-                binary: "a".to_string(),
+                binary: Some("a".to_string()),
                 ..Default::default()
             },
             BuildConfig {
-                binary: "b".to_string(),
+                binary: Some("b".to_string()),
                 copy_from: Some("a".to_string()),
                 ..Default::default()
             },
@@ -781,7 +790,7 @@ mod tests {
         use anodizer_core::config::BuildConfig;
         let mut c = make_crate("a", "a-v{{ .Version }}", None);
         c.builds = Some(vec![BuildConfig {
-            binary: "b".to_string(),
+            binary: Some("b".to_string()),
             copy_from: Some("nonexistent".to_string()),
             ..Default::default()
         }]);
