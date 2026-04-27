@@ -21,9 +21,14 @@ pub(super) fn close_milestones(
     // The previous implementation paid per-milestone-per-provider runtime
     // construction (3 places) which can total 5-15ms per close on cold
     // configurations and is observable when many milestones close at once.
-    // Lazily initialized so dry-run paths that never call out to a provider
-    // do no work.
-    let mut runtime: Option<tokio::runtime::Runtime> = None;
+    //
+    // Eagerly constructed so the per-iteration code path is a plain `&rt`
+    // borrow rather than an `Option<Runtime>` dance with a structurally
+    // infallible `expect`. The per-batch construction cost is paid once
+    // even when every milestone is dry-run; the alternative (lazy init
+    // inside the loop) trades a single runtime build for the panic-shape
+    // anti-pattern of `runtime.as_ref().expect(...)` on every iteration.
+    let rt = tokio::runtime::Runtime::new().context("milestone: create tokio runtime")?;
 
     for milestone_cfg in milestones {
         if !milestone_cfg.close.unwrap_or(false) {
@@ -76,17 +81,12 @@ pub(super) fn close_milestones(
         // first crate's release block is GitHub but the user is running a
         // GitLab release would otherwise misroute the milestone close.
         let api_url = resolve_milestone_api_url(milestone_cfg, &ctx.config);
-        if runtime.is_none() {
-            runtime =
-                Some(tokio::runtime::Runtime::new().context("milestone: create tokio runtime")?);
-        }
-        let rt = runtime.as_ref().expect("runtime initialized above");
         let close_result = match ctx.token_type {
             ScmTokenType::GitHub => {
-                close_milestone_github(rt, &token, &owner, &repo_name, &milestone_name)
+                close_milestone_github(&rt, &token, &owner, &repo_name, &milestone_name)
             }
             ScmTokenType::GitLab => close_milestone_gitlab(
-                rt,
+                &rt,
                 &token,
                 &owner,
                 &repo_name,
@@ -94,7 +94,7 @@ pub(super) fn close_milestones(
                 api_url.as_deref(),
             ),
             ScmTokenType::Gitea => close_milestone_gitea(
-                rt,
+                &rt,
                 &token,
                 &owner,
                 &repo_name,

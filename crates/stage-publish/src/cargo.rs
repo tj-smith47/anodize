@@ -147,7 +147,18 @@ pub fn publish_command(crate_name: &str, cfg: Option<&CargoPublishConfig>) -> Ve
 // ---------------------------------------------------------------------------
 
 /// Build the sparse index URL for a crate name (path segments based on length).
+///
+/// Crate names per cargo are restricted to ASCII alphanumerics plus `-`/`_`
+/// (cargo reference: "Crate names ... must be ASCII"), so the byte slices
+/// below are guaranteed to land on character boundaries. The debug_assert
+/// makes the invariant load-bearing — any caller passing a non-ASCII name
+/// would surface the violation in a debug build long before the slice
+/// could panic at runtime.
 fn sparse_index_url(crate_name: &str) -> String {
+    debug_assert!(
+        crate_name.is_ascii(),
+        "cargo crate names must be ASCII; got {crate_name:?}"
+    );
     let lower = crate_name.to_ascii_lowercase();
     match lower.len() {
         1 => format!("https://index.crates.io/1/{}", lower),
