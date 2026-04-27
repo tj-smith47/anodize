@@ -948,15 +948,17 @@ pub struct Defaults {
 /// Workspace-default publishers (DEC-3). Each publisher is single-struct in
 /// defaults; per-crate `publish.*` may be either a single struct or a list,
 /// reconciled by the merge engine.
-///
-/// NOTE: the `cargo` publisher (crates.io) is not yet present here — the
-/// `crates: → cargo:` rename lands in WAVE 3. For now the legacy
-/// `CratesPublishConfig` is reachable via the per-crate `publish.crates` field.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct PublishDefaults {
     /// Default Homebrew formula settings.
     pub homebrew: Option<HomebrewConfig>,
+    /// Default crates.io publish settings, merged into per-crate `publish.crates`.
+    ///
+    /// WAVE 3 will rename the type from `CratesPublishConfig` to
+    /// `CargoPublishConfig` and expose it under the `cargo:` key; for now the
+    /// existing type is reused verbatim.
+    pub cargo: Option<CratesPublishConfig>,
     /// Default Scoop manifest settings.
     pub scoop: Option<ScoopConfig>,
     /// Default WinGet manifest settings.

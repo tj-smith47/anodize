@@ -347,6 +347,7 @@ fn docker_v2_identity(c: &DockerV2Config) -> String {
 
 fn merge_publish_defaults(target: &mut PublishConfig, defaults: &PublishDefaults) {
     deep_merge_option(&mut target.homebrew, defaults.homebrew.as_ref());
+    deep_merge_option(&mut target.crates, defaults.cargo.as_ref());
     deep_merge_option(&mut target.scoop, defaults.scoop.as_ref());
     deep_merge_option(&mut target.winget, defaults.winget.as_ref());
     deep_merge_option(&mut target.chocolatey, defaults.chocolatey.as_ref());
@@ -354,9 +355,6 @@ fn merge_publish_defaults(target: &mut PublishConfig, defaults: &PublishDefaults
     deep_merge_option(&mut target.nix, defaults.nix.as_ref());
     deep_merge_option(&mut target.aur, defaults.aur.as_ref());
     deep_merge_option(&mut target.aur_source, defaults.aur_source.as_ref());
-    // The legacy `crates` (crates.io) publisher is intentionally left
-    // un-defaulted in WAVE 2 — the rename to `cargo` and its defaults
-    // wiring lands in WAVE 3.
 }
 
 // ---------------------------------------------------------------------------
@@ -605,6 +603,62 @@ mod tests {
         {
             assert_eq!(a.len(), b.len());
         }
+    }
+
+    // --------------- Cargo (crates.io) publisher defaults ---------------
+
+    #[test]
+    fn cargo_defaults_merge_into_per_crate_publish_crates_when_unset() {
+        use crate::config::CratesPublishConfig;
+
+        let defaults = Defaults {
+            publish: Some(PublishDefaults {
+                cargo: Some(CratesPublishConfig::Bool(true)),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        // Per-crate has no publish block at all.
+        let mut crate_cfg = make_crate("mycrate");
+
+        apply_to_crate(&defaults, &mut crate_cfg);
+
+        let publish = crate_cfg.publish.expect("publish block should be created");
+        let crates_field = publish
+            .crates
+            .expect("publish.crates should be inherited from defaults");
+        assert!(
+            matches!(crates_field, CratesPublishConfig::Bool(true)),
+            "expected Bool(true) inherited from defaults.cargo"
+        );
+    }
+
+    #[test]
+    fn cargo_defaults_do_not_override_per_crate_publish_crates() {
+        use crate::config::CratesPublishConfig;
+
+        let defaults = Defaults {
+            publish: Some(PublishDefaults {
+                cargo: Some(CratesPublishConfig::Bool(true)),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        // Per-crate explicitly sets publish.crates = false — should win.
+        let mut crate_cfg = make_crate("mycrate");
+        crate_cfg.publish = Some(PublishConfig {
+            crates: Some(CratesPublishConfig::Bool(false)),
+            ..Default::default()
+        });
+
+        apply_to_crate(&defaults, &mut crate_cfg);
+
+        let publish = crate_cfg.publish.unwrap();
+        let crates_field = publish.crates.unwrap();
+        assert!(
+            matches!(crates_field, CratesPublishConfig::Bool(false)),
+            "per-crate value should win over defaults"
+        );
     }
 
     // --------------- Builds template fold ---------------
