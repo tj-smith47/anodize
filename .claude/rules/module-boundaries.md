@@ -20,7 +20,12 @@ focus on the few touch-points that actually shell out.
 - `crates/core/src/user_command.rs` — sandboxed `Command` constructor for
   user-supplied commands (`publisher.cmd`); env is whitelisted to prevent
   credential leakage.
-- `crates/stage-*/**` — stage crates that wrap a single external tool:
+- `crates/stage-*/**` — every file under any stage crate is allow-listed.
+  The bullets below are *representative* (the primary tool each stage wraps),
+  not exhaustive — utility submodules like `stage-publish/util.rs` (which
+  spawns `git`/`gh` on behalf of the per-publisher modules) are also covered
+  by the umbrella glob. The named bullets call out the load-bearing tool per
+  stage so a reviewer reading this rule knows what to expect.
   - `stage-build` (cargo, rustup, cross)
   - `stage-archive` (tar, zip, sbom inputs)
   - `stage-docker` (docker, buildx, podman)

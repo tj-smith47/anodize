@@ -19,7 +19,10 @@ violations, user-reported issues.
 
 ## Active
 
-### Tracked migrations / scope-creep deferrals — 2026-04-27 (3 SUGGEST)
+### Tracked migrations / scope-creep deferrals — 2026-04-27 (4 SUGGEST)
+
+- [ ] 2026-04-27 code-review (lift opportunity): the four core probe helpers (`crates/core/src/{cargo_lock,docker_detect,tool_detect,user_command}.rs`) discard the underlying `io::Error` when `Command::output()` fails — they return `bool` / `Option<String>` and the caller cannot distinguish "tool missing" from "tool exists but exited non-zero" from "permission denied". This preserves the original CLI inline behaviour, but the lift was a chance to add structured errors. Migration: change return types to `Result<bool>` / `Result<Option<String>>` and let callers decide whether to log the io::Error at verbose level. Affects 4 helper modules + their ~10 call sites in `crates/cli/src/commands/{bump/inference,bump/mod,check,healthcheck,publisher,release/mod,tag}.rs`.
+
 
 - [ ] 2026-04-27 hygiene (H3 — DEC-12 scope creep): `ChocolateyConfig.skip_publish` is the lone publisher field that doesn't follow the project-wide `skip:` canonicalization (every other publisher uses `skip:` for opt-out). DEC-12 was scoped to `docker_v2.skip_push` but the same logic applies. Rename to `skip:` (or add an alias) in a future schema wave; out of scope for the WAVE 5+ Session B work but worth flagging so the next schema sweep catches it. Affects `crates/core/src/config.rs::ChocolateyConfig` + `crates/stage-publish/src/chocolatey.rs` consumers.
 - [ ] 2026-04-27 hygiene (H4 — naming consistency): `Defaults.nfpms` (plural) vs `CrateConfig.nfpm` (singular) — same singular/plural mismatch on `srpms` vs `srpm`. The defaults block uses plural list types while per-crate uses the singular form, which is confusing for users editing both sections. A future wave should align — either always plural list (the GoReleaser pattern) or always singular per-crate. Affects `crates/core/src/config.rs` + every defaults-merge consumer in `defaults_merge.rs`.

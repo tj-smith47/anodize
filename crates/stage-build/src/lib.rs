@@ -268,6 +268,14 @@ pub(crate) fn build_lib_command(
 ///    added).
 ///
 /// Returns false for library-only crates.
+///
+/// Limitation: probe (3) does not honour `[package].autobins = false`. A crate
+/// that explicitly opts out of `src/bin/` autodiscovery via that flag, AND has
+/// `*.rs` files in `src/bin/`, AND does not declare any `[[bin]]` block, will
+/// be misclassified as having a binary target. The clean way to opt out is to
+/// declare `[[bin]]` explicitly (which probe (2) honours) — `autobins = false`
+/// without a replacement `[[bin]]` is rare enough that we don't parse the flag
+/// here.
 fn crate_has_binary_target(crate_path: &str) -> bool {
     let path = Path::new(crate_path);
     // Check for src/main.rs

@@ -84,8 +84,25 @@ fn enable_ci_colors() {
     }
 }
 
+/// Initialize tracing for `tracing::warn!`/`info!`/`debug!` calls inside the
+/// pure-library code paths (e.g. `defaults_merge`). Honours `RUST_LOG` for
+/// per-module filtering; falls back to `warn` so config-validation warnings
+/// surface in CI even without a configured filter. Writes to stderr without
+/// timestamps to match the existing `eprintln!` convention used elsewhere.
+fn init_tracing() {
+    use tracing_subscriber::{EnvFilter, fmt};
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
+    let _ = fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .without_time()
+        .with_target(false)
+        .try_init();
+}
+
 fn main() {
     enable_ci_colors();
+    init_tracing();
     let cli = Cli::parse();
 
     // No subcommand given: print help and exit 0. Required for package-manager
