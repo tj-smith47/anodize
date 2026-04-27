@@ -262,9 +262,19 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("chocolatey: no chocolatey config for '{}'", crate_name))?;
 
-    let project_repo = choco_cfg.project_repo.as_ref().ok_or_else(|| {
-        anyhow::anyhow!("chocolatey: no project_repo config for '{}'", crate_name)
-    })?;
+    // SCH-21 (WAVE 5.5): legacy `project_repo:` removed; use `repository:`
+    // (RepositoryConfig) instead.
+    let repository = choco_cfg
+        .repository
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("chocolatey: no repository config for '{}'", crate_name))?;
+    let (repo_owner, repo_name) = match (repository.owner.as_deref(), repository.name.as_deref()) {
+        (Some(o), Some(n)) => (o, n),
+        _ => anyhow::bail!(
+            "chocolatey: repository.owner and repository.name are both required for '{}'",
+            crate_name
+        ),
+    };
 
     // GoReleaser checks SkipPublish early in Publish(), before any work.
     if choco_cfg.skip_publish == Some(true) {
@@ -278,7 +288,7 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
     if ctx.is_dry_run() {
         log.status(&format!(
             "(dry-run) would push Chocolatey package for '{}' to {}/{}",
-            crate_name, project_repo.owner, project_repo.name
+            crate_name, repo_owner, repo_name
         ));
         return Ok(());
     }
@@ -303,12 +313,10 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
         .clone()
         .or_else(|| ctx.config.meta_first_maintainer().map(str::to_string))
         .unwrap_or_else(|| crate_name.to_string());
-    let project_url = choco_cfg.project_url.clone().unwrap_or_else(|| {
-        format!(
-            "https://github.com/{}/{}",
-            project_repo.owner, project_repo.name
-        )
-    });
+    let project_url = choco_cfg
+        .project_url
+        .clone()
+        .unwrap_or_else(|| format!("https://github.com/{}/{}", repo_owner, repo_name));
     let icon_url = choco_cfg.icon_url.clone().unwrap_or_default();
     let tags = choco_cfg.tags.clone().unwrap_or_default();
 
@@ -1282,9 +1290,7 @@ mod tests {
 
     #[test]
     fn test_publish_to_chocolatey_dry_run() {
-        use anodizer_core::config::{
-            ChocolateyConfig, ChocolateyRepoConfig, Config, CrateConfig, PublishConfig,
-        };
+        use anodizer_core::config::{ChocolateyConfig, Config, CrateConfig, PublishConfig};
         use anodizer_core::context::{Context, ContextOptions};
         use anodizer_core::log::{StageLogger, Verbosity};
         let mut config = Config::default();
@@ -1294,9 +1300,10 @@ mod tests {
             tag_template: "v{{ .Version }}".to_string(),
             publish: Some(PublishConfig {
                 chocolatey: Some(ChocolateyConfig {
-                    project_repo: Some(ChocolateyRepoConfig {
-                        owner: "myorg".to_string(),
-                        name: "mytool".to_string(),
+                    repository: Some(anodizer_core::config::RepositoryConfig {
+                        owner: Some("myorg".to_string()),
+                        name: Some("mytool".to_string()),
+                        ..Default::default()
                     }),
                     description: Some("A great tool".to_string()),
                     ..Default::default()
@@ -1341,7 +1348,8 @@ mod tests {
     }
 
     #[test]
-    fn test_publish_to_chocolatey_missing_project_repo() {
+    fn test_publish_to_chocolatey_missing_repository() {
+        // SCH-21 (WAVE 5.5): renamed from project_repo to repository.
         use anodizer_core::config::{ChocolateyConfig, Config, CrateConfig, PublishConfig};
         use anodizer_core::context::{Context, ContextOptions};
         use anodizer_core::log::{StageLogger, Verbosity};
@@ -1352,7 +1360,7 @@ mod tests {
             tag_template: "v{{ .Version }}".to_string(),
             publish: Some(PublishConfig {
                 chocolatey: Some(ChocolateyConfig {
-                    project_repo: None,
+                    repository: None,
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -1439,7 +1447,7 @@ crates:
     publish:
       chocolatey:
         skip_publish: true
-        project_repo:
+        repository:
           owner: org
           name: test
 "#;
@@ -1465,7 +1473,7 @@ crates:
     publish:
       chocolatey:
         skip_publish: false
-        project_repo:
+        repository:
           owner: org
           name: test
 "#;

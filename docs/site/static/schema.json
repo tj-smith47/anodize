@@ -1418,14 +1418,6 @@
             }
           ]
         },
-        "url": {
-          "description": "Legacy project URL field.",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "url_template": {
           "description": "Custom URL template for download URLs (overrides release URL).",
           "default": null,
@@ -1953,23 +1945,6 @@
             "string",
             "null"
           ]
-        }
-      }
-    },
-    "BucketConfig": {
-      "type": "object",
-      "required": [
-        "name",
-        "owner"
-      ],
-      "properties": {
-        "name": {
-          "description": "Name of the Scoop bucket repository (e.g., \"scoop-bucket\").",
-          "type": "string"
-        },
-        "owner": {
-          "description": "GitHub owner of the Scoop bucket repository.",
-          "type": "string"
         }
       }
     },
@@ -2879,18 +2854,6 @@
             "null"
           ]
         },
-        "project_repo": {
-          "description": "GitHub project repo (owner/name). Used to derive download URLs.",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/ChocolateyRepoConfig"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "project_source_url": {
           "description": "Source code project URL.",
           "default": null,
@@ -2913,6 +2876,18 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "repository": {
+          "description": "GitHub project repo (owner/name). Used to derive download URLs. Unified project repo config (owner/name). Used to derive `<projectUrl>` and download URLs.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RepositoryConfig"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "require_license_acceptance": {
@@ -3001,23 +2976,6 @@
             "string",
             "null"
           ]
-        }
-      }
-    },
-    "ChocolateyRepoConfig": {
-      "type": "object",
-      "required": [
-        "name",
-        "owner"
-      ],
-      "properties": {
-        "name": {
-          "description": "GitHub repository name of the project.",
-          "type": "string"
-        },
-        "owner": {
-          "description": "GitHub owner of the project repository.",
-          "type": "string"
         }
       }
     },
@@ -3368,17 +3326,6 @@
           ],
           "items": {
             "$ref": "#/definitions/DmgConfig"
-          }
-        },
-        "docker": {
-          "description": "Docker image build configurations for this crate (legacy API).",
-          "default": null,
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "$ref": "#/definitions/DockerConfig"
           }
         },
         "docker_digest": {
@@ -4124,155 +4071,6 @@
         }
       }
     },
-    "DockerConfig": {
-      "type": "object",
-      "properties": {
-        "binaries": {
-          "description": "Binary names to copy into the image (defaults to all binaries from matched builds).",
-          "default": null,
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "string"
-          }
-        },
-        "build_flag_templates": {
-          "description": "Extra `--build-arg` and `--label` flags as templates (e.g., \"--build-arg VERSION={{ .Version }}\").",
-          "default": null,
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "string"
-          }
-        },
-        "dockerfile": {
-          "description": "Path to the Dockerfile relative to the project root.",
-          "default": "",
-          "type": "string"
-        },
-        "extra_files": {
-          "description": "Extra files to copy into the Docker build context.",
-          "default": null,
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "string"
-          }
-        },
-        "id": {
-          "description": "Unique identifier for this Docker config.",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "ids": {
-          "description": "Build IDs filter: only include binary artifacts whose metadata `id` is in this list.",
-          "default": null,
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "string"
-          }
-        },
-        "image_templates": {
-          "description": "Image tags to build and push (supports templates, e.g., \"ghcr.io/owner/app:{{ .Version }}\").",
-          "default": [],
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "labels": {
-          "description": "OCI labels to apply to the image via `--label key=value` flags.",
-          "default": null,
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": {
-            "type": "string"
-          }
-        },
-        "platforms": {
-          "description": "Target platforms for multi-arch builds (e.g., [\"linux/amd64\", \"linux/arm64\"]).",
-          "default": null,
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "string"
-          }
-        },
-        "push_flags": {
-          "description": "Extra flags passed to `docker push`.",
-          "default": null,
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "string"
-          }
-        },
-        "retry": {
-          "description": "Retry configuration for docker push operations.",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/DockerRetryConfig"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "skip_push": {
-          "description": "Skip push: true, false, or \"auto\" (skip for prereleases).",
-          "default": null,
-          "oneOf": [
-            {
-              "type": "string",
-              "enum": [
-                "auto"
-              ]
-            },
-            {
-              "type": "boolean"
-            }
-          ]
-        },
-        "templated_extra_files": {
-          "description": "Extra files whose contents are rendered through the template engine before copying. Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded. GoReleaser Pro feature.",
-          "default": null,
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "$ref": "#/definitions/TemplatedExtraFile"
-          }
-        },
-        "use": {
-          "description": "Docker backend: \"docker\", \"buildx\" (default), or \"podman\".",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      }
-    },
     "DockerDigestConfig": {
       "description": "Controls docker image digest file creation.\n\nAfter each docker image push, a digest file (containing the sha256 digest) is written to the dist directory. This config controls whether that happens and how the files are named.",
       "type": "object",
@@ -4783,18 +4581,6 @@
         },
         "skip": {
           "description": "When truthy, skip this docker build entirely. Supports templates.",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/StringOrBool"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "skip_push": {
-          "description": "When truthy, skip pushing images after build. Supports templates.",
           "default": null,
           "anyOf": [
             {
@@ -6069,22 +5855,6 @@
             }
           ]
         },
-        "commit_author_email": {
-          "description": "Git commit author email for tap updates (legacy; prefer `commit_author`).",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "commit_author_name": {
-          "description": "Git commit author name for tap updates (legacy; prefer `commit_author`).",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "commit_msg_template": {
           "description": "Custom commit message template. Rendered via Tera with the standard release template variables (`ProjectName`, `Tag`, `Version`, etc.). Default: `\"Brew formula update for {{ ProjectName }} version {{ Tag }}\"` (set in `crates/stage-publish/src/homebrew.rs::default_commit_msg_template`).",
           "default": null,
@@ -6248,18 +6018,6 @@
           "anyOf": [
             {
               "$ref": "#/definitions/StringOrBool"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "tap": {
-          "description": "Legacy tap config (owner/name). Prefer `repository` for new configs.",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/TapConfig"
             },
             {
               "type": "null"
@@ -6543,18 +6301,6 @@
             "type": "string"
           }
         },
-        "manifests_repo": {
-          "description": "Legacy krew-index fork repo (owner/name). Prefer `repository`.",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/KrewManifestsRepoConfig"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "name": {
           "description": "Override the plugin name (default: crate name).",
           "default": null,
@@ -6607,18 +6353,6 @@
             }
           ]
         },
-        "upstream_repo": {
-          "description": "Legacy upstream repo for PR target. Use `repository.pull_request.base` instead.",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/KrewManifestsRepoConfig"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "url_template": {
           "description": "Custom URL template for download URLs (overrides release URL).",
           "default": null,
@@ -6629,23 +6363,6 @@
         }
       },
       "additionalProperties": false
-    },
-    "KrewManifestsRepoConfig": {
-      "type": "object",
-      "required": [
-        "name",
-        "owner"
-      ],
-      "properties": {
-        "name": {
-          "description": "GitHub repository name of the krew-index fork.",
-          "type": "string"
-        },
-        "owner": {
-          "description": "GitHub owner of the krew-index fork.",
-          "type": "string"
-        }
-      }
     },
     "LinkedInAnnounce": {
       "type": "object",
@@ -6759,18 +6476,6 @@
       "description": "Native macOS signing and notarization via `codesign` + `xcrun notarytool`.",
       "type": "object",
       "properties": {
-        "enabled": {
-          "description": "Enable this configuration. Accepts bool or template string.",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/StringOrBool"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "ids": {
           "description": "Build IDs to filter. Default: project name.",
           "default": null,
@@ -6800,6 +6505,18 @@
           "anyOf": [
             {
               "$ref": "#/definitions/MacOSNativeSignConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "skip": {
+          "description": "Skip this configuration. Accepts bool or template string. SCH-30 (WAVE 5.5) replaced `enabled:` with the canonical `skip:` (DEC-6).",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
             },
             {
               "type": "null"
@@ -6912,18 +6629,6 @@
       "description": "Cross-platform macOS signing and notarization via `rcodesign`.",
       "type": "object",
       "properties": {
-        "enabled": {
-          "description": "Enable this configuration. Accepts bool or template string.",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/StringOrBool"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "ids": {
           "description": "Build IDs to filter. Default: project name.",
           "default": null,
@@ -6953,6 +6658,18 @@
           "anyOf": [
             {
               "$ref": "#/definitions/MacOSSignConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "skip": {
+          "description": "Skip this configuration. Accepts bool or template string. SCH-30 (WAVE 5.5) replaced the previous `enabled:` toggle with the canonical `skip:` (inverted semantic) to align with every other publisher / pipe in anodizer (DEC-6).",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrBool"
             },
             {
               "type": "null"
@@ -10016,18 +9733,6 @@
             "null"
           ]
         },
-        "bucket": {
-          "description": "Legacy bucket config (owner/name). Prefer `repository` for new configs.",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/BucketConfig"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "commit_author": {
           "description": "Commit author with optional signing.",
           "default": null,
@@ -11002,17 +10707,6 @@
             }
           ]
         },
-        "slots": {
-          "description": "Shared code/data interface slots for other snaps.",
-          "default": null,
-          "type": [
-            "array",
-            "null"
-          ],
-          "items": {
-            "type": "string"
-          }
-        },
         "summary": {
           "description": "Single-line elevator pitch (max 79 characters).",
           "default": null,
@@ -11710,23 +11404,6 @@
             "boolean",
             "null"
           ]
-        }
-      }
-    },
-    "TapConfig": {
-      "type": "object",
-      "required": [
-        "name",
-        "owner"
-      ],
-      "properties": {
-        "name": {
-          "description": "Name of the Homebrew tap repository (e.g., \"homebrew-tap\").",
-          "type": "string"
-        },
-        "owner": {
-          "description": "GitHub owner of the Homebrew tap repository.",
-          "type": "string"
         }
       }
     },
@@ -12463,18 +12140,6 @@
             "null"
           ]
         },
-        "manifests_repo": {
-          "description": "Legacy manifests repo config (owner/name). Prefer `repository`.",
-          "default": null,
-          "anyOf": [
-            {
-              "$ref": "#/definitions/WingetManifestsRepoConfig"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "name": {
           "description": "Override the package name (default: crate name).",
           "default": null,
@@ -12640,23 +12305,6 @@
         "package_identifier": {
           "description": "WinGet package identifier of the dependency (e.g., \"Publisher.App\").",
           "default": "",
-          "type": "string"
-        }
-      }
-    },
-    "WingetManifestsRepoConfig": {
-      "type": "object",
-      "required": [
-        "name",
-        "owner"
-      ],
-      "properties": {
-        "name": {
-          "description": "GitHub repository name of the WinGet community repository fork.",
-          "type": "string"
-        },
-        "owner": {
-          "description": "GitHub owner of the WinGet community repository fork.",
           "type": "string"
         }
       }

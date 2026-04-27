@@ -64,8 +64,6 @@ struct SnapcraftYaml {
     apps: HashMap<String, SnapcraftYamlApp>,
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     plugs: HashMap<String, serde_json::Value>,
-    #[serde(skip_serializing_if = "is_empty_vec")]
-    slots: Vec<String>,
     #[serde(rename = "layout")]
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     layouts: HashMap<String, SnapcraftYamlLayout>,
@@ -353,7 +351,8 @@ pub fn generate_snap_yaml(
         } else {
             HashMap::new()
         },
-        slots: config.slots.clone().unwrap_or_default(),
+        // DEC-13 (WAVE 5.5): top-level snapcraft `slots` field dropped —
+        // app-scoped slots live under apps.<name>.slots.
         layouts,
         hooks: if has_apps {
             config.hooks.clone().unwrap_or_default()
@@ -1235,7 +1234,10 @@ mod tests {
     }
 
     #[test]
-    fn test_generate_snapcraft_yaml_with_plugs_slots() {
+    fn test_generate_snapcraft_yaml_with_plugs_and_app_slots() {
+        // DEC-13 (WAVE 5.5): top-level snapcraft `slots` field dropped.
+        // App-scoped slots remain via `apps.<name>.slots` and that path is
+        // exercised here.
         let mut plugs = HashMap::new();
         plugs.insert("network".to_string(), serde_json::Value::Null);
         plugs.insert("home".to_string(), serde_json::Value::Null);
@@ -1244,20 +1246,19 @@ mod tests {
             serde_json::json!({ "interface": "personal-files", "read": ["/etc/myapp"] }),
         );
 
-        // plugs/hooks/assumes are only
-        // emitted when `apps` is non-empty (the Go loop runs per-app). Supply a
-        // minimal app so the plugs section appears.
         let mut apps_map = HashMap::new();
         apps_map.insert(
             "mysnap".to_string(),
-            anodizer_core::config::SnapcraftApp::default(),
+            anodizer_core::config::SnapcraftApp {
+                slots: Some(vec!["dbus-slot".to_string()]),
+                ..Default::default()
+            },
         );
 
         let cfg = SnapcraftConfig {
             name: Some("mysnap".to_string()),
             apps: Some(apps_map),
             plugs: Some(plugs),
-            slots: Some(vec!["dbus-slot".to_string()]),
             summary: Some("Test snap".to_string()),
             description: Some("A test snap package".to_string()),
             ..Default::default()
@@ -1274,8 +1275,7 @@ mod tests {
             yaml.contains("interface: personal-files"),
             "missing interface attribute in personal-files plug"
         );
-        assert!(yaml.contains("slots:"), "missing slots section");
-        assert!(yaml.contains("- dbus-slot"), "missing dbus-slot slot");
+        assert!(yaml.contains("- dbus-slot"), "missing app-scoped dbus-slot");
     }
 
     #[test]
@@ -1992,8 +1992,6 @@ crates:
         plugs:
           network: null
           home: null
-        slots:
-          - dbus-svc
         assumes:
           - snapd2.39
         apps:
@@ -2037,7 +2035,6 @@ crates:
         let plugs = snap.plugs.as_ref().unwrap();
         assert!(plugs.contains_key("network"), "missing network plug");
         assert!(plugs.contains_key("home"), "missing home plug");
-        assert_eq!(snap.slots.as_ref().unwrap(), &["dbus-svc"]);
         assert_eq!(snap.assumes.as_ref().unwrap(), &["snapd2.39"]);
 
         let apps = snap.apps.as_ref().unwrap();

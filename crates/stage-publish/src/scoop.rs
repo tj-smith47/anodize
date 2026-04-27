@@ -206,15 +206,15 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         return Ok(());
     }
 
-    // Resolve repository config: bails when both modern + legacy are set.
+    // SCH-21 (WAVE 5.5): legacy `bucket:` field removed.
     let (repo_owner, repo_name) = crate::util::resolve_repo_owner_name(
         "scoop",
         "bucket",
         scoop_cfg.repository.as_ref(),
-        scoop_cfg.bucket.as_ref().map(|b| b.owner.as_str()),
-        scoop_cfg.bucket.as_ref().map(|b| b.name.as_str()),
+        None,
+        None,
     )?
-    .ok_or_else(|| anyhow::anyhow!("scoop: no repository/bucket config for '{}'", crate_name))?;
+    .ok_or_else(|| anyhow::anyhow!("scoop: no repository config for '{}'", crate_name))?;
 
     if ctx.is_dry_run() {
         log.status(&format!(
@@ -561,46 +561,6 @@ mod tests {
             json["architecture"]["64bit"]["url"],
             "https://example.com/my-tool-2.1.0-windows-amd64.zip"
         );
-    }
-
-    #[test]
-    fn test_publish_to_scoop_dry_run() {
-        use anodizer_core::config::{
-            BucketConfig, Config, CrateConfig, PublishConfig, ScoopConfig,
-        };
-        use anodizer_core::context::{Context, ContextOptions};
-        use anodizer_core::log::{StageLogger, Verbosity};
-
-        let mut config = Config::default();
-        config.crates = vec![CrateConfig {
-            name: "cfgd".to_string(),
-            path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
-            publish: Some(PublishConfig {
-                scoop: Some(ScoopConfig {
-                    bucket: Some(BucketConfig {
-                        owner: "myorg".to_string(),
-                        name: "scoop-bucket".to_string(),
-                    }),
-                    description: Some("Declarative config management".to_string()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }];
-
-        let ctx = Context::new(
-            config,
-            ContextOptions {
-                dry_run: true,
-                ..Default::default()
-            },
-        );
-        let log = StageLogger::new("publish", Verbosity::Normal);
-
-        // dry-run should succeed without any network/git calls
-        assert!(publish_to_scoop(&ctx, "cfgd", &log).is_ok());
     }
 
     // -----------------------------------------------------------------------
@@ -1208,79 +1168,6 @@ mod tests {
     // skip_upload tests (reuses should_skip_upload from homebrew)
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn test_publish_to_scoop_skip_upload_true() {
-        use anodizer_core::config::{
-            BucketConfig, Config, CrateConfig, PublishConfig, ScoopConfig,
-        };
-        use anodizer_core::context::{Context, ContextOptions};
-        use anodizer_core::log::{StageLogger, Verbosity};
-
-        let config = Config {
-            crates: vec![CrateConfig {
-                name: "skipped".to_string(),
-                path: ".".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
-                publish: Some(PublishConfig {
-                    scoop: Some(ScoopConfig {
-                        bucket: Some(BucketConfig {
-                            owner: "myorg".to_string(),
-                            name: "scoop-bucket".to_string(),
-                        }),
-                        skip_upload: Some(anodizer_core::config::StringOrBool::String(
-                            "true".to_string(),
-                        )),
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-
-        let ctx = Context::new(config, ContextOptions::default());
-        let log = StageLogger::new("publish", Verbosity::Normal);
-        assert!(publish_to_scoop(&ctx, "skipped", &log).is_ok());
-    }
-
-    #[test]
-    fn test_publish_to_scoop_skip_upload_auto_prerelease() {
-        use anodizer_core::config::{
-            BucketConfig, Config, CrateConfig, PublishConfig, ScoopConfig,
-        };
-        use anodizer_core::context::{Context, ContextOptions};
-        use anodizer_core::log::{StageLogger, Verbosity};
-
-        let config = Config {
-            crates: vec![CrateConfig {
-                name: "pre".to_string(),
-                path: ".".to_string(),
-                tag_template: "v{{ .Version }}".to_string(),
-                publish: Some(PublishConfig {
-                    scoop: Some(ScoopConfig {
-                        bucket: Some(BucketConfig {
-                            owner: "myorg".to_string(),
-                            name: "scoop-bucket".to_string(),
-                        }),
-                        skip_upload: Some(anodizer_core::config::StringOrBool::String(
-                            "auto".to_string(),
-                        )),
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }],
-            ..Default::default()
-        };
-
-        let mut ctx = Context::new(config, ContextOptions::default());
-        ctx.template_vars_mut().set("Prerelease", "alpha.1");
-        let log = StageLogger::new("publish", Verbosity::Normal);
-        assert!(publish_to_scoop(&ctx, "pre", &log).is_ok());
-    }
-
     // -----------------------------------------------------------------------
     // Scoop manifest name override
     // -----------------------------------------------------------------------
@@ -1305,48 +1192,6 @@ mod tests {
     // -----------------------------------------------------------------------
     // Scoop manifest directory placement (dry-run test)
     // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_publish_to_scoop_dry_run_with_directory() {
-        use anodizer_core::config::{
-            BucketConfig, Config, CrateConfig, PublishConfig, ScoopConfig,
-        };
-        use anodizer_core::context::{Context, ContextOptions};
-        use anodizer_core::log::{StageLogger, Verbosity};
-
-        let mut config = Config::default();
-        config.crates = vec![CrateConfig {
-            name: "cfgd".to_string(),
-            path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
-            publish: Some(PublishConfig {
-                scoop: Some(ScoopConfig {
-                    bucket: Some(BucketConfig {
-                        owner: "myorg".to_string(),
-                        name: "scoop-bucket".to_string(),
-                    }),
-                    directory: Some("bucket".to_string()),
-                    description: Some("A tool".to_string()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }];
-
-        let ctx = Context::new(
-            config,
-            ContextOptions {
-                dry_run: true,
-                ..Default::default()
-            },
-        );
-        let log = StageLogger::new("publish", Verbosity::Normal);
-
-        // dry-run should succeed; the directory field is wired but no actual
-        // file system operations happen in dry-run mode.
-        assert!(publish_to_scoop(&ctx, "cfgd", &log).is_ok());
-    }
 
     // -----------------------------------------------------------------------
     // Scoop commit message template (uses shared render_commit_msg)

@@ -210,7 +210,6 @@ CloudSmith publisher configuration. Pushes packages to CloudSmith repositories.
 | `cross` | CrossStrategy | — | Cross-compilation strategy for this crate: auto, zigbuild, cross, or cargo. |
 | `depends_on` | list of string | — | Other crates this crate depends on; ensures release ordering. |
 | `dmgs` | list of DmgConfig | — | macOS DMG disk image configurations for this crate. |
-| `docker` | list of DockerConfig | — | Docker image build configurations for this crate (legacy API). |
 | `docker_digest` | DockerDigestConfig | — | Docker image digest file configuration for this crate. |
 | `docker_manifests` | list of DockerManifestConfig | — | Docker multi-platform manifest configurations for this crate. |
 | `docker_v2` | list of DockerV2Config | — | Docker V2 image build configurations for this crate (newer API with images+tags, annotations, build_args, sbom, disable). |

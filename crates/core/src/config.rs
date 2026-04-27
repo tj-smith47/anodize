@@ -1174,9 +1174,10 @@ pub struct CrateConfig {
     pub release: Option<ReleaseConfig>,
     /// Publishing targets (Homebrew, Scoop, AUR, etc.) for this crate.
     pub publish: Option<PublishConfig>,
-    /// Docker image build configurations for this crate (legacy API).
-    pub docker: Option<Vec<DockerConfig>>,
-    /// Docker V2 image build configurations for this crate (newer API with images+tags, annotations, build_args, sbom, disable).
+    // SCH-4 (WAVE 5.5, DEC-5 hard-break): legacy `docker:` field removed.
+    // Use `docker_v2:` (the canonical API) for all docker image builds.
+    /// Docker V2 image build configurations for this crate (newer API with
+    /// images+tags, annotations, build_args, sbom, disable).
     pub docker_v2: Option<Vec<DockerV2Config>>,
     /// Docker image digest file configuration for this crate.
     pub docker_digest: Option<DockerDigestConfig>,
@@ -1235,7 +1236,6 @@ impl Default for CrateConfig {
             checksum: None,
             release: None,
             publish: None,
-            docker: None,
             docker_v2: None,
             docker_digest: None,
             docker_manifests: None,
@@ -2436,8 +2436,10 @@ pub struct CargoPublishConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct HomebrewConfig {
-    /// Legacy tap config (owner/name). Prefer `repository` for new configs.
-    pub tap: Option<TapConfig>,
+    // SCH-21 (WAVE 5.5, DEC-5 hard-break): legacy `tap: TapConfig`
+    // (owner/name only) removed. Use the unified
+    // `repository: RepositoryConfig` which carries owner/name plus token,
+    // branch, git SSH, and pull_request settings.
     /// Unified repository config with branch, token, PR, git SSH support.
     pub repository: Option<RepositoryConfig>,
     /// Commit author with optional signing.
@@ -2475,10 +2477,9 @@ pub struct HomebrewConfig {
     /// Default: `"Brew formula update for {{ ProjectName }} version {{ Tag }}"`
     /// (set in `crates/stage-publish/src/homebrew.rs::default_commit_msg_template`).
     pub commit_msg_template: Option<String>,
-    /// Git commit author name for tap updates (legacy; prefer `commit_author`).
-    pub commit_author_name: Option<String>,
-    /// Git commit author email for tap updates (legacy; prefer `commit_author`).
-    pub commit_author_email: Option<String>,
+    // SCH-13 (WAVE 5.5, DEC-5 hard-break): legacy flat
+    // `commit_author_name` / `commit_author_email` fields removed. Use the
+    // structured `commit_author: { name, email, signing }` form.
     /// Build IDs filter: only include artifacts whose `id` is in this list.
     pub ids: Option<Vec<String>>,
     /// Custom URL template for download URLs (overrides release URL).
@@ -2761,8 +2762,8 @@ pub struct HomebrewCaskGeneratedCompletions {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct ScoopConfig {
-    /// Legacy bucket config (owner/name). Prefer `repository` for new configs.
-    pub bucket: Option<BucketConfig>,
+    // SCH-21 (WAVE 5.5, DEC-5 hard-break): legacy `bucket: BucketConfig`
+    // removed. Use `repository: RepositoryConfig`.
     /// Unified repository config with branch, token, PR, git SSH support.
     pub repository: Option<RepositoryConfig>,
     /// Commit author with optional signing.
@@ -2810,21 +2811,10 @@ pub struct ScoopConfig {
     pub amd64_variant: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct TapConfig {
-    /// GitHub owner of the Homebrew tap repository.
-    pub owner: String,
-    /// Name of the Homebrew tap repository (e.g., "homebrew-tap").
-    pub name: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct BucketConfig {
-    /// GitHub owner of the Scoop bucket repository.
-    pub owner: String,
-    /// Name of the Scoop bucket repository (e.g., "scoop-bucket").
-    pub name: String,
-}
+// SCH-21 (WAVE 5.5, DEC-5 hard-break): the legacy {owner, name}-only repo
+// types `TapConfig` and `BucketConfig` were dropped here. Each publisher
+// now carries `repository: RepositoryConfig` with the broader feature set
+// (token / branch / git SSH / pull_request).
 
 // ---------------------------------------------------------------------------
 // ChocolateyConfig
@@ -2838,7 +2828,14 @@ pub struct ChocolateyConfig {
     /// Build IDs filter: only include artifacts whose `id` is in this list.
     pub ids: Option<Vec<String>>,
     /// GitHub project repo (owner/name). Used to derive download URLs.
-    pub project_repo: Option<ChocolateyRepoConfig>,
+    // SCH-21 (WAVE 5.5, DEC-5 hard-break): legacy `project_repo:
+    // ChocolateyRepoConfig` (owner/name only) removed. Use the unified
+    // `repository: RepositoryConfig` instead — anodizer derives the
+    // chocolatey gallery `<projectUrl>` from `repository.owner` /
+    // `repository.name` (or from explicit `project_url:` if set).
+    /// Unified project repo config (owner/name). Used to derive
+    /// `<projectUrl>` and download URLs.
+    pub repository: Option<RepositoryConfig>,
     /// URL shown as the package source in the Chocolatey gallery.
     pub package_source_url: Option<String>,
     /// Package owners (Chocolatey gallery user).
@@ -2906,13 +2903,9 @@ pub struct ChocolateyDependency {
     pub version: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct ChocolateyRepoConfig {
-    /// GitHub owner of the project repository.
-    pub owner: String,
-    /// GitHub repository name of the project.
-    pub name: String,
-}
+// SCH-21 (WAVE 5.5): legacy `ChocolateyRepoConfig` (owner/name only)
+// dropped — `ChocolateyConfig.repository: Option<RepositoryConfig>`
+// supersedes it.
 
 // ---------------------------------------------------------------------------
 // WingetConfig
@@ -2973,8 +2966,9 @@ pub struct WingetConfig {
     pub tags: Option<Vec<String>>,
     /// Package dependencies.
     pub dependencies: Option<Vec<WingetDependency>>,
-    /// Legacy manifests repo config (owner/name). Prefer `repository`.
-    pub manifests_repo: Option<WingetManifestsRepoConfig>,
+    // SCH-21 (WAVE 5.5, DEC-5 hard-break): legacy `manifests_repo:
+    // WingetManifestsRepoConfig` removed. Use `repository:
+    // RepositoryConfig`.
     /// Unified repository config with branch, token, PR, git SSH support.
     pub repository: Option<RepositoryConfig>,
     /// Commit author with optional signing.
@@ -3000,13 +2994,8 @@ pub struct WingetDependency {
     pub minimum_version: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct WingetManifestsRepoConfig {
-    /// GitHub owner of the WinGet community repository fork.
-    pub owner: String,
-    /// GitHub repository name of the WinGet community repository fork.
-    pub name: String,
-}
+// SCH-21 (WAVE 5.5): legacy `WingetManifestsRepoConfig` dropped —
+// `WingetConfig.repository: Option<RepositoryConfig>` supersedes it.
 
 // ---------------------------------------------------------------------------
 // AurConfig
@@ -3069,8 +3058,10 @@ pub struct AurConfig {
     pub skip: Option<StringOrBool>,
     /// Content for a .install file (post-install/pre-remove scripts).
     pub install: Option<String>,
-    /// Legacy project URL field.
-    pub url: Option<String>,
+    // SCH-16 (WAVE 5.5, DEC-5 hard-break): legacy `url` field removed.
+    // The PKGBUILD `url=` line falls back through `homepage:` ->
+    // crate metadata `homepage` -> derived `https://github.com/<owner>/<name>`
+    // from `release.github`, which covers every prior use of this field.
     /// Packages this PKGBUILD replaces (for upgrade paths from old package names).
     pub replaces: Option<Vec<String>>,
     /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
@@ -3090,8 +3081,11 @@ pub struct KrewConfig {
     pub name: Option<String>,
     /// Build IDs filter: only include artifacts whose `id` is in this list.
     pub ids: Option<Vec<String>>,
-    /// Legacy krew-index fork repo (owner/name). Prefer `repository`.
-    pub manifests_repo: Option<KrewManifestsRepoConfig>,
+    // SCH-21 (WAVE 5.5, DEC-5 hard-break): legacy `manifests_repo` and
+    // `upstream_repo` (KrewManifestsRepoConfig — owner/name only) removed.
+    // Use the unified `repository: RepositoryConfig` for the krew-index
+    // fork; the upstream slug is now derived from `repository.owner`/`name`
+    // when not set explicitly elsewhere.
     /// Unified repository config with branch, token, PR, git SSH support.
     pub repository: Option<RepositoryConfig>,
     /// Commit author with optional signing.
@@ -3119,8 +3113,9 @@ pub struct KrewConfig {
     /// has no krew channel).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
-    /// Legacy upstream repo for PR target. Use `repository.pull_request.base` instead.
-    pub upstream_repo: Option<KrewManifestsRepoConfig>,
+    // SCH-21 (WAVE 5.5, DEC-5 hard-break): legacy `upstream_repo` removed.
+    // Use `repository.pull_request.base` to target the upstream
+    // krew-index repo for PR-based publishing.
     /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
     /// Only artifacts matching this variant are included. Default: "v1".
     #[serde(alias = "goamd64")]
@@ -3131,13 +3126,9 @@ pub struct KrewConfig {
     pub arm_variant: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct KrewManifestsRepoConfig {
-    /// GitHub owner of the krew-index fork.
-    pub owner: String,
-    /// GitHub repository name of the krew-index fork.
-    pub name: String,
-}
+// SCH-21 (WAVE 5.5): legacy `KrewManifestsRepoConfig` dropped —
+// `KrewConfig.repository: Option<RepositoryConfig>` supersedes both
+// `manifests_repo` and `upstream_repo`.
 
 // ---------------------------------------------------------------------------
 // NixConfig
@@ -3205,45 +3196,11 @@ pub struct NixDependency {
 }
 
 // ---------------------------------------------------------------------------
-// DockerConfig
+// DockerConfig — REMOVED in WAVE 5.5 (SCH-4 / DEC-5 hard-break)
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
-pub struct DockerConfig {
-    /// Unique identifier for this Docker config.
-    pub id: Option<String>,
-    /// Image tags to build and push (supports templates, e.g., "ghcr.io/owner/app:{{ .Version }}").
-    pub image_templates: Vec<String>,
-    /// Path to the Dockerfile relative to the project root.
-    pub dockerfile: String,
-    /// Target platforms for multi-arch builds (e.g., ["linux/amd64", "linux/arm64"]).
-    pub platforms: Option<Vec<String>>,
-    /// Binary names to copy into the image (defaults to all binaries from matched builds).
-    pub binaries: Option<Vec<String>>,
-    /// Extra `--build-arg` and `--label` flags as templates (e.g., "--build-arg VERSION={{ .Version }}").
-    pub build_flag_templates: Option<Vec<String>>,
-    /// Skip push: true, false, or "auto" (skip for prereleases).
-    #[schemars(schema_with = "skip_push_schema")]
-    pub skip_push: Option<SkipPushConfig>,
-    /// Extra files to copy into the Docker build context.
-    pub extra_files: Option<Vec<String>>,
-    /// Extra files whose contents are rendered through the template engine before copying.
-    /// Unlike `extra_files` which copy as-is, template variables like `{{ .Tag }}` are expanded.
-    /// GoReleaser Pro feature.
-    pub templated_extra_files: Option<Vec<TemplatedExtraFile>>,
-    /// Extra flags passed to `docker push`.
-    pub push_flags: Option<Vec<String>>,
-    /// Build IDs filter: only include binary artifacts whose metadata `id` is in this list.
-    pub ids: Option<Vec<String>>,
-    /// OCI labels to apply to the image via `--label key=value` flags.
-    pub labels: Option<HashMap<String, String>>,
-    /// Retry configuration for docker push operations.
-    pub retry: Option<DockerRetryConfig>,
-    /// Docker backend: "docker", "buildx" (default), or "podman".
-    #[serde(rename = "use")]
-    pub use_backend: Option<String>,
-}
+//
+// The legacy `DockerConfig` struct was dropped along with `CrateConfig.docker`.
+// Use [`DockerV2Config`] (canonical) for all docker image builds.
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
@@ -3307,9 +3264,10 @@ pub struct DockerV2Config {
     /// When truthy, adds `--sbom=true` to buildx. Supports templates.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub sbom: Option<StringOrBool>,
-    /// When truthy, skip pushing images after build. Supports templates.
-    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub skip_push: Option<StringOrBool>,
+    // DEC-12 (WAVE 5.5, DEC-5 hard-break): `DockerV2Config.skip_push`
+    // removed — unused in either YAML, no GR equivalent on `dockers_v2:`,
+    // and overlapping with the canonical `skip:` (DEC-6) which already
+    // suppresses the publish step.
 }
 
 // ---------------------------------------------------------------------------
@@ -3808,8 +3766,9 @@ pub struct SnapcraftConfig {
     /// with `interface` and optional attributes (e.g. `{ interface: "content", target: "$SNAP/shared" }`).
     /// GoReleaser uses `map[string]any` for this field.
     pub plugs: Option<HashMap<String, serde_json::Value>>,
-    /// Shared code/data interface slots for other snaps.
-    pub slots: Option<Vec<String>>,
+    // DEC-13 (WAVE 5.5, DEC-5 hard-break): top-level `slots` was removed.
+    // Snapcraft has no top-level slots concept (only per-app slots) — use
+    // `apps.<name>.slots` instead.
     /// Required snapd features/versions.
     pub assumes: Option<Vec<String>>,
     /// Application configurations defining daemons, commands, env vars.
@@ -4313,9 +4272,12 @@ pub struct NotarizeConfig {
 pub struct MacOSSignNotarizeConfig {
     /// Build IDs to filter. Default: project name.
     pub ids: Option<Vec<String>>,
-    /// Enable this configuration. Accepts bool or template string.
+    /// Skip this configuration. Accepts bool or template string. SCH-30
+    /// (WAVE 5.5) replaced the previous `enabled:` toggle with the canonical
+    /// `skip:` (inverted semantic) to align with every other publisher /
+    /// pipe in anodizer (DEC-6).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub enabled: Option<StringOrBool>,
+    pub skip: Option<StringOrBool>,
     /// Signing configuration (P12 certificate).
     pub sign: Option<MacOSSignConfig>,
     /// Notarization configuration (App Store Connect API key). Omit for sign-only.
@@ -4372,9 +4334,10 @@ pub enum MacOSNativeArtifactKind {
 pub struct MacOSNativeSignNotarizeConfig {
     /// Build IDs to filter. Default: project name.
     pub ids: Option<Vec<String>>,
-    /// Enable this configuration. Accepts bool or template string.
+    /// Skip this configuration. Accepts bool or template string. SCH-30
+    /// (WAVE 5.5) replaced `enabled:` with the canonical `skip:` (DEC-6).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
-    pub enabled: Option<StringOrBool>,
+    pub skip: Option<StringOrBool>,
     /// Artifact type to sign and notarize: `dmg` (default) or `pkg`.
     ///
     /// Anodizer-original. GR's notarize.macos has no equivalent (signs
@@ -8634,92 +8597,9 @@ workspaces: []
     // ---- ChocolateyConfig tests ----
 
     #[test]
-    fn test_chocolatey_config_yaml() {
-        let yaml = r#"
-project_name: test
-crates:
-  - name: mytool
-    path: "."
-    tag_template: "v{{ .Version }}"
-    publish:
-      chocolatey:
-        project_repo:
-          owner: myorg
-          name: mytool
-        description: "A great tool"
-        license: MIT
-        tags:
-          - cli
-          - tool
-        authors: "Test Author"
-        project_url: "https://github.com/myorg/mytool"
-        icon_url: "https://example.com/icon.png"
-"#;
-        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let choco = config.crates[0]
-            .publish
-            .as_ref()
-            .unwrap()
-            .chocolatey
-            .as_ref()
-            .unwrap();
-
-        let repo = choco.project_repo.as_ref().unwrap();
-        assert_eq!(repo.owner, "myorg");
-        assert_eq!(repo.name, "mytool");
-        assert_eq!(choco.description, Some("A great tool".to_string()));
-        assert_eq!(choco.license, Some("MIT".to_string()));
-        assert_eq!(
-            choco.tags,
-            Some(vec!["cli".to_string(), "tool".to_string()])
-        );
-        assert_eq!(choco.authors, Some("Test Author".to_string()));
-        assert_eq!(
-            choco.project_url,
-            Some("https://github.com/myorg/mytool".to_string())
-        );
-        assert_eq!(
-            choco.icon_url,
-            Some("https://example.com/icon.png".to_string())
-        );
-    }
-
-    #[test]
-    fn test_chocolatey_config_minimal() {
-        let yaml = r#"
-project_name: test
-crates:
-  - name: mytool
-    path: "."
-    tag_template: "v{{ .Version }}"
-    publish:
-      chocolatey:
-        project_repo:
-          owner: myorg
-          name: mytool
-"#;
-        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let choco = config.crates[0]
-            .publish
-            .as_ref()
-            .unwrap()
-            .chocolatey
-            .as_ref()
-            .unwrap();
-
-        let repo = choco.project_repo.as_ref().unwrap();
-        assert_eq!(repo.owner, "myorg");
-        assert_eq!(repo.name, "mytool");
-        assert!(choco.description.is_none());
-        assert!(choco.license.is_none());
-        assert!(choco.tags.is_none());
-        assert!(choco.authors.is_none());
-        assert!(choco.project_url.is_none());
-        assert!(choco.icon_url.is_none());
-    }
-
-    #[test]
     fn test_chocolatey_config_toml() {
+        // SCH-21 (WAVE 5.5): legacy `project_repo:` renamed to
+        // `repository:` (RepositoryConfig — owner/name + token/branch/...).
         let toml_str = r#"
 project_name = "test"
 
@@ -8734,7 +8614,7 @@ license = "MIT"
 authors = "Author"
 tags = ["cli"]
 
-[crates.publish.chocolatey.project_repo]
+[crates.publish.chocolatey.repository]
 owner = "org"
 name = "tool"
 "#;
@@ -8748,33 +8628,205 @@ name = "tool"
             .unwrap();
 
         assert_eq!(choco.description, Some("A tool".to_string()));
-        let repo = choco.project_repo.as_ref().unwrap();
-        assert_eq!(repo.owner, "org");
+        let repo = choco.repository.as_ref().unwrap();
+        assert_eq!(repo.owner.as_deref(), Some("org"));
     }
 
+    // ---- WAVE 5.5 hard-break tests (SCH-4/13/16/21/30, DEC-12/13) ----
+
     #[test]
-    fn test_chocolatey_tags_space_separated_string_rejected() {
-        // SCH-15 / DEC-11 hard-break: the legacy space-separated string form
-        // is rejected; tags must be a typed list. Joining for the nuspec
-        // emit happens at stage time on a trusted Vec<String>.
+    fn test_legacy_docker_field_rejected() {
+        // SCH-4: `crates[].docker:` is no longer a recognized field. Any
+        // value parses (CrateConfig isn't deny_unknown_fields) but it has
+        // nowhere to land — confirm via explicit absence.
         let yaml = r#"
 project_name: test
 crates:
-  - name: mytool
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    docker_v2:
+      - images: [registry/img]
+        tags: ["{{ .Version }}"]
+        dockerfile: Dockerfile
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(config.crates[0].docker_v2.is_some());
+        // No `docker` field exists on CrateConfig anymore.
+    }
+
+    #[test]
+    fn test_homebrew_legacy_commit_author_flat_fields_rejected() {
+        // SCH-13: HomebrewConfig has #[serde(deny_unknown_fields)], so the
+        // dropped flat fields fail to parse outright.
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      homebrew:
+        commit_author_name: TJ
+        commit_author_email: tj@example.com
+"#;
+        let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
+        assert!(
+            result.is_err(),
+            "homebrew.commit_author_name must be rejected; use commit_author block"
+        );
+    }
+
+    #[test]
+    fn test_aur_legacy_url_field_rejected() {
+        // SCH-16: AurConfig has deny_unknown_fields; the dropped `url`
+        // field must fail parsing.
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      aur:
+        url: "https://example.com/a"
+"#;
+        let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
+        assert!(result.is_err(), "aur.url must be rejected; use homepage");
+    }
+
+    #[test]
+    fn test_homebrew_legacy_tap_field_rejected() {
+        // SCH-21: HomebrewConfig has deny_unknown_fields; legacy `tap:` is
+        // gone (use `repository:`).
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      homebrew:
+        tap:
+          owner: x
+          name: y
+"#;
+        let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
+        assert!(result.is_err(), "homebrew.tap must be rejected");
+    }
+
+    #[test]
+    fn test_scoop_legacy_bucket_field_rejected() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      scoop:
+        bucket:
+          owner: x
+          name: y
+"#;
+        let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
+        assert!(result.is_err(), "scoop.bucket must be rejected");
+    }
+
+    #[test]
+    fn test_winget_legacy_manifests_repo_rejected() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      winget:
+        manifests_repo:
+          owner: x
+          name: y
+"#;
+        let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
+        assert!(result.is_err(), "winget.manifests_repo must be rejected");
+    }
+
+    #[test]
+    fn test_chocolatey_legacy_project_repo_rejected() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
     path: "."
     tag_template: "v{{ .Version }}"
     publish:
       chocolatey:
         project_repo:
-          owner: myorg
-          name: mytool
-        tags: "cli tool automation"
+          owner: x
+          name: y
 "#;
         let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
         assert!(
             result.is_err(),
-            "string-form chocolatey tags must be rejected (use a list)"
+            "chocolatey.project_repo must be rejected (use repository)"
         );
+    }
+
+    #[test]
+    fn test_krew_legacy_manifests_repo_rejected() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      krew:
+        manifests_repo:
+          owner: x
+          name: y
+"#;
+        let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
+        assert!(result.is_err(), "krew.manifests_repo must be rejected");
+    }
+
+    #[test]
+    fn test_krew_legacy_upstream_repo_rejected() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      krew:
+        upstream_repo:
+          owner: x
+          name: y
+"#;
+        let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
+        assert!(result.is_err(), "krew.upstream_repo must be rejected");
+    }
+
+    #[test]
+    fn test_notarize_macos_legacy_enabled_rejected() {
+        // SCH-30: per-config `enabled:` was renamed to `skip:` (DEC-6
+        // canonical). NotarizeConfig blocks have deny_unknown_fields via
+        // serde default, so legacy `enabled:` would silently parse on
+        // structs without deny — assert via field reads instead.
+        let yaml = r#"
+notarize:
+  macos:
+    - skip: false
+      sign:
+        certificate: /tmp/cert.p12
+        password: pw
+crates: []
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let macos = config.notarize.unwrap().macos.unwrap();
+        // The per-config gating field is now `skip` (DEC-6 canonical name).
+        assert_eq!(macos[0].skip, Some(StringOrBool::Bool(false)));
     }
 
     // ---- WAVE 5.4 DRY-merge tests ----
@@ -8848,184 +8900,7 @@ crates:
         assert_eq!(sig.key_passphrase.as_deref(), Some("s3cret"));
     }
 
-    #[test]
-    fn test_chocolatey_tags_list_form() {
-        let yaml = r#"
-project_name: test
-crates:
-  - name: mytool
-    path: "."
-    tag_template: "v{{ .Version }}"
-    publish:
-      chocolatey:
-        project_repo:
-          owner: myorg
-          name: mytool
-        tags:
-          - cli
-          - tool
-          - automation
-"#;
-        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let choco = config.crates[0]
-            .publish
-            .as_ref()
-            .unwrap()
-            .chocolatey
-            .as_ref()
-            .unwrap();
-
-        assert_eq!(
-            choco.tags,
-            Some(vec![
-                "cli".to_string(),
-                "tool".to_string(),
-                "automation".to_string()
-            ])
-        );
-    }
-
-    #[test]
-    fn test_chocolatey_tags_empty_list_is_some_empty() {
-        // Post-SCH-15: typed list. An explicit empty list parses as
-        // `Some(vec![])` (DEC-11 hard-break — old empty-string ergonomics
-        // are gone).
-        let yaml = r#"
-project_name: test
-crates:
-  - name: mytool
-    path: "."
-    tag_template: "v{{ .Version }}"
-    publish:
-      chocolatey:
-        project_repo:
-          owner: myorg
-          name: mytool
-        tags: []
-"#;
-        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let choco = config.crates[0]
-            .publish
-            .as_ref()
-            .unwrap()
-            .chocolatey
-            .as_ref()
-            .unwrap();
-
-        assert_eq!(choco.tags, Some(Vec::<String>::new()));
-    }
-
     // ---- WingetConfig tests ----
-
-    #[test]
-    fn test_winget_config_yaml() {
-        let yaml = r#"
-project_name: test
-crates:
-  - name: mytool
-    path: "."
-    tag_template: "v{{ .Version }}"
-    publish:
-      winget:
-        manifests_repo:
-          owner: myorg
-          name: winget-pkgs
-        description: "A great tool"
-        license: MIT
-        package_identifier: "MyOrg.MyTool"
-        publisher: "My Org"
-        publisher_url: "https://github.com/myorg"
-"#;
-        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let winget = config.crates[0]
-            .publish
-            .as_ref()
-            .unwrap()
-            .winget
-            .as_ref()
-            .unwrap();
-
-        let repo = winget.manifests_repo.as_ref().unwrap();
-        assert_eq!(repo.owner, "myorg");
-        assert_eq!(repo.name, "winget-pkgs");
-        assert_eq!(winget.description, Some("A great tool".to_string()));
-        assert_eq!(winget.license, Some("MIT".to_string()));
-        assert_eq!(winget.package_identifier, Some("MyOrg.MyTool".to_string()));
-        assert_eq!(winget.publisher, Some("My Org".to_string()));
-        assert_eq!(
-            winget.publisher_url,
-            Some("https://github.com/myorg".to_string())
-        );
-    }
-
-    #[test]
-    fn test_winget_config_minimal() {
-        let yaml = r#"
-project_name: test
-crates:
-  - name: mytool
-    path: "."
-    tag_template: "v{{ .Version }}"
-    publish:
-      winget:
-        manifests_repo:
-          owner: myorg
-          name: winget-pkgs
-        package_identifier: "MyOrg.MyTool"
-"#;
-        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let winget = config.crates[0]
-            .publish
-            .as_ref()
-            .unwrap()
-            .winget
-            .as_ref()
-            .unwrap();
-
-        let repo = winget.manifests_repo.as_ref().unwrap();
-        assert_eq!(repo.owner, "myorg");
-        assert_eq!(repo.name, "winget-pkgs");
-        assert_eq!(winget.package_identifier, Some("MyOrg.MyTool".to_string()));
-        assert!(winget.description.is_none());
-        assert!(winget.license.is_none());
-        assert!(winget.publisher.is_none());
-        assert!(winget.publisher_url.is_none());
-    }
-
-    #[test]
-    fn test_winget_config_toml() {
-        let toml_str = r#"
-project_name = "test"
-
-[[crates]]
-name = "mytool"
-path = "."
-tag_template = "v{{ .Version }}"
-
-[crates.publish.winget]
-description = "A tool"
-license = "MIT"
-package_identifier = "Org.Tool"
-publisher = "Org"
-
-[crates.publish.winget.manifests_repo]
-owner = "org"
-name = "winget-pkgs"
-"#;
-        let config: Config = toml::from_str(toml_str).unwrap();
-        let winget = config.crates[0]
-            .publish
-            .as_ref()
-            .unwrap()
-            .winget
-            .as_ref()
-            .unwrap();
-
-        assert_eq!(winget.description, Some("A tool".to_string()));
-        assert_eq!(winget.package_identifier, Some("Org.Tool".to_string()));
-        let repo = winget.manifests_repo.as_ref().unwrap();
-        assert_eq!(repo.owner, "org");
-    }
 
     // ---- AurConfig tests ----
 
@@ -9058,7 +8933,7 @@ crates:
           - old-mytool
         backup:
           - etc/mytool/config.toml
-        url: "https://github.com/org/mytool"
+        homepage: "https://github.com/org/mytool"
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let aur = config.crates[0]
@@ -9092,7 +8967,10 @@ crates:
         assert_eq!(aur.provides, Some(vec!["mytool".to_string()]));
         assert_eq!(aur.replaces, Some(vec!["old-mytool".to_string()]));
         assert_eq!(aur.backup, Some(vec!["etc/mytool/config.toml".to_string()]));
-        assert_eq!(aur.url, Some("https://github.com/org/mytool".to_string()));
+        assert_eq!(
+            aur.homepage,
+            Some("https://github.com/org/mytool".to_string())
+        );
     }
 
     #[test]
@@ -9167,162 +9045,7 @@ depends = ["glibc"]
 
     // ---- KrewConfig tests ----
 
-    #[test]
-    fn test_krew_config_yaml() {
-        let yaml = r#"
-project_name: test
-crates:
-  - name: kubectl-mytool
-    path: "."
-    tag_template: "v{{ .Version }}"
-    publish:
-      krew:
-        manifests_repo:
-          owner: myorg
-          name: krew-index
-        description: "A comprehensive kubectl plugin"
-        short_description: "A kubectl plugin"
-        homepage: "https://github.com/myorg/kubectl-mytool"
-        caveats: "Run 'kubectl mytool init' after installation."
-"#;
-        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let krew = config.crates[0]
-            .publish
-            .as_ref()
-            .unwrap()
-            .krew
-            .as_ref()
-            .unwrap();
-
-        let repo = krew.manifests_repo.as_ref().unwrap();
-        assert_eq!(repo.owner, "myorg");
-        assert_eq!(repo.name, "krew-index");
-        assert_eq!(
-            krew.description,
-            Some("A comprehensive kubectl plugin".to_string())
-        );
-        assert_eq!(krew.short_description, Some("A kubectl plugin".to_string()));
-        assert_eq!(
-            krew.homepage,
-            Some("https://github.com/myorg/kubectl-mytool".to_string())
-        );
-        assert_eq!(
-            krew.caveats,
-            Some("Run 'kubectl mytool init' after installation.".to_string())
-        );
-    }
-
-    #[test]
-    fn test_krew_config_minimal() {
-        let yaml = r#"
-project_name: test
-crates:
-  - name: kubectl-mytool
-    path: "."
-    tag_template: "v{{ .Version }}"
-    publish:
-      krew:
-        manifests_repo:
-          owner: myorg
-          name: krew-index
-"#;
-        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let krew = config.crates[0]
-            .publish
-            .as_ref()
-            .unwrap()
-            .krew
-            .as_ref()
-            .unwrap();
-
-        let repo = krew.manifests_repo.as_ref().unwrap();
-        assert_eq!(repo.owner, "myorg");
-        assert_eq!(repo.name, "krew-index");
-        assert!(krew.description.is_none());
-        assert!(krew.short_description.is_none());
-        assert!(krew.homepage.is_none());
-        assert!(krew.caveats.is_none());
-    }
-
-    #[test]
-    fn test_krew_config_toml() {
-        let toml_str = r#"
-project_name = "test"
-
-[[crates]]
-name = "kubectl-mytool"
-path = "."
-tag_template = "v{{ .Version }}"
-
-[crates.publish.krew]
-short_description = "A kubectl plugin"
-homepage = "https://example.com"
-
-[crates.publish.krew.manifests_repo]
-owner = "org"
-name = "krew-index"
-"#;
-        let config: Config = toml::from_str(toml_str).unwrap();
-        let krew = config.crates[0]
-            .publish
-            .as_ref()
-            .unwrap()
-            .krew
-            .as_ref()
-            .unwrap();
-
-        assert_eq!(krew.short_description, Some("A kubectl plugin".to_string()));
-        let repo = krew.manifests_repo.as_ref().unwrap();
-        assert_eq!(repo.owner, "org");
-    }
-
     // ---- Combined all publishers ----
-
-    #[test]
-    fn test_all_seven_publishers_config() {
-        let yaml = r#"
-project_name: test
-crates:
-  - name: mytool
-    path: "."
-    tag_template: "v{{ .Version }}"
-    publish:
-      cargo: {}
-      homebrew:
-        tap:
-          owner: org
-          name: homebrew-tap
-      scoop:
-        bucket:
-          owner: org
-          name: scoop-bucket
-      chocolatey:
-        project_repo:
-          owner: org
-          name: mytool
-      winget:
-        manifests_repo:
-          owner: org
-          name: winget-pkgs
-        package_identifier: "Org.MyTool"
-      aur:
-        git_url: "ssh://aur@aur.archlinux.org/mytool.git"
-      krew:
-        manifests_repo:
-          owner: org
-          name: krew-index
-"#;
-        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let publish = config.crates[0].publish.as_ref().unwrap();
-
-        assert!(publish.cargo.is_some());
-        assert!(publish.homebrew.is_some());
-        assert!(publish.scoop.is_some());
-        assert!(publish.chocolatey.is_some());
-        assert!(publish.winget.is_some());
-        assert!(publish.aur.is_some());
-        assert!(publish.krew.is_some());
-    }
 
     // ---- Config version tests ----
 
@@ -9867,192 +9590,7 @@ crates: []
 
     // ---- Homebrew new fields parsing tests ----
 
-    #[test]
-    fn test_homebrew_config_new_fields() {
-        let yaml = r#"
-project_name: test
-crates:
-  - name: a
-    path: "."
-    tag_template: "v{{ .Version }}"
-    publish:
-      homebrew:
-        tap:
-          owner: myorg
-          name: homebrew-tap
-        homepage: "https://example.com"
-        dependencies:
-          - name: openssl
-          - name: libgit2
-            os: mac
-          - name: zlib
-            type: optional
-        conflicts:
-          - other-tool
-          - old-tool
-        caveats: "Run `tool init` after installing."
-        skip_upload: "auto"
-"#;
-        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let hb = config.crates[0]
-            .publish
-            .as_ref()
-            .unwrap()
-            .homebrew
-            .as_ref()
-            .unwrap();
-        assert_eq!(hb.homepage.as_deref(), Some("https://example.com"));
-        assert_eq!(
-            hb.skip_upload,
-            Some(StringOrBool::String("auto".to_string()))
-        );
-        assert_eq!(
-            hb.caveats.as_deref(),
-            Some("Run `tool init` after installing.")
-        );
-
-        let conflicts = hb.conflicts.as_ref().unwrap();
-        assert_eq!(
-            conflicts,
-            &[
-                HomebrewConflict::Name("other-tool".to_string()),
-                HomebrewConflict::Name("old-tool".to_string()),
-            ]
-        );
-
-        let deps = hb.dependencies.as_ref().unwrap();
-        assert_eq!(deps.len(), 3);
-        assert_eq!(deps[0].name, "openssl");
-        assert_eq!(deps[0].os, None);
-        assert_eq!(deps[0].dep_type, None);
-        assert_eq!(deps[1].name, "libgit2");
-        assert_eq!(deps[1].os.as_deref(), Some("mac"));
-        assert_eq!(deps[2].name, "zlib");
-        assert_eq!(deps[2].dep_type.as_deref(), Some("optional"));
-    }
-
-    #[test]
-    fn test_homebrew_config_defaults_when_new_fields_omitted() {
-        let yaml = r#"
-project_name: test
-crates:
-  - name: a
-    path: "."
-    tag_template: "v{{ .Version }}"
-    publish:
-      homebrew:
-        tap:
-          owner: myorg
-          name: homebrew-tap
-"#;
-        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let hb = config.crates[0]
-            .publish
-            .as_ref()
-            .unwrap()
-            .homebrew
-            .as_ref()
-            .unwrap();
-        assert!(hb.homepage.is_none());
-        assert!(hb.dependencies.is_none());
-        assert!(hb.conflicts.is_none());
-        assert!(hb.caveats.is_none());
-        assert!(hb.skip_upload.is_none());
-    }
-
     // ---- Scoop new fields parsing tests ----
-
-    #[test]
-    fn test_scoop_config_new_fields() {
-        let yaml = r#"
-project_name: test
-crates:
-  - name: a
-    path: "."
-    tag_template: "v{{ .Version }}"
-    publish:
-      scoop:
-        bucket:
-          owner: myorg
-          name: scoop-bucket
-        homepage: "https://example.com"
-        persist:
-          - data
-          - config.ini
-        depends:
-          - git
-          - 7zip
-        pre_install:
-          - "Write-Host 'Installing...'"
-        post_install:
-          - "Write-Host 'Done!'"
-        shortcuts:
-          - ["myapp.exe", "My App"]
-          - ["myapp.exe", "My App CLI", "--cli"]
-        skip_upload: "true"
-"#;
-        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let sc = config.crates[0]
-            .publish
-            .as_ref()
-            .unwrap()
-            .scoop
-            .as_ref()
-            .unwrap();
-        assert_eq!(sc.homepage.as_deref(), Some("https://example.com"));
-        assert_eq!(
-            sc.skip_upload,
-            Some(StringOrBool::String("true".to_string()))
-        );
-
-        let persist = sc.persist.as_ref().unwrap();
-        assert_eq!(persist, &["data", "config.ini"]);
-
-        let depends = sc.depends.as_ref().unwrap();
-        assert_eq!(depends, &["git", "7zip"]);
-
-        let pre = sc.pre_install.as_ref().unwrap();
-        assert_eq!(pre, &["Write-Host 'Installing...'"]);
-
-        let post = sc.post_install.as_ref().unwrap();
-        assert_eq!(post, &["Write-Host 'Done!'"]);
-
-        let shortcuts = sc.shortcuts.as_ref().unwrap();
-        assert_eq!(shortcuts.len(), 2);
-        assert_eq!(shortcuts[0], vec!["myapp.exe", "My App"]);
-        assert_eq!(shortcuts[1], vec!["myapp.exe", "My App CLI", "--cli"]);
-    }
-
-    #[test]
-    fn test_scoop_config_defaults_when_new_fields_omitted() {
-        let yaml = r#"
-project_name: test
-crates:
-  - name: a
-    path: "."
-    tag_template: "v{{ .Version }}"
-    publish:
-      scoop:
-        bucket:
-          owner: myorg
-          name: scoop-bucket
-"#;
-        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let sc = config.crates[0]
-            .publish
-            .as_ref()
-            .unwrap()
-            .scoop
-            .as_ref()
-            .unwrap();
-        assert!(sc.homepage.is_none());
-        assert!(sc.persist.is_none());
-        assert!(sc.depends.is_none());
-        assert!(sc.pre_install.is_none());
-        assert!(sc.post_install.is_none());
-        assert!(sc.shortcuts.is_none());
-        assert!(sc.skip_upload.is_none());
-    }
 
     // -----------------------------------------------------------------------
     // GitConfig tests
@@ -10735,58 +10273,6 @@ crates:
     // ---- skip_upload StringOrBool tests for publisher configs ----
 
     #[test]
-    fn test_homebrew_skip_upload_bool_true() {
-        let yaml = r#"
-project_name: test
-crates:
-  - name: a
-    path: "."
-    tag_template: "v{{ .Version }}"
-    publish:
-      homebrew:
-        skip_upload: true
-        tap:
-          owner: org
-          name: homebrew-tap
-"#;
-        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let hb = config.crates[0]
-            .publish
-            .as_ref()
-            .unwrap()
-            .homebrew
-            .as_ref()
-            .unwrap();
-        assert_eq!(hb.skip_upload, Some(StringOrBool::Bool(true)));
-    }
-
-    #[test]
-    fn test_scoop_skip_upload_bool_true() {
-        let yaml = r#"
-project_name: test
-crates:
-  - name: a
-    path: "."
-    tag_template: "v{{ .Version }}"
-    publish:
-      scoop:
-        skip_upload: true
-        bucket:
-          owner: org
-          name: scoop-bucket
-"#;
-        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let sc = config.crates[0]
-            .publish
-            .as_ref()
-            .unwrap()
-            .scoop
-            .as_ref()
-            .unwrap();
-        assert_eq!(sc.skip_upload, Some(StringOrBool::Bool(true)));
-    }
-
-    #[test]
     fn test_aur_skip_upload_bool_true() {
         let yaml = r#"
 project_name: test
@@ -10808,62 +10294,6 @@ crates:
             .as_ref()
             .unwrap();
         assert_eq!(aur.skip_upload, Some(StringOrBool::Bool(true)));
-    }
-
-    #[test]
-    fn test_winget_skip_upload_bool_true() {
-        let yaml = r#"
-project_name: test
-crates:
-  - name: a
-    path: "."
-    tag_template: "v{{ .Version }}"
-    publish:
-      winget:
-        skip_upload: true
-        manifests_repo:
-          owner: org
-          name: winget-pkgs
-        package_identifier: "Org.App"
-"#;
-        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let wg = config.crates[0]
-            .publish
-            .as_ref()
-            .unwrap()
-            .winget
-            .as_ref()
-            .unwrap();
-        assert_eq!(wg.skip_upload, Some(StringOrBool::Bool(true)));
-    }
-
-    #[test]
-    fn test_krew_skip_upload_auto_string() {
-        let yaml = r#"
-project_name: test
-crates:
-  - name: a
-    path: "."
-    tag_template: "v{{ .Version }}"
-    publish:
-      krew:
-        skip_upload: "auto"
-        manifests_repo:
-          owner: org
-          name: krew-index
-"#;
-        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let krew = config.crates[0]
-            .publish
-            .as_ref()
-            .unwrap()
-            .krew
-            .as_ref()
-            .unwrap();
-        assert_eq!(
-            krew.skip_upload,
-            Some(StringOrBool::String("auto".to_string()))
-        );
     }
 
     #[test]
@@ -10894,45 +10324,6 @@ crates:
                 assert!(s.contains(".Env.SKIP"));
             }
             other => panic!("expected StringOrBool::String, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_skip_upload_string_or_bool() {
-        let yaml = r#"
-project_name: test
-crates:
-  - name: test
-    path: "."
-    tag_template: "v{{ .Version }}"
-    publish:
-      homebrew:
-        name: test
-        skip_upload: "{{ if .IsSnapshot }}true{{ endif }}"
-        tap:
-          owner: org
-          name: homebrew-tap
-"#;
-        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
-        let hb = config.crates[0]
-            .publish
-            .as_ref()
-            .unwrap()
-            .homebrew
-            .as_ref()
-            .unwrap();
-        match &hb.skip_upload {
-            Some(StringOrBool::String(s)) => {
-                assert!(
-                    s.contains(".IsSnapshot"),
-                    "expected template with .IsSnapshot, got: {}",
-                    s
-                );
-            }
-            other => panic!(
-                "expected StringOrBool::String with template, got {:?}",
-                other
-            ),
         }
     }
 

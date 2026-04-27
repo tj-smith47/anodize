@@ -57,15 +57,16 @@ fn refresh_artifact_checksums(ctx: &mut Context, log: &anodizer_core::log::Stage
 ///
 /// Note: notarize uses an opt-in `enabled` field (default `false`) rather than
 /// the opt-out `disable` field used by most other stages. This matches the
-/// GoReleaser schema where notarization must be explicitly enabled.
+/// SCH-30 (WAVE 5.5): per-config notarize gating moved from `enabled:` to
+/// the canonical `skip:` (DEC-6). Returns `true` when the notarize entry
+/// should run (i.e. `skip:` is absent or evaluates to false).
 ///
-/// The GoReleaser schema defaults `enabled` to `false`, so:
-/// - `None` → disabled
-/// - `Some(Bool(false))` → disabled
-/// - `Some(Bool(true))` → enabled
-/// - `Some(String(tmpl))` → render template, enabled if result is "true"
-fn is_enabled(enabled: &Option<StringOrBool>, ctx: &Context) -> bool {
-    match enabled {
+/// - `None` → run (default opt-in once notarize block is present)
+/// - `Some(Bool(false))` → run
+/// - `Some(Bool(true))` → skip
+/// - `Some(String(tmpl))` → render template, skip if result is "true"
+fn is_active(skip: &Option<StringOrBool>, ctx: &Context) -> bool {
+    let skipped = match skip {
         None => false,
         Some(sob) => {
             if sob.is_template() {
@@ -76,7 +77,8 @@ fn is_enabled(enabled: &Option<StringOrBool>, ctx: &Context) -> bool {
                 sob.as_bool()
             }
         }
-    }
+    };
+    !skipped
 }
 
 // ---------------------------------------------------------------------------
@@ -289,8 +291,8 @@ fn run_cross_platform(
     dry_run: bool,
     log: &anodizer_core::log::StageLogger,
 ) -> Result<()> {
-    if !is_enabled(&cfg.enabled, ctx) {
-        log.status(&format!("notarize: macos[{idx}] skipped (not enabled)"));
+    if !is_active(&cfg.skip, ctx) {
+        log.status(&format!("notarize: macos[{idx}] skipped (skip: true)"));
         return Ok(());
     }
 
@@ -535,9 +537,9 @@ fn run_native(
     dry_run: bool,
     log: &anodizer_core::log::StageLogger,
 ) -> Result<()> {
-    if !is_enabled(&cfg.enabled, ctx) {
+    if !is_active(&cfg.skip, ctx) {
         log.status(&format!(
-            "notarize: macos_native[{idx}] skipped (not enabled)"
+            "notarize: macos_native[{idx}] skipped (skip: true)"
         ));
         return Ok(());
     }
@@ -1006,11 +1008,12 @@ mod tests {
 
     #[test]
     fn test_cross_platform_config_deserializes() {
+        // SCH-30 (WAVE 5.5): per-config gating moved to `skip:` (DEC-6).
+        // The block below opts in implicitly (no `skip:` = run).
         let yaml = r#"
 notarize:
   macos:
-    - enabled: true
-      ids: [myapp]
+    - ids: [myapp]
       sign:
         certificate: /path/to/cert.p12
         password: "s3cret"
@@ -1028,7 +1031,7 @@ notarize:
         assert_eq!(macos.len(), 1);
 
         let entry = &macos[0];
-        assert_eq!(entry.enabled, Some(StringOrBool::Bool(true)));
+        assert_eq!(entry.skip, None);
         assert_eq!(entry.ids, Some(vec!["myapp".to_string()]));
 
         let sign = entry.sign.as_ref().unwrap();
@@ -1052,8 +1055,7 @@ notarize:
         let yaml = r#"
 notarize:
   macos_native:
-    - enabled: true
-      use: dmg
+    - use: dmg
       ids: [myapp]
       sign:
         identity: "Developer ID Application: Example"
@@ -1070,7 +1072,7 @@ notarize:
         assert_eq!(native.len(), 1);
 
         let entry = &native[0];
-        assert_eq!(entry.enabled, Some(StringOrBool::Bool(true)));
+        assert_eq!(entry.skip, None);
         assert_eq!(
             entry.use_,
             Some(anodizer_core::config::MacOSNativeArtifactKind::Dmg)
@@ -1096,8 +1098,7 @@ notarize:
         let yaml = r#"
 notarize:
   macos_native:
-    - enabled: true
-      use: pkg
+    - use: pkg
       sign:
         identity: "Developer ID Installer: Example"
       notarize:
@@ -1113,19 +1114,23 @@ notarize:
     }
 
     #[test]
-    fn test_enabled_string_template_deserializes() {
+    fn test_skip_string_template_deserializes() {
+        // SCH-30 (WAVE 5.5): per-config gating moved from `enabled:` to
+        // `skip:` (DEC-6); the template form still parses.
         let yaml = r#"
 notarize:
   macos:
-    - enabled: "{{ IsCI }}"
+    - skip: "{{ if .IsSnapshot }}true{{ endif }}"
       sign:
         certificate: cert.p12
         password: pass
 "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let macos = config.notarize.unwrap().macos.unwrap();
-        match &macos[0].enabled {
-            Some(StringOrBool::String(s)) => assert_eq!(s, "{{ IsCI }}"),
+        match &macos[0].skip {
+            Some(StringOrBool::String(s)) => {
+                assert_eq!(s, "{{ if .IsSnapshot }}true{{ endif }}")
+            }
             other => panic!("expected StringOrBool::String, got {:?}", other),
         }
     }
@@ -1135,13 +1140,11 @@ notarize:
         let yaml = r#"
 notarize:
   macos:
-    - enabled: true
-      sign:
+    - sign:
         certificate: cert.p12
         password: pass
   macos_native:
-    - enabled: true
-      sign:
+    - sign:
         identity: "Developer ID Application: Test"
       notarize:
         profile_name: test-profile
@@ -1194,7 +1197,7 @@ notarize: {}
         config.notarize = Some(NotarizeConfig {
             skip: None,
             macos: Some(vec![MacOSSignNotarizeConfig {
-                enabled: Some(StringOrBool::Bool(false)),
+                skip: Some(StringOrBool::Bool(true)),
                 sign: Some(MacOSSignConfig {
                     certificate: Some("cert.p12".to_string()),
                     password: Some("pass".to_string()),
@@ -1219,7 +1222,7 @@ notarize: {}
             skip: None,
             macos: None,
             macos_native: Some(vec![MacOSNativeSignNotarizeConfig {
-                enabled: Some(StringOrBool::Bool(false)),
+                skip: Some(StringOrBool::Bool(true)),
                 sign: Some(MacOSNativeSignConfig {
                     identity: Some("Developer ID".to_string()),
                     ..Default::default()
@@ -1243,7 +1246,7 @@ notarize: {}
         config.notarize = Some(NotarizeConfig {
             skip: None,
             macos: Some(vec![MacOSSignNotarizeConfig {
-                enabled: None,
+                skip: Some(StringOrBool::Bool(true)),
                 sign: Some(MacOSSignConfig {
                     certificate: Some("cert.p12".to_string()),
                     password: Some("pass".to_string()),
@@ -1270,7 +1273,7 @@ notarize: {}
         config.notarize = Some(NotarizeConfig {
             skip: None,
             macos: Some(vec![MacOSSignNotarizeConfig {
-                enabled: Some(StringOrBool::Bool(true)),
+                skip: None,
                 sign: None,
                 ..Default::default()
             }]),
@@ -1296,7 +1299,7 @@ notarize: {}
         config.notarize = Some(NotarizeConfig {
             skip: None,
             macos: Some(vec![MacOSSignNotarizeConfig {
-                enabled: Some(StringOrBool::Bool(true)),
+                skip: None,
                 sign: Some(MacOSSignConfig {
                     certificate: None,
                     password: Some("pass".to_string()),
@@ -1325,7 +1328,7 @@ notarize: {}
         config.notarize = Some(NotarizeConfig {
             skip: None,
             macos: Some(vec![MacOSSignNotarizeConfig {
-                enabled: Some(StringOrBool::Bool(true)),
+                skip: None,
                 sign: Some(MacOSSignConfig {
                     certificate: Some("cert.p12".to_string()),
                     password: None,
@@ -1355,7 +1358,7 @@ notarize: {}
             skip: None,
             macos: None,
             macos_native: Some(vec![MacOSNativeSignNotarizeConfig {
-                enabled: Some(StringOrBool::Bool(true)),
+                skip: None,
                 sign: None,
                 notarize: Some(MacOSNativeNotarizeConfig {
                     profile_name: Some("profile".to_string()),
@@ -1384,7 +1387,7 @@ notarize: {}
             skip: None,
             macos: None,
             macos_native: Some(vec![MacOSNativeSignNotarizeConfig {
-                enabled: Some(StringOrBool::Bool(true)),
+                skip: None,
                 sign: Some(MacOSNativeSignConfig {
                     identity: None,
                     ..Default::default()
@@ -1416,7 +1419,7 @@ notarize: {}
             skip: None,
             macos: None,
             macos_native: Some(vec![MacOSNativeSignNotarizeConfig {
-                enabled: Some(StringOrBool::Bool(true)),
+                skip: None,
                 sign: Some(MacOSNativeSignConfig {
                     identity: Some("Developer ID".to_string()),
                     ..Default::default()
@@ -1445,7 +1448,7 @@ notarize: {}
             skip: None,
             macos: None,
             macos_native: Some(vec![MacOSNativeSignNotarizeConfig {
-                enabled: Some(StringOrBool::Bool(true)),
+                skip: None,
                 sign: Some(MacOSNativeSignConfig {
                     identity: Some("Developer ID".to_string()),
                     ..Default::default()
@@ -1477,8 +1480,7 @@ notarize: {}
         let yaml = r#"
 notarize:
   macos_native:
-    - enabled: true
-      use: zip
+    - use: zip
       sign:
         identity: "Developer ID"
       notarize:
@@ -1503,7 +1505,7 @@ crates: []
         config.notarize = Some(NotarizeConfig {
             skip: None,
             macos: Some(vec![MacOSSignNotarizeConfig {
-                enabled: Some(StringOrBool::Bool(true)),
+                skip: None,
                 sign: Some(MacOSSignConfig {
                     certificate: Some("cert.p12".to_string()),
                     password: Some("pass".to_string()),
@@ -1576,7 +1578,7 @@ crates: []
         config.notarize = Some(NotarizeConfig {
             skip: None,
             macos: Some(vec![MacOSSignNotarizeConfig {
-                enabled: Some(StringOrBool::Bool(true)),
+                skip: None,
                 sign: Some(MacOSSignConfig {
                     certificate: Some("cert.p12".to_string()),
                     password: Some("pass".to_string()),
@@ -1617,7 +1619,7 @@ crates: []
         config.notarize = Some(NotarizeConfig {
             skip: None,
             macos: Some(vec![MacOSSignNotarizeConfig {
-                enabled: Some(StringOrBool::Bool(true)),
+                skip: None,
                 sign: Some(MacOSSignConfig {
                     certificate: Some("cert.p12".to_string()),
                     password: Some("pass".to_string()),
@@ -1659,7 +1661,7 @@ crates: []
             skip: None,
             macos: None,
             macos_native: Some(vec![MacOSNativeSignNotarizeConfig {
-                enabled: Some(StringOrBool::Bool(true)),
+                skip: None,
                 use_: Some(anodizer_core::config::MacOSNativeArtifactKind::Dmg),
                 sign: Some(MacOSNativeSignConfig {
                     identity: Some("Developer ID Application: Test".to_string()),
@@ -1718,7 +1720,7 @@ crates: []
             skip: None,
             macos: None,
             macos_native: Some(vec![MacOSNativeSignNotarizeConfig {
-                enabled: Some(StringOrBool::Bool(true)),
+                skip: None,
                 use_: Some(anodizer_core::config::MacOSNativeArtifactKind::Pkg),
                 sign: Some(MacOSNativeSignConfig {
                     identity: Some("Developer ID Installer: Test".to_string()),
@@ -1767,7 +1769,7 @@ crates: []
             skip: None,
             macos: None,
             macos_native: Some(vec![MacOSNativeSignNotarizeConfig {
-                enabled: Some(StringOrBool::Bool(true)),
+                skip: None,
                 use_: Some(anodizer_core::config::MacOSNativeArtifactKind::Dmg),
                 sign: Some(MacOSNativeSignConfig {
                     identity: Some("Developer ID Application: Test".to_string()),
@@ -1802,7 +1804,7 @@ crates: []
             skip: None,
             macos: None,
             macos_native: Some(vec![MacOSNativeSignNotarizeConfig {
-                enabled: Some(StringOrBool::Bool(true)),
+                skip: None,
                 use_: Some(anodizer_core::config::MacOSNativeArtifactKind::Pkg),
                 sign: Some(MacOSNativeSignConfig {
                     identity: Some("Developer ID Installer: Test".to_string()),
@@ -1839,7 +1841,7 @@ crates: []
         config.notarize = Some(NotarizeConfig {
             skip: None,
             macos: Some(vec![MacOSSignNotarizeConfig {
-                enabled: Some(StringOrBool::Bool(true)),
+                skip: None,
                 ids: Some(vec!["other-crate".to_string()]),
                 sign: Some(MacOSSignConfig {
                     certificate: Some("cert.p12".to_string()),
@@ -1930,7 +1932,7 @@ crates: []
         config.notarize = Some(NotarizeConfig {
             skip: None,
             macos: Some(vec![MacOSSignNotarizeConfig {
-                enabled: Some(StringOrBool::Bool(true)),
+                skip: None,
                 sign: Some(MacOSSignConfig {
                     certificate: Some("cert.p12".to_string()),
                     password: Some("pass".to_string()),
@@ -1982,7 +1984,7 @@ crates: []
             skip: None,
             macos: None,
             macos_native: Some(vec![MacOSNativeSignNotarizeConfig {
-                enabled: Some(StringOrBool::Bool(true)),
+                skip: None,
                 ids: Some(vec!["other".to_string()]),
                 sign: Some(MacOSNativeSignConfig {
                     identity: Some("Developer ID".to_string()),
@@ -2021,45 +2023,46 @@ crates: []
     }
 
     // -----------------------------------------------------------------------
-    // is_enabled helper tests
+    // is_active helper tests (SCH-30 / WAVE 5.5: was is_enabled, inverted)
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_is_enabled_none() {
+    fn test_is_active_none_runs() {
+        // None -> run (default opt-in once notarize block is present).
         let config = Config::default();
         let ctx = Context::new(config, ContextOptions::default());
-        assert!(!is_enabled(&None, &ctx));
+        assert!(is_active(&None, &ctx));
     }
 
     #[test]
-    fn test_is_enabled_bool_true() {
+    fn test_is_active_skip_true_skipped() {
         let config = Config::default();
         let ctx = Context::new(config, ContextOptions::default());
-        assert!(is_enabled(&Some(StringOrBool::Bool(true)), &ctx));
+        assert!(!is_active(&Some(StringOrBool::Bool(true)), &ctx));
     }
 
     #[test]
-    fn test_is_enabled_bool_false() {
+    fn test_is_active_skip_false_runs() {
         let config = Config::default();
         let ctx = Context::new(config, ContextOptions::default());
-        assert!(!is_enabled(&Some(StringOrBool::Bool(false)), &ctx));
+        assert!(is_active(&Some(StringOrBool::Bool(false)), &ctx));
     }
 
     #[test]
-    fn test_is_enabled_string_true() {
+    fn test_is_active_skip_string_true_skipped() {
         let config = Config::default();
         let ctx = Context::new(config, ContextOptions::default());
-        assert!(is_enabled(
+        assert!(!is_active(
             &Some(StringOrBool::String("true".to_string())),
             &ctx
         ));
     }
 
     #[test]
-    fn test_is_enabled_string_false() {
+    fn test_is_active_skip_string_false_runs() {
         let config = Config::default();
         let ctx = Context::new(config, ContextOptions::default());
-        assert!(!is_enabled(
+        assert!(is_active(
             &Some(StringOrBool::String("false".to_string())),
             &ctx
         ));
@@ -2077,7 +2080,7 @@ crates: []
             skip: None,
             macos: None,
             macos_native: Some(vec![MacOSNativeSignNotarizeConfig {
-                enabled: Some(StringOrBool::Bool(true)),
+                skip: None,
                 use_: None, // should default to "dmg"
                 sign: Some(MacOSNativeSignConfig {
                     identity: Some("Developer ID Application: Test".to_string()),

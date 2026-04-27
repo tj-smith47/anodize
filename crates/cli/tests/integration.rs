@@ -2807,9 +2807,11 @@ crates:
     archives:
       - name_template: "test-project-{{{{ .Os }}}}-{{{{ .Arch }}}}"
         format: tar.gz
-    docker:
-      - image_templates:
-          - "myregistry/test-project:{{{{ .Version }}}}"
+    docker_v2:
+      - images:
+          - "myregistry/test-project"
+        tags:
+          - "{{{{ .Version }}}}"
         dockerfile: Dockerfile
         platforms:
           - linux/amd64

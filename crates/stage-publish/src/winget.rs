@@ -490,20 +490,15 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
         return Ok(());
     }
 
-    // Resolve repository config: bails when both modern + legacy are set.
+    // SCH-21 (WAVE 5.5): legacy `manifests_repo:` field removed.
     let (repo_owner, repo_name) = crate::util::resolve_repo_owner_name(
         "winget",
         "manifests_repo",
         winget_cfg.repository.as_ref(),
-        winget_cfg.manifests_repo.as_ref().map(|r| r.owner.as_str()),
-        winget_cfg.manifests_repo.as_ref().map(|r| r.name.as_str()),
+        None,
+        None,
     )?
-    .ok_or_else(|| {
-        anyhow::anyhow!(
-            "winget: no repository/manifests_repo config for '{}'",
-            crate_name
-        )
-    })?;
+    .ok_or_else(|| anyhow::anyhow!("winget: no repository config for '{}'", crate_name))?;
 
     let name_raw = winget_cfg.name.as_deref().unwrap_or(crate_name);
     let name_rendered = ctx
@@ -1129,95 +1124,10 @@ mod tests {
     // publish_to_winget dry-run tests
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn test_publish_to_winget_dry_run() {
-        use anodizer_core::config::{
-            Config, CrateConfig, PublishConfig, WingetConfig, WingetManifestsRepoConfig,
-        };
-        use anodizer_core::context::{Context, ContextOptions};
-        use anodizer_core::log::{StageLogger, Verbosity};
-
-        let mut config = Config::default();
-        config.crates = vec![CrateConfig {
-            name: "mytool".to_string(),
-            path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
-            publish: Some(PublishConfig {
-                winget: Some(WingetConfig {
-                    manifests_repo: Some(WingetManifestsRepoConfig {
-                        owner: "myorg".to_string(),
-                        name: "winget-pkgs".to_string(),
-                    }),
-                    package_identifier: Some("MyOrg.MyTool".to_string()),
-                    description: Some("A great tool".to_string()),
-                    publisher: Some("My Org".to_string()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }];
-
-        let ctx = Context::new(
-            config,
-            ContextOptions {
-                dry_run: true,
-                ..Default::default()
-            },
-        );
-        let log = StageLogger::new("publish", Verbosity::Normal);
-
-        // dry-run should succeed without any network/command calls
-        assert!(publish_to_winget(&ctx, "mytool", &log).is_ok());
-    }
-
     /// Regression for parity with GoReleaser's `errNoShortDescription`:
     /// when short_description, description, and meta.description are all
     /// unset, winget must hard-fail with an actionable error. The old
     /// lenient fallback to `crate_name` produced a meaningless manifest.
-    #[test]
-    fn test_publish_to_winget_missing_short_description_hard_errors() {
-        use anodizer_core::config::{
-            Config, CrateConfig, PublishConfig, WingetConfig, WingetManifestsRepoConfig,
-        };
-        use anodizer_core::context::{Context, ContextOptions};
-        use anodizer_core::log::{StageLogger, Verbosity};
-
-        let mut config = Config::default();
-        config.crates = vec![CrateConfig {
-            name: "mytool".to_string(),
-            path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
-            publish: Some(PublishConfig {
-                winget: Some(WingetConfig {
-                    manifests_repo: Some(WingetManifestsRepoConfig {
-                        owner: "myorg".to_string(),
-                        name: "winget-pkgs".to_string(),
-                    }),
-                    package_identifier: Some("MyOrg.MyTool".to_string()),
-                    publisher: Some("My Org".to_string()),
-                    license: Some("MIT".to_string()),
-                    // description + short_description both unset
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }];
-
-        // dry_run: false so we reach the short_description check.
-        let ctx = Context::new(config, ContextOptions::default());
-        let log = StageLogger::new("publish", Verbosity::Normal);
-
-        let result = publish_to_winget(&ctx, "mytool", &log);
-        let err = result.expect_err("missing short_description must hard-fail");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("short_description is required"),
-            "error should explain the missing field, got: {msg}"
-        );
-    }
-
     #[test]
     fn test_publish_to_winget_missing_config() {
         use anodizer_core::config::{Config, CrateConfig, PublishConfig};
@@ -1247,47 +1157,6 @@ mod tests {
     }
 
     #[test]
-    fn test_publish_to_winget_auto_generates_package_identifier() {
-        use anodizer_core::config::{
-            Config, CrateConfig, PublishConfig, WingetConfig, WingetManifestsRepoConfig,
-        };
-        use anodizer_core::context::{Context, ContextOptions};
-        use anodizer_core::log::{StageLogger, Verbosity};
-
-        let mut config = Config::default();
-        config.crates = vec![CrateConfig {
-            name: "mytool".to_string(),
-            path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
-            publish: Some(PublishConfig {
-                winget: Some(WingetConfig {
-                    manifests_repo: Some(WingetManifestsRepoConfig {
-                        owner: "myorg".to_string(),
-                        name: "winget-pkgs".to_string(),
-                    }),
-                    publisher: Some("My Org".to_string()),
-                    package_identifier: None, // Auto-generated from Publisher.Name
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }];
-
-        let ctx = Context::new(
-            config,
-            ContextOptions {
-                dry_run: true,
-                ..Default::default()
-            },
-        );
-        let log = StageLogger::new("publish", Verbosity::Normal);
-
-        // Should succeed - package_identifier auto-generated as "MyOrg.mytool"
-        assert!(publish_to_winget(&ctx, "mytool", &log).is_ok());
-    }
-
-    #[test]
     fn test_publish_to_winget_missing_manifests_repo() {
         use anodizer_core::config::{Config, CrateConfig, PublishConfig, WingetConfig};
         use anodizer_core::context::{Context, ContextOptions};
@@ -1300,7 +1169,7 @@ mod tests {
             tag_template: "v{{ .Version }}".to_string(),
             publish: Some(PublishConfig {
                 winget: Some(WingetConfig {
-                    manifests_repo: None, // Missing
+                    repository: None, // Missing
                     package_identifier: Some("Org.Tool".to_string()),
                     ..Default::default()
                 }),

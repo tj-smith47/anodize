@@ -349,10 +349,11 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         .clone()
         .or_else(|| ctx.config.meta_license().map(str::to_string))
         .unwrap_or_default();
+    // SCH-16 (WAVE 5.5): the legacy `aur.url` field was removed; resolve
+    // through `homepage` -> crate metadata homepage -> derived github URL.
     let url = aur_cfg
-        .url
+        .homepage
         .as_deref()
-        .or(aur_cfg.homepage.as_deref())
         .or_else(|| ctx.config.meta_homepage())
         .map(|s| s.to_string());
     let url = if let Some(u) = url {
@@ -362,7 +363,7 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     } else {
         anyhow::bail!(
             "aur: no url configured for '{}' and no release.github owner/name available. \
-             Set `publish.aur.url` or configure `release.github` with owner and name.",
+             Set `publish.aur.homepage` or configure `release.github` with owner and name.",
             crate_name
         );
     };
@@ -1094,7 +1095,7 @@ mod tests {
             publish: Some(PublishConfig {
                 aur: Some(AurConfig {
                     git_url: Some("ssh://aur@aur.archlinux.org/mytool.git".to_string()),
-                    url: Some("https://example.com/mytool".to_string()),
+                    homepage: Some("https://example.com/mytool".to_string()),
                     description: Some("A great tool".to_string()),
                     // ids filter that matches nothing forces empty archive set.
                     ids: Some(vec!["nonexistent".to_string()]),

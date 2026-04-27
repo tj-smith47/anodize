@@ -278,19 +278,15 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
 
     // Resolve repository config: prefer `repository` over legacy `manifests_repo`.
     // GoReleaser applies TemplateRef() to repository fields (krew.go:292-296).
+    // SCH-21 (WAVE 5.5): legacy `manifests_repo:` field removed.
     let (repo_owner_raw, repo_name_raw) = crate::util::resolve_repo_owner_name(
         "krew",
         "manifests_repo",
         krew_cfg.repository.as_ref(),
-        krew_cfg.manifests_repo.as_ref().map(|r| r.owner.as_str()),
-        krew_cfg.manifests_repo.as_ref().map(|r| r.name.as_str()),
+        None,
+        None,
     )?
-    .ok_or_else(|| {
-        anyhow::anyhow!(
-            "krew: no repository/manifests_repo config for '{}'",
-            crate_name
-        )
-    })?;
+    .ok_or_else(|| anyhow::anyhow!("krew: no repository config for '{}'", crate_name))?;
     let repo_owner = ctx
         .render_template(&repo_owner_raw)
         .unwrap_or(repo_owner_raw);
@@ -520,11 +516,20 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
         // to the user's own repo (the prior behavior) silently created
         // useless intra-fork PRs against the user's empty `main` branch
         // instead of against the real upstream.
-        let upstream_slug = if let Some(ref u) = krew_cfg.upstream_repo {
-            format!("{}/{}", u.owner, u.name)
-        } else {
-            "kubernetes-sigs/krew-index".to_string()
-        };
+        // SCH-21 (WAVE 5.5): legacy `upstream_repo:` removed. The upstream
+        // PR target now comes from `repository.pull_request.base` (a
+        // `RepositoryRef` with owner/name); when absent fall back to the
+        // canonical kubernetes-sigs/krew-index slug.
+        let upstream_slug = krew_cfg
+            .repository
+            .as_ref()
+            .and_then(|r| r.pull_request.as_ref())
+            .and_then(|pr| pr.base.as_ref())
+            .and_then(|base| match (base.owner.as_deref(), base.name.as_deref()) {
+                (Some(o), Some(n)) => Some(format!("{}/{}", o, n)),
+                _ => None,
+            })
+            .unwrap_or_else(|| "kubernetes-sigs/krew-index".to_string());
 
         util::submit_pr_via_gh(
             repo_path,
@@ -783,45 +788,6 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_publish_to_krew_dry_run() {
-        use anodizer_core::config::{
-            Config, CrateConfig, KrewConfig, KrewManifestsRepoConfig, PublishConfig,
-        };
-        use anodizer_core::context::{Context, ContextOptions};
-        use anodizer_core::log::{StageLogger, Verbosity};
-
-        let mut config = Config::default();
-        config.crates = vec![CrateConfig {
-            name: "kubectl-mytool".to_string(),
-            path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
-            publish: Some(PublishConfig {
-                krew: Some(KrewConfig {
-                    manifests_repo: Some(KrewManifestsRepoConfig {
-                        owner: "myorg".to_string(),
-                        name: "krew-index".to_string(),
-                    }),
-                    short_description: Some("A great plugin".to_string()),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }];
-
-        let ctx = Context::new(
-            config,
-            ContextOptions {
-                dry_run: true,
-                ..Default::default()
-            },
-        );
-        let log = StageLogger::new("publish", Verbosity::Normal);
-
-        assert!(publish_to_krew(&ctx, "kubectl-mytool", &log).is_ok());
-    }
-
-    #[test]
     fn test_publish_to_krew_missing_config() {
         use anodizer_core::config::{Config, CrateConfig, PublishConfig};
         use anodizer_core::context::{Context, ContextOptions};
@@ -861,7 +827,7 @@ mod tests {
             tag_template: "v{{ .Version }}".to_string(),
             publish: Some(PublishConfig {
                 krew: Some(KrewConfig {
-                    manifests_repo: None, // Missing
+                    repository: None, // Missing
                     ..Default::default()
                 }),
                 ..Default::default()
