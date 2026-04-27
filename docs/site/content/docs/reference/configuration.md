@@ -362,7 +362,9 @@ Fields from both original types are present; any field may be `None` at either c
 | `skip_upload` | StringOrBool | — | Skip publishing the cask. `"true"` always skips; `"auto"` skips for prerelease versions. Accepts bool or template string. |
 | `uninstall` | HomebrewCaskUninstall | — | Structured uninstall stanza configuration. |
 | `url` | HomebrewCaskURL | — | Structured download URL configuration (top-level axis). |
-| `url_template` | string | — | Simple URL template for the .dmg/.zip download (per-crate shorthand). Prefer `url:` for the structured form used at the top-level axis. |
+| `url_template` | string | — | Simple URL template for the .dmg/.zip download (per-crate shorthand).
+
+Cannot be combined with `url.template:` — set one or the other. If both are present, config validation rejects the config at parse time. Use `url:` for the structured form (verified domain, custom headers, etc.) or `url_template:` for a bare string shorthand — never both simultaneously. |
 | `zap` | HomebrewCaskUninstall | — | Deep uninstall (zap) stanza configuration. |
 
 ## `makeselfs`

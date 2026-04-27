@@ -467,7 +467,7 @@ mod tests {
     use super::*;
     use crate::config::{
         ArchiveConfig, ArchivesConfig, ChecksumConfig, CrossStrategy, HomebrewCaskConfig,
-        HomebrewConfig, StringOrBool,
+        HomebrewCaskUninstall, HomebrewConfig, StringOrBool,
     };
 
     fn make_crate(name: &str) -> CrateConfig {
@@ -1095,6 +1095,58 @@ crates:
             cask.license.as_deref(),
             Some("MIT"),
             "license should be filled from defaults (per-crate left it unset)"
+        );
+    }
+
+    #[test]
+    fn homebrew_cask_uninstall_nested_struct_deep_merges() {
+        // DEC-9: structured nested types must deep-merge, not replace wholesale.
+        // defaults: uninstall.launchctl = ["com.example.myapp"]
+        // crate:    uninstall.quit      = ["com.example.myapp.helper"]
+        // expect both fields to survive in the merged result.
+        let defaults = Defaults {
+            publish: Some(PublishDefaults {
+                homebrew_cask: Some(HomebrewCaskConfig {
+                    uninstall: Some(HomebrewCaskUninstall {
+                        launchctl: Some(vec!["com.example.myapp".to_string()]),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut crate_cfg = make_crate("mycrate");
+        crate_cfg.publish = Some(PublishConfig {
+            homebrew_cask: Some(HomebrewCaskConfig {
+                uninstall: Some(HomebrewCaskUninstall {
+                    quit: Some(vec!["com.example.myapp.helper".to_string()]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+
+        apply_to_crate(&defaults, &mut crate_cfg);
+
+        let publish = crate_cfg.publish.unwrap();
+        let cask = publish.homebrew_cask.unwrap();
+        let uninstall = cask
+            .uninstall
+            .expect("uninstall should be present after merge");
+        let expected_launchctl = vec!["com.example.myapp".to_string()];
+        assert_eq!(
+            uninstall.launchctl.as_deref(),
+            Some(expected_launchctl.as_slice()),
+            "launchctl from defaults should survive deep merge"
+        );
+        let expected_quit = vec!["com.example.myapp.helper".to_string()];
+        assert_eq!(
+            uninstall.quit.as_deref(),
+            Some(expected_quit.as_slice()),
+            "quit from crate should survive deep merge"
         );
     }
 }

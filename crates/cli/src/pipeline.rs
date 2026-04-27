@@ -366,6 +366,9 @@ pub fn load_config(path: &Path) -> Result<Config> {
         .map_err(|e| anyhow::anyhow!("{}", e))?;
     // Validate defaults.crates / defaults.workspaces axis matches top-level (DEC-4).
     anodizer_core::config::validate_defaults_axis(&config).map_err(|e| anyhow::anyhow!("{}", e))?;
+    // Validate homebrew_cask does not set both url_template and url.template (WAVE 4).
+    anodizer_core::config::validate_homebrew_cask_url_template(&config)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     // Apply monorepo defaults: when monorepo.dir is set and a crate's path
     // is empty or ".", default it to monorepo.dir.

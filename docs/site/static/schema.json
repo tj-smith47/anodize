@@ -5665,7 +5665,7 @@
           ]
         },
         "url_template": {
-          "description": "Simple URL template for the .dmg/.zip download (per-crate shorthand). Prefer `url:` for the structured form used at the top-level axis.",
+          "description": "Simple URL template for the .dmg/.zip download (per-crate shorthand).\n\nCannot be combined with `url.template:` — set one or the other. If both are present, config validation rejects the config at parse time. Use `url:` for the structured form (verified domain, custom headers, etc.) or `url_template:` for a bare string shorthand — never both simultaneously.",
           "default": null,
           "type": [
             "string",

@@ -554,6 +554,77 @@ pub fn validate_format_overrides(config: &Config) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate that no [`HomebrewCaskConfig`] sets both `url_template` AND
+/// `url.template` simultaneously — they are mutually exclusive shorthands
+/// for the same URL field and combining them is ambiguous.
+///
+/// Inspects every occurrence of `HomebrewCaskConfig` in the config:
+/// - `homebrew_casks:` (top-level array)
+/// - `crates[].publish.homebrew_cask:`
+/// - `workspaces[].crates[].publish.homebrew_cask:`
+/// - `defaults.publish.homebrew_cask:`
+pub fn validate_homebrew_cask_url_template(config: &Config) -> Result<(), String> {
+    let check = |location: &str, cask: &HomebrewCaskConfig| -> Result<(), String> {
+        let has_url_template = cask.url_template.is_some();
+        let has_url_dot_template = cask.url.as_ref().is_some_and(|u| u.template.is_some());
+        if has_url_template && has_url_dot_template {
+            return Err(format!(
+                "{location}: homebrew_cask sets both `url_template` and `url.template`. \
+                 These are mutually exclusive — use one or the other."
+            ));
+        }
+        Ok(())
+    };
+
+    // Top-level homebrew_casks array
+    if let Some(ref casks) = config.homebrew_casks {
+        for (i, cask) in casks.iter().enumerate() {
+            check(&format!("homebrew_casks[{i}]"), cask)?;
+        }
+    }
+
+    // Per-crate publish.homebrew_cask
+    for krate in &config.crates {
+        if let Some(ref publish) = krate.publish
+            && let Some(ref cask) = publish.homebrew_cask
+        {
+            check(
+                &format!("crates[{}].publish.homebrew_cask", krate.name),
+                cask,
+            )?;
+        }
+    }
+
+    // Workspace crates
+    if let Some(ref workspaces) = config.workspaces {
+        for ws in workspaces {
+            for krate in &ws.crates {
+                if let Some(ref publish) = krate.publish
+                    && let Some(ref cask) = publish.homebrew_cask
+                {
+                    check(
+                        &format!(
+                            "workspaces[{}].crates[{}].publish.homebrew_cask",
+                            ws.name, krate.name
+                        ),
+                        cask,
+                    )?;
+                }
+            }
+        }
+    }
+
+    // defaults.publish.homebrew_cask
+    if let Some(ref defaults) = config.defaults
+        && let Some(ref publish) = defaults.publish
+        && let Some(ref cask) = publish.homebrew_cask
+    {
+        check("defaults.publish.homebrew_cask", cask)?;
+    }
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // EnvFilesConfig — accepts list of .env paths OR structured token file paths
 // ---------------------------------------------------------------------------
@@ -2472,7 +2543,11 @@ pub struct HomebrewCaskConfig {
 
     // ----- Download URL -----
     /// Simple URL template for the .dmg/.zip download (per-crate shorthand).
-    /// Prefer `url:` for the structured form used at the top-level axis.
+    ///
+    /// Cannot be combined with `url.template:` — set one or the other.
+    /// If both are present, config validation rejects the config at parse time.
+    /// Use `url:` for the structured form (verified domain, custom headers, etc.)
+    /// or `url_template:` for a bare string shorthand — never both simultaneously.
     pub url_template: Option<String>,
     /// Structured download URL configuration (top-level axis).
     pub url: Option<HomebrewCaskURL>,
@@ -9773,6 +9848,88 @@ crates: []
         assert!(
             err.contains("workspaces"),
             "error should mention top-level workspaces: {err}"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
+    // validate_homebrew_cask_url_template tests
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn test_validate_homebrew_cask_url_template_both_set_rejected() {
+        // Setting url_template AND url.template on the same HomebrewCaskConfig
+        // must be a hard validation error.
+        let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      homebrew_cask:
+        url_template: "https://example.com/{{ .Tag }}/myapp.dmg"
+        url:
+          template: "https://example.com/{{ .Tag }}/myapp.dmg"
+          verified: "example.com"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let err = validate_homebrew_cask_url_template(&config).unwrap_err();
+        assert!(
+            err.contains("url_template") && err.contains("url.template"),
+            "error should mention both conflicting fields: {err}"
+        );
+        assert!(
+            err.contains("mutually exclusive"),
+            "error should say they are mutually exclusive: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_homebrew_cask_url_template_only_url_template_is_ok() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      homebrew_cask:
+        url_template: "https://example.com/{{ .Tag }}/myapp.dmg"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(validate_homebrew_cask_url_template(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_homebrew_cask_url_template_only_url_is_ok() {
+        let yaml = r#"
+project_name: test
+homebrew_casks:
+  - name: myapp
+    url:
+      template: "https://example.com/{{ .Tag }}/myapp.dmg"
+      verified: "example.com"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(validate_homebrew_cask_url_template(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_homebrew_cask_url_template_top_level_both_set_rejected() {
+        // Same conflict detected in top-level homebrew_casks array.
+        let yaml = r#"
+project_name: test
+homebrew_casks:
+  - name: myapp
+    url_template: "https://example.com/{{ .Tag }}/myapp.dmg"
+    url:
+      template: "https://example.com/{{ .Tag }}/myapp.dmg"
+"#;
+        let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+        let err = validate_homebrew_cask_url_template(&config).unwrap_err();
+        assert!(
+            err.contains("homebrew_casks[0]"),
+            "error should identify the offending entry: {err}"
         );
     }
 
