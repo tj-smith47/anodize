@@ -721,9 +721,7 @@ pub fn publish_cask(ctx: &Context, crate_name: &str, log: &StageLogger) -> Resul
         return Ok(());
     }
 
-    // Resolve repository config: bails when both modern + legacy are set.
-    // SCH-21 (WAVE 5.5): legacy `tap:` field removed; only `repository:`
-    // supplies owner/name now.
+    // Resolve repository owner/name from `repository:` (RepositoryConfig).
     let (repo_owner, repo_name) = crate::util::resolve_repo_owner_name(
         "homebrew_cask",
         "tap",
@@ -783,9 +781,6 @@ pub fn publish_cask(ctx: &Context, crate_name: &str, log: &StageLogger) -> Resul
     );
 
     let cask_lossy = cask_path.to_string_lossy();
-    // SCH-13 (WAVE 5.5, DEC-5 hard-break): legacy flat
-    // commit_author_name/email fields removed from HomebrewConfig — pass
-    // None for the legacy fallback slots.
     let commit_opts = crate::util::resolve_commit_opts(hb_cfg.commit_author.as_ref(), None, None);
     let branch = crate::util::resolve_branch(hb_cfg.repository.as_ref());
     crate::util::commit_and_push_with_opts(
@@ -1291,7 +1286,6 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
         return Ok(());
     }
 
-    // SCH-21 (WAVE 5.5): legacy `tap:` field removed.
     let (repo_owner, repo_name) = crate::util::resolve_repo_owner_name(
         "homebrew",
         "tap",
@@ -1636,7 +1630,6 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
         kind,
     );
 
-    // SCH-13 (WAVE 5.5): structured commit_author only.
     let commit_opts = crate::util::resolve_commit_opts(hb_cfg.commit_author.as_ref(), None, None);
     let branch = crate::util::resolve_branch(hb_cfg.repository.as_ref());
     crate::util::commit_and_push_with_opts(

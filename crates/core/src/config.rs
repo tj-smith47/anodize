@@ -89,9 +89,9 @@ pub struct Config {
     pub signs: Vec<SignConfig>,
     /// Binary-specific signing configs (same shape as `signs` but only for
     /// binary artifacts). The `artifacts` field on each entry is constrained
-    /// at parse time to [`BinarySignArtifacts`] (`binary` or `none`) — a
-    /// broader filter on `binary_signs` would silently match nothing because
-    /// the loop only iterates Binary artifacts.
+    /// at parse time to `binary` / `none` (or omitted) — a broader filter on
+    /// `binary_signs` would silently match nothing because the loop only
+    /// iterates Binary artifacts. Constraint lives in `deserialize_binary_signs`.
     #[serde(
         default,
         alias = "binary_sign",
@@ -1174,10 +1174,9 @@ pub struct CrateConfig {
     pub release: Option<ReleaseConfig>,
     /// Publishing targets (Homebrew, Scoop, AUR, etc.) for this crate.
     pub publish: Option<PublishConfig>,
-    // SCH-4 (WAVE 5.5, DEC-5 hard-break): legacy `docker:` field removed.
-    // Use `docker_v2:` (the canonical API) for all docker image builds.
-    /// Docker V2 image build configurations for this crate (newer API with
-    /// images+tags, annotations, build_args, sbom, disable).
+    /// Docker V2 image build configurations for this crate (canonical API:
+    /// images+tags, annotations, build_args, sbom, disable). The legacy
+    /// `docker:` block was removed; this is the only docker surface.
     pub docker_v2: Option<Vec<DockerV2Config>>,
     /// Docker image digest file configuration for this crate.
     pub docker_digest: Option<DockerDigestConfig>,
@@ -1499,19 +1498,24 @@ where
     deserializer.deserialize_any(SignsVisitor)
 }
 
-/// The constrained `artifacts` value for `binary_signs[]`. Mirrors GR's
-/// allowed set for binary-only sign pipes — broader filters silently match
-/// nothing because the binary-sign loop only iterates Binary artifacts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum BinarySignArtifacts {
-    Binary,
-    None,
-}
+// `binary_signs[].artifacts` is constrained at deserialize time (not as a
+// serde-typed enum) because `SignConfig` is shared with the top-level `signs:`
+// field, which legitimately accepts a wider set (`all`, `archive`, `binary`,
+// `checksum`, `package`, `sbom`, `none`). Promoting `artifacts` to an enum
+// would either narrow that surface or require a parallel `BinarySignConfig`
+// type duplicating every `SignConfig` field — the runtime check below keeps
+// `SignConfig` a single shared shape while still rejecting misconfigured
+// `binary_signs` entries at config-load time.
+//
+// The JSON schema for `binary_signs[]` therefore inherits `SignConfig`'s
+// unconstrained `artifacts: Option<String>` — the constraint lives in the
+// custom deserializer below and is exercised by the parse-time tests
+// `test_binary_signs_artifacts_*` further down this file.
 
 /// Wraps [`deserialize_signs`] and enforces that each entry's `artifacts`
-/// is either `binary` or `none` (or omitted). Catches misconfiguration at
-/// load time instead of producing a silent no-op signing pipe.
+/// is one of the binary-only allowed values (`binary`, `none`, or omitted).
+/// Catches misconfiguration at load time instead of producing a silent
+/// no-op signing pipe.
 fn deserialize_binary_signs<'de, D>(deserializer: D) -> Result<Vec<SignConfig>, D::Error>
 where
     D: Deserializer<'de>,
@@ -2436,11 +2440,8 @@ pub struct CargoPublishConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct HomebrewConfig {
-    // SCH-21 (WAVE 5.5, DEC-5 hard-break): legacy `tap: TapConfig`
-    // (owner/name only) removed. Use the unified
-    // `repository: RepositoryConfig` which carries owner/name plus token,
-    // branch, git SSH, and pull_request settings.
     /// Unified repository config with branch, token, PR, git SSH support.
+    /// (Replaces the legacy `tap: TapConfig` owner/name-only form.)
     pub repository: Option<RepositoryConfig>,
     /// Commit author with optional signing.
     pub commit_author: Option<CommitAuthorConfig>,
@@ -2477,9 +2478,8 @@ pub struct HomebrewConfig {
     /// Default: `"Brew formula update for {{ ProjectName }} version {{ Tag }}"`
     /// (set in `crates/stage-publish/src/homebrew.rs::default_commit_msg_template`).
     pub commit_msg_template: Option<String>,
-    // SCH-13 (WAVE 5.5, DEC-5 hard-break): legacy flat
-    // `commit_author_name` / `commit_author_email` fields removed. Use the
-    // structured `commit_author: { name, email, signing }` form.
+    // Legacy flat `commit_author_name` / `commit_author_email` fields are
+    // gone; use the structured `commit_author: { name, email, signing }`.
     /// Build IDs filter: only include artifacts whose `id` is in this list.
     pub ids: Option<Vec<String>>,
     /// Custom URL template for download URLs (overrides release URL).
@@ -2762,9 +2762,8 @@ pub struct HomebrewCaskGeneratedCompletions {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct ScoopConfig {
-    // SCH-21 (WAVE 5.5, DEC-5 hard-break): legacy `bucket: BucketConfig`
-    // removed. Use `repository: RepositoryConfig`.
     /// Unified repository config with branch, token, PR, git SSH support.
+    /// (Replaces the legacy `bucket: BucketConfig` owner/name-only form.)
     pub repository: Option<RepositoryConfig>,
     /// Commit author with optional signing.
     pub commit_author: Option<CommitAuthorConfig>,
@@ -2794,10 +2793,9 @@ pub struct ScoopConfig {
     pub skip_upload: Option<StringOrBool>,
     /// Custom commit message template.
     pub commit_msg_template: Option<String>,
-    /// Git commit author name (legacy; prefer `commit_author`).
-    pub commit_author_name: Option<String>,
-    /// Git commit author email (legacy; prefer `commit_author`).
-    pub commit_author_email: Option<String>,
+    // Legacy flat `commit_author_name` / `commit_author_email` fields removed
+    // in the WAVE 5 mop-up (drained from the WAVE 5.5 follow-up known-bug);
+    // use the structured `commit_author: { name, email, signing }` form.
     /// Build IDs filter: only include artifacts whose `id` is in this list.
     pub ids: Option<Vec<String>>,
     /// Custom URL template for download URLs (overrides release URL).
@@ -2811,10 +2809,9 @@ pub struct ScoopConfig {
     pub amd64_variant: Option<String>,
 }
 
-// SCH-21 (WAVE 5.5, DEC-5 hard-break): the legacy {owner, name}-only repo
-// types `TapConfig` and `BucketConfig` were dropped here. Each publisher
-// now carries `repository: RepositoryConfig` with the broader feature set
-// (token / branch / git SSH / pull_request).
+// `TapConfig` / `BucketConfig` (legacy {owner, name}-only repo types) live
+// nowhere — every publisher now carries `repository: RepositoryConfig`
+// with the broader feature set (token / branch / git SSH / pull_request).
 
 // ---------------------------------------------------------------------------
 // ChocolateyConfig
@@ -2827,14 +2824,10 @@ pub struct ChocolateyConfig {
     pub name: Option<String>,
     /// Build IDs filter: only include artifacts whose `id` is in this list.
     pub ids: Option<Vec<String>>,
-    /// GitHub project repo (owner/name). Used to derive download URLs.
-    // SCH-21 (WAVE 5.5, DEC-5 hard-break): legacy `project_repo:
-    // ChocolateyRepoConfig` (owner/name only) removed. Use the unified
-    // `repository: RepositoryConfig` instead — anodizer derives the
-    // chocolatey gallery `<projectUrl>` from `repository.owner` /
-    // `repository.name` (or from explicit `project_url:` if set).
     /// Unified project repo config (owner/name). Used to derive
-    /// `<projectUrl>` and download URLs.
+    /// `<projectUrl>` (the Chocolatey gallery link) and download URLs.
+    /// `<projectUrl>` resolves through `project_url:` (if set) → derived
+    /// `https://github.com/{repository.owner}/{repository.name}`.
     pub repository: Option<RepositoryConfig>,
     /// URL shown as the package source in the Chocolatey gallery.
     pub package_source_url: Option<String>,
@@ -2903,10 +2896,6 @@ pub struct ChocolateyDependency {
     pub version: Option<String>,
 }
 
-// SCH-21 (WAVE 5.5): legacy `ChocolateyRepoConfig` (owner/name only)
-// dropped — `ChocolateyConfig.repository: Option<RepositoryConfig>`
-// supersedes it.
-
 // ---------------------------------------------------------------------------
 // WingetConfig
 // ---------------------------------------------------------------------------
@@ -2966,10 +2955,8 @@ pub struct WingetConfig {
     pub tags: Option<Vec<String>>,
     /// Package dependencies.
     pub dependencies: Option<Vec<WingetDependency>>,
-    // SCH-21 (WAVE 5.5, DEC-5 hard-break): legacy `manifests_repo:
-    // WingetManifestsRepoConfig` removed. Use `repository:
-    // RepositoryConfig`.
     /// Unified repository config with branch, token, PR, git SSH support.
+    /// (Replaces the legacy `manifests_repo: WingetManifestsRepoConfig`.)
     pub repository: Option<RepositoryConfig>,
     /// Commit author with optional signing.
     pub commit_author: Option<CommitAuthorConfig>,
@@ -2993,9 +2980,6 @@ pub struct WingetDependency {
     /// Minimum required version of the dependency.
     pub minimum_version: Option<String>,
 }
-
-// SCH-21 (WAVE 5.5): legacy `WingetManifestsRepoConfig` dropped —
-// `WingetConfig.repository: Option<RepositoryConfig>` supersedes it.
 
 // ---------------------------------------------------------------------------
 // AurConfig
@@ -3058,10 +3042,9 @@ pub struct AurConfig {
     pub skip: Option<StringOrBool>,
     /// Content for a .install file (post-install/pre-remove scripts).
     pub install: Option<String>,
-    // SCH-16 (WAVE 5.5, DEC-5 hard-break): legacy `url` field removed.
-    // The PKGBUILD `url=` line falls back through `homepage:` ->
-    // crate metadata `homepage` -> derived `https://github.com/<owner>/<name>`
-    // from `release.github`, which covers every prior use of this field.
+    // The PKGBUILD `url=` line resolves through `homepage:` →
+    // crate metadata `homepage` → derived
+    // `https://github.com/{release.github.owner}/{release.github.name}`.
     /// Packages this PKGBUILD replaces (for upgrade paths from old package names).
     pub replaces: Option<Vec<String>>,
     /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
@@ -3081,12 +3064,10 @@ pub struct KrewConfig {
     pub name: Option<String>,
     /// Build IDs filter: only include artifacts whose `id` is in this list.
     pub ids: Option<Vec<String>>,
-    // SCH-21 (WAVE 5.5, DEC-5 hard-break): legacy `manifests_repo` and
-    // `upstream_repo` (KrewManifestsRepoConfig — owner/name only) removed.
-    // Use the unified `repository: RepositoryConfig` for the krew-index
-    // fork; the upstream slug is now derived from `repository.owner`/`name`
-    // when not set explicitly elsewhere.
     /// Unified repository config with branch, token, PR, git SSH support.
+    /// (Replaces the legacy `manifests_repo:` / `upstream_repo:` form.) The
+    /// upstream PR target is derived from `repository.pull_request.base`
+    /// when set, falling back to the canonical kubernetes-sigs/krew-index.
     pub repository: Option<RepositoryConfig>,
     /// Commit author with optional signing.
     pub commit_author: Option<CommitAuthorConfig>,
@@ -3113,9 +3094,6 @@ pub struct KrewConfig {
     /// has no krew channel).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
-    // SCH-21 (WAVE 5.5, DEC-5 hard-break): legacy `upstream_repo` removed.
-    // Use `repository.pull_request.base` to target the upstream
-    // krew-index repo for PR-based publishing.
     /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
     /// Only artifacts matching this variant are included. Default: "v1".
     #[serde(alias = "goamd64")]
@@ -3125,10 +3103,6 @@ pub struct KrewConfig {
     #[serde(alias = "goarm")]
     pub arm_variant: Option<String>,
 }
-
-// SCH-21 (WAVE 5.5): legacy `KrewManifestsRepoConfig` dropped —
-// `KrewConfig.repository: Option<RepositoryConfig>` supersedes both
-// `manifests_repo` and `upstream_repo`.
 
 // ---------------------------------------------------------------------------
 // NixConfig
@@ -3232,7 +3206,7 @@ pub struct DockerRetryConfig {
 /// - `flags` for arbitrary extra flags
 /// - No `goos`/`goarch`/`goarm` fields — uses `platforms` only
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct DockerV2Config {
     /// Unique identifier for this Docker V2 config.
     pub id: Option<String>,
@@ -3264,10 +3238,8 @@ pub struct DockerV2Config {
     /// When truthy, adds `--sbom=true` to buildx. Supports templates.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub sbom: Option<StringOrBool>,
-    // DEC-12 (WAVE 5.5, DEC-5 hard-break): `DockerV2Config.skip_push`
-    // removed — unused in either YAML, no GR equivalent on `dockers_v2:`,
-    // and overlapping with the canonical `skip:` (DEC-6) which already
-    // suppresses the publish step.
+    // No `skip_push` field — use the canonical `skip:` (DEC-6) to suppress
+    // the publish step (matches every other publisher / pipe in anodizer).
 }
 
 // ---------------------------------------------------------------------------
@@ -3697,17 +3669,15 @@ pub struct NfpmIpkAlternative {
     pub link_name: Option<String>,
 }
 
-/// Unified signature configuration for nFPM (deb/rpm/apk) and SRPM packages.
-///
-/// SCH-9 (WAVE 5.4) merged the formerly-separate `SrpmSignatureConfig`
-/// (`key_file` + `passphrase`) into this struct because SRPM's surface was
-/// a strict subset. The legacy SRPM `passphrase:` key is accepted as a
-/// serde alias for `key_passphrase:` so both spellings parse.
+/// Unified signature configuration shared by nFPM (deb/rpm/apk) and SRPM
+/// packages — SRPM's surface is a strict subset, so a single struct covers
+/// both. The legacy SRPM `passphrase:` key is accepted as a serde alias
+/// for `key_passphrase:` so both spellings parse.
 ///
 /// GR keeps three distinct signature types (`NFPMRPMSignature`,
 /// `NFPMDebSignature`, `NFPMAPKSignature`) with overlapping but slightly
-/// different fields. Anodizer's union here predates SCH-9 — keeping the
-/// union avoids a 3-struct cascade where 90% of fields overlap.
+/// different fields. Anodizer's union here avoids the 3-struct cascade
+/// when 90% of fields overlap.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct NfpmSignatureConfig {
@@ -3732,7 +3702,7 @@ pub struct NfpmSignatureConfig {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SnapcraftConfig {
     /// Unique identifier for this snapcraft config.
     pub id: Option<String>,
@@ -3766,9 +3736,8 @@ pub struct SnapcraftConfig {
     /// with `interface` and optional attributes (e.g. `{ interface: "content", target: "$SNAP/shared" }`).
     /// GoReleaser uses `map[string]any` for this field.
     pub plugs: Option<HashMap<String, serde_json::Value>>,
-    // DEC-13 (WAVE 5.5, DEC-5 hard-break): top-level `slots` was removed.
-    // Snapcraft has no top-level slots concept (only per-app slots) — use
-    // `apps.<name>.slots` instead.
+    // No top-level `slots:` — Snapcraft itself has no top-level slots
+    // concept; use `apps.<name>.slots` for per-app slots.
     /// Required snapd features/versions.
     pub assumes: Option<Vec<String>>,
     /// Application configurations defining daemons, commands, env vars.
@@ -4661,13 +4630,10 @@ pub struct ChangelogConfig {
     pub divider: Option<String>,
     /// AI-powered changelog enhancement configuration.
     pub ai: Option<ChangelogAiConfig>,
-    /// SCH-26 (WAVE 5.7): when `true`, render the changelog even in
-    /// snapshot mode. Anodizer-original opt-in — GR's changelog pipe
-    /// short-circuits on `ctx.Snapshot` (see GR `internal/pipe/changelog/
-    /// changelog.go:46`); anodizer keeps the GR default (skip on snapshot)
-    /// but lets users opt back in here when they want a draft changelog
-    /// surfaced during local snapshot testing. The behavior wiring lands
-    /// in Session C; only the schema field is introduced in this commit.
+    /// When `true`, render the changelog even in snapshot mode. Anodizer
+    /// matches GoReleaser's default (skip changelog on `ctx.Snapshot`) and
+    /// lets users opt back in here for local preview / draft generation.
+    /// Wired in `crates/stage-changelog/src/lib.rs::ChangelogStage::run`.
     pub snapshot: Option<bool>,
 }
 
@@ -5818,9 +5784,9 @@ pub struct WorkspaceConfig {
     pub signs: Vec<SignConfig>,
     /// Binary-specific signing configs (same shape as `signs` but only for
     /// binary artifacts). The `artifacts` field on each entry is constrained
-    /// at parse time to [`BinarySignArtifacts`] (`binary` or `none`) — a
-    /// broader filter on `binary_signs` would silently match nothing because
-    /// the loop only iterates Binary artifacts.
+    /// at parse time to `binary` / `none` (or omitted) — a broader filter on
+    /// `binary_signs` would silently match nothing because the loop only
+    /// iterates Binary artifacts. Constraint lives in `deserialize_binary_signs`.
     #[serde(
         default,
         alias = "binary_sign",
@@ -6223,8 +6189,8 @@ pub struct MakeselfConfig {
     /// Build IDs filter: only include artifacts whose `id` is in this list.
     pub ids: Option<Vec<String>>,
     /// Output filename template (default includes project, version, os, arch).
-    /// SCH-11 (WAVE 5.6) accepts the GR-canonical `filename:` key as an alias
-    /// for the historical anodizer `name_template:` spelling.
+    /// Accepts the GR-canonical `filename:` key as an alias for the historical
+    /// anodizer `name_template:` spelling.
     #[serde(alias = "filename")]
     pub name_template: Option<String>,
     /// Display name embedded in the self-extracting archive.
@@ -6364,12 +6330,11 @@ pub struct SrpmConfig {
     /// Documentation files to include.
     pub docs: Option<Vec<String>>,
     /// Additional contents to include in the source RPM. Shares the unified
-    /// [`NfpmContent`] type with nFPM contents (SCH-8 / DEC-5 hard-break in
-    /// WAVE 5.4); SRPM-style `source:` / `destination:` / `type:` keys are
-    /// still accepted via serde aliases.
+    /// [`NfpmContent`] type with nFPM contents; SRPM-style `source:` /
+    /// `destination:` / `type:` keys are accepted via serde aliases.
     pub contents: Option<Vec<NfpmContent>>,
     /// RPM signature configuration. Shares the unified
-    /// [`NfpmSignatureConfig`] type with nFPM (SCH-9 / WAVE 5.4).
+    /// [`NfpmSignatureConfig`] type with nFPM.
     pub signature: Option<NfpmSignatureConfig>,
     /// Build IDs whose binaries are bundled into the source RPM. When set,
     /// only artifacts produced by builds with these IDs are packaged.
@@ -6403,13 +6368,11 @@ pub struct SrpmConfig {
     pub skip: Option<StringOrBool>,
 }
 
-// SCH-9 (WAVE 5.4): the legacy `SrpmSignatureConfig` was merged into the
-// unified [`NfpmSignatureConfig`] above. The SRPM-style `passphrase:` key
-// remains accepted as a serde alias for `key_passphrase:`.
+// SRPM signatures share [`NfpmSignatureConfig`]; the SRPM-style
+// `passphrase:` key is accepted as a serde alias for `key_passphrase:`.
 
-// SCH-8 (WAVE 5.4): the legacy `NfpmContentConfig` (SRPM-only mirror) was
-// merged into [`NfpmContent`]. The unified type accepts both the canonical
-// `src` / `dst` keys and the SRPM-style `source` / `destination` aliases.
+// SRPM contents share [`NfpmContent`]; both the canonical `src` / `dst`
+// keys and the SRPM-style `source` / `destination` aliases parse.
 
 // ---------------------------------------------------------------------------
 // MilestoneConfig
@@ -6547,12 +6510,45 @@ pub struct AurSourceConfig {
     pub skip: Option<StringOrBool>,
     /// Explicit architecture list (default: auto-detect from artifacts).
     pub arches: Option<Vec<String>>,
-    /// `x86_64` micro-architecture variant — `"v1"` (baseline), `"v2"`,
-    /// `"v3"` (AVX2), `"v4"`. Equivalent to GR `AurSource.Goamd64`.
-    /// Surfaced as a template var (`Amd64`) when present so user-supplied
-    /// `prepare`/`build`/`package` script bodies can branch on the variant.
-    /// When unset, defaults to `"v1"` at template-render time.
-    pub amd64_variant: Option<String>,
+    /// `x86_64` micro-architecture variant — `v1` (baseline), `v2`, `v3`
+    /// (AVX2), or `v4`. Equivalent to GR `AurSource.Goamd64`. Constrained
+    /// to a typed enum because AUR source pkgs build from the upstream
+    /// tarball (no binary artifacts to filter), so the value's only role
+    /// is as the `Amd64` template var consumed by `prepare:` / `build:` /
+    /// `package:` script bodies — typos must fail at parse time, not
+    /// silently render an invalid string into the PKGBUILD.
+    /// When unset, defaults to `v1` at template-render time.
+    #[serde(alias = "goamd64")]
+    pub amd64_variant: Option<Amd64Variant>,
+}
+
+/// `x86_64` micro-architecture variant. Mirrors GoReleaser's `Goamd64` typed
+/// values. Used by [`AurSourceConfig::amd64_variant`] to constrain the
+/// `prepare:` / `build:` / `package:` template var surface to a known set —
+/// AUR source pkgs build from the upstream tarball so the value is
+/// template-only (no artifact filter) and a typo would render an invalid
+/// PKGBUILD silently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Amd64Variant {
+    V1,
+    V2,
+    V3,
+    V4,
+}
+
+impl Amd64Variant {
+    /// Canonical lowercase string form (`"v1"`..`"v4"`). Matches the GR
+    /// `Goamd64` external surface and the value rendered into the PKGBUILD
+    /// `Amd64` template var.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Amd64Variant::V1 => "v1",
+            Amd64Variant::V2 => "v2",
+            Amd64Variant::V3 => "v3",
+            Amd64Variant::V4 => "v4",
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -7757,9 +7753,9 @@ crates: []
 
     #[test]
     fn test_binary_signs_artifacts_archive_rejected() {
-        // SCH-27: anything broader than `binary` / `none` would silently
-        // match nothing because the binary-sign loop only iterates Binary
-        // artifacts. Reject at parse time instead.
+        // Anything broader than `binary` / `none` would silently match
+        // nothing because the binary-sign loop only iterates Binary
+        // artifacts; reject at parse time instead.
         let yaml = r#"
 project_name: test
 binary_signs:
@@ -7785,6 +7781,31 @@ crates: []
         assert!(
             result.is_err(),
             "binary_signs[].artifacts: all must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_binary_signs_artifacts_schema_is_runtime_constrained() {
+        // The constraint on `binary_signs[].artifacts` lives in the custom
+        // deserializer, not as a serde-typed enum, because `SignConfig` is
+        // shared with the top-level `signs:` field (which legitimately
+        // accepts a wider artifact filter set). The JSON schema therefore
+        // inherits the unconstrained `Option<String>` shape from `SignConfig`
+        // — this test pins that contract so any future schema-typing attempt
+        // surfaces as a deliberate decision (and updates this test + the
+        // documenting comment above `deserialize_binary_signs`).
+        let schema = schemars::schema_for!(Config);
+        let json = serde_json::to_value(&schema).expect("schema must serialize");
+        let sign_artifacts = json
+            .pointer("/definitions/SignConfig/properties/artifacts")
+            .expect("SignConfig.artifacts must appear in the generated schema");
+        // `artifacts` is `Option<String>` → schemars emits a nullable string
+        // (`type: ["string", "null"]` on Draft-07). Either form is acceptable
+        // here — the assertion is that no `enum` constraint has been added.
+        assert!(
+            sign_artifacts.get("enum").is_none(),
+            "binary_signs[].artifacts schema must remain unconstrained \
+             (constraint lives in deserialize_binary_signs); got: {sign_artifacts}"
         );
     }
 
@@ -8617,8 +8638,8 @@ workspaces: []
 
     #[test]
     fn test_chocolatey_config_toml() {
-        // SCH-21 (WAVE 5.5): legacy `project_repo:` renamed to
-        // `repository:` (RepositoryConfig — owner/name + token/branch/...).
+        // ChocolateyConfig.repository is the unified RepositoryConfig form
+        // (owner/name + token/branch/...).
         let toml_str = r#"
 project_name = "test"
 
@@ -8655,9 +8676,9 @@ name = "tool"
 
     #[test]
     fn test_changelog_snapshot_field_parses() {
-        // SCH-26: schema field exists and round-trips. The behavior wiring
-        // (default snapshot-skip vs always-on) is a Session C concern;
-        // this commit only proves the field parses.
+        // The `changelog.snapshot: true` opt-in parses + round-trips on
+        // ChangelogConfig. Behavior wiring lives in
+        // `crates/stage-changelog/src/lib.rs::ChangelogStage::run`.
         let yaml = r#"
 project_name: test
 changelog:
@@ -8682,13 +8703,13 @@ crates: []
         assert_eq!(cl.snapshot, None);
     }
 
-    // ---- WAVE 5.6 alias tests (SCH-5/11/34) ----
+    // ---- Plural-canonical key + alias tests ----
 
     #[test]
     fn test_top_level_plural_canonical_keys_parse() {
-        // SCH-5 verification — the plural canonical keys (nfpms, dmgs,
-        // msis, flatpaks) are anodizer's only spelling. Singular forms
-        // would be rejected as unknown fields when present at top level.
+        // The plural canonical keys (nfpms, dmgs, msis, flatpaks) are
+        // anodizer's only spelling at top level — singular forms would
+        // be rejected as unknown fields.
         let yaml = r#"
 project_name: test
 defaults:
@@ -8712,8 +8733,8 @@ crates: []
 
     #[test]
     fn test_makeself_filename_alias_for_name_template() {
-        // SCH-11: GR-canonical `filename:` aliases anodizer's
-        // `name_template:` so configs copied from GR docs parse.
+        // GR-canonical `filename:` aliases anodizer's `name_template:`
+        // so configs copied from GR docs parse without rewrites.
         let yaml = r#"
 project_name: test
 makeselfs:
@@ -8748,8 +8769,8 @@ crates: []
 
     #[test]
     fn test_announce_smtp_aliases_email() {
-        // SCH-34: mirrors GR's own smtp -> email rename (GR keeps both as
-        // alias; anodizer matches).
+        // Mirrors GR's own `smtp:` → `email:` rename (GR keeps both as
+        // aliases; anodizer matches).
         let yaml = r#"
 project_name: test
 announce:
@@ -8791,13 +8812,13 @@ crates: []
         assert!(config.announce.unwrap().email.is_some());
     }
 
-    // ---- WAVE 5.5 hard-break tests (SCH-4/13/16/21/30, DEC-12/13) ----
+    // ---- Legacy-field rejection tests (post-DEC-5 hard-break shape) ----
 
     #[test]
     fn test_legacy_docker_field_rejected() {
-        // SCH-4: `crates[].docker:` is no longer a recognized field. Any
-        // value parses (CrateConfig isn't deny_unknown_fields) but it has
-        // nowhere to land — confirm via explicit absence.
+        // `crates[].docker:` is no longer a recognized field. Any value
+        // parses (CrateConfig isn't deny_unknown_fields) but it has nowhere
+        // to land — confirm via explicit absence.
         let yaml = r#"
 project_name: test
 crates:
@@ -8816,7 +8837,7 @@ crates:
 
     #[test]
     fn test_homebrew_legacy_commit_author_flat_fields_rejected() {
-        // SCH-13: HomebrewConfig has #[serde(deny_unknown_fields)], so the
+        // HomebrewConfig has `#[serde(deny_unknown_fields)]`, so the
         // dropped flat fields fail to parse outright.
         let yaml = r#"
 project_name: test
@@ -8836,10 +8857,34 @@ crates:
         );
     }
 
+    // ScoopConfig has `#[serde(deny_unknown_fields)]`. Use the structured
+    // `commit_author: { name, email, signing }` block; the flat fields
+    // must fail parsing.
+    #[test]
+    fn test_scoop_legacy_commit_author_flat_fields_rejected() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      scoop:
+        commit_author_name: TJ
+        commit_author_email: tj@example.com
+"#;
+        let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
+        assert!(
+            result.is_err(),
+            "scoop.commit_author_name must be rejected; use commit_author block"
+        );
+    }
+
     #[test]
     fn test_aur_legacy_url_field_rejected() {
-        // SCH-16: AurConfig has deny_unknown_fields; the dropped `url`
-        // field must fail parsing.
+        // AurConfig has `deny_unknown_fields`; the dropped legacy `url:`
+        // field must fail parsing (PKGBUILD url= resolves through
+        // homepage → crate metadata → derived github URL).
         let yaml = r#"
 project_name: test
 crates:
@@ -8856,7 +8901,7 @@ crates:
 
     #[test]
     fn test_homebrew_legacy_tap_field_rejected() {
-        // SCH-21: HomebrewConfig has deny_unknown_fields; legacy `tap:` is
+        // HomebrewConfig has `deny_unknown_fields`; legacy `tap:` is
         // gone (use `repository:`).
         let yaml = r#"
 project_name: test
@@ -8969,8 +9014,8 @@ crates:
 
     #[test]
     fn test_notarize_macos_skip_roundtrip() {
-        // SCH-30: `skip:` is the canonical field (DEC-6). Verify known-good
-        // YAML with `skip: false` still parses correctly.
+        // `skip:` is the canonical per-config gating field (DEC-6); known-good
+        // YAML with `skip: false` parses cleanly.
         let yaml = r#"
 notarize:
   macos:
@@ -8987,10 +9032,9 @@ crates: []
 
     #[test]
     fn test_notarize_macos_legacy_enabled_rejected() {
-        // SCH-30: `deny_unknown_fields` must reject legacy `enabled: true`
-        // on MacOSSignNotarizeConfig now that the field has been renamed to
-        // `skip:` (DEC-6). Without deny_unknown_fields this would silently
-        // drop the field and produce a confusing no-op.
+        // `deny_unknown_fields` must reject legacy `enabled: true` on
+        // MacOSSignNotarizeConfig — without it, the field would silently
+        // drop and produce a confusing no-op pipeline run.
         let yaml = r#"
 notarize:
   macos:
@@ -9009,7 +9053,7 @@ crates: []
 
     #[test]
     fn test_notarize_macos_native_legacy_enabled_rejected() {
-        // SCH-30: same check for MacOSNativeSignNotarizeConfig.
+        // Same `deny_unknown_fields` check for MacOSNativeSignNotarizeConfig.
         let yaml = r#"
 notarize:
   macos_native:
@@ -9025,8 +9069,8 @@ crates: []
 
     #[test]
     fn test_notarize_top_level_unknown_field_rejected() {
-        // SCH-30: unknown fields on the top-level NotarizeConfig are also
-        // rejected via deny_unknown_fields.
+        // Unknown fields on the top-level NotarizeConfig are also rejected
+        // via `deny_unknown_fields`.
         let yaml = r#"
 notarize:
   enabled: true
@@ -9039,13 +9083,13 @@ crates: []
         );
     }
 
-    // ---- WAVE 5.4 DRY-merge tests ----
+    // ---- Unified nFPM/SRPM content + signature tests ----
 
     #[test]
     fn test_nfpm_content_unified_with_srpm_aliases() {
-        // SCH-8 (WAVE 5.4): NfpmContentConfig was merged into NfpmContent.
-        // The SRPM-style `source` / `destination` keys are accepted as
-        // serde aliases so existing srpm contents YAML still parses.
+        // SRPM contents share [`NfpmContent`]; SRPM-style `source` /
+        // `destination` keys are accepted as serde aliases so existing
+        // srpm contents YAML still parses.
         let yaml = r#"
 project_name: test
 srpm:
@@ -9089,9 +9133,9 @@ crates:
 
     #[test]
     fn test_nfpm_signature_unified_passphrase_alias() {
-        // SCH-9 (WAVE 5.4): SrpmSignatureConfig merged into NfpmSignatureConfig.
-        // The legacy `passphrase:` key on srpm.signature aliases to the
-        // canonical `key_passphrase:` so existing YAML keeps working.
+        // SRPM signatures share [`NfpmSignatureConfig`]; the SRPM-style
+        // `passphrase:` key is accepted as a serde alias for the canonical
+        // `key_passphrase:` so existing YAML keeps working.
         let yaml = r#"
 project_name: test
 srpm:
@@ -10343,6 +10387,66 @@ crates:
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let snap = &config.crates[0].snapcrafts.as_ref().unwrap()[0];
         assert!(snap.skip.is_none());
+    }
+
+    // `docker_v2[].skip_push` is not a recognized field; `deny_unknown_fields`
+    // on `DockerV2Config` must reject it at parse time instead of silently
+    // dropping. Use the canonical `skip:` (DEC-6) to suppress the publish step.
+    #[test]
+    fn test_docker_v2_skip_push_rejected() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    docker_v2:
+      - dockerfile: Dockerfile
+        images: ["ghcr.io/owner/app"]
+        tags: ["{{ .Version }}"]
+        skip_push: true
+"#;
+        let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
+        assert!(
+            result.is_err(),
+            "docker_v2[].skip_push must be rejected (use canonical `skip:`)"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("skip_push") || err.contains("unknown field"),
+            "error should mention the rejected field; got: {err}"
+        );
+    }
+
+    // Snapcraft has no top-level `slots:` concept (only per-app slots via
+    // `apps.<name>.slots`); `deny_unknown_fields` on `SnapcraftConfig` must
+    // reject the top-level form at parse time instead of silently dropping.
+    #[test]
+    fn test_snapcraft_top_level_slots_rejected() {
+        let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    snapcrafts:
+      - name: mysnap
+        slots:
+          dbus-svc:
+            interface: dbus
+            bus: session
+            name: com.example.svc
+"#;
+        let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
+        assert!(
+            result.is_err(),
+            "snapcrafts[].slots must be rejected (use apps.<name>.slots)"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("slots") || err.contains("unknown field"),
+            "error should mention the rejected field; got: {err}"
+        );
     }
 
     // ---- AurConfig disable StringOrBool tests ----

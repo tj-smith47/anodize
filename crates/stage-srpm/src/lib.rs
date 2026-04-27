@@ -118,8 +118,8 @@ impl Stage for SrpmStage {
             if let Some(ref packager) = srpm_cfg.packager {
                 ctx.template_vars_mut().set("Packager", packager);
             }
-            // SCH-12 (WAVE 5.3) — surface the new RPM-spec fields as
-            // template vars so user-supplied spec files can reference them.
+            // Surface the optional RPM-spec fields as template vars so
+            // user-supplied spec files can reference them with `{{ .Foo }}`.
             if let Some(ref import_path) = srpm_cfg.import_path {
                 ctx.template_vars_mut().set("ImportPath", import_path);
             }
@@ -299,6 +299,22 @@ impl Stage for SrpmStage {
 }
 
 /// Generate a minimal RPM spec file when no user template is provided.
+///
+/// Folds in every WAVE 5.3 SrpmConfig field (the SCH-12 add-batch) so that
+/// `spec_file:` and the auto-generated path produce semantically equivalent
+/// output for the new fields:
+///
+/// - `prerelease` / `version_metadata` → suffixed onto `Version:` (e.g.
+///   `1.2.3~rc1+g1234abc`).
+/// - `prefixes` → emitted as one `Prefix:` directive per entry (RPM's tag
+///   for relocatable installs).
+/// - `build_host` → emitted as a `BuildHost:` tag override.
+/// - `pretrans` / `posttrans` → inlined as `%pretrans` / `%posttrans`
+///   scriptlets that source the configured script file at install time.
+/// - `import_path` → added as a comment line near the header so downstream
+///   tooling (vendor tooling that scans spec headers for VCS roots) sees it.
+/// - `bins` → emitted as a `# Bins:` comment summarising which build IDs
+///   the SRPM bundles, mirroring the spec_file template variable surface.
 fn generate_default_spec(
     package_name: &str,
     version: &str,
@@ -310,16 +326,61 @@ fn generate_default_spec(
     let url = cfg.url.as_deref().unwrap_or("");
     let description = cfg.description.as_deref().unwrap_or(package_name);
 
+    // Compose the version string with prerelease (~suffix) and version
+    // metadata (+suffix) per the GR-aligned SrpmConfig contract.
+    let version_field = {
+        let mut out = version.to_string();
+        if let Some(pre) = cfg.prerelease.as_deref() {
+            out.push('~');
+            out.push_str(pre);
+        }
+        if let Some(meta) = cfg.version_metadata.as_deref() {
+            out.push('+');
+            out.push_str(meta);
+        }
+        out
+    };
+
     let maintainer = cfg.maintainer.as_deref().unwrap_or(package_name);
+
+    // Optional header tags / comments — emit only when configured.
+    let mut header_extras = String::new();
+    if let Some(import_path) = cfg.import_path.as_deref() {
+        header_extras.push_str(&format!("# ImportPath: {import_path}\n"));
+    }
+    if let Some(bins) = cfg.bins.as_deref()
+        && !bins.is_empty()
+    {
+        header_extras.push_str(&format!("# Bins: {}\n", bins.join(",")));
+    }
+    if let Some(host) = cfg.build_host.as_deref() {
+        header_extras.push_str(&format!("BuildHost:      {host}\n"));
+    }
+    if let Some(prefixes) = cfg.prefixes.as_deref() {
+        for p in prefixes {
+            header_extras.push_str(&format!("Prefix:         {p}\n"));
+        }
+    }
+
+    // Optional scriptlets — emit a `%pretrans` / `%posttrans` block that
+    // sources the configured file at install time.
+    let mut scriptlets = String::new();
+    if let Some(pretrans) = cfg.pretrans.as_deref() {
+        scriptlets.push_str(&format!("\n%pretrans\n. {pretrans}\n"));
+    }
+    if let Some(posttrans) = cfg.posttrans.as_deref() {
+        scriptlets.push_str(&format!("\n%posttrans\n. {posttrans}\n"));
+    }
+
     format!(
         r#"Name:           {package_name}
-Version:        {version}
+Version:        {version_field}
 Release:        1%{{?dist}}
 Summary:        {summary}
 License:        {license}
 URL:            {url}
 Source0:        {source_name}
-
+{header_extras}
 %description
 {description}
 
@@ -331,10 +392,10 @@ Source0:        {source_name}
 %install
 
 %files
-
+{scriptlets}
 %changelog
-* {date} {maintainer} - {version}-1
-- Release {version}
+* {date} {maintainer} - {version_field}-1
+- Release {version_field}
 "#,
         date = chrono::Utc::now().format("%a %b %d %Y"),
     )
@@ -412,6 +473,43 @@ mod tests {
         assert!(spec.contains("Source0:        myapp-1.0.0.tar.gz"));
     }
 
+    // The optional RPM-spec fields (prerelease/version_metadata/prefixes/
+    // build_host/pretrans/posttrans/import_path/bins) must be folded into
+    // the auto-generated default spec, not only into the user-supplied
+    // `spec_file:` template surface.
+    #[test]
+    fn test_generate_default_spec_emits_new_rpm_fields() {
+        let cfg = SrpmConfig {
+            prerelease: Some("rc1".to_string()),
+            version_metadata: Some("g1234abc".to_string()),
+            build_host: Some("build.local".to_string()),
+            prefixes: Some(vec!["/opt".to_string(), "/usr/local".to_string()]),
+            pretrans: Some("scripts/pretrans.sh".to_string()),
+            posttrans: Some("scripts/posttrans.sh".to_string()),
+            import_path: Some("github.com/me/myapp".to_string()),
+            bins: Some(vec!["myapp-cli".to_string()]),
+            ..Default::default()
+        };
+        let spec = generate_default_spec("myapp", "1.0.0", &cfg, "myapp-1.0.0.tar.gz");
+        // Version field carries prerelease (~) and metadata (+) suffixes.
+        assert!(
+            spec.contains("Version:        1.0.0~rc1+g1234abc"),
+            "version must include prerelease + metadata; got:\n{spec}"
+        );
+        // Build host emitted as RPM tag override.
+        assert!(spec.contains("BuildHost:      build.local"));
+        // Each prefix becomes its own `Prefix:` directive.
+        assert!(spec.contains("Prefix:         /opt"));
+        assert!(spec.contains("Prefix:         /usr/local"));
+        // Pretrans + posttrans scriptlets sourcing the configured files.
+        assert!(spec.contains("%pretrans\n. scripts/pretrans.sh"));
+        assert!(spec.contains("%posttrans\n. scripts/posttrans.sh"));
+        // Import path + bins surface as header comments (mirrors spec_file
+        // template-var semantics — downstream tooling can grep them out).
+        assert!(spec.contains("# ImportPath: github.com/me/myapp"));
+        assert!(spec.contains("# Bins: myapp-cli"));
+    }
+
     #[test]
     fn test_srpm_config_parsing() {
         use anodizer_core::config::Config;
@@ -440,8 +538,9 @@ crates:
 
     #[test]
     fn test_srpm_new_rpm_spec_fields_parse() {
-        // SCH-12 (WAVE 5.3): the 8 newly-added RPM-spec fields parse and
-        // surface on the SrpmConfig struct.
+        // The optional RPM-spec fields (prerelease/version_metadata/prefixes/
+        // build_host/pretrans/posttrans/import_path/bins) parse and surface
+        // on the SrpmConfig struct.
         use anodizer_core::config::Config;
 
         let yaml = r#"

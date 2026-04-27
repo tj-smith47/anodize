@@ -63,7 +63,7 @@
       ]
     },
     "binary_signs": {
-      "description": "Binary-specific signing configs (same shape as `signs` but only for binary artifacts). The `artifacts` field on each entry is constrained at parse time to [`BinarySignArtifacts`] (`binary` or `none`) — a broader filter on `binary_signs` would silently match nothing because the loop only iterates Binary artifacts.",
+      "description": "Binary-specific signing configs (same shape as `signs` but only for binary artifacts). The `artifacts` field on each entry is constrained at parse time to `binary` / `none` (or omitted) — a broader filter on `binary_signs` would silently match nothing because the loop only iterates Binary artifacts. Constraint lives in `deserialize_binary_signs`.",
       "default": [],
       "type": "array",
       "items": {
@@ -489,6 +489,16 @@
   },
   "additionalProperties": false,
   "definitions": {
+    "Amd64Variant": {
+      "description": "`x86_64` micro-architecture variant. Mirrors GoReleaser's `Goamd64` typed values. Used by [`AurSourceConfig::amd64_variant`] to constrain the `prepare:` / `build:` / `package:` template var surface to a known set — AUR source pkgs build from the upstream tarball so the value is template-only (no artifact filter) and a typo would render an invalid PKGBUILD silently.",
+      "type": "string",
+      "enum": [
+        "v1",
+        "v2",
+        "v3",
+        "v4"
+      ]
+    },
     "AnnounceConfig": {
       "type": "object",
       "properties": {
@@ -1433,11 +1443,15 @@
       "type": "object",
       "properties": {
         "amd64_variant": {
-          "description": "`x86_64` micro-architecture variant — `\"v1\"` (baseline), `\"v2\"`, `\"v3\"` (AVX2), `\"v4\"`. Equivalent to GR `AurSource.Goamd64`. Surfaced as a template var (`Amd64`) when present so user-supplied `prepare`/`build`/`package` script bodies can branch on the variant. When unset, defaults to `\"v1\"` at template-render time.",
+          "description": "`x86_64` micro-architecture variant — `v1` (baseline), `v2`, `v3` (AVX2), or `v4`. Equivalent to GR `AurSource.Goamd64`. Constrained to a typed enum because AUR source pkgs build from the upstream tarball (no binary artifacts to filter), so the value's only role is as the `Amd64` template var consumed by `prepare:` / `build:` / `package:` script bodies — typos must fail at parse time, not silently render an invalid string into the PKGBUILD. When unset, defaults to `v1` at template-render time.",
           "default": null,
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Amd64Variant"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "arches": {
@@ -2561,7 +2575,7 @@
           ]
         },
         "snapshot": {
-          "description": "SCH-26 (WAVE 5.7): when `true`, render the changelog even in snapshot mode. Anodizer-original opt-in — GR's changelog pipe short-circuits on `ctx.Snapshot` (see GR `internal/pipe/changelog/ changelog.go:46`); anodizer keeps the GR default (skip on snapshot) but lets users opt back in here when they want a draft changelog surfaced during local snapshot testing. The behavior wiring lands in Session C; only the schema field is introduced in this commit.",
+          "description": "When `true`, render the changelog even in snapshot mode. Anodizer matches GoReleaser's default (skip changelog on `ctx.Snapshot`) and lets users opt back in here for local preview / draft generation. Wired in `crates/stage-changelog/src/lib.rs::ChangelogStage::run`.",
           "default": null,
           "type": [
             "boolean",
@@ -2887,7 +2901,7 @@
           ]
         },
         "repository": {
-          "description": "GitHub project repo (owner/name). Used to derive download URLs. Unified project repo config (owner/name). Used to derive `<projectUrl>` and download URLs.",
+          "description": "Unified project repo config (owner/name). Used to derive `<projectUrl>` (the Chocolatey gallery link) and download URLs. `<projectUrl>` resolves through `project_url:` (if set) → derived `https://github.com/{repository.owner}/{repository.name}`.",
           "default": null,
           "anyOf": [
             {
@@ -3360,7 +3374,7 @@
           }
         },
         "docker_v2": {
-          "description": "Docker V2 image build configurations for this crate (newer API with images+tags, annotations, build_args, sbom, disable).",
+          "description": "Docker V2 image build configurations for this crate (canonical API: images+tags, annotations, build_args, sbom, disable). The legacy `docker:` block was removed; this is the only docker surface.",
           "default": null,
           "type": [
             "array",
@@ -4607,7 +4621,8 @@
             "type": "string"
           }
         }
-      }
+      },
+      "additionalProperties": false
     },
     "Duration": {
       "type": "object",
@@ -6001,7 +6016,7 @@
           ]
         },
         "repository": {
-          "description": "Unified repository config with branch, token, PR, git SSH support.",
+          "description": "Unified repository config with branch, token, PR, git SSH support. (Replaces the legacy `tap: TapConfig` owner/name-only form.)",
           "default": null,
           "anyOf": [
             {
@@ -6318,7 +6333,7 @@
           ]
         },
         "repository": {
-          "description": "Unified repository config with branch, token, PR, git SSH support.",
+          "description": "Unified repository config with branch, token, PR, git SSH support. (Replaces the legacy `manifests_repo:` / `upstream_repo:` form.) The upstream PR target is derived from `repository.pull_request.base` when set, falling back to the canonical kubernetes-sigs/krew-index.",
           "default": null,
           "anyOf": [
             {
@@ -6814,7 +6829,7 @@
           ]
         },
         "name_template": {
-          "description": "Output filename template (default includes project, version, os, arch). SCH-11 (WAVE 5.6) accepts the GR-canonical `filename:` key as an alias for the historical anodizer `name_template:` spelling.",
+          "description": "Output filename template (default includes project, version, os, arch). Accepts the GR-canonical `filename:` key as an alias for the historical anodizer `name_template:` spelling.",
           "default": null,
           "type": [
             "string",
@@ -8251,7 +8266,7 @@
       }
     },
     "NfpmSignatureConfig": {
-      "description": "Unified signature configuration for nFPM (deb/rpm/apk) and SRPM packages.\n\nSCH-9 (WAVE 5.4) merged the formerly-separate `SrpmSignatureConfig` (`key_file` + `passphrase`) into this struct because SRPM's surface was a strict subset. The legacy SRPM `passphrase:` key is accepted as a serde alias for `key_passphrase:` so both spellings parse.\n\nGR keeps three distinct signature types (`NFPMRPMSignature`, `NFPMDebSignature`, `NFPMAPKSignature`) with overlapping but slightly different fields. Anodizer's union here predates SCH-9 — keeping the union avoids a 3-struct cascade where 90% of fields overlap.",
+      "description": "Unified signature configuration shared by nFPM (deb/rpm/apk) and SRPM packages — SRPM's surface is a strict subset, so a single struct covers both. The legacy SRPM `passphrase:` key is accepted as a serde alias for `key_passphrase:` so both spellings parse.\n\nGR keeps three distinct signature types (`NFPMRPMSignature`, `NFPMDebSignature`, `NFPMAPKSignature`) with overlapping but slightly different fields. Anodizer's union here avoids the 3-struct cascade when 90% of fields overlap.",
       "type": "object",
       "properties": {
         "key_file": {
@@ -9756,22 +9771,6 @@
             }
           ]
         },
-        "commit_author_email": {
-          "description": "Git commit author email (legacy; prefer `commit_author`).",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "commit_author_name": {
-          "description": "Git commit author name (legacy; prefer `commit_author`).",
-          "default": null,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "commit_msg_template": {
           "description": "Custom commit message template.",
           "default": null,
@@ -9876,7 +9875,7 @@
           }
         },
         "repository": {
-          "description": "Unified repository config with branch, token, PR, git SSH support.",
+          "description": "Unified repository config with branch, token, PR, git SSH support. (Replaces the legacy `bucket: BucketConfig` owner/name-only form.)",
           "default": null,
           "anyOf": [
             {
@@ -10745,7 +10744,8 @@
             "null"
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "SnapcraftExtraFileSpec": {
       "description": "Specifies an extra file for snapcraft. Can be a simple source path string or a structured object with source, destination, and mode fields (matching GoReleaser's SnapcraftExtraFiles).",
@@ -10986,7 +10986,7 @@
           ]
         },
         "contents": {
-          "description": "Additional contents to include in the source RPM. Shares the unified [`NfpmContent`] type with nFPM contents (SCH-8 / DEC-5 hard-break in WAVE 5.4); SRPM-style `source:` / `destination:` / `type:` keys are still accepted via serde aliases.",
+          "description": "Additional contents to include in the source RPM. Shares the unified [`NfpmContent`] type with nFPM contents; SRPM-style `source:` / `destination:` / `type:` keys are accepted via serde aliases.",
           "default": null,
           "type": [
             "array",
@@ -11139,7 +11139,7 @@
           ]
         },
         "signature": {
-          "description": "RPM signature configuration. Shares the unified [`NfpmSignatureConfig`] type with nFPM (SCH-9 / WAVE 5.4).",
+          "description": "RPM signature configuration. Shares the unified [`NfpmSignatureConfig`] type with nFPM.",
           "default": null,
           "anyOf": [
             {
@@ -12240,7 +12240,7 @@
           ]
         },
         "repository": {
-          "description": "Unified repository config with branch, token, PR, git SSH support.",
+          "description": "Unified repository config with branch, token, PR, git SSH support. (Replaces the legacy `manifests_repo: WingetManifestsRepoConfig`.)",
           "default": null,
           "anyOf": [
             {
@@ -12349,7 +12349,7 @@
           ]
         },
         "binary_signs": {
-          "description": "Binary-specific signing configs (same shape as `signs` but only for binary artifacts). The `artifacts` field on each entry is constrained at parse time to [`BinarySignArtifacts`] (`binary` or `none`) — a broader filter on `binary_signs` would silently match nothing because the loop only iterates Binary artifacts.",
+          "description": "Binary-specific signing configs (same shape as `signs` but only for binary artifacts). The `artifacts` field on each entry is constrained at parse time to `binary` / `none` (or omitted) — a broader filter on `binary_signs` would silently match nothing because the loop only iterates Binary artifacts. Constraint lives in `deserialize_binary_signs`.",
           "default": [],
           "type": "array",
           "items": {

@@ -53,15 +53,11 @@ fn refresh_artifact_checksums(ctx: &mut Context, log: &anodizer_core::log::Stage
 // Helper: check if a StringOrBool-typed `enabled` field is active
 // ---------------------------------------------------------------------------
 
-/// Returns `true` when the config entry is enabled.
+/// Returns `true` when the notarize entry should run, i.e. `skip:` is absent
+/// or evaluates to false. Per-config notarize gating uses the canonical
+/// `skip:` field (DEC-6), shared with every other publisher / pipe.
 ///
-/// Note: notarize uses an opt-in `enabled` field (default `false`) rather than
-/// the opt-out `disable` field used by most other stages. This matches the
-/// SCH-30 (WAVE 5.5): per-config notarize gating moved from `enabled:` to
-/// the canonical `skip:` (DEC-6). Returns `true` when the notarize entry
-/// should run (i.e. `skip:` is absent or evaluates to false).
-///
-/// - `None` → run (default opt-in once notarize block is present)
+/// - `None` → run (default opt-in once a notarize block is present)
 /// - `Some(Bool(false))` → run
 /// - `Some(Bool(true))` → skip
 /// - `Some(String(tmpl))` → render template, skip if result is "true"
@@ -1008,8 +1004,8 @@ mod tests {
 
     #[test]
     fn test_cross_platform_config_deserializes() {
-        // SCH-30 (WAVE 5.5): per-config gating moved to `skip:` (DEC-6).
-        // The block below opts in implicitly (no `skip:` = run).
+        // Per-config gating uses the canonical `skip:` field; the block
+        // below opts in implicitly (no `skip:` = run).
         let yaml = r#"
 notarize:
   macos:
@@ -1115,8 +1111,8 @@ notarize:
 
     #[test]
     fn test_skip_string_template_deserializes() {
-        // SCH-30 (WAVE 5.5): per-config gating moved from `enabled:` to
-        // `skip:` (DEC-6); the template form still parses.
+        // The template form of `skip:` (DEC-6) still parses on per-config
+        // notarize blocks.
         let yaml = r#"
 notarize:
   macos:
@@ -1475,8 +1471,8 @@ notarize: {}
 
     #[test]
     fn test_native_rejects_unsupported_use_type_at_parse_time() {
-        // SCH-31 hard-break: macos_native.use is a typed enum; unsupported
-        // values fail at parse time instead of producing a silent no-op.
+        // `notarize.macos_native.use` is a typed enum; unsupported values
+        // must fail at parse time instead of producing a silent no-op.
         let yaml = r#"
 notarize:
   macos_native:

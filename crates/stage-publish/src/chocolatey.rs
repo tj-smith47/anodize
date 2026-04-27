@@ -262,8 +262,6 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("chocolatey: no chocolatey config for '{}'", crate_name))?;
 
-    // SCH-21 (WAVE 5.5): legacy `project_repo:` removed; use `repository:`
-    // (RepositoryConfig) instead.
     let repository = choco_cfg
         .repository
         .as_ref()
@@ -1349,7 +1347,6 @@ mod tests {
 
     #[test]
     fn test_publish_to_chocolatey_missing_repository() {
-        // SCH-21 (WAVE 5.5): renamed from project_repo to repository.
         use anodizer_core::config::{ChocolateyConfig, Config, CrateConfig, PublishConfig};
         use anodizer_core::context::{Context, ContextOptions};
         use anodizer_core::log::{StageLogger, Verbosity};

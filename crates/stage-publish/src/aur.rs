@@ -349,8 +349,8 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         .clone()
         .or_else(|| ctx.config.meta_license().map(str::to_string))
         .unwrap_or_default();
-    // SCH-16 (WAVE 5.5): the legacy `aur.url` field was removed; resolve
-    // through `homepage` -> crate metadata homepage -> derived github URL.
+    // PKGBUILD `url=` resolves through `homepage:` → crate metadata
+    // homepage → the derived github release URL.
     let url = aur_cfg
         .homepage
         .as_deref()

@@ -18,7 +18,7 @@ Anodizer uses `.anodizer.yaml` (or `.anodizer.toml`) in your project root.
 | `artifactories` | list of ArtifactoryConfig | — | Artifactory upload configurations. |
 | `aur_sources` | list of AurSourceConfig | — | AUR source package publishing configurations (source-only PKGBUILD, not -bin). |
 | `before` | HooksConfig | — | Hooks run before the release pipeline starts. |
-| `binary_signs` | list of SignConfig | `[]` | Binary-specific signing configs (same shape as `signs` but only for binary artifacts). The `artifacts` field on each entry is constrained at parse time to [`BinarySignArtifacts`] (`binary` or `none`) — a broader filter on `binary_signs` would silently match nothing because the loop only iterates Binary artifacts. |
+| `binary_signs` | list of SignConfig | `[]` | Binary-specific signing configs (same shape as `signs` but only for binary artifacts). The `artifacts` field on each entry is constrained at parse time to `binary` / `none` (or omitted) — a broader filter on `binary_signs` would silently match nothing because the loop only iterates Binary artifacts. Constraint lives in `deserialize_binary_signs`. |
 | `changelog` | ChangelogConfig | — | Changelog generation configuration. |
 | `cloudsmiths` | list of CloudSmithConfig | — | CloudSmith publisher configurations. |
 | `crates` | list of CrateConfig | `[]` | List of crates in this project. |
@@ -115,7 +115,7 @@ Artifactory upload configuration. Uploads artifacts to JFrog Artifactory reposit
 ## `aur_sources`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `amd64_variant` | string | — | `x86_64` micro-architecture variant — `"v1"` (baseline), `"v2"`, `"v3"` (AVX2), `"v4"`. Equivalent to GR `AurSource.Goamd64`. Surfaced as a template var (`Amd64`) when present so user-supplied `prepare`/`build`/`package` script bodies can branch on the variant. When unset, defaults to `"v1"` at template-render time. |
+| `amd64_variant` | Amd64Variant | — | `x86_64` micro-architecture variant — `v1` (baseline), `v2`, `v3` (AVX2), or `v4`. Equivalent to GR `AurSource.Goamd64`. Constrained to a typed enum because AUR source pkgs build from the upstream tarball (no binary artifacts to filter), so the value's only role is as the `Amd64` template var consumed by `prepare:` / `build:` / `package:` script bodies — typos must fail at parse time, not silently render an invalid string into the PKGBUILD. When unset, defaults to `v1` at template-render time. |
 | `arches` | list of string | — | Explicit architecture list (default: auto-detect from artifacts). |
 | `backup` | list of string | — | Backup files to preserve on upgrade. |
 | `build` | string | — | Custom `build()` function body for PKGBUILD. |
@@ -180,7 +180,7 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `header` | ContentSource | — | Text prepended to the changelog. Inline string, `from_file: <path>`, or `from_url: <url>` — symmetric with the release block's header/footer so users can compose headers from a templated file or remote endpoint (GoReleaser uses a plain string here; anodizer extends to ContentSource for consistency with `release.header`). |
 | `paths` | list of string | — | File paths to filter commits by. Only commits touching files under these paths are included. Works with `use: git` for precise per-commit filtering. With `use: github`, only the first path is used for API queries; multi-path filtering is coarse. Supports template rendering. |
 | `skip` | StringOrBool | — | Skip changelog generation. Accepts bool or template string (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional skip). |
-| `snapshot` | bool | — | SCH-26 (WAVE 5.7): when `true`, render the changelog even in snapshot mode. Anodizer-original opt-in — GR's changelog pipe short-circuits on `ctx.Snapshot` (see GR `internal/pipe/changelog/ changelog.go:46`); anodizer keeps the GR default (skip on snapshot) but lets users opt back in here when they want a draft changelog surfaced during local snapshot testing. The behavior wiring lands in Session C; only the schema field is introduced in this commit. |
+| `snapshot` | bool | — | When `true`, render the changelog even in snapshot mode. Anodizer matches GoReleaser's default (skip changelog on `ctx.Snapshot`) and lets users opt back in here for local preview / draft generation. Wired in `crates/stage-changelog/src/lib.rs::ChangelogStage::run`. |
 | `sort` | string | — | Sort order for changelog entries: "asc" or "desc" (default: "asc"). |
 | `title` | string | — | Title heading for the changelog. Default: "Changelog". Supports templates. |
 | `use` | string | — | Changelog source: `"git"` (default), `"github"`, or `"github-native"`. `"github"` fetches commits via the GitHub API, enriching entries with author login information (available as the `{{ Logins }}` per-entry template variable and the `{{ AllLogins }}` release-wide variable). `"github-native"` delegates entirely to GitHub's auto-generated notes. |
@@ -213,7 +213,7 @@ CloudSmith publisher configuration. Pushes packages to CloudSmith repositories.
 | `dmgs` | list of DmgConfig | — | macOS DMG disk image configurations for this crate. |
 | `docker_digest` | DockerDigestConfig | — | Docker image digest file configuration for this crate. |
 | `docker_manifests` | list of DockerManifestConfig | — | Docker multi-platform manifest configurations for this crate. |
-| `docker_v2` | list of DockerV2Config | — | Docker V2 image build configurations for this crate (newer API with images+tags, annotations, build_args, sbom, disable). |
+| `docker_v2` | list of DockerV2Config | — | Docker V2 image build configurations for this crate (canonical API: images+tags, annotations, build_args, sbom, disable). The legacy `docker:` block was removed; this is the only docker surface. |
 | `flatpaks` | list of FlatpakConfig | — | Linux Flatpak bundle configurations for this crate. |
 | `msis` | list of MsiConfig | — | Windows MSI installer configurations for this crate. |
 | `name` | string | — | Crate name as published (must match the Cargo.toml package name). |
@@ -384,7 +384,7 @@ Cannot be combined with `url.template:` — set one or the other. If both are pr
 | `license` | string | — | License for LSM metadata. |
 | `maintainer` | string | — | Maintainer for LSM metadata. |
 | `name` | string | — | Display name embedded in the self-extracting archive. |
-| `name_template` | string | — | Output filename template (default includes project, version, os, arch). SCH-11 (WAVE 5.6) accepts the GR-canonical `filename:` key as an alias for the historical anodizer `name_template:` spelling. |
+| `name_template` | string | — | Output filename template (default includes project, version, os, arch). Accepts the GR-canonical `filename:` key as an alias for the historical anodizer `name_template:` spelling. |
 | `script` | string | — | Startup script to run when the archive is extracted and executed. Required — the archive will not be created without this. |
 | `skip` | StringOrBool | — | Skip this config. Accepts bool or template string. |
 
@@ -534,7 +534,7 @@ Top-level notarization configuration supporting both cross-platform (`rcodesign`
 | `bins` | list of string | — | Build IDs whose binaries are bundled into the source RPM. When set, only artifacts produced by builds with these IDs are packaged. Mirrors GR `NFPM.Builds`. |
 | `build_host` | string | — | Override the build host recorded in the RPM header. Useful for reproducible builds where the actual hostname leaks build-env detail. |
 | `compression` | string | — | Compression algorithm (gzip, xz, zstd, none). |
-| `contents` | list of NfpmContent | — | Additional contents to include in the source RPM. Shares the unified [`NfpmContent`] type with nFPM contents (SCH-8 / DEC-5 hard-break in WAVE 5.4); SRPM-style `source:` / `destination:` / `type:` keys are still accepted via serde aliases. |
+| `contents` | list of NfpmContent | — | Additional contents to include in the source RPM. Shares the unified [`NfpmContent`] type with nFPM contents; SRPM-style `source:` / `destination:` / `type:` keys are accepted via serde aliases. |
 | `description` | string | — | Package description. |
 | `docs` | list of string | — | Documentation files to include. |
 | `enabled` | bool | — | Enable source RPM generation. Default: false. |
@@ -552,7 +552,7 @@ Top-level notarization configuration supporting both cross-platform (`rcodesign`
 | `prerelease` | string | — | Prerelease suffix appended to the version (e.g. `rc1`, `beta2`). Mirrors GR `NFPM.Prerelease`. |
 | `pretrans` | string | — | `%pretrans` scriptlet — executed on the package transaction *before* any package in the transaction is installed. Path to a script file. |
 | `section` | string | — | RPM section. |
-| `signature` | NfpmSignatureConfig | — | RPM signature configuration. Shares the unified [`NfpmSignatureConfig`] type with nFPM (SCH-9 / WAVE 5.4). |
+| `signature` | NfpmSignatureConfig | — | RPM signature configuration. Shares the unified [`NfpmSignatureConfig`] type with nFPM. |
 | `skip` | StringOrBool | — | Skip this config. Accepts bool or template string. |
 | `spec_file` | string | — | Path to the RPM spec file template. |
 | `summary` | string | — | Summary line. |
@@ -638,7 +638,7 @@ A workspace represents an independent project root within a monorepo. Each works
 |-------|------|---------|-------------|
 | `after` | HooksConfig | — | Hooks run after this workspace's pipeline completes. |
 | `before` | HooksConfig | — | Hooks run before this workspace's pipeline starts. |
-| `binary_signs` | list of SignConfig | `[]` | Binary-specific signing configs (same shape as `signs` but only for binary artifacts). The `artifacts` field on each entry is constrained at parse time to [`BinarySignArtifacts`] (`binary` or `none`) — a broader filter on `binary_signs` would silently match nothing because the loop only iterates Binary artifacts. |
+| `binary_signs` | list of SignConfig | `[]` | Binary-specific signing configs (same shape as `signs` but only for binary artifacts). The `artifacts` field on each entry is constrained at parse time to `binary` / `none` (or omitted) — a broader filter on `binary_signs` would silently match nothing because the loop only iterates Binary artifacts. Constraint lives in `deserialize_binary_signs`. |
 | `changelog` | ChangelogConfig | — | Changelog configuration for this workspace. |
 | `crates` | list of CrateConfig | `[]` | Crates belonging to this workspace. |
 | `env` | list of string | — | Environment variables scoped to this workspace.

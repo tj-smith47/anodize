@@ -276,9 +276,8 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
         return Ok(());
     }
 
-    // Resolve repository config: prefer `repository` over legacy `manifests_repo`.
+    // Resolve repository owner/name from `repository:` (RepositoryConfig).
     // GoReleaser applies TemplateRef() to repository fields (krew.go:292-296).
-    // SCH-21 (WAVE 5.5): legacy `manifests_repo:` field removed.
     let (repo_owner_raw, repo_name_raw) = crate::util::resolve_repo_owner_name(
         "krew",
         "manifests_repo",
@@ -515,11 +514,10 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
         // krew-index repository unless explicitly overridden. Falling back
         // to the user's own repo (the prior behavior) silently created
         // useless intra-fork PRs against the user's empty `main` branch
-        // instead of against the real upstream.
-        // SCH-21 (WAVE 5.5): legacy `upstream_repo:` removed. The upstream
-        // PR target now comes from `repository.pull_request.base` (a
-        // `RepositoryRef` with owner/name); when absent fall back to the
-        // canonical kubernetes-sigs/krew-index slug.
+        // instead of against the real upstream. The upstream PR target now
+        // comes from `repository.pull_request.base` (a `RepositoryRef` with
+        // owner/name); when absent fall back to the canonical
+        // kubernetes-sigs/krew-index slug.
         let upstream_slug = krew_cfg
             .repository
             .as_ref()

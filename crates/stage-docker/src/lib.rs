@@ -1430,12 +1430,10 @@ impl Stage for DockerStage {
             return Ok(());
         }
 
-        // Validate Docker / Docker V2 config ID uniqueness. Matches GoReleaser
-        // `internal/ids/ids.go:26-36` — duplicate IDs are a hard error in both
-        // `docker.go:111` and `v2/docker.go:93`, because downstream filters
-        // rely on IDs to disambiguate artifacts.
-        // SCH-4 (WAVE 5.5): legacy `docker:` field dropped — only the
-        // docker_v2 ID-uniqueness check remains.
+        // Validate Docker V2 config ID uniqueness. Matches GoReleaser
+        // `internal/ids/ids.go:26-36` — duplicate IDs are a hard error in
+        // `v2/docker.go:93`, because downstream filters rely on IDs to
+        // disambiguate artifacts.
         {
             let mut v2_ids: HashSet<String> = HashSet::new();
             for krate in &crates {
@@ -1473,9 +1471,6 @@ impl Stage for DockerStage {
         // ==================================================================
         let mut build_jobs: Vec<DockerBuildJob> = Vec::new();
 
-        // SCH-4 (WAVE 5.5): legacy `krate.docker` pipeline removed — the
-        // entire build/push/push-flag/retry block that read it is gone.
-        // Only the docker_v2 loop remains.
         for krate in &crates {
             // ------------------------------------------------------------------
             // Docker V2 configs
@@ -1728,9 +1723,8 @@ impl Stage for DockerStage {
                     let staging_str = staging_dir.to_string_lossy().into_owned();
 
                     // Snapshot builds never push (GoReleaser uses --load per-platform).
-                    // DEC-12 (WAVE 5.5): legacy `skip_push` field dropped on
-                    // docker_v2; the canonical `skip:` field (DEC-6) already
-                    // suppresses publish via `is_active`-style gating earlier.
+                    // The canonical `skip:` field (DEC-6) suppresses publish via
+                    // `is_active`-style gating earlier in the pipeline.
                     let should_push = if ctx.is_snapshot() { false } else { !dry_run };
 
                     // Determine whether --load is safe (requires a running daemon).
@@ -2610,9 +2604,6 @@ mod tests {
         assert!(!cmd_plain.contains(&"--push".to_string()));
         assert!(!cmd_plain.contains(&"--provenance=true".to_string()));
     }
-
-    // SCH-4 (WAVE 5.5): `stage_setup_only` helper removed — its only
-    // callers were the legacy-docker tests deleted above.
 
     // -----------------------------------------------------------------------
     // Task 4C: Additional behavior tests — config fields actually do things
@@ -4337,10 +4328,6 @@ crates:
         assert_eq!(images.len(), 1);
         assert_eq!(images[0].metadata.get("tag").unwrap(), "img:latest");
     }
-
-    // SCH-4 (WAVE 5.5): `test_docker_v2_coexists_with_legacy` removed —
-    // the legacy `docker:` field no longer exists, so co-existence is
-    // impossible by construction.
 
     #[test]
     fn test_templated_extra_files_written_to_staging_dir() {

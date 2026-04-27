@@ -490,7 +490,6 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
         return Ok(());
     }
 
-    // SCH-21 (WAVE 5.5): legacy `manifests_repo:` field removed.
     let (repo_owner, repo_name) = crate::util::resolve_repo_owner_name(
         "winget",
         "manifests_repo",

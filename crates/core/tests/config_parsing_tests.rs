@@ -738,9 +738,9 @@ crates:
 
 #[test]
 fn test_parse_build_flags_string_form_rejected() {
-    // SCH-1 hard-break (DEC-5): the legacy `flags: "--release"` string form
-    // was dropped in WAVE 5.1. flags is now strictly a typed list so quoted
-    // shell args round-trip as discrete argv tokens.
+    // The legacy `flags: "--release"` string form is gone — `flags` is
+    // strictly a typed list now so quoted shell args round-trip as discrete
+    // argv tokens (no shell-splitting at template-render time).
     let yaml = r#"
 project_name: test
 crates:
@@ -2736,8 +2736,8 @@ crates:
 
 #[test]
 fn test_parse_invalid_type_docker_v2_string() {
-    // SCH-4 (WAVE 5.5): legacy `docker:` field dropped — replaced by
-    // `docker_v2:`. Same string-vs-list type mismatch must still be rejected.
+    // `docker_v2:` is the only docker surface; a string-vs-list type
+    // mismatch must still be rejected.
     let yaml = r#"
 project_name: test
 crates:
@@ -3004,7 +3004,6 @@ fn test_crate_config_default_struct() {
     assert!(config.checksum.is_none());
     assert!(config.release.is_none());
     assert!(config.publish.is_none());
-    // SCH-4 (WAVE 5.5): legacy `docker:` field removed.
     assert!(config.nfpm.is_none());
 }
 
@@ -3056,9 +3055,6 @@ fn test_release_config_default_struct() {
     assert!(config.replace_existing_draft.is_none());
     assert!(config.replace_existing_artifacts.is_none());
 }
-
-// SCH-4 (WAVE 5.5): `test_docker_config_default_struct` removed —
-// the legacy `DockerConfig` struct was dropped along with the field.
 
 #[test]
 fn test_nfpm_config_default_struct() {
@@ -3265,3 +3261,478 @@ crates:
 }
 
 // ---- Invalid tag_template ----
+
+#[test]
+fn test_invalid_tag_template_syntax_error() {
+    // A tag_template with bad Tera syntax should parse fine as a string,
+    // but fail when rendered.
+    let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "{{ unclosed"
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    assert_eq!(config.crates[0].tag_template, "{{ unclosed");
+    // Config parses but rendering would fail
+}
+
+#[test]
+fn test_empty_tag_template() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: ""
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    assert_eq!(config.crates[0].tag_template, "");
+}
+
+// ---- depends_on edge cases (no validation at parse time; resolved later) ----
+
+#[test]
+fn test_depends_on_nonexistent_crate_parses() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+    depends_on:
+      - nonexistent-crate
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let deps = config.crates[0].depends_on.as_ref().unwrap();
+    assert_eq!(deps, &["nonexistent-crate"]);
+}
+
+#[test]
+fn test_circular_depends_on_parses() {
+    // Circular dependencies parse fine in YAML (no validation at parse time).
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    depends_on: [b]
+  - name: b
+    path: "."
+    tag_template: "v{{ .Version }}"
+    depends_on: [a]
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    assert_eq!(config.crates.len(), 2);
+    assert_eq!(config.crates[0].depends_on.as_ref().unwrap(), &["b"]);
+    assert_eq!(config.crates[1].depends_on.as_ref().unwrap(), &["a"]);
+}
+
+#[test]
+fn test_self_referencing_depends_on() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+    depends_on: [myapp]
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let deps = config.crates[0].depends_on.as_ref().unwrap();
+    assert_eq!(deps, &["myapp"]);
+}
+
+// ---- Invalid YAML / wrong types ----
+
+#[test]
+fn test_invalid_yaml_syntax_produces_parse_error() {
+    let yaml = "project_name: test\ncrates:\n  - name: [invalid yaml structure";
+    let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
+    assert!(result.is_err(), "invalid YAML should produce a parse error");
+}
+
+#[test]
+fn test_wrong_type_for_crates_field() {
+    let yaml = "project_name: test\ncrates: not_a_list";
+    let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
+    assert!(result.is_err(), "crates should be a list, not a string");
+}
+
+#[test]
+fn test_unknown_field_in_crate_config_accepted() {
+    // CrateConfig uses #[serde(default)] without deny_unknown_fields, so
+    // unknown fields are silently ignored (intentional — keeps user YAML
+    // forward-compatible across anodizer versions).
+    let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+    unknown_field: some_value
+"#;
+    let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
+    assert!(result.is_ok(), "unknown fields should be silently ignored");
+    let config = result.unwrap();
+    assert_eq!(config.crates[0].name, "myapp");
+}
+
+// ---- Archive disabled form ----
+
+#[test]
+fn test_archives_disabled_bool_parses() {
+    // `archives: false` parses to ArchivesConfig::Disabled — short-circuits
+    // archive emission entirely for the crate.
+    let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+    archives: false
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    assert!(matches!(
+        config.crates[0].archives,
+        ArchivesConfig::Disabled
+    ));
+}
+
+// ---- Missing required fields ----
+
+#[test]
+fn test_crate_missing_name_defaults_to_empty() {
+    // CrateConfig uses #[serde(default)], so a missing `name` defaults to "".
+    let yaml = r#"
+project_name: test
+crates:
+  - path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+    let result: Result<Config, _> = serde_yaml_ng::from_str(yaml);
+    assert!(
+        result.is_ok(),
+        "missing name should parse due to #[serde(default)]"
+    );
+    let config = result.unwrap();
+    assert_eq!(config.crates[0].name, "");
+}
+
+// ---- UniversalBinaryConfig default ----
+
+#[test]
+fn test_universal_binary_config_default() {
+    let ub = UniversalBinaryConfig::default();
+    assert!(ub.name_template.is_none());
+    assert!(ub.replace.is_none());
+    assert!(ub.ids.is_none());
+}
+
+// ---- monorepo config ----
+
+#[test]
+fn test_parse_monorepo_both_fields() {
+    let yaml = r#"
+crates: []
+monorepo:
+  tag_prefix: "subproject1/"
+  dir: subproj1
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let mono = config.monorepo.expect("monorepo should be Some");
+    assert_eq!(mono.tag_prefix.as_deref(), Some("subproject1/"));
+    assert_eq!(mono.dir.as_deref(), Some("subproj1"));
+}
+
+#[test]
+fn test_parse_monorepo_only_tag_prefix() {
+    let yaml = r#"
+crates: []
+monorepo:
+  tag_prefix: "myapp/"
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let mono = config.monorepo.expect("monorepo should be Some");
+    assert_eq!(mono.tag_prefix.as_deref(), Some("myapp/"));
+    assert!(mono.dir.is_none());
+}
+
+#[test]
+fn test_parse_monorepo_only_dir() {
+    let yaml = r#"
+crates: []
+monorepo:
+  dir: packages/backend
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let mono = config.monorepo.expect("monorepo should be Some");
+    assert!(mono.tag_prefix.is_none());
+    assert_eq!(mono.dir.as_deref(), Some("packages/backend"));
+}
+
+#[test]
+fn test_parse_monorepo_absent_defaults_to_none() {
+    let yaml = "crates: []";
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    assert!(config.monorepo.is_none());
+}
+
+#[test]
+fn test_parse_monorepo_empty_map_defaults_to_empty() {
+    let yaml = r#"
+crates: []
+monorepo: {}
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let mono = config
+        .monorepo
+        .expect("monorepo should be Some with defaults");
+    assert!(mono.tag_prefix.is_none());
+    assert!(mono.dir.is_none());
+}
+
+// ---- Comprehensive happy-path config (post-WAVE-5 shape) ----
+
+#[test]
+fn test_parse_comprehensive_config() {
+    // End-to-end happy-path test that exercises every top-level surface
+    // touched by WAVE 5: typed fields (BuildConfig.flags as Vec<String>,
+    // ChangelogConfig.{header,footer} as ContentSource), the unified
+    // RepositoryConfig form (replacing legacy {tap,bucket,...} variants),
+    // structured commit_author, and post-DEC-5 hard-break shapes.
+    let yaml = r###"
+project_name: comprehensive-test
+dist: ./custom-dist
+env:
+  - GLOBAL_VAR=value
+report_sizes: true
+before:
+  hooks:
+    - "cargo fmt --check"
+after:
+  post:
+    - "echo release complete"
+defaults:
+  targets:
+    - x86_64-unknown-linux-gnu
+    - aarch64-apple-darwin
+  cross: zigbuild
+  builds:
+    flags:
+      - "--release"
+      - "--locked"
+  archives:
+    format: tar.gz
+    format_overrides:
+      - os: windows
+        format: zip
+  checksum:
+    algorithm: sha256
+    name_template: "checksums.txt"
+changelog:
+  sort: desc
+  abbrev: 8
+  header: "## Changelog"
+  footer: "---"
+  filters:
+    exclude:
+      - "^docs:"
+  groups:
+    - title: Features
+      regexp: "^feat"
+      order: 0
+snapshot:
+  name_template: "{{ version }}-SNAPSHOT"
+signs:
+  - id: gpg
+    artifacts: all
+    cmd: gpg
+    args:
+      - "--detach-sig"
+    signature: "{{ .Artifact }}.sig"
+publishers:
+  - name: custom
+    cmd: upload.sh
+    env:
+      - TOKEN=secret
+crates:
+  - name: lib
+    path: crates/lib
+    tag_template: "lib/v{{ version }}"
+  - name: app
+    path: crates/app
+    tag_template: "app/v{{ version }}"
+    depends_on:
+      - lib
+    cross: cargo
+    builds:
+      - binary: app
+        features:
+          - full
+    archives:
+      - format: tar.gz
+        files:
+          - LICENSE
+          - README.md
+        binaries:
+          - app
+        name_template: "app-{{ version }}-{{ os }}-{{ arch }}"
+    checksum:
+      algorithm: sha512
+    release:
+      github:
+        owner: org
+        name: repo
+      draft: false
+      prerelease: auto
+      make_latest: auto
+      name_template: "App {{ tag }}"
+      header: "## Release"
+      footer: "---"
+    publish:
+      cargo:
+        index_timeout: 60
+      homebrew:
+        repository:
+          owner: org
+          name: homebrew-tap
+        commit_author:
+          name: bot
+          email: bot@example.com
+        directory: Formula
+        description: "App tool"
+        license: MIT
+      scoop:
+        repository:
+          owner: org
+          name: scoop-bucket
+        commit_author:
+          name: bot
+          email: bot@example.com
+    docker_v2:
+      - dockerfile: Dockerfile
+        images:
+          - "ghcr.io/org/app"
+        tags:
+          - "{{ version }}"
+        platforms:
+          - linux/amd64
+          - linux/arm64
+        labels:
+          version: "{{ version }}"
+    nfpm:
+      - package_name: app
+        formats:
+          - deb
+          - rpm
+        vendor: Org
+        description: "A cool app"
+        file_name_template: "app_{{ version }}_{{ arch }}"
+        overrides:
+          deb:
+            depends:
+              - libc6
+        bindir: /usr/bin
+        contents:
+          - src: "./app"
+            dst: "/usr/bin/app"
+        scripts:
+          postinstall: ./scripts/post.sh
+"###;
+    let config: Config = serde_yaml_ng::from_str(yaml).expect("comprehensive yaml must parse");
+
+    // Top-level
+    assert_eq!(config.project_name, "comprehensive-test");
+    assert_eq!(config.dist, PathBuf::from("./custom-dist"));
+    assert_eq!(config.report_sizes, Some(true));
+    assert!(config.env.is_some());
+    assert!(config.before.is_some());
+    assert!(config.after.is_some());
+
+    // Defaults
+    let defaults = config.defaults.as_ref().unwrap();
+    assert_eq!(defaults.targets.as_ref().unwrap().len(), 2);
+    assert_eq!(defaults.cross, Some(CrossStrategy::Zigbuild));
+    let build_flags = defaults
+        .builds
+        .as_ref()
+        .unwrap()
+        .flags
+        .as_ref()
+        .expect("BuildConfig.flags must parse as Vec<String>");
+    assert_eq!(
+        build_flags.as_slice(),
+        &["--release".to_string(), "--locked".to_string()]
+    );
+
+    // Changelog (post-SCH-25: ContentSource for header/footer)
+    let cl = config.changelog.as_ref().unwrap();
+    assert_eq!(cl.sort, Some("desc".to_string()));
+    assert_eq!(cl.abbrev, Some(8));
+    match cl.header.as_ref().expect("changelog.header") {
+        ContentSource::Inline(s) => assert_eq!(s, "## Changelog"),
+        other => panic!("expected ContentSource::Inline, got {other:?}"),
+    }
+    match cl.footer.as_ref().expect("changelog.footer") {
+        ContentSource::Inline(s) => assert_eq!(s, "---"),
+        other => panic!("expected ContentSource::Inline, got {other:?}"),
+    }
+
+    // Snapshot
+    assert!(config.snapshot.is_some());
+
+    // Signs
+    assert_eq!(config.signs.len(), 1);
+
+    // Publishers
+    assert_eq!(config.publishers.as_ref().unwrap().len(), 1);
+
+    // Crates
+    assert_eq!(config.crates.len(), 2);
+    let app = &config.crates[1];
+    assert_eq!(app.name, "app");
+    assert_eq!(app.depends_on.as_ref().unwrap(), &["lib"]);
+    assert_eq!(app.cross, Some(CrossStrategy::Cargo));
+
+    // App builds
+    let builds = app.builds.as_ref().unwrap();
+    assert_eq!(builds[0].binary.as_deref(), Some("app"));
+
+    // App archives
+    if let ArchivesConfig::Configs(configs) = &app.archives {
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs[0].binaries.as_ref().unwrap(), &["app"]);
+    } else {
+        panic!("expected ArchivesConfig::Configs");
+    }
+
+    // App release
+    let release = app.release.as_ref().unwrap();
+    assert_eq!(release.prerelease, Some(PrereleaseConfig::Auto));
+    assert_eq!(release.make_latest, Some(MakeLatestConfig::Auto));
+
+    // App publish — uses the unified `repository:` form (post-SCH-21)
+    let publish = app.publish.as_ref().unwrap();
+    let hb = publish.homebrew.as_ref().expect("homebrew publisher");
+    let repo = hb.repository.as_ref().expect("homebrew.repository");
+    assert_eq!(repo.owner.as_deref(), Some("org"));
+    assert_eq!(repo.name.as_deref(), Some("homebrew-tap"));
+    let scoop = publish.scoop.as_ref().expect("scoop publisher");
+    let scoop_repo = scoop.repository.as_ref().expect("scoop.repository");
+    assert_eq!(scoop_repo.name.as_deref(), Some("scoop-bucket"));
+    assert_eq!(publish.cargo.as_ref().unwrap().index_timeout, Some(60));
+
+    // App docker_v2 (post-SCH-4: legacy `docker:` field dropped)
+    let docker = &app.docker_v2.as_ref().unwrap()[0];
+    assert_eq!(docker.platforms.as_ref().unwrap().len(), 2);
+    assert_eq!(docker.images, vec!["ghcr.io/org/app".to_string()]);
+
+    // App nfpm
+    let nfpm = &app.nfpm.as_ref().unwrap()[0];
+    assert_eq!(nfpm.formats, vec!["deb", "rpm"]);
+    assert!(nfpm.overrides.is_some());
+    assert!(nfpm.scripts.is_some());
+}

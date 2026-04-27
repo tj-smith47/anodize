@@ -40,11 +40,17 @@ fn publish_aur_source_entry(
 
     let pkgrel: u32 = cfg.rel.as_deref().and_then(|r| r.parse().ok()).unwrap_or(1);
 
-    // SCH-17: surface the configured x86_64 micro-architecture variant as a
-    // template var (default `v1`) so user-supplied `prepare` / `build` /
-    // `package` scripts can branch on the variant when the source builds
-    // need to pick CPU-feature-specific cargo flags.
-    let amd64_variant = cfg.amd64_variant.as_deref().unwrap_or("v1");
+    // Surface the configured x86_64 micro-architecture variant as a template
+    // var (default `v1`) so user-supplied `prepare` / `build` / `package`
+    // scripts can branch on the variant when the source builds need to pick
+    // CPU-feature-specific cargo flags. Constrained to a typed enum at the
+    // config layer (no artifact filter applies — AUR source pkgs build from
+    // the upstream tarball, so this is template-only).
+    let amd64_variant = cfg
+        .amd64_variant
+        .as_ref()
+        .map(|v| v.as_str())
+        .unwrap_or("v1");
     ctx.template_vars_mut().set("Amd64", amd64_variant);
 
     // Source URL — use url_template or default release URL
@@ -646,9 +652,10 @@ crates:
 
     #[test]
     fn test_aur_source_amd64_variant_field_parses() {
-        // SCH-17 (WAVE 5.3): amd64_variant lands on AurSourceConfig and is
-        // surfaced as the `Amd64` template var when the source pkg is built.
-        use anodizer_core::config::Config;
+        // amd64_variant lands on AurSourceConfig as a typed Amd64Variant enum
+        // (PKGBUILD `prepare:` / `build:` / `package:` template surface uses
+        // it as the `Amd64` var; AUR source pkgs don't filter binaries).
+        use anodizer_core::config::{Amd64Variant, Config};
 
         let yaml = r#"
 project_name: test
@@ -672,6 +679,31 @@ crates:
             .aur_source
             .as_ref()
             .unwrap();
-        assert_eq!(aur_src.amd64_variant.as_deref(), Some("v3"));
+        assert_eq!(aur_src.amd64_variant, Some(Amd64Variant::V3));
+        assert_eq!(aur_src.amd64_variant.unwrap().as_str(), "v3");
+    }
+
+    #[test]
+    fn test_aur_source_amd64_variant_typo_rejected() {
+        // Typed enum constraint: anything outside v1/v2/v3/v4 must fail at
+        // parse time so the bad value never silently lands in the PKGBUILD.
+        use anodizer_core::config::Config;
+
+        let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      aur_source:
+        name: myapp
+        amd64_variant: v9000
+"#;
+        let result: Result<Config, serde_yaml_ng::Error> = serde_yaml_ng::from_str(yaml);
+        assert!(
+            result.is_err(),
+            "amd64_variant: v9000 must be rejected by the typed enum"
+        );
     }
 }

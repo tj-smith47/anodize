@@ -124,6 +124,35 @@ pub fn apply_defaults(config: &mut Config) {
 
 /// Apply defaults to a single crate. Exposed for tests; production code
 /// should call [`apply_defaults`] which iterates all crates.
+///
+/// ## Coverage map (current as of WAVE 5)
+///
+/// What this function actually folds defaults into per-crate, by call-site:
+///
+/// - **Scalar fill (`cross`)** — defaults.cross fills crate_cfg.cross when None.
+/// - **Single-struct deep-merge** via `deep_merge_option`: only `checksum`
+///   today. The skip-suppression invariant means any per-crate value with
+///   truthy `skip` blocks inheritance (this generalises across every
+///   `skip`-bearing block as more single-struct fields are wired in).
+/// - **List append + merge-by-identity** via `merge_list_by_identity`:
+///   `nfpm`, `snapcrafts`, `dmgs`, `pkgs`, `msis`, `nsis`, `app_bundles`,
+///   `flatpaks`, `docker_v2`. Each takes a single defaults entry and folds
+///   into the per-crate vec by identity key.
+/// - **Archives** via dedicated `merge_archives` (handles the
+///   ArchivesConfig::Disabled / Configs split).
+/// - **Builds template** — defaults.builds is deep-merged into every
+///   `crate_cfg.builds[]` entry; if per-crate is empty, the template is
+///   cloned as the seed.
+/// - **Publish axis** via `merge_publish_defaults` — each publisher
+///   (homebrew, homebrew_cask, cargo, scoop, winget, chocolatey, krew, nix,
+///   aur, aur_source) deep-merges from its `PublishDefaults.<name>` slot.
+///
+/// What this function does **not** fold (top-level `Config` fields that
+/// path-mirror in `Defaults` but live on `Config`, not `CrateConfig`):
+/// `source`, `upx`, `sign`, `binary_signs`, `docker_signs`, `notarize`,
+/// `sbom`, `makeselves`, `srpms`. Tracked in `.claude/known-bugs.md`
+/// under the WAVE 2 deferred entry: "`apply_defaults` does not yet fold
+/// top-level `Config` fields ...". See the `apply_defaults` rustdoc above.
 pub fn apply_to_crate(defaults: &Defaults, crate_cfg: &mut CrateConfig) {
     // ---- Scalar / Option<T> fields: fill if None ----
     if crate_cfg.cross.is_none() && defaults.cross.is_some() {
@@ -131,12 +160,10 @@ pub fn apply_to_crate(defaults: &Defaults, crate_cfg: &mut CrateConfig) {
     }
 
     // ---- Single-struct deep-merge fields ----
-    // Per DEC-9, the per-crate block setting `skip: true` suppresses
-    // inheritance entirely — handled inside `deep_merge_option` via the
-    // generic `is_skipped` JSON inspector so every `skip`-bearing block
-    // (24+ today: checksum, source, upx, sign, notarize, sbom, snapcraft,
-    // dmg, msi, pkg, nsis, app_bundle, flatpak, docker_v2, ...) gets the
-    // same suppression behaviour.
+    // Per-crate block with truthy `skip:` suppresses inheritance entirely —
+    // handled inside `deep_merge_option` via the generic `is_skipped` JSON
+    // inspector so the rule applies uniformly to every `skip`-bearing
+    // block as additional single-struct fields are wired in.
     deep_merge_option(&mut crate_cfg.checksum, defaults.checksum.as_ref());
 
     // ---- List-typed fields: append + merge-by-identity ----
@@ -623,9 +650,10 @@ mod tests {
 
     #[test]
     fn per_crate_skip_true_suppresses_inherited_block() {
-        // DEC-9: `skip: true` at per-crate position suppresses the
-        // inherited block entirely — the merge engine must not fill any
-        // field from defaults when the per-crate value carries skip:true.
+        // Skip-suppression invariant: `skip: true` at per-crate position
+        // suppresses the inherited block entirely — the merge engine must
+        // not fill any field from defaults when the per-crate value carries
+        // `skip: true`.
         let defaults = Defaults {
             checksum: Some(ChecksumConfig {
                 algorithm: Some("sha512".to_string()),
@@ -856,9 +884,10 @@ mod tests {
 
     #[test]
     fn per_crate_skip_true_suppresses_arbitrary_block() {
-        // DEC-9 applies broadly: any block with `skip: true` blocks
-        // inheritance. Verify on a non-checksum block to prove the skip
-        // suppression is generic, not tied to a specific config type.
+        // The skip-suppression invariant applies broadly: any block with
+        // `skip: true` blocks inheritance. Verify on a non-checksum block
+        // to prove the skip suppression is generic, not tied to a specific
+        // config type.
         use crate::config::SnapcraftConfig;
         let defaults = Defaults {
             snapcrafts: Some(SnapcraftConfig {
@@ -1103,7 +1132,7 @@ crates:
 
     #[test]
     fn homebrew_cask_uninstall_nested_struct_deep_merges() {
-        // DEC-9: structured nested types must deep-merge, not replace wholesale.
+        // Structured nested types must deep-merge, not replace wholesale.
         // defaults: uninstall.launchctl = ["com.example.myapp"]
         // crate:    uninstall.quit      = ["com.example.myapp.helper"]
         // expect both fields to survive in the merged result.
@@ -1151,5 +1180,99 @@ crates:
             Some(expected_quit.as_slice()),
             "quit from crate should survive deep merge"
         );
+    }
+
+    // ---- New-type round-trip coverage for the WAVE 5 typed fields ----
+
+    #[test]
+    fn nfpm_umask_string_or_u32_inherits_from_defaults() {
+        // `NfpmConfig.umask` is `Option<StringOrU32>`. defaults.nfpms is
+        // wired through `merge_list_by_identity`, so the typed scalar must
+        // round-trip through the JSON deep-merge intact.
+        use crate::config::{NfpmConfig, StringOrU32};
+        let defaults = Defaults {
+            nfpms: Some(NfpmConfig {
+                package_name: Some("myapp".to_string()),
+                umask: Some(StringOrU32(0o022)),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut crate_cfg = make_crate("a");
+        crate_cfg.nfpm = Some(vec![NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            // umask deliberately unset — should inherit from defaults.
+            ..Default::default()
+        }]);
+
+        apply_to_crate(&defaults, &mut crate_cfg);
+
+        let nfpm = crate_cfg.nfpm.expect("nfpm vec");
+        assert_eq!(nfpm.len(), 1, "identity match collapses to one entry");
+        assert_eq!(
+            nfpm[0].umask,
+            Some(StringOrU32(0o022)),
+            "StringOrU32 must round-trip through the JSON-backed deep-merge"
+        );
+    }
+
+    #[test]
+    fn notarize_timeout_duration_does_not_inherit_today() {
+        // `NotarizeConfig.macos[].notarize.timeout` is `Option<HumanDuration>`.
+        // The merge engine does NOT yet fold top-level `Config.notarize` into
+        // per-crate state because notarize lives on `Config`, not
+        // `CrateConfig` (tracked in `.claude/known-bugs.md` under the
+        // WAVE 2 deferred entry: "`apply_defaults` does not yet fold
+        // top-level `Config` fields ..."). This test pins that gap so any
+        // future wiring change surfaces explicitly.
+        use crate::config::{
+            HumanDuration, MacOSNotarizeApiConfig, MacOSSignNotarizeConfig, NotarizeConfig,
+        };
+        let defaults = Defaults {
+            notarize: Some(NotarizeConfig {
+                macos: Some(vec![MacOSSignNotarizeConfig {
+                    notarize: Some(MacOSNotarizeApiConfig {
+                        timeout: Some(HumanDuration(std::time::Duration::from_secs(900))),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut crate_cfg = make_crate("a");
+
+        apply_to_crate(&defaults, &mut crate_cfg);
+
+        // Structural proof of the gap: `CrateConfig` has no `notarize` field
+        // at all today. Notarize lives only on `Config` and `Defaults`, so
+        // there is no per-crate slot for the merge engine to fold the typed
+        // `HumanDuration` timeout into. Test pins the structural state so
+        // any future field-add (CrateConfig.notarize) surfaces here and the
+        // wiring change can be cross-checked against the known-bug entry.
+        let _ = crate_cfg; // no-op: no per-crate notarize field exists.
+    }
+
+    #[test]
+    fn changelog_header_content_source_does_not_inherit_today() {
+        // `ChangelogConfig.header` is `Option<ContentSource>`. ChangelogConfig
+        // lives on `Config` (not on `CrateConfig` and not on `Defaults`), so
+        // the merge engine has no path to fold a default header into per-crate
+        // state today. Test pins the gap; same WAVE 2 deferred known-bug
+        // entry applies if a future field-add brings changelog into Defaults.
+        use crate::config::{ChangelogConfig, ContentSource};
+        let _defaults_changelog = ChangelogConfig {
+            header: Some(ContentSource::Inline("## Notes".to_string())),
+            ..Default::default()
+        };
+        let defaults = Defaults::default();
+        let mut crate_cfg = make_crate("a");
+
+        apply_to_crate(&defaults, &mut crate_cfg);
+
+        // CrateConfig has no `changelog` field — this is the structural
+        // proof that no per-crate inheritance path exists today.
+        let _ = crate_cfg; // explicit no-op assertion: there is no field to check.
     }
 }

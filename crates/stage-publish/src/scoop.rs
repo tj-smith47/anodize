@@ -206,7 +206,6 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
         return Ok(());
     }
 
-    // SCH-21 (WAVE 5.5): legacy `bucket:` field removed.
     let (repo_owner, repo_name) = crate::util::resolve_repo_owner_name(
         "scoop",
         "bucket",
@@ -476,11 +475,7 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
     );
 
     let manifest_lossy = manifest_path.to_string_lossy();
-    let commit_opts = util::resolve_commit_opts(
-        scoop_cfg.commit_author.as_ref(),
-        scoop_cfg.commit_author_name.as_deref(),
-        scoop_cfg.commit_author_email.as_deref(),
-    );
+    let commit_opts = util::resolve_commit_opts(scoop_cfg.commit_author.as_ref(), None, None);
     let branch = util::resolve_branch(scoop_cfg.repository.as_ref());
     util::commit_and_push_with_opts(
         repo_path,

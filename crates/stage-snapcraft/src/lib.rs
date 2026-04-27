@@ -351,8 +351,8 @@ pub fn generate_snap_yaml(
         } else {
             HashMap::new()
         },
-        // DEC-13 (WAVE 5.5): top-level snapcraft `slots` field dropped —
-        // app-scoped slots live under apps.<name>.slots.
+        // Snapcraft has no top-level `slots:` concept; app-scoped slots live
+        // under `apps.<name>.slots` and are emitted via the apps walker above.
         layouts,
         hooks: if has_apps {
             config.hooks.clone().unwrap_or_default()
@@ -1235,9 +1235,8 @@ mod tests {
 
     #[test]
     fn test_generate_snapcraft_yaml_with_plugs_and_app_slots() {
-        // DEC-13 (WAVE 5.5): top-level snapcraft `slots` field dropped.
-        // App-scoped slots remain via `apps.<name>.slots` and that path is
-        // exercised here.
+        // Snapcraft has no top-level `slots:` concept; app-scoped slots remain
+        // via `apps.<name>.slots` and that path is exercised here.
         let mut plugs = HashMap::new();
         plugs.insert("network".to_string(), serde_json::Value::Null);
         plugs.insert("home".to_string(), serde_json::Value::Null);

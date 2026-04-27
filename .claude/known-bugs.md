@@ -19,9 +19,9 @@ violations, user-reported issues.
 
 ## Active
 
-### WAVE 5.5 follow-up — 2026-04-27 (1 SUGGEST)
+### WAVE 5 deferred — 2026-04-27 (1 SUGGEST)
 
-- [ ] 2026-04-27 code-review (WAVE 5.5): SCH-13 cascade — `ScoopConfig.commit_author_name` and `commit_author_email` (crates/core/src/config.rs:2797-2800) are the same legacy doubled surface that SCH-13 dropped from `HomebrewConfig`. Spec literally said Homebrew-only so the W5.5 batch was technically compliant, but the DRY gap should be drained. Drop these two fields and migrate consumers to read structured `commit_author: CommitAuthorConfig` only.
+- [ ] 2026-04-27 code-review (WAVE 5): `crates/core/src/config.rs` is 11443 lines after WAVE 5 (net +96 from start). Consider extracting `crates/core/src/config/` as a module directory (`publishers/`, `packagers/`, `signing/`, `env/`) in a future wave to break up the monolith. Currently 32 type definitions live in one file.
 
 ### WAVE 3 deferred — 2026-04-27 (1 SUGGEST)
 

@@ -465,8 +465,6 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
             }
         }
 
-        // SCH-4 (WAVE 5.5): legacy `docker:` field dropped; only check
-        // `docker_v2:` when deciding whether the docker CLI is needed.
         let needs_docker = config.crates.iter().any(|c| c.docker_v2.is_some());
         if needs_docker {
             if !tool_available("docker") {
