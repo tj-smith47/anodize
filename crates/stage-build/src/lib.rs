@@ -388,14 +388,15 @@ fn project_universal_out_path(
         binaries
             .into_iter()
             .filter(|a| {
+                // GR-aligned: `id`-only filter (mirrors universalbinary.go:255-258
+                // `artifact.ByIDs(unibin.IDs...)`). Binary artifacts now always
+                // carry an `id` metadata key (see `artifact_meta`), defaulted to
+                // the binary name when `build.id` is unset, so the historical
+                // `binary`-key fallback is no longer needed.
                 a.metadata
                     .get("id")
                     .map(|v| effective_ids.contains(v))
                     .unwrap_or(false)
-                    || a.metadata
-                        .get("binary")
-                        .map(|v| effective_ids.contains(v))
-                        .unwrap_or(false)
             })
             .collect()
     } else {
@@ -450,15 +451,15 @@ fn build_universal_binary(
         binaries
             .into_iter()
             .filter(|a| {
-                // Match on either "binary" (historical) or "id" (GoReleaser).
+                // GR-aligned: `id`-only filter (universalbinary.go:255-258
+                // `artifact.ByIDs(unibin.IDs...)`). `id` is now always populated
+                // on Binary artifacts (defaulted to the binary name when
+                // `build.id` is unset) so the historical `binary` fallback is
+                // unnecessary.
                 a.metadata
                     .get("id")
                     .map(|v| effective_ids.contains(v))
                     .unwrap_or(false)
-                    || a.metadata
-                        .get("binary")
-                        .map(|v| effective_ids.contains(v))
-                        .unwrap_or(false)
             })
             .collect()
     } else {
@@ -613,23 +614,25 @@ fn build_universal_binary(
     // true = this universal binary supersedes per-arch variants in publishers.
     let replaces = ub.replace == Some(true);
 
-    // GoReleaser universalbinary.go:236-239 — preserve source binary Extras
-    // (copied from the first source binary) before setting universal-specific
-    // keys. Only forward the known-used keys to avoid leaking unrelated state.
+    // GR-aligned (universalbinary.go:236-239): copy the entire `Extra` map
+    // from the first source binary, then overwrite universal-specific keys.
+    // The previous 4-key whitelist (`dynamically_linked`, `abi`, `libc`, `id`)
+    // silently dropped any other metadata stage-build emits today or might
+    // emit tomorrow (e.g. `DynamicallyLinked`, `amd64_variant`, future keys),
+    // so anodizer was losing fidelity GR preserves.
     let mut metadata: HashMap<String, String> = HashMap::new();
     let first_source = arm64.or(x86_64);
     if let Some(src) = first_source {
-        for key in &["dynamically_linked", "abi", "libc", "id"] {
-            if let Some(v) = src.metadata.get(*key) {
-                metadata.insert((*key).to_string(), v.clone());
-            }
-        }
+        metadata.extend(src.metadata.iter().map(|(k, v)| (k.clone(), v.clone())));
     }
-    // Universal-specific keys (override any copied values)
+    // Universal-specific keys (override any copied values).
     metadata.insert("binary".to_string(), binary_name);
     metadata.insert("universal".to_string(), "true".to_string());
     metadata.insert("replaces".to_string(), replaces.to_string());
-    // Universal binary's own id, if configured
+    // Universal binary's own id, if configured (otherwise the inherited
+    // source-binary `id` remains, matching GR's `extra[ExtraID] = unibin.ID`
+    // override at universalbinary.go:239 — when `unibin.ID` is empty, the
+    // first source's id passes through unchanged).
     if let Some(ref id) = ub.id {
         metadata.insert("id".to_string(), id.clone());
     }
@@ -1379,10 +1382,16 @@ impl Stage for BuildStage {
             build_id: &Option<String>,
             amd64_variant: &Option<String>,
         ) -> HashMap<String, String> {
-            let mut m = HashMap::from([("binary".to_string(), binary.to_string())]);
-            if let Some(id) = build_id {
-                m.insert("id".to_string(), id.clone());
-            }
+            // GoReleaser's Build pipe always populates the `id` metadata key
+            // (defaults to ProjectName at Default()-time). Mirror that here:
+            // if `build.id` is unset, default to the binary name so downstream
+            // filters (universal_binaries, archives, signs, …) can rely on
+            // `id` being present without falling back to `binary`-key lookups.
+            let id = build_id.clone().unwrap_or_else(|| binary.to_string());
+            let mut m = HashMap::from([
+                ("binary".to_string(), binary.to_string()),
+                ("id".to_string(), id),
+            ]);
             if let Some(v) = amd64_variant {
                 m.insert("amd64_variant".to_string(), v.clone());
             }
@@ -3011,6 +3020,8 @@ crate_type = ["dylib"]
     // ---- Task 5F: universal binary tests ----
 
     /// Helper: register a fake Binary artifact directly in the context.
+    /// Mirrors production `artifact_meta` — both `binary` and `id` are set
+    /// (id defaults to the binary name when no explicit build.id is given).
     fn register_binary(
         ctx: &mut anodizer_core::context::Context,
         crate_name: &str,
@@ -3018,13 +3029,13 @@ crate_type = ["dylib"]
         path: std::path::PathBuf,
     ) {
         use anodizer_core::artifact::{Artifact, ArtifactKind};
+        let binary_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let mut meta = HashMap::new();
-        meta.insert(
-            "binary".to_string(),
-            path.file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default(),
-        );
+        meta.insert("binary".to_string(), binary_name.clone());
+        meta.insert("id".to_string(), binary_name);
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
             name: String::new(),
@@ -3320,6 +3331,132 @@ crate_type = ["dylib"]
         assert_eq!(
             art.metadata.get("binary").map(|s| s.as_str()),
             Some("myapp")
+        );
+    }
+
+    /// Pins C-new-1: universal-binary metadata copy is the FULL `Extra` map of
+    /// the first source binary (matching GoReleaser `universalbinary.go:236-239`
+    /// `maps.Copy(extra, binaries[0].Extra)`), not a hardcoded whitelist. A
+    /// regression that re-introduces the old 4-key whitelist would silently
+    /// drop arbitrary metadata keys downstream stages emit.
+    #[test]
+    fn test_universal_binary_copies_full_extras_from_first_source() {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::config::UniversalBinaryConfig;
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let mut config = anodizer_core::config::Config::default();
+        config.project_name = "myapp".to_string();
+        let opts = ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+
+        // arm64 (first source — its Extra map is the one copied) carries a
+        // miscellaneous metadata key that the old whitelist would have dropped.
+        let mut arm_meta = HashMap::new();
+        arm_meta.insert("binary".to_string(), "myapp".to_string());
+        arm_meta.insert("id".to_string(), "myapp".to_string());
+        arm_meta.insert("DynamicallyLinked".to_string(), "true".to_string());
+        arm_meta.insert("custom_future_key".to_string(), "preserved".to_string());
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: std::path::PathBuf::from("target/aarch64-apple-darwin/release/myapp"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: arm_meta,
+            size: None,
+        });
+        // x86_64 source — also valid, but we only assert against arm64's keys.
+        register_binary(
+            &mut ctx,
+            "myapp",
+            "x86_64-apple-darwin",
+            std::path::PathBuf::from("target/x86_64-apple-darwin/release/myapp"),
+        );
+
+        build_universal_binary("myapp", &UniversalBinaryConfig::default(), &mut ctx, true).unwrap();
+
+        let universals: Vec<_> = ctx
+            .artifacts
+            .by_kind(ArtifactKind::UniversalBinary)
+            .into_iter()
+            .filter(|a| a.target.as_deref() == Some("darwin-universal"))
+            .collect();
+        assert_eq!(universals.len(), 1);
+        let art = universals[0];
+        // Inherited from arm64 (first source).
+        assert_eq!(
+            art.metadata.get("DynamicallyLinked").map(String::as_str),
+            Some("true"),
+            "DynamicallyLinked must be copied from first source binary"
+        );
+        assert_eq!(
+            art.metadata.get("custom_future_key").map(String::as_str),
+            Some("preserved"),
+            "non-whitelisted metadata key must be preserved (no whitelist)"
+        );
+        // Universal-specific overrides — copied id is overridden only when ub.id is set.
+        assert_eq!(
+            art.metadata.get("universal").map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(
+            art.metadata.get("replaces").map(String::as_str),
+            Some("false")
+        );
+    }
+
+    /// Pins C-new-3: universal-binary id-only filter (no `binary`-key fallback).
+    /// A binary whose `id` does not match the universal binary's id list must
+    /// NOT be matched by its `binary`-key value.
+    #[test]
+    fn test_universal_binary_filter_id_only_no_binary_fallback() {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use anodizer_core::config::UniversalBinaryConfig;
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let mut config = anodizer_core::config::Config::default();
+        config.project_name = "myapp".to_string();
+        let opts = ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+
+        // Register binaries whose `binary` key matches the requested id "wanted"
+        // but whose `id` key does NOT — the new id-only filter must reject these.
+        for target in ["aarch64-apple-darwin", "x86_64-apple-darwin"] {
+            let mut meta = HashMap::new();
+            meta.insert("binary".to_string(), "wanted".to_string());
+            meta.insert("id".to_string(), "different".to_string());
+            ctx.artifacts.add(Artifact {
+                kind: ArtifactKind::Binary,
+                name: String::new(),
+                path: std::path::PathBuf::from(format!("target/{target}/release/wanted")),
+                target: Some(target.to_string()),
+                crate_name: "myapp".to_string(),
+                metadata: meta,
+                size: None,
+            });
+        }
+
+        let ub = UniversalBinaryConfig {
+            id: Some("wanted".to_string()),
+            ids: Some(vec!["wanted".to_string()]),
+            ..Default::default()
+        };
+
+        build_universal_binary("myapp", &ub, &mut ctx, true).unwrap();
+
+        // Filter rejects binary-key matches → no universal binary produced.
+        let universals = ctx.artifacts.by_kind(ArtifactKind::UniversalBinary);
+        assert!(
+            universals.is_empty(),
+            "id-only filter must not match via `binary` key: got {} universals",
+            universals.len()
         );
     }
 
