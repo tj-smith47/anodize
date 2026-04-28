@@ -13,10 +13,12 @@ use anyhow::{Context as _, Result};
 
 /// Resolve header/footer precedence for the GitHub release body.
 ///
-/// GoReleaser parity: both `release.header` (the more specific override) and
-/// `changelog.header` feed `ctx.ReleaseNotes`. When both are set, the
-/// `release.*` value wins because it is the more specific override; otherwise
-/// the `changelog.*` value is used.
+/// Anodizer-local precedence: `release.header` / `release.footer` is the more
+/// specific override and wins; `changelog.header` / `changelog.footer` is the
+/// fallback so a YAML-configured changelog wrapper still reaches the release
+/// body. GoReleaser only has the `release.*` source (loaded via
+/// `loadContent(ReleaseHeader…)` in `internal/pipe/changelog/changelog.go`);
+/// we extend that to a second source as a Rust-first ergonomic.
 ///
 /// `release_value` is the already-rendered `release.header` / `release.footer`
 /// string; `changelog_value` is the rendered `changelog.header` /

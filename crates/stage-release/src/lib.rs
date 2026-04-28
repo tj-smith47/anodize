@@ -829,14 +829,15 @@ impl Stage for ReleaseStage {
             // resolve_content_source now template-renders the from_file path and the
             // from_url URL + header values internally; body still rendered here.
             //
-            // Precedence (matching GoReleaser): `release.header` is the more
-            // specific override and wins; otherwise the `changelog.header`
-            // value (rendered and stashed by the changelog stage in
-            // `ctx.changelog_header`) is used. Same for the footer. This
-            // mirrors GoReleaser's `loadContent(ReleaseHeader…)` flow where
-            // both `changelog.header` and the `--release-header` / explicit
-            // `release.header` paths feed `ctx.ReleaseNotes` and reach the
-            // GitHub release body.
+            // Anodizer-local precedence: `release.header` is the more
+            // specific override and wins; `changelog.header` (rendered and
+            // stashed by the changelog stage in `ctx.changelog_header`) is the
+            // fallback so a YAML-configured changelog wrapper still reaches
+            // the release body. Same for the footer. GoReleaser only has the
+            // `release.*` source (loaded via `loadContent(ReleaseHeader…)` in
+            // `internal/pipe/changelog/changelog.go`); we extend that to a
+            // second source as a Rust-first ergonomic. See
+            // `release_body::resolve_header_footer` for the precedence helper.
             let release_header = release_cfg
                 .header
                 .as_ref()

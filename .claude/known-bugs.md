@@ -19,6 +19,11 @@ violations, user-reported issues.
 
 ## Active
 
+### Group F·3 review deferrals — 2026-04-28 (2 MINOR)
+
+- [ ] `crates/core/src/context.rs:146-153` — fields `changelog_header: Option<String>` and `changelog_footer: Option<String>` joined the existing `changelogs: HashMap<String, String>` on the stage-output side of `Context`. As more stage→stage handoff fields accrete, a `StageOutputs` sub-struct would compress the surface and keep input/output state cleanly separated. Defer until a third stage-output pair lands; then break out. Source: F·3 code-quality review.
+- [ ] `crates/stage-changelog/src/lib.rs::test_changelog_stage_github_no_prev_tag_uses_git_fallback` (and 5 other cwd-mutating tests in the same file) — tests `set_current_dir(original_cwd)` after `stage.run`; if `stage.run` panics, the restore is skipped and the leaked cwd contaminates other tests in the same process. Fix: wrap restore in `scopeguard::defer!` or a `Drop` helper. Pre-existing pattern (not introduced by F·3); flagged during the F·3 code-quality review.
+
 ### Session C / Group E review deferrals — 2026-04-28 (1 MINOR)
 
 - [ ] `crates/stage-publish/src/aur.rs:435-437` — `ctx.render_template(&raw_package_name).unwrap_or_else(|_| raw_package_name.clone())` silently swallows malformed-template errors and propagates the raw string into `base_name`, defeating the rendered-vs-raw fix landed in `73d7776` for the malformed-template case. Pre-existing pattern (not introduced by `1e98536` or `73d7776`); flagged during the Group E code-quality re-review. Fix: surface render errors with `with_context()` (or `log.warn()` + fallback if the silent path is intentional). Behavior change — opening surfaces previously-swallowed errors to currently-malformed configs, so worth its own scope decision.
