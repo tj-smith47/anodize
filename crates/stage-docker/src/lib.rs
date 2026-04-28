@@ -643,6 +643,39 @@ fn resolve_digest_config(
     Ok((skip_digest, name_template))
 }
 
+/// Apply GoReleaser-compatible defaults to a single Docker V2 config.
+///
+/// Mirrors `internal/pipe/docker/v2/docker.go::Default()`:
+///   - `id`         defaults to the project name
+///   - `dockerfile` defaults to `"Dockerfile"`
+///   - `tags`       defaults to `["{{ .Tag }}"]`
+///   - `platforms`  defaults to `["linux/amd64", "linux/arm64"]`
+///   - `sbom`       defaults to `Some(StringOrBool::Bool(true))`
+///
+/// Retry defaults are applied later by `resolve_retry_params` (10 attempts,
+/// 10s base, 5m max) so they aren't repeated here.
+pub fn apply_docker_v2_defaults(
+    mut cfg: anodizer_core::config::DockerV2Config,
+    project_name: &str,
+) -> anodizer_core::config::DockerV2Config {
+    if cfg.id.is_none() {
+        cfg.id = Some(project_name.to_string());
+    }
+    if cfg.dockerfile.is_empty() {
+        cfg.dockerfile = "Dockerfile".to_string();
+    }
+    if cfg.tags.is_empty() {
+        cfg.tags = vec!["{{ .Tag }}".to_string()];
+    }
+    if cfg.platforms.is_none() {
+        cfg.platforms = Some(vec!["linux/amd64".to_string(), "linux/arm64".to_string()]);
+    }
+    if cfg.sbom.is_none() {
+        cfg.sbom = Some(StringOrBool::Bool(true));
+    }
+    cfg
+}
+
 /// Evaluate whether the sbom flag should be added for a Docker V2 config.
 ///
 /// The `sbom` field is a [`StringOrBool`]. When it evaluates to true, the
@@ -652,6 +685,14 @@ fn resolve_digest_config(
 /// Default-on: matches GoReleaser `internal/pipe/docker/v2/docker.go:85-87`,
 /// which sets `SBOM = "true"` at `Default()` time. Users opt out with
 /// `sbom: false` (or a templated string evaluating to `"false"`).
+///
+/// The default-on policy is enforced in two complementary places:
+/// 1. The `Default()`-apply block populates `cfg.sbom = Some(Bool(true))` so
+///    the resolved config written to `dist/config.yaml` round-trips faithfully
+///    (matches the `resolved_*()` lazy-defaults pattern used elsewhere).
+/// 2. This helper's `None` branch returns `Ok(true)` so any caller that
+///    bypasses the `Default()` apply (tests, hypothetical alternate entry
+///    points) still observes the canonical default.
 pub fn is_docker_v2_sbom_enabled(sbom: &Option<StringOrBool>, ctx: &Context) -> Result<bool> {
     match sbom {
         None => Ok(true),
@@ -1487,31 +1528,7 @@ impl Stage for DockerStage {
             // Apply GoReleaser-compatible defaults to V2 configs.
             let docker_v2_configs: Vec<_> = docker_v2_configs
                 .into_iter()
-                .map(|mut cfg| {
-                    // ID defaults to project name
-                    if cfg.id.is_none() {
-                        cfg.id = Some(ctx.config.project_name.clone());
-                    }
-                    // Dockerfile defaults to "Dockerfile"
-                    if cfg.dockerfile.is_empty() {
-                        cfg.dockerfile = "Dockerfile".to_string();
-                    }
-                    // Tags default to ["{{ .Tag }}"]
-                    if cfg.tags.is_empty() {
-                        cfg.tags = vec!["{{ .Tag }}".to_string()];
-                    }
-                    // Platforms default to ["linux/amd64", "linux/arm64"]
-                    if cfg.platforms.is_none() {
-                        cfg.platforms =
-                            Some(vec!["linux/amd64".to_string(), "linux/arm64".to_string()]);
-                    }
-                    // SBOM defaults to true
-                    if cfg.sbom.is_none() {
-                        cfg.sbom = Some(StringOrBool::Bool(true));
-                    }
-                    // Retry defaults are already handled by resolve_retry_params (10 attempts, 10s, 5m)
-                    cfg
-                })
+                .map(|cfg| apply_docker_v2_defaults(cfg, &ctx.config.project_name))
                 .collect();
 
             for (idx, v2_cfg) in docker_v2_configs.iter().enumerate() {
@@ -4136,12 +4153,68 @@ crates:
     fn test_is_docker_v2_sbom_enabled_none_defaults_on() {
         // GR-aligned default: when `sbom` is unset, SBOM attestation is
         // enabled. Mirrors `internal/pipe/docker/v2/docker.go:85-87` which
-        // assigns `SBOM = "true"` at Default() time. Pins C-new-7.
+        // assigns `SBOM = "true"` at Default() time. Pins C-new-7 at the
+        // helper level — defensive path for callers that bypass the
+        // Default()-apply pass.
         use anodizer_core::config::Config;
         use anodizer_core::context::{Context, ContextOptions};
 
         let ctx = Context::new(Config::default(), ContextOptions::default());
         assert!(is_docker_v2_sbom_enabled(&None, &ctx).unwrap());
+    }
+
+    #[test]
+    fn test_apply_docker_v2_defaults_sbom_none_resolves_to_true() {
+        // Pins C-new-7 at the wired Default()-apply level: a config with
+        // `sbom: None` post-defaults must carry `Some(Bool(true))` so the
+        // resolved YAML written to dist/config.yaml round-trips faithfully
+        // (matching GoReleaser's persistence behavior). Complements the
+        // helper-level test above.
+        use anodizer_core::config::DockerV2Config;
+
+        let cfg = apply_docker_v2_defaults(
+            DockerV2Config {
+                images: vec!["ghcr.io/owner/app".into()],
+                ..Default::default()
+            },
+            "myapp",
+        );
+        assert_eq!(cfg.sbom, Some(StringOrBool::Bool(true)));
+        // Spot-check the other applied defaults so a regression in any one
+        // of them surfaces from the same test.
+        assert_eq!(cfg.id.as_deref(), Some("myapp"));
+        assert_eq!(cfg.dockerfile, "Dockerfile");
+        assert_eq!(cfg.tags, vec!["{{ .Tag }}"]);
+        assert_eq!(
+            cfg.platforms.as_deref(),
+            Some(&["linux/amd64".to_string(), "linux/arm64".to_string()][..])
+        );
+    }
+
+    #[test]
+    fn test_apply_docker_v2_defaults_preserves_user_values() {
+        // User-set values must survive Default()-apply unchanged.
+        use anodizer_core::config::DockerV2Config;
+
+        let cfg = apply_docker_v2_defaults(
+            DockerV2Config {
+                id: Some("custom-id".into()),
+                dockerfile: "Containerfile".into(),
+                tags: vec!["v1".into()],
+                platforms: Some(vec!["linux/arm/v7".into()]),
+                sbom: Some(StringOrBool::Bool(false)),
+                ..Default::default()
+            },
+            "myapp",
+        );
+        assert_eq!(cfg.id.as_deref(), Some("custom-id"));
+        assert_eq!(cfg.dockerfile, "Containerfile");
+        assert_eq!(cfg.tags, vec!["v1"]);
+        assert_eq!(
+            cfg.platforms.as_deref(),
+            Some(&["linux/arm/v7".to_string()][..])
+        );
+        assert_eq!(cfg.sbom, Some(StringOrBool::Bool(false)));
     }
 
     #[test]

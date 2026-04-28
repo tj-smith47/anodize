@@ -421,10 +421,6 @@ pub fn generate_nfpm_yaml_with_env(
     //   CArchive  = "/usr/lib"
     //   CShared   = "/usr/lib"
     //
-    // When actual library artifacts are provided (from the artifact registry),
-    // use their paths directly. Otherwise, derive from the first binary stem
-    // for backward compatibility.
-    //
     // Apply GoReleaser-aligned libdirs defaults unconditionally (matching
     // `internal/pipe/nfpm/nfpm.go:59-67`, which sets these in `Default()`
     // regardless of whether any library artifacts exist). The inner emit-loop
@@ -5701,6 +5697,41 @@ crates:
         assert!(
             !yaml.contains("/usr/include"),
             "no library entries expected without actual artifacts:\n{yaml}"
+        );
+    }
+
+    #[test]
+    fn test_libdirs_none_no_artifacts_byte_identical() {
+        // Pins existing-C3: with `libdirs: None` AND no library artifacts,
+        // dropping the outer `has_library_artifacts || config.libdirs.is_some()`
+        // gate must be a no-op for the resulting package YAML — no
+        // `/usr/include` or `/usr/lib` entries appear because the inner emit
+        // loop iterates the (empty) `library_paths.{headers,c_archives,c_shared}`
+        // vectors. Complements `test_libdirs_no_artifacts_no_entries` which
+        // covers `libdirs: Some` + no artifacts.
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            meta: Some(true),
+            libdirs: None,
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(
+            &nfpm_cfg,
+            "1.0.0",
+            &["".to_string()],
+            None,
+            false,
+            &NfpmLibraryPaths::default(),
+        )
+        .unwrap();
+        assert!(
+            !yaml.contains("/usr/include"),
+            "header dir leaked despite no artifacts:\n{yaml}"
+        );
+        assert!(
+            !yaml.contains("/usr/lib"),
+            "lib dir leaked despite no artifacts:\n{yaml}"
         );
     }
 
