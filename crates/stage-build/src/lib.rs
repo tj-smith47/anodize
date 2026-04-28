@@ -675,6 +675,65 @@ pub(crate) fn is_target_ignored(target: &str, ignores: &[BuildIgnore]) -> bool {
     ignores.iter().any(|ig| ig.os == os && ig.arch == arch)
 }
 
+/// Resolve the merged env map for a build target by interpreting each
+/// `build.env` key as a glob pattern (matching the same `glob::Pattern`
+/// semantic used by `find_matching_override` and the `targets:` filter on
+/// upx / overrides).
+///
+/// Tradeoff-free UX win over the previous exact-key lookup: a user who writes
+/// `env: { "*-linux-gnu": { CC: musl-gcc } }` now gets that env applied to
+/// every linux-gnu target instead of silently nothing. Exact target strings
+/// are valid trivial globs and continue to match exactly as before.
+///
+/// Merge order: keys are visited in lexicographic order so the output is
+/// deterministic; later (alphabetically-greater) matching keys override
+/// earlier ones on conflicting values.
+///
+/// Returns `Ok(None)` when the env map is absent / empty / has no matching
+/// keys; otherwise `Ok(Some(merged))`.
+pub(crate) fn resolve_target_env(
+    env: Option<&HashMap<String, HashMap<String, String>>>,
+    target: &str,
+    log: &anodizer_core::log::StageLogger,
+    strict: bool,
+) -> anyhow::Result<Option<HashMap<String, String>>> {
+    let Some(env) = env else { return Ok(None) };
+    if env.is_empty() {
+        return Ok(None);
+    }
+    let mut sorted_keys: Vec<&String> = env.keys().collect();
+    sorted_keys.sort();
+    let mut merged: HashMap<String, String> = HashMap::new();
+    let mut matched_any = false;
+    for key in sorted_keys {
+        match glob::Pattern::new(key) {
+            Ok(pat) if pat.matches(target) => {
+                matched_any = true;
+                if let Some(vals) = env.get(key) {
+                    for (k, v) in vals {
+                        merged.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+            Ok(_) => {}
+            Err(e) => {
+                if strict {
+                    anyhow::bail!(
+                        "build: invalid glob pattern in build.env key '{}': {} (strict mode)",
+                        key,
+                        e
+                    );
+                }
+                log.warn(&format!(
+                    "invalid glob pattern in build.env key '{}': {}",
+                    key, e
+                ));
+            }
+        }
+    }
+    Ok(if matched_any { Some(merged) } else { None })
+}
+
 /// Find the first matching override for a target triple.
 /// Override `targets` are glob patterns matched against the full triple string.
 pub(crate) fn find_matching_override<'a>(
@@ -1725,11 +1784,13 @@ impl Stage for BuildStage {
                     // e.g. "aarch64-unknown-linux-gnu.2.17" -> stripped for dir
                     let (cargo_target_name, _has_glibc_suffix) = strip_glibc_suffix(target);
 
-                    let raw_target_env: Option<&HashMap<String, String>> =
-                        build.env.as_ref().and_then(|m| m.get(target.as_str()));
+                    // Glob-match per-target env keys (C-new-2). Owned merged
+                    // map; cargo_target_dir takes a borrow of it.
+                    let raw_target_env: Option<HashMap<String, String>> =
+                        resolve_target_env(build.env.as_ref(), target, &log, ctx.is_strict())?;
 
                     // Use stripped target name for directory path
-                    let bin_path = cargo_target_dir(raw_target_env)
+                    let bin_path = cargo_target_dir(raw_target_env.as_ref())
                         .join(cargo_target_name)
                         .join(profile)
                         .join(&output_name);
@@ -1741,7 +1802,7 @@ impl Stage for BuildStage {
                         } else {
                             src_binary.clone()
                         };
-                        let src_path = cargo_target_dir(raw_target_env)
+                        let src_path = cargo_target_dir(raw_target_env.as_ref())
                             .join(cargo_target_name)
                             .join(profile)
                             .join(&src_name);
@@ -1758,8 +1819,8 @@ impl Stage for BuildStage {
                         ctx.template_vars_mut().set("ArtifactID", "");
 
                         let copy_variant = raw_target_env
-                            .map(|e| detect_amd64_variant(target, e))
-                            .unwrap_or(None);
+                            .as_ref()
+                            .and_then(|e| detect_amd64_variant(target, e));
                         copy_jobs.push(BuildJob {
                             cmd: None,
                             copy_from: Some((src_path, bin_path.clone())),
@@ -1780,13 +1841,10 @@ impl Stage for BuildStage {
                         continue;
                     }
 
-                    // No copy_from: build a compilation command
-                    let mut target_env: HashMap<String, String> = build
-                        .env
-                        .as_ref()
-                        .and_then(|m| m.get(target.as_str()))
-                        .cloned()
-                        .unwrap_or_default();
+                    // No copy_from: build a compilation command. Use the
+                    // glob-matched env (C-new-2) — same merged map as above.
+                    let mut target_env: HashMap<String, String> =
+                        raw_target_env.clone().unwrap_or_default();
 
                     // Render env values and expand shell-style env var references.
                     // Cascade: each rendered KEY is injected into the template
@@ -3577,6 +3635,102 @@ crate_type = ["dylib"]
     }
 
     // ---- Build override tests ----
+
+    // ---- C-new-2: resolve_target_env glob-match tests ----
+
+    #[test]
+    fn test_resolve_target_env_exact_match() {
+        // Exact target strings remain trivial-glob matches: backward compat.
+        let log = test_logger();
+        let env: HashMap<String, HashMap<String, String>> = HashMap::from([(
+            "x86_64-unknown-linux-gnu".to_string(),
+            HashMap::from([("CC".to_string(), "gcc".to_string())]),
+        )]);
+        let merged = resolve_target_env(Some(&env), "x86_64-unknown-linux-gnu", &log, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(merged.get("CC").map(String::as_str), Some("gcc"));
+    }
+
+    #[test]
+    fn test_resolve_target_env_glob_match() {
+        // Pins C-new-2: a glob-keyed env entry now matches its targets instead
+        // of being silently ignored.
+        let log = test_logger();
+        let env: HashMap<String, HashMap<String, String>> = HashMap::from([(
+            "*-linux-gnu".to_string(),
+            HashMap::from([("CC".to_string(), "musl-gcc".to_string())]),
+        )]);
+        let merged = resolve_target_env(Some(&env), "x86_64-unknown-linux-gnu", &log, false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(merged.get("CC").map(String::as_str), Some("musl-gcc"));
+    }
+
+    #[test]
+    fn test_resolve_target_env_no_match_returns_none() {
+        let log = test_logger();
+        let env: HashMap<String, HashMap<String, String>> = HashMap::from([(
+            "*-linux-gnu".to_string(),
+            HashMap::from([("CC".to_string(), "musl-gcc".to_string())]),
+        )]);
+        let merged = resolve_target_env(Some(&env), "aarch64-apple-darwin", &log, false).unwrap();
+        assert!(merged.is_none());
+    }
+
+    #[test]
+    fn test_resolve_target_env_merges_multiple_matches() {
+        // When two patterns both match the target, both are merged.
+        // Lexicographic key order: later (alphabetically-greater) wins.
+        // "x86_64-unknown-linux-gnu" > "*-linux-gnu" so the exact-match value
+        // overrides the glob value on the conflicting key.
+        let log = test_logger();
+        let env: HashMap<String, HashMap<String, String>> = HashMap::from([
+            (
+                "*-linux-gnu".to_string(),
+                HashMap::from([
+                    ("CC".to_string(), "musl-gcc".to_string()),
+                    ("CFLAGS".to_string(), "-O2".to_string()),
+                ]),
+            ),
+            (
+                "x86_64-unknown-linux-gnu".to_string(),
+                HashMap::from([("CC".to_string(), "gcc-12".to_string())]),
+            ),
+        ]);
+        let merged = resolve_target_env(Some(&env), "x86_64-unknown-linux-gnu", &log, false)
+            .unwrap()
+            .unwrap();
+        // From the exact-match entry (later in sort order), wins on CC.
+        assert_eq!(merged.get("CC").map(String::as_str), Some("gcc-12"));
+        // From the glob entry (no override), preserved.
+        assert_eq!(merged.get("CFLAGS").map(String::as_str), Some("-O2"));
+    }
+
+    #[test]
+    fn test_resolve_target_env_invalid_glob_strict_errors() {
+        let log = test_logger();
+        let env: HashMap<String, HashMap<String, String>> = HashMap::from([(
+            "[invalid".to_string(),
+            HashMap::from([("X".to_string(), "y".to_string())]),
+        )]);
+        let err = resolve_target_env(Some(&env), "x86_64-unknown-linux-gnu", &log, true)
+            .expect_err("strict mode must reject invalid glob");
+        assert!(
+            err.to_string().contains("invalid glob pattern"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_target_env_none_input_returns_none() {
+        let log = test_logger();
+        assert!(
+            resolve_target_env(None, "x86_64-unknown-linux-gnu", &log, false)
+                .unwrap()
+                .is_none()
+        );
+    }
 
     #[test]
     fn test_find_matching_override_glob_match() {
