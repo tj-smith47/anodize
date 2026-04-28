@@ -2046,6 +2046,40 @@ blocks:
 
     #[test]
     #[serial]
+    fn test_missing_reddit_username_returns_error() {
+        unsafe { std::env::set_var("REDDIT_SECRET", "testsecret") };
+        unsafe { std::env::set_var("REDDIT_PASSWORD", "testpass") };
+        let announce = AnnounceConfig {
+            reddit: Some(RedditAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                application_id: Some("app123".to_string()),
+                username: None,
+                sub: Some("rust".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.announce = Some(announce);
+        // Skip-when-empty UX: hard error in strict mode only.
+        let opts = ContextOptions {
+            strict: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        let err = AnnounceStage.run(&mut ctx).unwrap_err();
+        assert!(
+            err.to_string().contains("missing username"),
+            "expected 'missing username' error, got: {err}"
+        );
+        unsafe { std::env::remove_var("REDDIT_SECRET") };
+        unsafe { std::env::remove_var("REDDIT_PASSWORD") };
+    }
+
+    #[test]
+    #[serial]
     fn test_missing_reddit_sub_warn_and_skip() {
         unsafe { std::env::set_var("REDDIT_SECRET", "testsecret") };
         unsafe { std::env::set_var("REDDIT_PASSWORD", "testpass") };
@@ -2063,6 +2097,40 @@ blocks:
         AnnounceStage
             .run(&mut ctx)
             .expect("normal-mode missing reddit sub must skip cleanly, not error");
+        unsafe { std::env::remove_var("REDDIT_SECRET") };
+        unsafe { std::env::remove_var("REDDIT_PASSWORD") };
+    }
+
+    #[test]
+    #[serial]
+    fn test_missing_reddit_sub_returns_error() {
+        unsafe { std::env::set_var("REDDIT_SECRET", "testsecret") };
+        unsafe { std::env::set_var("REDDIT_PASSWORD", "testpass") };
+        let announce = AnnounceConfig {
+            reddit: Some(RedditAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                application_id: Some("app123".to_string()),
+                username: Some("testuser".to_string()),
+                sub: None,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.announce = Some(announce);
+        // Skip-when-empty UX: hard error in strict mode only.
+        let opts = ContextOptions {
+            strict: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        let err = AnnounceStage.run(&mut ctx).unwrap_err();
+        assert!(
+            err.to_string().contains("missing sub"),
+            "expected 'missing sub' error, got: {err}"
+        );
         unsafe { std::env::remove_var("REDDIT_SECRET") };
         unsafe { std::env::remove_var("REDDIT_PASSWORD") };
     }
@@ -3000,14 +3068,26 @@ blocks:
         let mut ctx = Context::new(config, opts);
         ctx.template_vars_mut().set("Tag", "v1.0.0");
         let err = AnnounceStage.run(&mut ctx).unwrap_err();
-        let msg = err.to_string().to_lowercase();
+        // Structural assertion against anodizer-controlled wrapping strings only:
+        // - "announce errors:" comes from the stage aggregator (lib.rs:1046)
+        // - "mattermost:" comes from the per-announcer error tag (lib.rs:703)
+        // - "failed to render template" comes from the anodizer template engine's
+        //   `with_context` wrapper (`crates/core/src/template.rs:1552`)
+        // None of these depend on Tera's internal error wording, so this test
+        // stays green if Tera renames "syntax error" → "parse error" (or similar)
+        // upstream. The previous 5-token disjunction (`template`/`render`/`parse`/
+        // `syntax`/`tera`) leaned on Tera-internal phrases for some branches and
+        // would silently degrade if Tera reworded them.
+        //
+        // Note: we cannot use `err.chain().any(|e| e.is::<tera::Error>())` here
+        // because the per-announcer block at lib.rs:703 collapses each inner
+        // error to a String via `format!("mattermost: {e}")` before re-bailing
+        // through `anyhow::bail!`, flattening the chain to a single layer.
+        let msg = err.to_string();
         assert!(
-            msg.contains("mattermost")
-                && (msg.contains("template")
-                    || msg.contains("render")
-                    || msg.contains("parse")
-                    || msg.contains("syntax")
-                    || msg.contains("tera")),
+            msg.contains("announce errors:")
+                && msg.contains("mattermost:")
+                && msg.contains("failed to render template"),
             "expected mattermost template render error proving channel rendering is invoked, got: {err}"
         );
     }

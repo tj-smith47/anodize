@@ -19,6 +19,10 @@ violations, user-reported issues.
 
 ## Active
 
+### Group G review deferral — 2026-04-28 (1 MINOR)
+
+- [ ] `crates/stage-announce/src/lib.rs:443, 464-466` — webhook header-map precedence is case-sensitive: a user-supplied lowercase `authorization` or `user-agent` header bypasses the `entry()`-based override guard and both the user value and anodizer's default are pushed to reqwest. Pre-existing pattern (predates `7512379`); the new `User-Agent` precedence block re-confirms the gap. Action: case-fold the lookup OR normalize header keys at parse time. Source: Group G code-quality review.
+
 ### Group F·3 review deferrals — 2026-04-28 (2 MINOR)
 
 - [ ] `crates/core/src/context.rs:146-153` — fields `changelog_header: Option<String>` and `changelog_footer: Option<String>` joined the existing `changelogs: HashMap<String, String>` on the stage-output side of `Context`. As more stage→stage handoff fields accrete, a `StageOutputs` sub-struct would compress the surface and keep input/output state cleanly separated. Defer until a third stage-output pair lands; then break out. Source: F·3 code-quality review.
