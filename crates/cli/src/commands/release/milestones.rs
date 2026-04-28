@@ -8,7 +8,10 @@ use anyhow::{Context as _, Result};
 ///
 /// For each milestone config with `close: true`, renders the name template,
 /// resolves the repo owner/name, and calls the GitHub/GitLab/Gitea API to
-/// close the milestone. Errors are logged as warnings unless `fail_on_error` is set.
+/// close the milestone. Config-resolution failures (empty rendered name,
+/// unresolvable repo) route through [`Context::strict_guard`] (warn in
+/// normal mode, error in `--strict`); `CloseMilestone` API failures are
+/// gated by `fail_on_error`.
 pub(super) fn close_milestones(
     milestones: &[anodizer_core::config::MilestoneConfig],
     ctx: &mut Context,
@@ -41,7 +44,7 @@ pub(super) fn close_milestones(
             .context("milestone: render name_template")?;
 
         if milestone_name.is_empty() {
-            log.verbose("milestone: skipping empty name");
+            ctx.strict_guard(log, "milestone: name_template rendered to empty — skipping")?;
             continue;
         }
 
@@ -51,10 +54,10 @@ pub(super) fn close_milestones(
         let (owner, repo_name) = resolve_milestone_repo(milestone_cfg, &ctx.config, ctx.token_type);
 
         if owner.is_empty() || repo_name.is_empty() {
-            if milestone_cfg.resolved_fail_on_error() {
-                anyhow::bail!("milestone: repo owner/name not configured");
-            }
-            log.warn("milestone: skipping — repo owner/name not configured");
+            ctx.strict_guard(
+                log,
+                "milestone: repo owner/name not resolvable — skipping close",
+            )?;
             continue;
         }
 
@@ -484,4 +487,146 @@ fn close_milestone_gitea(
         }
         Ok(MilestoneCloseOutcome::Closed)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anodizer_core::config::{
+        Config, CrateConfig, MilestoneConfig, ReleaseConfig, ScmRepoConfig,
+    };
+    use anodizer_core::context::ContextOptions;
+
+    fn ctx_with_strict(config: Config, strict: bool) -> Context {
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                strict,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx
+    }
+
+    fn config_with_resolvable_repo() -> Config {
+        Config {
+            crates: vec![CrateConfig {
+                release: Some(ReleaseConfig {
+                    github: Some(ScmRepoConfig {
+                        owner: "toss45".into(),
+                        name: "anodize".into(),
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn config_with_empty_release_block() -> Config {
+        // An empty github block forces resolve_milestone_repo to return ("", "")
+        // via the preferred-token-type branch, exercising the unresolvable-repo
+        // path without needing to mock `git::detect_owner_repo`.
+        Config {
+            crates: vec![CrateConfig {
+                release: Some(ReleaseConfig {
+                    github: Some(ScmRepoConfig {
+                        owner: String::new(),
+                        name: String::new(),
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn empty_name_normal_mode_warns_and_skips() {
+        let config = config_with_resolvable_repo();
+        let mut ctx = ctx_with_strict(config, false);
+        let log = ctx.logger("milestone");
+        let milestones = vec![MilestoneConfig {
+            close: Some(true),
+            name_template: Some(String::new()),
+            ..Default::default()
+        }];
+        close_milestones(&milestones, &mut ctx, true, &log)
+            .expect("normal mode must skip empty rendered name cleanly");
+    }
+
+    #[test]
+    fn empty_name_strict_mode_errors() {
+        let config = config_with_resolvable_repo();
+        let mut ctx = ctx_with_strict(config, true);
+        let log = ctx.logger("milestone");
+        let milestones = vec![MilestoneConfig {
+            close: Some(true),
+            name_template: Some(String::new()),
+            ..Default::default()
+        }];
+        let err = close_milestones(&milestones, &mut ctx, true, &log)
+            .expect_err("strict mode must error on empty rendered name");
+        assert!(
+            err.to_string().contains("rendered to empty"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn unresolvable_repo_normal_mode_warns_and_skips() {
+        let config = config_with_empty_release_block();
+        let mut ctx = ctx_with_strict(config, false);
+        let log = ctx.logger("milestone");
+        let milestones = vec![MilestoneConfig {
+            close: Some(true),
+            name_template: Some("{{ Tag }}".into()),
+            ..Default::default()
+        }];
+        close_milestones(&milestones, &mut ctx, true, &log)
+            .expect("normal mode must skip unresolvable repo cleanly");
+    }
+
+    #[test]
+    fn unresolvable_repo_strict_mode_errors() {
+        let config = config_with_empty_release_block();
+        let mut ctx = ctx_with_strict(config, true);
+        let log = ctx.logger("milestone");
+        let milestones = vec![MilestoneConfig {
+            close: Some(true),
+            name_template: Some("{{ Tag }}".into()),
+            ..Default::default()
+        }];
+        let err = close_milestones(&milestones, &mut ctx, true, &log)
+            .expect_err("strict mode must error on unresolvable repo");
+        assert!(
+            err.to_string().contains("not resolvable"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn unresolvable_repo_ignores_fail_on_error() {
+        // Decoupling regression: `fail_on_error` gates only CloseMilestone API
+        // failures. Config-resolution failures route through `strict_guard`
+        // independently — `fail_on_error: true` must not turn a normal-mode
+        // unresolvable-repo into a hard error.
+        let config = config_with_empty_release_block();
+        let mut ctx = ctx_with_strict(config, false);
+        let log = ctx.logger("milestone");
+        let milestones = vec![MilestoneConfig {
+            close: Some(true),
+            fail_on_error: Some(true),
+            name_template: Some("{{ Tag }}".into()),
+            ..Default::default()
+        }];
+        close_milestones(&milestones, &mut ctx, true, &log)
+            .expect("fail_on_error must not gate config-resolution failures");
+    }
 }
