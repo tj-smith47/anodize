@@ -30,7 +30,7 @@ violations, user-reported issues.
 
 ### Session C Stream 2 final review deferral — 2026-04-28 (1 MINOR)
 
-- [ ] `crates/stage-changelog/src/lib.rs::tests` (23 sites) — hand-rolled `Context::new(config, ContextOptions::default())` setups instead of using the canonical `TestContextBuilder` from `crates/core/src/test_helpers.rs`. Other crates (stage-templatefiles/msi/checksum/release/upx/sign/source/archive) already migrated. Action: migrate stage-changelog test setups to `TestContextBuilder`. Pre-existing pattern; the new `test_changelog_stage_github_no_prev_tag_uses_git_fallback` test added in `860c243` perpetuated it but did not introduce it. Source: Session C Stream 2 final cross-cutting review.
+- [ ] `crates/stage-changelog/src/lib.rs::tests` (21 sites) — hand-rolled `Context::new(config, ContextOptions::default())` setups instead of using the canonical `TestContextBuilder` from `crates/core/src/test_helpers.rs`. Other crates (stage-templatefiles/msi/checksum/release/upx/sign/source/archive) already migrated. Action: migrate stage-changelog test setups to `TestContextBuilder`. Pre-existing pattern; the new `test_changelog_stage_github_no_prev_tag_uses_git_fallback` test added in `860c243` perpetuated it but did not introduce it. Source: Session C Stream 2 final cross-cutting review.
 
 ### Session C / Group E review deferrals — 2026-04-28 (1 MINOR)
 
