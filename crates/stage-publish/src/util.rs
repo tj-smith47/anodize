@@ -1483,6 +1483,37 @@ pub(crate) fn find_windows_artifact(ctx: &Context, crate_name: &str) -> Option<(
 }
 
 // ---------------------------------------------------------------------------
+// Template render helper
+// ---------------------------------------------------------------------------
+
+/// Render `raw` through the context template engine and on error emit a
+/// `log.warn` describing the failed `field` (e.g. `"aur.name"`,
+/// `"aur.description"`, `"aur.directory"`) and fall back to the raw value.
+///
+/// Originally these sites used `ctx.render_template(...).unwrap_or_else(|_|
+/// raw.clone())` which silently swallowed malformed-template errors and
+/// propagated the raw string downstream — defeating debuggability. The
+/// non-strict warn-and-fallback path keeps currently-malformed user
+/// configs building (no behavior regression) while making the error
+/// visible in stage output.
+///
+/// `field` should carry the namespace (e.g. `"aur.name"`,
+/// `"aur_source.directory"`); the warn message does not prepend a stage
+/// prefix because `StageLogger` already does that for every line.
+pub(crate) fn render_or_warn(ctx: &Context, log: &StageLogger, field: &str, raw: &str) -> String {
+    match ctx.render_template(raw) {
+        Ok(rendered) => rendered,
+        Err(e) => {
+            log.warn(&format!(
+                "failed to render {field} template {raw:?}: {e}; \
+                 falling back to raw value"
+            ));
+            raw.to_string()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -2229,5 +2260,51 @@ mod tests {
         };
         let got = resolve_repo_owner_name(Some(&repo));
         assert_eq!(got, None);
+    }
+
+    // -----------------------------------------------------------------------
+    // render_or_warn regression: malformed template must NOT propagate as
+    // Err; instead, the raw value is preserved and a warning is emitted.
+    // Pins the warn-and-fallback path against a future drift back to
+    // `unwrap_or_else(|_| raw.clone())` (silent swallow) or `with_context()`
+    // (hard-fail). Source: Session C / Group E review deferral 2026-04-28.
+    // -----------------------------------------------------------------------
+
+    /// A malformed Tera template (`{{ unclosed`) feeding `render_or_warn`
+    /// must yield the raw value back (not Err, not empty). The warning
+    /// surfaces on stderr — the unit assertion focuses on the fallback
+    /// value which is the load-bearing wire-shape contract.
+    #[test]
+    fn test_render_or_warn_falls_back_on_malformed_template() {
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::log::{StageLogger, Verbosity};
+
+        let ctx = Context::new(Config::default(), ContextOptions::default());
+        let log = StageLogger::new("publish", Verbosity::Normal);
+
+        let raw = "{{ unclosed";
+        let out = render_or_warn(&ctx, &log, "aur.name", raw);
+        assert_eq!(
+            out, raw,
+            "malformed template must fall back to raw value, got {out:?}"
+        );
+    }
+
+    /// Well-formed templates render normally — pin the success path so a
+    /// future refactor that breaks the Ok branch trips this test.
+    #[test]
+    fn test_render_or_warn_renders_well_formed_template() {
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::log::{StageLogger, Verbosity};
+
+        let mut config = Config::default();
+        config.project_name = "myproj".to_string();
+        let ctx = Context::new(config, ContextOptions::default());
+        let log = StageLogger::new("publish", Verbosity::Normal);
+
+        let out = render_or_warn(&ctx, &log, "aur.name", "{{ .ProjectName }}-bin");
+        assert_eq!(out, "myproj-bin");
     }
 }

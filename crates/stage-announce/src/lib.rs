@@ -191,6 +191,9 @@ fn resolve_webhook_headers(
     user_agent_default: &str,
 ) -> HashMap<String, String> {
     let mut headers = user_headers;
+    // O(n) per lookup, O(n²) over the precedence walk. Fine for webhook
+    // header counts (typically <10); a future optimizer should not reach
+    // for `HeaderMap` reflexively.
     let has_user_key = |target: &str, h: &HashMap<String, String>| -> bool {
         h.keys().any(|k| k.eq_ignore_ascii_case(target))
     };
