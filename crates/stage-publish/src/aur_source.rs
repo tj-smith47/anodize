@@ -217,7 +217,16 @@ fn publish_aur_source_entry(
         }
 
         let output_dir = if let Some(ref dir) = cfg.directory {
-            let rendered_dir = ctx.render_template(dir).unwrap_or_else(|_| dir.clone());
+            let rendered_dir = match ctx.render_template(dir) {
+                Ok(rendered) => rendered,
+                Err(e) => {
+                    log.warn(&format!(
+                        "{label}: failed to render directory template {dir:?}: {e}; \
+                         falling back to raw value"
+                    ));
+                    dir.clone()
+                }
+            };
             let d = repo_path.join(&rendered_dir);
             std::fs::create_dir_all(&d)?;
             d

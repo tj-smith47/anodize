@@ -368,6 +368,33 @@ pub(crate) fn aur_resolve_defaults(
 }
 
 // ---------------------------------------------------------------------------
+// Template render helper
+// ---------------------------------------------------------------------------
+
+/// Render `raw` through the context template engine and on error emit a
+/// `log.warn` describing the failed `field` (e.g. `"aur.name"`,
+/// `"aur.description"`, `"aur.directory"`) and fall back to the raw value.
+///
+/// Originally these sites used `ctx.render_template(...).unwrap_or_else(|_|
+/// raw.clone())` which silently swallowed malformed-template errors and
+/// propagated the raw string downstream — defeating debuggability. The
+/// non-strict warn-and-fallback path keeps currently-malformed user
+/// configs building (no behavior regression) while making the error
+/// visible in stage output.
+pub(crate) fn render_or_warn(ctx: &Context, log: &StageLogger, field: &str, raw: &str) -> String {
+    match ctx.render_template(raw) {
+        Ok(rendered) => rendered,
+        Err(e) => {
+            log.warn(&format!(
+                "aur: failed to render {field} template {raw:?}: {e}; \
+                 falling back to raw value"
+            ));
+            raw.to_string()
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // publish_to_aur
 // ---------------------------------------------------------------------------
 
@@ -431,10 +458,11 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     let project_name_for_defaults = ctx.config.project_name.as_str();
     let raw_package_name = aur_default_package_name(aur_cfg, crate_name);
     // Render the resolved name through the template engine — users who set
-    // `aur.name: "{{ .ProjectName }}-bin"` rely on this.
-    let package_name = ctx
-        .render_template(&raw_package_name)
-        .unwrap_or_else(|_| raw_package_name.clone());
+    // `aur.name: "{{ .ProjectName }}-bin"` rely on this. On render failure
+    // (typically a malformed template like `{{ unclosed`), surface a warning
+    // and fall back to the raw value: a visible warning beats a silent
+    // swallow without breaking a currently-malformed user build.
+    let package_name = render_or_warn(ctx, log, "aur.name", &raw_package_name);
     let resolved_defaults = aur_resolve_defaults(aur_cfg, &package_name, project_name_for_defaults);
     // GoReleaser Pro parity: fall back to project `metadata.*` when aur config unset.
     let description_raw = aur_cfg
@@ -442,9 +470,7 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
         .as_deref()
         .or_else(|| ctx.config.meta_description())
         .unwrap_or(crate_name);
-    let description = ctx
-        .render_template(description_raw)
-        .unwrap_or_else(|_| description_raw.to_string());
+    let description = render_or_warn(ctx, log, "aur.description", description_raw);
     let license = aur_cfg
         .license
         .clone()
@@ -609,7 +635,7 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
     // Determine output directory (optional subdirectory in the repo).
     // GoReleaser templates the directory field (aur.go:103-108).
     let output_dir = if let Some(ref dir) = aur_cfg.directory {
-        let rendered_dir = ctx.render_template(dir).unwrap_or_else(|_| dir.clone());
+        let rendered_dir = render_or_warn(ctx, log, "aur.directory", dir);
         let d = repo_path.join(&rendered_dir);
         std::fs::create_dir_all(&d)
             .with_context(|| format!("aur: create directory {}", d.display()))?;
@@ -1449,5 +1475,51 @@ mod tests {
             resolved.provides,
         );
         assert_eq!(resolved.provides[0], "");
+    }
+
+    // -----------------------------------------------------------------------
+    // render_or_warn regression: malformed template must NOT propagate as
+    // Err; instead, the raw value is preserved and a warning is emitted.
+    // Pins the warn-and-fallback path against a future drift back to
+    // `unwrap_or_else(|_| raw.clone())` (silent swallow) or `with_context()`
+    // (hard-fail). Source: Session C / Group E review deferral 2026-04-28.
+    // -----------------------------------------------------------------------
+
+    /// A malformed Tera template (`{{ unclosed`) feeding `render_or_warn`
+    /// must yield the raw value back (not Err, not empty). The warning
+    /// surfaces on stderr — the unit assertion focuses on the fallback
+    /// value which is the load-bearing wire-shape contract.
+    #[test]
+    fn test_render_or_warn_falls_back_on_malformed_template() {
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::log::{StageLogger, Verbosity};
+
+        let ctx = Context::new(Config::default(), ContextOptions::default());
+        let log = StageLogger::new("publish", Verbosity::Normal);
+
+        let raw = "{{ unclosed";
+        let out = render_or_warn(&ctx, &log, "aur.name", raw);
+        assert_eq!(
+            out, raw,
+            "malformed template must fall back to raw value, got {out:?}"
+        );
+    }
+
+    /// Well-formed templates render normally — pin the success path so a
+    /// future refactor that breaks the Ok branch trips this test.
+    #[test]
+    fn test_render_or_warn_renders_well_formed_template() {
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::log::{StageLogger, Verbosity};
+
+        let mut config = Config::default();
+        config.project_name = "myproj".to_string();
+        let ctx = Context::new(config, ContextOptions::default());
+        let log = StageLogger::new("publish", Verbosity::Normal);
+
+        let out = render_or_warn(&ctx, &log, "aur.name", "{{ .ProjectName }}-bin");
+        assert_eq!(out, "myproj-bin");
     }
 }

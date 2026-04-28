@@ -19,10 +19,6 @@ violations, user-reported issues.
 
 ## Active
 
-### Group G review deferral — 2026-04-28 (1 MINOR)
-
-- [ ] `crates/stage-announce/src/lib.rs:443, 464-466` — webhook header-map precedence is case-sensitive: a user-supplied lowercase `authorization` or `user-agent` header bypasses the `entry()`-based override guard and both the user value and anodizer's default are pushed to reqwest. Pre-existing pattern (predates `7512379`); the new `User-Agent` precedence block re-confirms the gap. Action: case-fold the lookup OR normalize header keys at parse time. Source: Group G code-quality review.
-
 ### Group F·3 review deferrals — 2026-04-28 (2 MINOR)
 
 - [ ] `crates/core/src/context.rs:146-153` — fields `changelog_header: Option<String>` and `changelog_footer: Option<String>` joined the existing `changelogs: HashMap<String, String>` on the stage-output side of `Context`. As more stage→stage handoff fields accrete, a `StageOutputs` sub-struct would compress the surface and keep input/output state cleanly separated. Defer until a third stage-output pair lands; then break out. Source: F·3 code-quality review.
@@ -31,10 +27,6 @@ violations, user-reported issues.
 ### Session C Stream 2 final review deferral — 2026-04-28 (1 MINOR)
 
 - [ ] `crates/stage-changelog/src/lib.rs::tests` (21 sites) — hand-rolled `Context::new(config, ContextOptions::default())` setups instead of using the canonical `TestContextBuilder` from `crates/core/src/test_helpers.rs`. Other crates (stage-templatefiles/msi/checksum/release/upx/sign/source/archive) already migrated. Action: migrate stage-changelog test setups to `TestContextBuilder`. Pre-existing pattern; the new `test_changelog_stage_github_no_prev_tag_uses_git_fallback` test added in `860c243` perpetuated it but did not introduce it. Source: Session C Stream 2 final cross-cutting review.
-
-### Session C / Group E review deferrals — 2026-04-28 (1 MINOR)
-
-- [ ] `crates/stage-publish/src/aur.rs:435-437` — `ctx.render_template(&raw_package_name).unwrap_or_else(|_| raw_package_name.clone())` silently swallows malformed-template errors and propagates the raw string into `base_name`, defeating the rendered-vs-raw fix landed in `73d7776` for the malformed-template case. Pre-existing pattern (not introduced by `1e98536` or `73d7776`); flagged during the Group E code-quality re-review. Fix: surface render errors with `with_context()` (or `log.warn()` + fallback if the silent path is intentional). Behavior change — opening surfaces previously-swallowed errors to currently-malformed configs, so worth its own scope decision.
 
 ### Tracked migrations / scope-creep deferrals — 2026-04-27 (4 SUGGEST)
 

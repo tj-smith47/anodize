@@ -164,6 +164,53 @@ fn dispatch(
 }
 
 // ---------------------------------------------------------------------------
+// Webhook header resolver
+// ---------------------------------------------------------------------------
+
+/// Resolve the effective webhook header set: start with user-supplied
+/// `headers`, then apply anodizer's defaults for `Authorization` (from
+/// `BASIC_AUTH_HEADER_VALUE` or `BEARER_TOKEN_HEADER_VALUE`) and
+/// `User-Agent` (`anodizer_core::http::USER_AGENT`) only when the user did
+/// not already supply that header.
+///
+/// HTTP header names are case-insensitive (RFC 7230 §3.2). A user who
+/// writes `headers: { authorization: "user-foo" }` (lowercase) expects
+/// their value to win over anodizer's default — but a naive
+/// `headers.contains_key("Authorization")` lookup would miss the lowercase
+/// key, push BOTH the user's `authorization` AND anodizer's `Authorization`
+/// onto the wire, and let reqwest send two competing headers. This
+/// helper case-folds the lookup so any spelling of `authorization` /
+/// `user-agent` (or any other override) is honored.
+///
+/// Pinned by `test_resolve_webhook_headers_*` — drift back to a
+/// case-sensitive `contains_key` will trip those tests.
+fn resolve_webhook_headers(
+    user_headers: HashMap<String, String>,
+    basic_auth: Option<&str>,
+    bearer_token: Option<&str>,
+    user_agent_default: &str,
+) -> HashMap<String, String> {
+    let mut headers = user_headers;
+    let has_user_key = |target: &str, h: &HashMap<String, String>| -> bool {
+        h.keys().any(|k| k.eq_ignore_ascii_case(target))
+    };
+
+    if !has_user_key("Authorization", &headers) {
+        if let Some(basic) = basic_auth.filter(|s| !s.is_empty()) {
+            headers.insert("Authorization".to_string(), basic.to_string());
+        } else if let Some(bearer) = bearer_token.filter(|s| !s.is_empty()) {
+            headers.insert("Authorization".to_string(), bearer.to_string());
+        }
+    }
+
+    if !has_user_key("User-Agent", &headers) {
+        headers.insert("User-Agent".to_string(), user_agent_default.to_string());
+    }
+
+    headers
+}
+
+// ---------------------------------------------------------------------------
 // AnnounceStage
 // ---------------------------------------------------------------------------
 
@@ -431,39 +478,33 @@ impl Stage for AnnounceStage {
                 )?;
 
                 let raw_headers = cfg.headers.clone().unwrap_or_default();
-                let mut headers = HashMap::new();
+                let mut user_headers = HashMap::new();
                 for (k, v) in &raw_headers {
-                    headers.insert(k.clone(), ctx.render_template(v)?);
+                    user_headers.insert(k.clone(), ctx.render_template(v)?);
                 }
 
                 // `BASIC_AUTH_HEADER_VALUE` / `BEARER_TOKEN_HEADER_VALUE` populate
                 // `Authorization` only when the config didn't already set one —
-                // user-supplied `headers.Authorization` wins. Basic auth takes
-                // priority over bearer token.
-                if !headers.contains_key("Authorization") {
-                    if let Ok(basic) = std::env::var("BASIC_AUTH_HEADER_VALUE") {
-                        if !basic.is_empty() {
-                            headers.insert("Authorization".to_string(), basic);
-                        }
-                    } else if let Ok(bearer) = std::env::var("BEARER_TOKEN_HEADER_VALUE")
-                        && !bearer.is_empty()
-                    {
-                        headers.insert("Authorization".to_string(), bearer);
-                    }
-                }
-
-                // Anodize-additive UX win (locked 2026-04-28): we send
-                // `User-Agent: anodizer/<version>` so operators can attribute
-                // incoming webhooks to anodizer for routing, rate-limiting,
-                // and audit-log tagging. GoReleaser
+                // user-supplied `headers.Authorization` wins (case-insensitive,
+                // per RFC 7230). Basic auth takes priority over bearer token.
+                //
+                // Anodize-additive UX win (locked 2026-04-28): we also send
+                // `User-Agent: anodizer/<version>` (unless the user overrides)
+                // so operators can attribute incoming webhooks to anodizer for
+                // routing, rate-limiting, and audit-log tagging. GoReleaser
                 // (`internal/pipe/webhook/webhook.go`) sends a static
                 // `User-Agent: goreleaser` with no version suffix; the
                 // version-suffixed variant is tradeoff-free (same wire shape,
                 // strictly more debuggable). Pinned by
                 // `test_webhook_user_agent_is_anodizer_versioned`.
-                headers
-                    .entry("User-Agent".to_string())
-                    .or_insert_with(|| anodizer_core::http::USER_AGENT.to_string());
+                let basic_auth_env = std::env::var("BASIC_AUTH_HEADER_VALUE").ok();
+                let bearer_token_env = std::env::var("BEARER_TOKEN_HEADER_VALUE").ok();
+                let headers = resolve_webhook_headers(
+                    user_headers,
+                    basic_auth_env.as_deref(),
+                    bearer_token_env.as_deref(),
+                    anodizer_core::http::USER_AGENT,
+                );
 
                 // GoReleaser defaults to "application/json; charset=utf-8".
                 let content_type = cfg
@@ -3124,6 +3165,139 @@ blocks:
         AnnounceStage.run(&mut ctx).expect(
             "mattermost channel/username/icon_url/icon_emoji template rendering must \
                      succeed in dry-run with valid templates",
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Webhook header resolver — case-insensitive precedence
+    //
+    // Pre-2026-04-28 the header-precedence logic used
+    // `headers.contains_key("Authorization")` and a HashMap `entry("User-
+    // Agent")` to gate anodizer's defaults. HTTP header names are case-
+    // insensitive (RFC 7230); a user who wrote `headers: { authorization:
+    // "user-foo" }` (lowercase) bypassed the gate, anodizer pushed its own
+    // `Authorization` header, and reqwest emitted BOTH on the wire. The
+    // resolver now case-folds the override check; these tests pin that
+    // behavior. Source: Group G review deferral 2026-04-28.
+    // -----------------------------------------------------------------------
+
+    /// Lowercase `authorization` from the user must suppress anodizer's
+    /// `BASIC_AUTH_HEADER_VALUE` / `BEARER_TOKEN_HEADER_VALUE` default and
+    /// be the SOLE Authorization key (no duplicate of any case).
+    #[test]
+    fn test_resolve_webhook_headers_lowercase_authorization_wins() {
+        let mut user = HashMap::new();
+        user.insert("authorization".to_string(), "user-foo".to_string());
+
+        let resolved = resolve_webhook_headers(user, Some("Basic ZGVmYXVsdA=="), None, "ua/1.0");
+
+        // Sole Authorization key, case-folded count == 1.
+        let auth_count = resolved
+            .iter()
+            .filter(|(k, _)| k.eq_ignore_ascii_case("Authorization"))
+            .count();
+        assert_eq!(
+            auth_count, 1,
+            "exactly one Authorization-equivalent key must be present, got {resolved:?}"
+        );
+
+        // The value must be the user's, not anodizer's basic_auth default.
+        let (_, val) = resolved
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("Authorization"))
+            .expect("Authorization key present");
+        assert_eq!(
+            val, "user-foo",
+            "user-supplied lowercase authorization must win over basic_auth env default"
+        );
+    }
+
+    /// Lowercase `user-agent` from the user must suppress anodizer's
+    /// `User-Agent` default and be the SOLE User-Agent key.
+    #[test]
+    fn test_resolve_webhook_headers_lowercase_user_agent_wins() {
+        let mut user = HashMap::new();
+        user.insert("user-agent".to_string(), "custom-ua/9.9".to_string());
+
+        let resolved = resolve_webhook_headers(user, None, None, "anodizer/1.2.3");
+
+        let ua_count = resolved
+            .iter()
+            .filter(|(k, _)| k.eq_ignore_ascii_case("User-Agent"))
+            .count();
+        assert_eq!(
+            ua_count, 1,
+            "exactly one User-Agent-equivalent key must be present, got {resolved:?}"
+        );
+
+        let (_, val) = resolved
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("User-Agent"))
+            .expect("User-Agent key present");
+        assert_eq!(
+            val, "custom-ua/9.9",
+            "user-supplied lowercase user-agent must win over anodizer default"
+        );
+    }
+
+    /// Mixed-case `aUtHoRiZaTiOn` likewise wins (defensive: HTTP header
+    /// names are case-insensitive across the spec, not just the two
+    /// canonical spellings).
+    #[test]
+    fn test_resolve_webhook_headers_mixed_case_authorization_wins() {
+        let mut user = HashMap::new();
+        user.insert("aUtHoRiZaTiOn".to_string(), "weird-case".to_string());
+
+        let resolved = resolve_webhook_headers(user, None, Some("Bearer xyz"), "ua/1.0");
+
+        let auth_count = resolved
+            .iter()
+            .filter(|(k, _)| k.eq_ignore_ascii_case("Authorization"))
+            .count();
+        assert_eq!(auth_count, 1, "got {resolved:?}");
+
+        let (_, val) = resolved
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("Authorization"))
+            .expect("Authorization key present");
+        assert_eq!(
+            val, "weird-case",
+            "user-supplied mixed-case Authorization must win over bearer_token env default"
+        );
+    }
+
+    /// When the user supplies neither, anodizer's defaults populate both
+    /// `Authorization` (from basic_auth) and `User-Agent`.
+    #[test]
+    fn test_resolve_webhook_headers_defaults_apply_when_user_silent() {
+        let resolved =
+            resolve_webhook_headers(HashMap::new(), Some("Basic abc"), None, "anodizer/1.2.3");
+
+        assert_eq!(
+            resolved.get("Authorization").map(String::as_str),
+            Some("Basic abc")
+        );
+        assert_eq!(
+            resolved.get("User-Agent").map(String::as_str),
+            Some("anodizer/1.2.3")
+        );
+    }
+
+    /// Basic auth takes priority over bearer token when both env vars are
+    /// set and the user has not supplied an Authorization header.
+    #[test]
+    fn test_resolve_webhook_headers_basic_auth_priority_over_bearer() {
+        let resolved = resolve_webhook_headers(
+            HashMap::new(),
+            Some("Basic abc"),
+            Some("Bearer xyz"),
+            "anodizer/1.2.3",
+        );
+
+        assert_eq!(
+            resolved.get("Authorization").map(String::as_str),
+            Some("Basic abc"),
+            "basic auth must take priority over bearer token"
         );
     }
 }
