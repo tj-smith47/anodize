@@ -778,4 +778,107 @@ mod tests {
             err
         );
     }
+
+    #[test]
+    fn resolve_milestone_for_close_returns_target_with_resolved_fields() {
+        // Pin the user-facing artifact: when pre-flight emits its status log
+        // ("milestone: will close 'X' on Y/Z"), the resolved fields must come
+        // through as expected. Asserting on the helper's return value catches
+        // a regression where `log.status` is dropped from preflight_milestones
+        // (which the public-API test alone cannot detect).
+        let config = config_with_resolvable_repo();
+        let ctx = ctx_with_strict(config, false);
+        let log = ctx.logger("milestone");
+        let milestone_cfg = MilestoneConfig {
+            close: Some(true),
+            name_template: Some("{{ Tag }}".into()),
+            ..Default::default()
+        };
+        let target = resolve_milestone_for_close(&milestone_cfg, &ctx, &log)
+            .expect("resolution must succeed")
+            .expect("close: true + resolvable repo must return Some(target)");
+        assert_eq!(target.name, "v1.0.0");
+        assert_eq!(target.owner, "toss45");
+        assert_eq!(target.repo_name, "anodize");
+    }
+
+    #[test]
+    fn preflight_close_false_with_empty_name_strict_is_noop() {
+        // Gate-order invariant: the close-check must run before the
+        // name-render check. A milestone with `close: false` and an empty
+        // `name_template` must NOT trip strict_guard — even in strict mode,
+        // since the entry is opted out entirely.
+        let config = config_with_resolvable_repo();
+        let mut ctx = ctx_with_strict(config, true);
+        let log = ctx.logger("milestone");
+        let milestones = vec![MilestoneConfig {
+            close: Some(false),
+            name_template: Some(String::new()),
+            ..Default::default()
+        }];
+        preflight_milestones(&milestones, &mut ctx, &log)
+            .expect("close: false must short-circuit before name-render check");
+    }
+
+    #[test]
+    fn preflight_continues_past_unresolvable_in_normal_mode() {
+        // Mixed-list happy path: a warn on milestone[0] must not bubble up as
+        // Err in normal mode. Pairs with the strict-mode ordering test below,
+        // which structurally proves iter[1] is reached.
+        let config = config_with_empty_release_block();
+        let mut ctx = ctx_with_strict(config, false);
+        let log = ctx.logger("milestone");
+        let milestones = vec![
+            MilestoneConfig {
+                close: Some(true),
+                name_template: Some("{{ Tag }}".into()),
+                ..Default::default()
+            },
+            MilestoneConfig {
+                close: Some(true),
+                name_template: Some("{{ Tag }}".into()),
+                repo: Some(ScmRepoConfig {
+                    owner: "explicit".into(),
+                    name: "override".into(),
+                }),
+                ..Default::default()
+            },
+        ];
+        preflight_milestones(&milestones, &mut ctx, &log)
+            .expect("normal mode must not promote a warn on milestone[0] to Err");
+    }
+
+    #[test]
+    fn preflight_strict_iterates_to_second_milestone() {
+        // Structural proof of iteration: with [resolvable, unresolvable] in
+        // strict mode, the resolvable item logs and proceeds, then the
+        // unresolvable item trips strict_guard and bails. A bug that
+        // short-circuits after the first iteration would return Ok here.
+        let config = config_with_empty_release_block();
+        let mut ctx = ctx_with_strict(config, true);
+        let log = ctx.logger("milestone");
+        let milestones = vec![
+            MilestoneConfig {
+                close: Some(true),
+                name_template: Some("{{ Tag }}".into()),
+                repo: Some(ScmRepoConfig {
+                    owner: "explicit".into(),
+                    name: "override".into(),
+                }),
+                ..Default::default()
+            },
+            MilestoneConfig {
+                close: Some(true),
+                name_template: Some("{{ Tag }}".into()),
+                ..Default::default()
+            },
+        ];
+        let err = preflight_milestones(&milestones, &mut ctx, &log)
+            .expect_err("strict mode must error on milestone[1] unresolvable repo");
+        assert!(
+            err.to_string().contains("not resolvable"),
+            "unexpected error: {}",
+            err
+        );
+    }
 }

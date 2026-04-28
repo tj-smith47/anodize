@@ -458,8 +458,11 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
 
     // Pre-flight milestone resolution so a misconfigured `milestones:` block
     // (empty rendered name, unresolvable repo) fails fast — at validate time
-    // — instead of after the full build/archive/sign pipeline. Skipped in
-    // --split mode; the milestone close runs only in the merge step.
+    // — instead of after the full build/archive/sign pipeline. Runs in normal
+    // and `--merge` modes (close_milestones runs in run_post_pipeline for
+    // both). Skipped in `--split` mode: split only emits build artifacts and
+    // exits without invoking run_post_pipeline, so milestone close never runs
+    // there and pre-flighting it would warn about a stage that won't fire.
     if !opts.split
         && let Some(ref milestones) = config.milestones
     {
