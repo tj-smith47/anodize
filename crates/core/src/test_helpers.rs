@@ -10,6 +10,7 @@
 //!
 //! Provides:
 //! - [`TestContextBuilder`] — fluent builder for [`Context`] with sensible defaults
+//! - [`CwdGuard`] — RAII helper that restores the original cwd on Drop (panic-safe)
 //! - [`create_test_project`] — creates a minimal Cargo project on disk
 //! - [`init_git_repo`] — initializes a git repo with config, initial commit, and tag
 //! - [`init_git_repo_with_commits`] — initializes a git repo with multiple commits
@@ -23,6 +24,56 @@ use crate::git::{GitInfo, SemVer};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+// ---------------------------------------------------------------------------
+// CwdGuard — panic-safe cwd restore
+// ---------------------------------------------------------------------------
+
+/// RAII guard that captures the current working directory on construction,
+/// switches to `target`, and restores the original cwd on Drop.
+///
+/// This makes cwd-mutating tests panic-safe: if the test body panics between
+/// `CwdGuard::new(...)` and the end of the scope, the original cwd is still
+/// restored when the guard unwinds — preventing one test's failure from
+/// contaminating subsequent tests in the same process.
+///
+/// Pair with `#[serial]` (from the `serial_test` crate) when multiple tests
+/// in a file mutate cwd, since changing cwd is a process-wide side effect.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use anodizer_core::test_helpers::CwdGuard;
+///
+/// #[test]
+/// #[serial]
+/// fn my_test() {
+///     let tmp = tempfile::tempdir().unwrap();
+///     let _guard = CwdGuard::new(tmp.path()).unwrap();
+///     // ... test body; cwd is now tmp.path() ...
+///     // panic-safe: original cwd is restored when `_guard` drops.
+/// }
+/// ```
+pub struct CwdGuard {
+    original: PathBuf,
+}
+
+impl CwdGuard {
+    /// Capture the current cwd and switch to `target`. Returns the guard;
+    /// the original cwd is restored when the guard is dropped.
+    pub fn new(target: impl AsRef<Path>) -> std::io::Result<Self> {
+        let original = std::env::current_dir()?;
+        std::env::set_current_dir(target.as_ref())?;
+        Ok(Self { original })
+    }
+}
+
+impl Drop for CwdGuard {
+    fn drop(&mut self) {
+        // Best-effort: ignore the error during unwind so we never double-panic.
+        let _ = std::env::set_current_dir(&self.original);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // TestContextBuilder

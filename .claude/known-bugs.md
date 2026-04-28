@@ -19,14 +19,9 @@ violations, user-reported issues.
 
 ## Active
 
-### Group F·3 review deferrals — 2026-04-28 (2 MINOR)
+### Group F·3 review deferrals — 2026-04-28 (1 MINOR)
 
 - [ ] `crates/core/src/context.rs:146-153` — fields `changelog_header: Option<String>` and `changelog_footer: Option<String>` joined the existing `changelogs: HashMap<String, String>` on the stage-output side of `Context`. As more stage→stage handoff fields accrete, a `StageOutputs` sub-struct would compress the surface and keep input/output state cleanly separated. Defer until a third stage-output pair lands; then break out. Source: F·3 code-quality review.
-- [ ] `crates/stage-changelog/src/lib.rs::test_changelog_stage_github_no_prev_tag_uses_git_fallback` (and 5 other cwd-mutating tests in the same file) — tests `set_current_dir(original_cwd)` after `stage.run`; if `stage.run` panics, the restore is skipped and the leaked cwd contaminates other tests in the same process. Fix: wrap restore in `scopeguard::defer!` or a `Drop` helper. Pre-existing pattern (not introduced by F·3); flagged during the F·3 code-quality review.
-
-### Session C Stream 2 final review deferral — 2026-04-28 (1 MINOR)
-
-- [ ] `crates/stage-changelog/src/lib.rs::tests` (21 sites) — hand-rolled `Context::new(config, ContextOptions::default())` setups instead of using the canonical `TestContextBuilder` from `crates/core/src/test_helpers.rs`. Other crates (stage-templatefiles/msi/checksum/release/upx/sign/source/archive) already migrated. Action: migrate stage-changelog test setups to `TestContextBuilder`. Pre-existing pattern; the new `test_changelog_stage_github_no_prev_tag_uses_git_fallback` test added in `860c243` perpetuated it but did not introduce it. Source: Session C Stream 2 final cross-cutting review.
 
 ### Tracked migrations / scope-creep deferrals — 2026-04-27 (4 SUGGEST)
 

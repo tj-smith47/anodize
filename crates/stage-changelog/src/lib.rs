@@ -1889,6 +1889,7 @@ fn fetch_gitea_commits(
 mod tests {
     use super::*;
     use anodizer_core::log::{StageLogger, Verbosity};
+    use anodizer_core::test_helpers::{CwdGuard, TestContextBuilder};
     use serial_test::serial;
 
     fn test_logger() -> StageLogger {
@@ -2189,23 +2190,21 @@ mod tests {
 
     #[test]
     fn test_changelog_stage_disabled_skips() {
-        use anodizer_core::config::{ChangelogConfig, Config, CrateConfig};
-        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ChangelogConfig, CrateConfig};
 
-        let mut config = Config::default();
-        config.project_name = "test".to_string();
-        config.changelog = Some(ChangelogConfig {
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .crates(vec![CrateConfig {
+                name: "test".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                ..Default::default()
+            }])
+            .build();
+        ctx.config.changelog = Some(ChangelogConfig {
             skip: Some(anodizer_core::config::StringOrBool::Bool(true)),
             ..Default::default()
         });
-        config.crates = vec![CrateConfig {
-            name: "test".to_string(),
-            path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
-            ..Default::default()
-        }];
-
-        let mut ctx = Context::new(config, ContextOptions::default());
 
         let stage = ChangelogStage;
         // Should succeed without errors (skips immediately).
@@ -2239,15 +2238,13 @@ mod tests {
 
     #[test]
     fn test_changelog_snapshot_skipped_when_opt_in_unset() {
-        use anodizer_core::context::{Context, ContextOptions};
         let config = changelog_snapshot_test_config(None);
-        let mut ctx = Context::new(
-            config,
-            ContextOptions {
-                snapshot: true,
-                ..Default::default()
-            },
-        );
+        let mut ctx = TestContextBuilder::new()
+            .project_name(&config.project_name)
+            .crates(config.crates.clone())
+            .snapshot(true)
+            .build();
+        ctx.config.changelog = config.changelog;
         ChangelogStage
             .run(&mut ctx)
             .expect("snapshot skip is graceful");
@@ -2259,15 +2256,13 @@ mod tests {
 
     #[test]
     fn test_changelog_snapshot_skipped_when_opt_in_false() {
-        use anodizer_core::context::{Context, ContextOptions};
         let config = changelog_snapshot_test_config(Some(false));
-        let mut ctx = Context::new(
-            config,
-            ContextOptions {
-                snapshot: true,
-                ..Default::default()
-            },
-        );
+        let mut ctx = TestContextBuilder::new()
+            .project_name(&config.project_name)
+            .crates(config.crates.clone())
+            .snapshot(true)
+            .build();
+        ctx.config.changelog = config.changelog;
         ChangelogStage
             .run(&mut ctx)
             .expect("snapshot skip is graceful");
@@ -2281,9 +2276,12 @@ mod tests {
     fn test_changelog_non_snapshot_runs_regardless_of_opt_in() {
         // The opt-in is snapshot-mode-only; in normal release mode the gate is
         // bypassed entirely so changelog generation continues as before.
-        use anodizer_core::context::{Context, ContextOptions};
         let config = changelog_snapshot_test_config(None);
-        let mut ctx = Context::new(config, ContextOptions::default());
+        let mut ctx = TestContextBuilder::new()
+            .project_name(&config.project_name)
+            .crates(config.crates.clone())
+            .build();
+        ctx.config.changelog = config.changelog;
         // We can't easily run the full git-backed pipeline in a unit test, but
         // we can assert that the snapshot-skip branch is NOT taken — the stage
         // will proceed and either succeed or fail later for unrelated reasons
@@ -2302,23 +2300,21 @@ mod tests {
         // Third matrix cell: snapshot mode + `changelog.snapshot: true` →
         // changelog generation proceeds. We use --release-notes to give the
         // stage a deterministic content path that doesn't require git history.
-        use anodizer_core::context::{Context, ContextOptions};
         let tmp = tempfile::tempdir().expect("tempdir");
         let dist = tmp.path().join("dist");
         std::fs::create_dir_all(&dist).expect("create dist");
         let notes = tmp.path().join("notes.md");
         std::fs::write(&notes, "snapshot opt-in body").expect("write notes");
 
-        let mut config = changelog_snapshot_test_config(Some(true));
-        config.dist = dist.clone();
-        let mut ctx = Context::new(
-            config,
-            ContextOptions {
-                snapshot: true,
-                release_notes_path: Some(notes),
-                ..Default::default()
-            },
-        );
+        let config = changelog_snapshot_test_config(Some(true));
+        let mut ctx = TestContextBuilder::new()
+            .project_name(&config.project_name)
+            .crates(config.crates.clone())
+            .dist(dist.clone())
+            .snapshot(true)
+            .build();
+        ctx.config.changelog = config.changelog;
+        ctx.options.release_notes_path = Some(notes);
         ChangelogStage
             .run(&mut ctx)
             .expect("snapshot + opt-in must render");
@@ -2497,38 +2493,29 @@ abbrev: 10
 
     #[test]
     fn test_changelog_stage_github_native_produces_empty() {
-        use anodizer_core::config::{
-            ChangelogConfig, Config, CrateConfig, ReleaseConfig, ScmRepoConfig,
-        };
-        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ChangelogConfig, CrateConfig, ReleaseConfig, ScmRepoConfig};
 
-        let mut config = Config::default();
-        config.project_name = "test".to_string();
-        config.changelog = Some(ChangelogConfig {
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .token(Some("test-token".to_string()))
+            .crates(vec![CrateConfig {
+                name: "mylib".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                release: Some(ReleaseConfig {
+                    github: Some(ScmRepoConfig {
+                        owner: "owner".to_string(),
+                        name: "repo".to_string(),
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+        ctx.config.changelog = Some(ChangelogConfig {
             use_source: Some("github-native".to_string()),
             ..Default::default()
         });
-        config.crates = vec![CrateConfig {
-            name: "mylib".to_string(),
-            path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
-            release: Some(ReleaseConfig {
-                github: Some(ScmRepoConfig {
-                    owner: "owner".to_string(),
-                    name: "repo".to_string(),
-                }),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }];
-
-        let mut ctx = Context::new(
-            config,
-            ContextOptions {
-                token: Some("test-token".to_string()),
-                ..Default::default()
-            },
-        );
 
         let stage = ChangelogStage;
         stage.run(&mut ctx).unwrap();
@@ -2539,61 +2526,52 @@ abbrev: 10
 
     #[test]
     fn test_changelog_stage_github_native_requires_token() {
-        use anodizer_core::config::{
-            ChangelogConfig, Config, CrateConfig, ReleaseConfig, ScmRepoConfig,
-        };
-        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ChangelogConfig, CrateConfig, ReleaseConfig, ScmRepoConfig};
 
-        let mut config = Config::default();
-        config.project_name = "test".to_string();
-        config.changelog = Some(ChangelogConfig {
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .crates(vec![CrateConfig {
+                name: "mylib".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                release: Some(ReleaseConfig {
+                    github: Some(ScmRepoConfig {
+                        owner: "owner".to_string(),
+                        name: "repo".to_string(),
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+        ctx.config.changelog = Some(ChangelogConfig {
             use_source: Some("github-native".to_string()),
             ..Default::default()
         });
-        config.crates = vec![CrateConfig {
-            name: "mylib".to_string(),
-            path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
-            release: Some(ReleaseConfig {
-                github: Some(ScmRepoConfig {
-                    owner: "owner".to_string(),
-                    name: "repo".to_string(),
-                }),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }];
 
-        let mut ctx = Context::new(config, ContextOptions::default());
         let err = ChangelogStage.run(&mut ctx).unwrap_err().to_string();
         assert!(err.contains("requires a GitHub token"), "{}", err);
     }
 
     #[test]
     fn test_changelog_stage_github_native_requires_repo() {
-        use anodizer_core::config::{ChangelogConfig, Config, CrateConfig};
-        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ChangelogConfig, CrateConfig};
 
-        let mut config = Config::default();
-        config.project_name = "test".to_string();
-        config.changelog = Some(ChangelogConfig {
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .token(Some("test-token".to_string()))
+            .crates(vec![CrateConfig {
+                name: "mylib".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                ..Default::default()
+            }])
+            .build();
+        ctx.config.changelog = Some(ChangelogConfig {
             use_source: Some("github-native".to_string()),
             ..Default::default()
         });
-        config.crates = vec![CrateConfig {
-            name: "mylib".to_string(),
-            path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
-            ..Default::default()
-        }];
 
-        let mut ctx = Context::new(
-            config,
-            ContextOptions {
-                token: Some("test-token".to_string()),
-                ..Default::default()
-            },
-        );
         let err = ChangelogStage.run(&mut ctx).unwrap_err().to_string();
         assert!(
             err.contains("release.github.owner and release.github.name"),
@@ -2975,7 +2953,6 @@ abbrev: 10
         use anodizer_core::config::{
             ChangelogConfig, ChangelogFilters, ChangelogGroup, Config, CrateConfig,
         };
-        use anodizer_core::context::{Context, ContextOptions};
         use std::process::Command;
 
         let tmp = tempfile::tempdir().unwrap();
@@ -3058,13 +3035,17 @@ abbrev: 10
             ..Default::default()
         };
 
-        let mut ctx = Context::new(config, ContextOptions::default());
+        let mut ctx = TestContextBuilder::new()
+            .project_name(&config.project_name)
+            .crates(config.crates.clone())
+            .dist(config.dist.clone())
+            .build();
+        ctx.config.changelog = config.changelog;
 
-        // Run the stage from within the temp repo so git commands target it
-        let original_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(repo).unwrap();
+        // Run the stage from within the temp repo so git commands target it.
+        // CwdGuard restores cwd on Drop — panic-safe if `stage.run` panics.
+        let _cwd = CwdGuard::new(repo).unwrap();
         let result = ChangelogStage.run(&mut ctx);
-        std::env::set_current_dir(&original_dir).unwrap();
 
         result.unwrap();
 
@@ -3238,23 +3219,22 @@ abbrev: 10
 
     #[test]
     fn test_disable_skips_stage_entirely() {
-        use anodizer_core::config::{ChangelogConfig, Config, CrateConfig};
-        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ChangelogConfig, CrateConfig};
 
-        let mut config = Config::default();
-        config.project_name = "test".to_string();
-        config.changelog = Some(ChangelogConfig {
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .crates(vec![CrateConfig {
+                name: "test".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                ..Default::default()
+            }])
+            .build();
+        ctx.config.changelog = Some(ChangelogConfig {
             skip: Some(anodizer_core::config::StringOrBool::Bool(true)),
             ..Default::default()
         });
-        config.crates = vec![CrateConfig {
-            name: "test".to_string(),
-            path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
-            ..Default::default()
-        }];
 
-        let mut ctx = Context::new(config, ContextOptions::default());
         ChangelogStage.run(&mut ctx).unwrap();
 
         // No changelogs should be generated when disabled
@@ -3285,7 +3265,6 @@ abbrev: 10
     #[serial]
     fn test_changelog_written_to_correct_output_location() {
         use anodizer_core::config::{ChangelogConfig, Config, CrateConfig};
-        use anodizer_core::context::{Context, ContextOptions};
         use std::process::Command;
 
         let tmp = tempfile::tempdir().unwrap();
@@ -3325,12 +3304,16 @@ abbrev: 10
             ..Default::default()
         };
 
-        let mut ctx = Context::new(config, ContextOptions::default());
+        let mut ctx = TestContextBuilder::new()
+            .project_name(&config.project_name)
+            .crates(config.crates.clone())
+            .dist(config.dist.clone())
+            .build();
+        ctx.config.changelog = config.changelog;
 
-        let original_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(repo).unwrap();
+        // CwdGuard restores cwd on Drop — panic-safe if `stage.run` panics.
+        let _cwd = CwdGuard::new(repo).unwrap();
         let result = ChangelogStage.run(&mut ctx);
-        std::env::set_current_dir(&original_dir).unwrap();
         result.unwrap();
 
         // CHANGELOG.md should be written to the dist directory
@@ -3443,7 +3426,6 @@ abbrev: 10
     #[serial]
     fn test_changelog_create_dist_dir_failure() {
         use anodizer_core::config::{Config, CrateConfig};
-        use anodizer_core::context::{Context, ContextOptions};
         use std::process::Command;
 
         let tmp = tempfile::tempdir().unwrap();
@@ -3487,12 +3469,15 @@ abbrev: 10
             ..Default::default()
         };
 
-        let mut ctx = Context::new(config, ContextOptions::default());
+        let mut ctx = TestContextBuilder::new()
+            .project_name(&config.project_name)
+            .crates(config.crates.clone())
+            .dist(config.dist.clone())
+            .build();
 
-        let original_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(repo).unwrap();
+        // CwdGuard restores cwd on Drop — panic-safe if `stage.run` panics.
+        let _cwd = CwdGuard::new(repo).unwrap();
         let result = ChangelogStage.run(&mut ctx);
-        std::env::set_current_dir(&original_dir).unwrap();
 
         assert!(
             result.is_err(),
@@ -3509,7 +3494,6 @@ abbrev: 10
     #[serial]
     fn test_changelog_write_failure_on_readonly_path() {
         use anodizer_core::config::{Config, CrateConfig};
-        use anodizer_core::context::{Context, ContextOptions};
         use std::process::Command;
 
         let tmp = tempfile::tempdir().unwrap();
@@ -3552,12 +3536,15 @@ abbrev: 10
             ..Default::default()
         };
 
-        let mut ctx = Context::new(config, ContextOptions::default());
+        let mut ctx = TestContextBuilder::new()
+            .project_name(&config.project_name)
+            .crates(config.crates.clone())
+            .dist(config.dist.clone())
+            .build();
 
-        let original_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(repo).unwrap();
+        // CwdGuard restores cwd on Drop — panic-safe if `stage.run` panics.
+        let _cwd = CwdGuard::new(repo).unwrap();
         let result = ChangelogStage.run(&mut ctx);
-        std::env::set_current_dir(&original_dir).unwrap();
 
         assert!(
             result.is_err(),
@@ -3574,7 +3561,6 @@ abbrev: 10
     #[serial]
     fn test_changelog_dry_run_writes_file() {
         use anodizer_core::config::{Config, CrateConfig};
-        use anodizer_core::context::{Context, ContextOptions};
         use std::process::Command;
 
         let tmp = tempfile::tempdir().unwrap();
@@ -3612,18 +3598,16 @@ abbrev: 10
             ..Default::default()
         };
 
-        let mut ctx = Context::new(
-            config,
-            ContextOptions {
-                dry_run: true,
-                ..Default::default()
-            },
-        );
+        let mut ctx = TestContextBuilder::new()
+            .project_name(&config.project_name)
+            .crates(config.crates.clone())
+            .dist(config.dist.clone())
+            .dry_run(true)
+            .build();
 
-        let original_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(repo).unwrap();
+        // CwdGuard restores cwd on Drop — panic-safe if `stage.run` panics.
+        let _cwd = CwdGuard::new(repo).unwrap();
         let result = ChangelogStage.run(&mut ctx);
-        std::env::set_current_dir(&original_dir).unwrap();
 
         assert!(
             result.is_ok(),
@@ -3773,12 +3757,7 @@ format: "{{ ShortSHA }} {{ Message }} by {{ AuthorName }}"
     fn test_header_footer_template_rendering() {
         // Simulate what ChangelogStage::run does: render header/footer through
         // ctx.render_template() before inserting them.
-        use anodizer_core::config::Config;
-        use anodizer_core::context::{Context, ContextOptions};
-
-        let mut config = Config::default();
-        config.project_name = "myapp".to_string();
-        let mut ctx = Context::new(config, ContextOptions::default());
+        let mut ctx = TestContextBuilder::new().project_name("myapp").build();
         ctx.template_vars_mut().set("Version", "2.0.0");
 
         let header_tmpl = "# {{ .ProjectName }} v{{ .Version }} Release Notes";
@@ -3794,11 +3773,7 @@ format: "{{ ShortSHA }} {{ Message }} by {{ AuthorName }}"
     #[test]
     fn test_header_with_plain_string_passes_through() {
         // A header without template variables should pass through unchanged.
-        use anodizer_core::config::Config;
-        use anodizer_core::context::{Context, ContextOptions};
-
-        let config = Config::default();
-        let ctx = Context::new(config, ContextOptions::default());
+        let ctx = TestContextBuilder::new().build();
 
         let header = "# Plain Header";
         let rendered = ctx.render_template(header).unwrap();
@@ -4590,23 +4565,22 @@ use: gitea
     fn test_validation_rejects_unsupported_source() {
         // Exercise the actual production validation path — "bitbucket" should
         // cause the stage to bail with "unsupported use source".
-        use anodizer_core::config::{ChangelogConfig, Config, CrateConfig};
-        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ChangelogConfig, CrateConfig};
 
-        let mut config = Config::default();
-        config.project_name = "test".to_string();
-        config.changelog = Some(ChangelogConfig {
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .crates(vec![CrateConfig {
+                name: "mylib".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                ..Default::default()
+            }])
+            .build();
+        ctx.config.changelog = Some(ChangelogConfig {
             use_source: Some("bitbucket".to_string()),
             ..Default::default()
         });
-        config.crates = vec![CrateConfig {
-            name: "mylib".to_string(),
-            path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
-            ..Default::default()
-        }];
 
-        let mut ctx = Context::new(config, ContextOptions::default());
         let stage = ChangelogStage;
         let result = stage.run(&mut ctx);
         assert!(result.is_err());
@@ -4619,30 +4593,25 @@ use: gitea
         // When use: gitlab but no token is available, should fall back to git
         // (which will also fail in a test environment, but the point is that
         // the stage doesn't bail on "unsupported use source").
-        use anodizer_core::config::{ChangelogConfig, Config, CrateConfig};
-        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ChangelogConfig, CrateConfig};
 
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut config = Config::default();
-        config.project_name = "test".to_string();
-        config.dist = tmp.path().to_path_buf();
-        config.changelog = Some(ChangelogConfig {
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .dist(tmp.path().to_path_buf())
+            .dry_run(true)
+            // No token — should trigger fallback to git.
+            .crates(vec![CrateConfig {
+                name: "test".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                ..Default::default()
+            }])
+            .build();
+        ctx.config.changelog = Some(ChangelogConfig {
             use_source: Some("gitlab".to_string()),
             ..Default::default()
         });
-        config.crates = vec![CrateConfig {
-            name: "test".to_string(),
-            path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
-            ..Default::default()
-        }];
-
-        let opts = ContextOptions {
-            dry_run: true,
-            // No token — should trigger fallback to git.
-            ..Default::default()
-        };
-        let mut ctx = Context::new(config, opts);
 
         let stage = ChangelogStage;
         // Should not bail with "unsupported use source". It will either succeed
@@ -4658,29 +4627,24 @@ use: gitea
 
     #[test]
     fn test_changelog_stage_gitea_falls_back_to_git_no_token() {
-        use anodizer_core::config::{ChangelogConfig, Config, CrateConfig};
-        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::config::{ChangelogConfig, CrateConfig};
 
         let tmp = tempfile::TempDir::new().unwrap();
-        let mut config = Config::default();
-        config.project_name = "test".to_string();
-        config.dist = tmp.path().to_path_buf();
-        config.changelog = Some(ChangelogConfig {
+        let mut ctx = TestContextBuilder::new()
+            .project_name("test")
+            .dist(tmp.path().to_path_buf())
+            .dry_run(true)
+            .crates(vec![CrateConfig {
+                name: "test".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                ..Default::default()
+            }])
+            .build();
+        ctx.config.changelog = Some(ChangelogConfig {
             use_source: Some("gitea".to_string()),
             ..Default::default()
         });
-        config.crates = vec![CrateConfig {
-            name: "test".to_string(),
-            path: ".".to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
-            ..Default::default()
-        }];
-
-        let opts = ContextOptions {
-            dry_run: true,
-            ..Default::default()
-        };
-        let mut ctx = Context::new(config, opts);
 
         let stage = ChangelogStage;
         let result = stage.run(&mut ctx);
