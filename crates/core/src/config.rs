@@ -5417,6 +5417,15 @@ pub struct EmailAnnounce {
     /// When absent, falls back to sendmail/msmtp.
     pub host: Option<String>,
     /// SMTP server port (default: 587 for STARTTLS).
+    ///
+    /// Anodize-additive UX win (locked 2026-04-28): GoReleaser's
+    /// `internal/pipe/smtp/smtp.go` errors with `errNoPort` when `port` is
+    /// unset (zero value). Anodize defaults to 587 — the IETF submission
+    /// port — so the common case (corporate / SaaS SMTP relays exposing
+    /// STARTTLS on 587) works out of the box without a config knob. The
+    /// `auto` encryption mode then resolves to STARTTLS for 587, which is
+    /// the conventional pairing. Pinned by
+    /// `test_email_smtp_port_defaults_to_587`.
     pub port: Option<u16>,
     /// SMTP username (can also be set via SMTP_USERNAME env var).
     pub username: Option<String>,

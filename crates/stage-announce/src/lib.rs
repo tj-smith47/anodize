@@ -65,18 +65,6 @@ fn is_enabled(ctx: &mut Context, enabled: Option<&StringOrBool>) -> Result<bool>
     }
 }
 
-/// Render a required config field through the template engine, bailing with
-/// `provider: missing <field>` when the value is `None`.
-fn require_rendered(
-    ctx: &mut Context,
-    raw: Option<&str>,
-    provider: &str,
-    field: &str,
-) -> Result<String> {
-    let value = raw.ok_or_else(|| anyhow::anyhow!("announce.{provider}: missing {field}"))?;
-    ctx.render_template(value)
-}
-
 /// Read a required env var, bailing with a unified message when it is missing
 /// or empty after trim. Avoids the duplicated `var(...).map_err(...)?; if
 /// empty bail!()` pattern across every provider.
@@ -120,6 +108,21 @@ fn require_env_all(provider: &str, names: &[&str]) -> Result<Vec<String>> {
 /// Render a message template, falling back to the standard default.
 fn render_message(ctx: &mut Context, tmpl: Option<&str>) -> Result<String> {
     ctx.render_template(tmpl.unwrap_or(DEFAULT_MESSAGE_TEMPLATE))
+}
+
+/// Resolve the effective SMTP port from (config, SMTP_PORT env, default).
+///
+/// Anodize-additive UX win (locked 2026-04-28): when both `cfg.port` and
+/// `SMTP_PORT` are unset we default to **587** — the IETF submission port,
+/// the conventional STARTTLS endpoint exposed by virtually every modern
+/// SMTP relay (Postfix, Exim, sendgrid, mailgun, AWS SES, …). GoReleaser's
+/// `internal/pipe/smtp/smtp.go` errors out with `errNoPort` in this case;
+/// the default-587 path is tradeoff-free because operators who need a
+/// different port set it explicitly, and the `auto` encryption mode then
+/// picks STARTTLS for 587 (matching the wire reality). Pinned by
+/// `test_email_smtp_port_defaults_to_587`.
+fn resolve_smtp_port(cfg_port: Option<u16>, env_port: Option<u16>) -> u16 {
+    cfg_port.or(env_port).unwrap_or(587)
 }
 
 /// Render template variables inside a `serde_json::Value` by serializing to
@@ -284,13 +287,28 @@ impl Stage for AnnounceStage {
         if let Some(cfg) = &announce.discourse
             && is_enabled(ctx, cfg.enabled.as_ref())?
             && let Err(e) = (|| -> Result<()> {
-                let server = require_rendered(ctx, cfg.server.as_deref(), "discourse", "server")?;
+                // Skip-when-empty UX policy: missing or empty `server` /
+                // missing `category_id` warn-and-skip in normal mode and bail
+                // in strict mode. A configured-but-zero `category_id` is a
+                // config error, not skip-when-empty, so it stays a hard bail.
+                let server = match cfg.server.as_deref() {
+                    Some(raw) => ctx.render_template(raw)?,
+                    None => {
+                        ctx.strict_guard(&log, "announce.discourse: missing server")?;
+                        return Ok(());
+                    }
+                };
                 if server.is_empty() {
-                    anyhow::bail!("announce.discourse: server must not be empty");
+                    ctx.strict_guard(&log, "announce.discourse: server must not be empty")?;
+                    return Ok(());
                 }
-                let category_id = cfg
-                    .category_id
-                    .ok_or_else(|| anyhow::anyhow!("announce.discourse: missing category_id"))?;
+                let category_id = match cfg.category_id {
+                    Some(id) => id,
+                    None => {
+                        ctx.strict_guard(&log, "announce.discourse: missing category_id")?;
+                        return Ok(());
+                    }
+                };
                 if category_id == 0 {
                     anyhow::bail!("announce.discourse: category_id must be non-zero");
                 }
@@ -434,6 +452,15 @@ impl Stage for AnnounceStage {
                     }
                 }
 
+                // Anodize-additive UX win (locked 2026-04-28): we send
+                // `User-Agent: anodizer/<version>` so operators can attribute
+                // incoming webhooks to anodizer for routing, rate-limiting,
+                // and audit-log tagging. GoReleaser
+                // (`internal/pipe/webhook/webhook.go`) sends a static
+                // `User-Agent: goreleaser` with no version suffix; the
+                // version-suffixed variant is tradeoff-free (same wire shape,
+                // strictly more debuggable). Pinned by
+                // `test_webhook_user_agent_is_anodizer_versioned`.
                 headers
                     .entry("User-Agent".to_string())
                     .or_insert_with(|| anodizer_core::http::USER_AGENT.to_string());
@@ -473,12 +500,29 @@ impl Stage for AnnounceStage {
             && let Err(e) = (|| -> Result<()> {
                 let bot_token = match cfg.bot_token.as_deref() {
                     Some(t) => ctx.render_template(t)?,
-                    None => std::env::var("TELEGRAM_TOKEN")
+                    None => match std::env::var("TELEGRAM_TOKEN")
                         .ok()
                         .filter(|s| !s.is_empty())
-                        .ok_or_else(|| anyhow::anyhow!("announce.telegram: missing bot_token (set config or TELEGRAM_TOKEN env var)"))?,
+                    {
+                        Some(env) => env,
+                        None => {
+                            // Skip-when-empty UX: warn-and-skip in normal mode,
+                            // bail in strict mode.
+                            ctx.strict_guard(
+                                &log,
+                                "announce.telegram: missing bot_token (set config or TELEGRAM_TOKEN env var)",
+                            )?;
+                            return Ok(());
+                        }
+                    },
                 };
-                let chat_id = require_rendered(ctx, cfg.chat_id.as_deref(), "telegram", "chat_id")?;
+                let chat_id = match cfg.chat_id.as_deref() {
+                    Some(raw) => ctx.render_template(raw)?,
+                    None => {
+                        ctx.strict_guard(&log, "announce.telegram: missing chat_id")?;
+                        return Ok(());
+                    }
+                };
                 // Telegram defaults to MarkdownV2 parse mode, so the default
                 // message template must apply the mdv2escape filter.
                 //
@@ -610,6 +654,16 @@ impl Stage for AnnounceStage {
                     },
                 };
                 let message = render_message(ctx, cfg.message_template.as_deref())?;
+                // Anodize-additive UX win (locked 2026-04-28): channel,
+                // username, icon_url, and icon_emoji all run through the
+                // template engine. GoReleaser
+                // (`internal/pipe/mattermost/mattermost.go`) passes these
+                // fields raw — no template substitution. Rendering is
+                // tradeoff-free (raw strings still pass through unchanged)
+                // and unlocks per-tag channel routing like
+                // `channel: "release-{{ Tag }}"`. Render errors surface via
+                // the strict_guard collected-errors path, same as message.
+                // Pinned by `test_mattermost_renders_channel_template`.
                 let channel = ctx.render_template_opt(cfg.channel.as_deref())?;
                 // Default username to DEFAULT_DISPLAY_NAME (GoReleaser defaults to
                 // "GoReleaser"; brand-default policy keeps anodizer's own attribution).
@@ -655,15 +709,32 @@ impl Stage for AnnounceStage {
         if let Some(cfg) = &announce.reddit
             && is_enabled(ctx, cfg.enabled.as_ref())?
             && let Err(e) = (|| -> Result<()> {
-                let app_id = require_rendered(
-                    ctx,
-                    cfg.application_id.as_deref(),
-                    "reddit",
-                    "application_id",
-                )?;
-                let username =
-                    require_rendered(ctx, cfg.username.as_deref(), "reddit", "username")?;
-                let sub = require_rendered(ctx, cfg.sub.as_deref(), "reddit", "sub")?;
+                // Skip-when-empty UX: missing required config fields
+                // (application_id / username / sub) warn-and-skip in normal
+                // mode and bail in strict mode. The required env vars
+                // (REDDIT_SECRET, REDDIT_PASSWORD) still hard-bail because
+                // missing credentials are a config error, not skip-when-empty.
+                let app_id = match cfg.application_id.as_deref() {
+                    Some(raw) => ctx.render_template(raw)?,
+                    None => {
+                        ctx.strict_guard(&log, "announce.reddit: missing application_id")?;
+                        return Ok(());
+                    }
+                };
+                let username = match cfg.username.as_deref() {
+                    Some(raw) => ctx.render_template(raw)?,
+                    None => {
+                        ctx.strict_guard(&log, "announce.reddit: missing username")?;
+                        return Ok(());
+                    }
+                };
+                let sub = match cfg.sub.as_deref() {
+                    Some(raw) => ctx.render_template(raw)?,
+                    None => {
+                        ctx.strict_guard(&log, "announce.reddit: missing sub")?;
+                        return Ok(());
+                    }
+                };
                 let title = ctx.render_template(
                     cfg.title_template
                         .as_deref()
@@ -735,8 +806,17 @@ impl Stage for AnnounceStage {
         if let Some(cfg) = &announce.mastodon
             && is_enabled(ctx, cfg.enabled.as_ref())?
             && let Err(e) = (|| -> Result<()> {
-                let server = require_rendered(ctx, cfg.server.as_deref(), "mastodon", "server")?;
+                // Skip-when-empty UX: missing or empty `server` warn-and-skip
+                // in normal mode, bail in strict mode.
+                let server = match cfg.server.as_deref() {
+                    Some(raw) => ctx.render_template(raw)?,
+                    None => {
+                        ctx.strict_guard(&log, "announce.mastodon: missing server")?;
+                        return Ok(());
+                    }
+                };
                 if server.is_empty() {
+                    ctx.strict_guard(&log, "announce.mastodon: server must not be empty")?;
                     return Ok(());
                 }
                 let message = render_message(ctx, cfg.message_template.as_deref())?;
@@ -755,8 +835,16 @@ impl Stage for AnnounceStage {
         if let Some(cfg) = &announce.bluesky
             && is_enabled(ctx, cfg.enabled.as_ref())?
             && let Err(e) = (|| -> Result<()> {
-                let username =
-                    require_rendered(ctx, cfg.username.as_deref(), "bluesky", "username")?;
+                // Skip-when-empty UX: missing `username` warn-and-skips in
+                // normal mode and bails in strict mode. BLUESKY_APP_PASSWORD
+                // missing still hard-bails (credential, not skip-when-empty).
+                let username = match cfg.username.as_deref() {
+                    Some(raw) => ctx.render_template(raw)?,
+                    None => {
+                        ctx.strict_guard(&log, "announce.bluesky: missing username")?;
+                        return Ok(());
+                    }
+                };
                 let message = render_message(ctx, cfg.message_template.as_deref())?;
                 let app_password = require_env("bluesky", "BLUESKY_APP_PASSWORD")?;
                 let release_url = ctx.template_vars().get("ReleaseURL").map(|s| s.to_string());
@@ -815,8 +903,17 @@ impl Stage for AnnounceStage {
         if let Some(cfg) = &announce.opencollective
             && is_enabled(ctx, cfg.enabled.as_ref())?
             && let Err(e) = (|| -> Result<()> {
-                let slug = require_rendered(ctx, cfg.slug.as_deref(), "opencollective", "slug")?;
+                // Skip-when-empty UX: missing or empty `slug` warn-and-skip in
+                // normal mode, bail in strict mode.
+                let slug = match cfg.slug.as_deref() {
+                    Some(raw) => ctx.render_template(raw)?,
+                    None => {
+                        ctx.strict_guard(&log, "announce.opencollective: missing slug")?;
+                        return Ok(());
+                    }
+                };
                 if slug.is_empty() {
+                    ctx.strict_guard(&log, "announce.opencollective: slug must not be empty")?;
                     return Ok(());
                 }
                 opencollective::validate_slug(&slug)?;
@@ -895,11 +992,10 @@ impl Stage for AnnounceStage {
                     .host
                     .clone()
                     .or_else(|| std::env::var("SMTP_HOST").ok().filter(|s| !s.is_empty()));
-                let smtp_port = cfg.port.or_else(|| {
-                    std::env::var("SMTP_PORT")
-                        .ok()
-                        .and_then(|s| s.parse::<u16>().ok())
-                });
+                let smtp_port_env = std::env::var("SMTP_PORT")
+                    .ok()
+                    .and_then(|s| s.parse::<u16>().ok());
+                let smtp_port = resolve_smtp_port(cfg.port, smtp_port_env);
 
                 if let Some(host) = &smtp_host {
                     let smtp_username = cfg
@@ -912,7 +1008,7 @@ impl Stage for AnnounceStage {
                     }
                     let encryption = cfg.encryption.unwrap_or_default();
                     let needs_password = !matches!(
-                        email::resolve_encryption(encryption, smtp_port.unwrap_or(587)),
+                        email::resolve_encryption(encryption, smtp_port),
                         anodizer_core::config::EmailEncryption::None
                     );
                     let smtp_password = if needs_password {
@@ -920,7 +1016,7 @@ impl Stage for AnnounceStage {
                     } else {
                         std::env::var("SMTP_PASSWORD").unwrap_or_default()
                     };
-                    let port = smtp_port.unwrap_or(587);
+                    let port = smtp_port;
                     let insecure = cfg.insecure_skip_verify.unwrap_or(false);
 
                     let smtp_params = email::SmtpParams {
@@ -1288,7 +1384,35 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_missing_telegram_bot_token_returns_error() {
+        unsafe { std::env::remove_var("TELEGRAM_TOKEN") };
+        let announce = AnnounceConfig {
+            telegram: Some(TelegramAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                bot_token: None,
+                chat_id: Some("-100123".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.announce = Some(announce);
+        // Skip-when-empty UX: hard error in strict mode only.
+        let opts = ContextOptions {
+            strict: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        assert!(AnnounceStage.run(&mut ctx).is_err());
+    }
+
+    #[test]
+    #[serial]
+    fn test_missing_telegram_bot_token_warn_and_skip() {
+        unsafe { std::env::remove_var("TELEGRAM_TOKEN") };
         let announce = AnnounceConfig {
             telegram: Some(TelegramAnnounce {
                 enabled: Some(StringOrBool::Bool(true)),
@@ -1303,7 +1427,9 @@ mod tests {
         config.announce = Some(announce);
         let mut ctx = Context::new(config, ContextOptions::default());
         ctx.template_vars_mut().set("Tag", "v1.0.0");
-        assert!(AnnounceStage.run(&mut ctx).is_err());
+        AnnounceStage
+            .run(&mut ctx)
+            .expect("normal-mode missing telegram bot_token must skip cleanly, not error");
     }
 
     #[test]
@@ -1320,9 +1446,35 @@ mod tests {
         let mut config = Config::default();
         config.project_name = "myapp".to_string();
         config.announce = Some(announce);
-        let mut ctx = Context::new(config, ContextOptions::default());
+        // Skip-when-empty UX: hard error in strict mode only.
+        let opts = ContextOptions {
+            strict: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
         ctx.template_vars_mut().set("Tag", "v1.0.0");
         assert!(AnnounceStage.run(&mut ctx).is_err());
+    }
+
+    #[test]
+    fn test_missing_telegram_chat_id_warn_and_skip() {
+        let announce = AnnounceConfig {
+            telegram: Some(TelegramAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                bot_token: Some("123:ABC".to_string()),
+                chat_id: None,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.announce = Some(announce);
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        AnnounceStage
+            .run(&mut ctx)
+            .expect("normal-mode missing telegram chat_id must skip cleanly, not error");
     }
 
     // ----------------------------------------------------------------
@@ -1812,6 +1964,109 @@ blocks:
         unsafe { std::env::remove_var("REDDIT_PASSWORD") };
     }
 
+    #[test]
+    #[serial]
+    fn test_missing_reddit_application_id_returns_error() {
+        unsafe { std::env::set_var("REDDIT_SECRET", "testsecret") };
+        unsafe { std::env::set_var("REDDIT_PASSWORD", "testpass") };
+        let announce = AnnounceConfig {
+            reddit: Some(RedditAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                application_id: None,
+                username: Some("testuser".to_string()),
+                sub: Some("rust".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.announce = Some(announce);
+        // Skip-when-empty UX: hard error in strict mode only.
+        let opts = ContextOptions {
+            strict: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        let err = AnnounceStage.run(&mut ctx).unwrap_err();
+        assert!(
+            err.to_string().contains("missing application_id"),
+            "expected 'missing application_id' error, got: {err}"
+        );
+        unsafe { std::env::remove_var("REDDIT_SECRET") };
+        unsafe { std::env::remove_var("REDDIT_PASSWORD") };
+    }
+
+    #[test]
+    #[serial]
+    fn test_missing_reddit_application_id_warn_and_skip() {
+        unsafe { std::env::set_var("REDDIT_SECRET", "testsecret") };
+        unsafe { std::env::set_var("REDDIT_PASSWORD", "testpass") };
+        let announce = AnnounceConfig {
+            reddit: Some(RedditAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                application_id: None,
+                username: Some("testuser".to_string()),
+                sub: Some("rust".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = make_ctx(Some(announce));
+        AnnounceStage
+            .run(&mut ctx)
+            .expect("normal-mode missing reddit application_id must skip cleanly, not error");
+        unsafe { std::env::remove_var("REDDIT_SECRET") };
+        unsafe { std::env::remove_var("REDDIT_PASSWORD") };
+    }
+
+    #[test]
+    #[serial]
+    fn test_missing_reddit_username_warn_and_skip() {
+        unsafe { std::env::set_var("REDDIT_SECRET", "testsecret") };
+        unsafe { std::env::set_var("REDDIT_PASSWORD", "testpass") };
+        let announce = AnnounceConfig {
+            reddit: Some(RedditAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                application_id: Some("app123".to_string()),
+                username: None,
+                sub: Some("rust".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = make_ctx(Some(announce));
+        AnnounceStage
+            .run(&mut ctx)
+            .expect("normal-mode missing reddit username must skip cleanly, not error");
+        unsafe { std::env::remove_var("REDDIT_SECRET") };
+        unsafe { std::env::remove_var("REDDIT_PASSWORD") };
+    }
+
+    #[test]
+    #[serial]
+    fn test_missing_reddit_sub_warn_and_skip() {
+        unsafe { std::env::set_var("REDDIT_SECRET", "testsecret") };
+        unsafe { std::env::set_var("REDDIT_PASSWORD", "testpass") };
+        let announce = AnnounceConfig {
+            reddit: Some(RedditAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                application_id: Some("app123".to_string()),
+                username: Some("testuser".to_string()),
+                sub: None,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = make_ctx(Some(announce));
+        AnnounceStage
+            .run(&mut ctx)
+            .expect("normal-mode missing reddit sub must skip cleanly, not error");
+        unsafe { std::env::remove_var("REDDIT_SECRET") };
+        unsafe { std::env::remove_var("REDDIT_PASSWORD") };
+    }
+
     // ----------------------------------------------------------------
     // Twitter tests
     // ----------------------------------------------------------------
@@ -1962,13 +2217,41 @@ blocks:
         let mut config = Config::default();
         config.project_name = "myapp".to_string();
         config.announce = Some(announce);
-        let mut ctx = Context::new(config, ContextOptions::default());
+        // Skip-when-empty UX: hard error in strict mode only.
+        let opts = ContextOptions {
+            strict: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
         ctx.template_vars_mut().set("Tag", "v1.0.0");
         let err = AnnounceStage.run(&mut ctx).unwrap_err();
         assert!(
             err.to_string().contains("missing server"),
             "expected 'missing server' error, got: {err}"
         );
+        unsafe { std::env::remove_var("MASTODON_ACCESS_TOKEN") };
+    }
+
+    #[test]
+    #[serial]
+    fn test_mastodon_missing_server_warn_and_skip() {
+        unsafe { std::env::set_var("MASTODON_ACCESS_TOKEN", "test-token") };
+        let announce = AnnounceConfig {
+            mastodon: Some(MastodonAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                server: None,
+                message_template: None,
+            }),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.announce = Some(announce);
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        AnnounceStage
+            .run(&mut ctx)
+            .expect("normal-mode missing mastodon server must skip cleanly, not error");
         unsafe { std::env::remove_var("MASTODON_ACCESS_TOKEN") };
     }
 
@@ -2077,12 +2360,41 @@ blocks:
             }),
             ..Default::default()
         };
-        let mut ctx = make_ctx(Some(announce));
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.announce = Some(announce);
+        // Skip-when-empty UX: hard error in strict mode only.
+        let opts = ContextOptions {
+            strict: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
         let err = AnnounceStage.run(&mut ctx).unwrap_err();
         assert!(
             err.to_string().contains("missing username"),
             "expected 'missing username' error, got: {err}"
         );
+        unsafe { std::env::remove_var("BLUESKY_APP_PASSWORD") };
+    }
+
+    #[serial]
+    #[test]
+    fn test_bluesky_missing_username_warn_and_skip() {
+        unsafe { std::env::set_var("BLUESKY_APP_PASSWORD", "test_pass") };
+        let announce = AnnounceConfig {
+            bluesky: Some(BlueskyAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                username: None,
+                message_template: None,
+                pds_url: None,
+            }),
+            ..Default::default()
+        };
+        let mut ctx = make_ctx(Some(announce));
+        AnnounceStage
+            .run(&mut ctx)
+            .expect("normal-mode missing bluesky username must skip cleanly, not error");
         unsafe { std::env::remove_var("BLUESKY_APP_PASSWORD") };
     }
 
@@ -2292,12 +2604,37 @@ blocks:
             }),
             ..Default::default()
         };
-        let mut ctx = make_ctx(Some(announce));
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.announce = Some(announce);
+        // Skip-when-empty UX: hard error in strict mode only.
+        let opts = ContextOptions {
+            strict: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
         let err = AnnounceStage.run(&mut ctx).unwrap_err();
         assert!(
             err.to_string().contains("missing slug"),
             "expected 'missing slug' error, got: {err}"
         );
+    }
+
+    #[test]
+    fn test_opencollective_missing_slug_warn_and_skip() {
+        let announce = AnnounceConfig {
+            opencollective: Some(OpenCollectiveAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                slug: None,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = make_ctx(Some(announce));
+        AnnounceStage
+            .run(&mut ctx)
+            .expect("normal-mode missing opencollective slug must skip cleanly, not error");
     }
 
     #[test]
@@ -2431,12 +2768,41 @@ blocks:
             }),
             ..Default::default()
         };
-        let mut ctx = make_ctx(Some(announce));
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.announce = Some(announce);
+        // Skip-when-empty UX: hard error in strict mode only.
+        let opts = ContextOptions {
+            strict: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
         let err = AnnounceStage.run(&mut ctx).unwrap_err();
         assert!(
             err.to_string().contains("missing server"),
             "expected 'missing server' error, got: {err}"
         );
+        unsafe { std::env::remove_var("DISCOURSE_API_KEY") };
+    }
+
+    #[serial]
+    #[test]
+    fn test_missing_discourse_server_warn_and_skip() {
+        unsafe { std::env::set_var("DISCOURSE_API_KEY", "test_key") };
+        let announce = AnnounceConfig {
+            discourse: Some(DiscourseAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                server: None,
+                category_id: Some(5),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = make_ctx(Some(announce));
+        AnnounceStage
+            .run(&mut ctx)
+            .expect("normal-mode missing discourse server must skip cleanly, not error");
         unsafe { std::env::remove_var("DISCOURSE_API_KEY") };
     }
 
@@ -2453,12 +2819,41 @@ blocks:
             }),
             ..Default::default()
         };
-        let mut ctx = make_ctx(Some(announce));
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.announce = Some(announce);
+        // Skip-when-empty UX: hard error in strict mode only.
+        let opts = ContextOptions {
+            strict: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
         let err = AnnounceStage.run(&mut ctx).unwrap_err();
         assert!(
             err.to_string().contains("missing category_id"),
             "expected 'missing category_id' error, got: {err}"
         );
+        unsafe { std::env::remove_var("DISCOURSE_API_KEY") };
+    }
+
+    #[serial]
+    #[test]
+    fn test_missing_discourse_category_id_warn_and_skip() {
+        unsafe { std::env::set_var("DISCOURSE_API_KEY", "test_key") };
+        let announce = AnnounceConfig {
+            discourse: Some(DiscourseAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                server: Some("https://forum.example.com".to_string()),
+                category_id: None,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = make_ctx(Some(announce));
+        AnnounceStage
+            .run(&mut ctx)
+            .expect("normal-mode missing discourse category_id must skip cleanly, not error");
         unsafe { std::env::remove_var("DISCOURSE_API_KEY") };
     }
 
@@ -2533,5 +2928,122 @@ blocks:
             "expected 'must not be empty' error, got: {err}"
         );
         unsafe { std::env::remove_var("DISCOURSE_API_KEY") };
+    }
+
+    // ----------------------------------------------------------------
+    // Anodize-additive UX divergences from GoReleaser
+    // ----------------------------------------------------------------
+
+    /// Pins the webhook User-Agent as `anodizer/<crate-version>` (anodize-
+    /// additive UX win documented in lib.rs near the User-Agent header
+    /// fallback). GoReleaser sends a static `User-Agent: goreleaser`; the
+    /// version-suffixed variant is debuggable on the receiving end without
+    /// any wire-shape cost.
+    #[test]
+    fn test_webhook_user_agent_is_anodizer_versioned() {
+        let ua = anodizer_core::http::USER_AGENT;
+        assert!(
+            ua.starts_with("anodizer/"),
+            "webhook User-Agent must start with 'anodizer/' (anodize-additive UX divergence \
+             from GoReleaser's static 'goreleaser' UA), got: {ua:?}"
+        );
+        let suffix = ua.trim_start_matches("anodizer/");
+        assert!(
+            !suffix.is_empty() && suffix.chars().any(|c| c.is_ascii_digit()),
+            "webhook User-Agent must include a version suffix (e.g. anodizer/1.2.3), got: {ua:?}"
+        );
+    }
+
+    /// Pins the SMTP port default at 587 (anodize-additive UX win
+    /// documented on `EmailAnnounce::port`). When both the config field
+    /// and the SMTP_PORT env var are unset, the announcer defaults to the
+    /// IETF submission port instead of GoReleaser's `errNoPort` bail.
+    #[test]
+    fn test_email_smtp_port_defaults_to_587() {
+        // No config port, no env override → submission port.
+        assert_eq!(resolve_smtp_port(None, None), 587);
+        // Config wins over env and over the default.
+        assert_eq!(resolve_smtp_port(Some(2525), None), 2525);
+        assert_eq!(resolve_smtp_port(Some(2525), Some(465)), 2525);
+        // Env wins over the default when config is absent.
+        assert_eq!(resolve_smtp_port(None, Some(465)), 465);
+    }
+
+    /// Pins Mattermost `channel` as template-rendered (anodize-additive UX
+    /// win documented near the mattermost render block). GoReleaser passes
+    /// `channel` raw — no template substitution. Anodize renders it through
+    /// the engine, unlocking per-tag channel routing like
+    /// `channel: "release-{{ Tag }}"`. We pin this by feeding a malformed
+    /// template that would only error if rendering is invoked.
+    #[test]
+    fn test_mattermost_renders_channel_template() {
+        let announce = AnnounceConfig {
+            mattermost: Some(MattermostAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                webhook_url: Some("https://mm.invalid/hooks/xxx".to_string()),
+                // Unclosed Tera tag — will only surface as a render error if
+                // the channel field is actually run through the engine.
+                channel: Some("release-{{ Tag".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.announce = Some(announce);
+        // Strict mode so the per-announcer error surfaces as a stage-level
+        // failure (rather than being swallowed by any soft skip path).
+        let opts = ContextOptions {
+            strict: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        let err = AnnounceStage.run(&mut ctx).unwrap_err();
+        let msg = err.to_string().to_lowercase();
+        assert!(
+            msg.contains("mattermost")
+                && (msg.contains("template")
+                    || msg.contains("render")
+                    || msg.contains("parse")
+                    || msg.contains("syntax")
+                    || msg.contains("tera")),
+            "expected mattermost template render error proving channel rendering is invoked, got: {err}"
+        );
+    }
+
+    /// Pins Mattermost `channel` rendering on the *success* path: a valid
+    /// `{{ Tag }}` template must resolve cleanly during dry-run.
+    #[test]
+    fn test_mattermost_channel_template_resolves_on_dry_run() {
+        let announce = AnnounceConfig {
+            mattermost: Some(MattermostAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                webhook_url: Some("https://mm.invalid/hooks/xxx".to_string()),
+                channel: Some("release-{{ Tag }}".to_string()),
+                username: Some("bot-{{ ProjectName }}".to_string()),
+                icon_url: Some("https://cdn.invalid/{{ Tag }}.png".to_string()),
+                icon_emoji: Some(":{{ ProjectName }}:".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.announce = Some(announce);
+        let opts = ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut().set(
+            "ReleaseURL",
+            "https://github.com/org/myapp/releases/tag/v1.0.0",
+        );
+        AnnounceStage.run(&mut ctx).expect(
+            "mattermost channel/username/icon_url/icon_emoji template rendering must \
+                     succeed in dry-run with valid templates",
+        );
     }
 }
