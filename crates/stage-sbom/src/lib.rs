@@ -297,7 +297,7 @@ impl Stage for SbomStage {
         // Validate ID uniqueness
         let mut seen_ids = std::collections::HashSet::new();
         for cfg in &ctx.config.sboms {
-            let id = cfg.id.as_deref().unwrap_or("default");
+            let id = cfg.resolved_id();
             if !seen_ids.insert(id.to_string()) {
                 bail!(
                     "found multiple sboms with the ID '{}', please fix your config",
@@ -325,7 +325,7 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
         .cloned()
         .unwrap_or_else(|| "unknown".to_string());
 
-    let id = sbom_cfg.id.as_deref().unwrap_or("default");
+    let id = sbom_cfg.resolved_id();
 
     // Evaluate skip — supports bool or template string. Use
     // try_evaluates_to_true so a malformed skip: template surfaces as Err
@@ -346,20 +346,10 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
     }
 
     // --- External command (subprocess) model ---
-    let cmd = sbom_cfg.cmd.as_deref().unwrap_or("syft");
-    let artifacts_type = sbom_cfg.artifacts.as_deref().unwrap_or("archive");
+    let cmd = sbom_cfg.resolved_cmd();
+    let artifacts_type = sbom_cfg.resolved_artifacts();
 
-    // Default documents based on artifacts type
-    let documents = sbom_cfg
-        .documents
-        .clone()
-        .unwrap_or_else(|| match artifacts_type {
-            "binary" => {
-                vec!["{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}.sbom.json".to_string()]
-            }
-            "any" => vec![],
-            _ => vec!["{{ .ArtifactName }}.sbom.json".to_string()],
-        });
+    let documents = sbom_cfg.resolved_documents(artifacts_type);
 
     // when artifacts != "any", multiple
     // SBOM output documents are unsupported because each document name is
@@ -372,35 +362,12 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
         );
     }
 
-    // Default args for syft
-    let args = sbom_cfg.args.clone().unwrap_or_else(|| {
-        if cmd == "syft" {
-            vec![
-                "$artifact".to_string(),
-                "--output".to_string(),
-                "spdx-json=$document".to_string(),
-                "--enrich".to_string(),
-                "all".to_string(),
-            ]
-        } else {
-            vec![]
-        }
-    });
+    let args = sbom_cfg.resolved_args(cmd);
 
-    // Default env for syft with source/archive
     let env_vars: Vec<(String, String)> = match sbom_cfg.env.as_deref() {
         Some(list) => anodizer_core::config::parse_env_entries(list)
             .with_context(|| "sbom: parse env entries")?,
-        None => {
-            if cmd == "syft" && matches!(artifacts_type, "source" | "archive") {
-                vec![(
-                    "SYFT_FILE_METADATA_CATALOGER_ENABLED".to_string(),
-                    "true".to_string(),
-                )]
-            } else {
-                Vec::new()
-            }
-        }
+        None => SbomConfig::default_syft_env_for(cmd, artifacts_type),
     };
 
     // Filter artifacts from the registry based on artifacts type.
@@ -655,7 +622,7 @@ fn run_sbom_builtin(
     version: &str,
 ) -> Result<()> {
     let log = ctx.logger("sbom");
-    let id = sbom_cfg.id.as_deref().unwrap_or("default");
+    let id = sbom_cfg.resolved_id();
 
     // Detect format from the document's extension chain rather than a raw
     // substring match. `mytool-spdx-companion.cdx.json` should resolve to

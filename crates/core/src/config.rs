@@ -4459,6 +4459,105 @@ pub struct SbomConfig {
     pub skip: Option<StringOrBool>,
 }
 
+impl SbomConfig {
+    /// Default `id` when an SBOM config has none. Mirrors GoReleaser
+    /// `internal/pipe/sbom/sbom.go` (`cfg.ID = "default"`).
+    pub const DEFAULT_ID: &'static str = "default";
+
+    /// Default SBOM-generation command. Mirrors GoReleaser `sbom.go`
+    /// (`cfg.Cmd = "syft"`).
+    pub const DEFAULT_CMD: &'static str = "syft";
+
+    /// Default `artifacts` filter. Mirrors GoReleaser `sbom.go`
+    /// (`cfg.Artifacts = "archive"`).
+    pub const DEFAULT_ARTIFACTS: &'static str = "archive";
+
+    /// Default document-path template when `artifacts: binary`. Includes
+    /// per-target Os/Arch suffix so per-arch SBOMs don't collide.
+    /// Mirrors GoReleaser `sbom.go`.
+    pub const DEFAULT_DOCUMENT_BINARY: &'static str =
+        "{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}.sbom.json";
+
+    /// Default document-path template for any non-binary, non-any
+    /// `artifacts:` filter. Mirrors GoReleaser `sbom.go`.
+    pub const DEFAULT_DOCUMENT_OTHER: &'static str = "{{ .ArtifactName }}.sbom.json";
+
+    /// Default `args` for the syft command. Mirrors GoReleaser
+    /// `sbom.go`. Anodize matches GR's shell-style `$artifact` /
+    /// `$document` placeholders verbatim — the arg-renderer rewrites
+    /// these to per-artifact values at execution time.
+    pub const DEFAULT_SYFT_ARGS: &[&'static str] = &[
+        "$artifact",
+        "--output",
+        "spdx-json=$document",
+        "--enrich",
+        "all",
+    ];
+
+    /// Env entry that syft requires to emit file paths in the SBOM
+    /// when cataloging archives or source. Mirrors GoReleaser `sbom.go`.
+    pub const DEFAULT_SYFT_ENV_KEY: &'static str = "SYFT_FILE_METADATA_CATALOGER_ENABLED";
+    pub const DEFAULT_SYFT_ENV_VAL: &'static str = "true";
+
+    /// Resolve the SBOM-config id, falling back to `"default"`.
+    pub fn resolved_id(&self) -> &str {
+        self.id.as_deref().unwrap_or(Self::DEFAULT_ID)
+    }
+
+    /// Resolve the SBOM command, falling back to `"syft"`.
+    pub fn resolved_cmd(&self) -> &str {
+        self.cmd.as_deref().unwrap_or(Self::DEFAULT_CMD)
+    }
+
+    /// Resolve the `artifacts:` filter, falling back to `"archive"`.
+    pub fn resolved_artifacts(&self) -> &str {
+        self.artifacts.as_deref().unwrap_or(Self::DEFAULT_ARTIFACTS)
+    }
+
+    /// Resolve `documents`, falling back to the artifact-type-specific
+    /// default when unset. Caller should pass the result of
+    /// [`Self::resolved_artifacts`] for `artifacts`.
+    pub fn resolved_documents(&self, artifacts: &str) -> Vec<String> {
+        self.documents.clone().unwrap_or_else(|| match artifacts {
+            "binary" => vec![Self::DEFAULT_DOCUMENT_BINARY.to_string()],
+            "any" => vec![],
+            _ => vec![Self::DEFAULT_DOCUMENT_OTHER.to_string()],
+        })
+    }
+
+    /// Resolve `args`, falling back to [`Self::DEFAULT_SYFT_ARGS`] when
+    /// `cmd` is `"syft"`; empty vec otherwise (matches GoReleaser:
+    /// `sbom.go` only initializes args when cmd is syft, and leaves
+    /// args empty for other cmds).
+    pub fn resolved_args(&self, cmd: &str) -> Vec<String> {
+        self.args.clone().unwrap_or_else(|| {
+            if cmd == Self::DEFAULT_CMD {
+                Self::DEFAULT_SYFT_ARGS
+                    .iter()
+                    .map(|s| (*s).to_string())
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        })
+    }
+
+    /// Default env additions for the syft sub-process. Empty unless cmd
+    /// is syft AND artifacts is source/archive — in which case syft
+    /// needs the file-metadata cataloger enabled to produce file paths
+    /// in the SBOM. Mirrors GoReleaser `sbom.go`.
+    pub fn default_syft_env_for(cmd: &str, artifacts: &str) -> Vec<(String, String)> {
+        if cmd == Self::DEFAULT_CMD && matches!(artifacts, "source" | "archive") {
+            vec![(
+                Self::DEFAULT_SYFT_ENV_KEY.to_string(),
+                Self::DEFAULT_SYFT_ENV_VAL.to_string(),
+            )]
+        } else {
+            Vec::new()
+        }
+    }
+}
+
 /// Custom deserializer for the `sboms` / `sbom` field.
 /// Accepts:
 ///   - null/missing → empty vec (via serde default)
@@ -6827,6 +6926,152 @@ crates:
             ..Default::default()
         };
         assert_eq!(cfg.resolved_use(), MacOSNativeArtifactKind::Pkg);
+    }
+
+    // ---- SbomConfig resolved_*() accessors (Session C lazy-defaults policy) ----
+
+    #[test]
+    fn test_sbom_resolved_id_default() {
+        assert_eq!(SbomConfig::default().resolved_id(), "default");
+    }
+
+    #[test]
+    fn test_sbom_resolved_id_user_value_wins() {
+        let cfg = SbomConfig {
+            id: Some("custom".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolved_id(), "custom");
+    }
+
+    #[test]
+    fn test_sbom_resolved_cmd_default() {
+        assert_eq!(SbomConfig::default().resolved_cmd(), "syft");
+    }
+
+    #[test]
+    fn test_sbom_resolved_cmd_user_value_wins() {
+        let cfg = SbomConfig {
+            cmd: Some("trivy".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolved_cmd(), "trivy");
+    }
+
+    #[test]
+    fn test_sbom_resolved_artifacts_default() {
+        assert_eq!(SbomConfig::default().resolved_artifacts(), "archive");
+    }
+
+    #[test]
+    fn test_sbom_resolved_artifacts_user_value_wins() {
+        let cfg = SbomConfig {
+            artifacts: Some("binary".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolved_artifacts(), "binary");
+    }
+
+    #[test]
+    fn test_sbom_resolved_documents_default_binary() {
+        assert_eq!(
+            SbomConfig::default().resolved_documents("binary"),
+            vec!["{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}.sbom.json".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_sbom_resolved_documents_default_any() {
+        assert_eq!(
+            SbomConfig::default().resolved_documents("any"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn test_sbom_resolved_documents_default_archive() {
+        assert_eq!(
+            SbomConfig::default().resolved_documents("archive"),
+            vec!["{{ .ArtifactName }}.sbom.json".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_sbom_resolved_documents_user_value_wins() {
+        let cfg = SbomConfig {
+            documents: Some(vec!["custom-{{ Version }}.sbom.json".to_string()]),
+            ..Default::default()
+        };
+        assert_eq!(
+            cfg.resolved_documents("binary"),
+            vec!["custom-{{ Version }}.sbom.json".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_sbom_resolved_args_default_syft() {
+        assert_eq!(
+            SbomConfig::default().resolved_args("syft"),
+            vec![
+                "$artifact".to_string(),
+                "--output".to_string(),
+                "spdx-json=$document".to_string(),
+                "--enrich".to_string(),
+                "all".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_sbom_resolved_args_default_non_syft_is_empty() {
+        assert_eq!(
+            SbomConfig::default().resolved_args("trivy"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn test_sbom_resolved_args_user_value_wins() {
+        let custom = vec!["sbom".to_string(), "$artifact".to_string()];
+        let cfg = SbomConfig {
+            args: Some(custom.clone()),
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolved_args("syft"), custom);
+        assert_eq!(cfg.resolved_args("trivy"), custom);
+    }
+
+    #[test]
+    fn test_sbom_default_syft_env_archive() {
+        assert_eq!(
+            SbomConfig::default_syft_env_for("syft", "archive"),
+            vec![(
+                "SYFT_FILE_METADATA_CATALOGER_ENABLED".to_string(),
+                "true".to_string(),
+            )]
+        );
+    }
+
+    #[test]
+    fn test_sbom_default_syft_env_source() {
+        assert_eq!(
+            SbomConfig::default_syft_env_for("syft", "source"),
+            vec![(
+                "SYFT_FILE_METADATA_CATALOGER_ENABLED".to_string(),
+                "true".to_string(),
+            )]
+        );
+    }
+
+    #[test]
+    fn test_sbom_default_syft_env_other_artifacts_empty() {
+        assert!(SbomConfig::default_syft_env_for("syft", "binary").is_empty());
+        assert!(SbomConfig::default_syft_env_for("syft", "any").is_empty());
+    }
+
+    #[test]
+    fn test_sbom_default_syft_env_non_syft_empty() {
+        assert!(SbomConfig::default_syft_env_for("trivy", "archive").is_empty());
     }
 
     // ---- ChecksumConfig disable tests ----
