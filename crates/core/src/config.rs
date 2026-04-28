@@ -4728,10 +4728,11 @@ pub struct ChangelogConfig {
     /// `github` backend only), AllLogins (comma-separated list of all GitHub usernames
     /// across the entire release, `github` backend only).
     ///
-    /// Default depends on backend (matches GoReleaser
-    /// `internal/pipe/changelog/changelog.go:54-61`):
-    /// - `git`: `"{{ SHA }} {{ Message }}"`
-    /// - `github`/`gitlab`/`gitea`: `"{{ SHA }}: {{ Message }} (@Login or AuthorName <AuthorEmail>)"`
+    /// Default depends on backend. Uses the full SHA to match GoReleaser
+    /// (`internal/pipe/changelog/changelog.go:54-61`):
+    /// - `git` backend (default): `"{{ SHA }} {{ Message }}"`
+    /// - `github`/`gitlab`/`gitea` backend: `"{{ SHA }}: {{ Message }} (@Login or AuthorName <AuthorEmail>)"`
+    ///   Falls back to `AuthorName <AuthorEmail>` when `Login` is empty (matching GoReleaser).
     ///
     /// When `abbrev < 0`, the default reduces to `"{{ Message }}"` (no hash prefix).
     pub format: Option<String>,

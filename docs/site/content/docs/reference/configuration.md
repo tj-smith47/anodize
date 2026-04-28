@@ -177,7 +177,7 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 | `footer` | ContentSource | — | Text appended to the changelog. Same shape as `header`. |
 | `format` | string | — | Template for each changelog commit line. Available variables: SHA (full hash), ShortSHA (abbreviated), Message (commit subject), AuthorName, AuthorEmail, Login (per-commit GitHub username, `github` backend only), Logins (per-entry comma-separated list of GitHub usernames for that commit, `github` backend only), AllLogins (comma-separated list of all GitHub usernames across the entire release, `github` backend only).
 
-Default depends on backend (matches GoReleaser `internal/pipe/changelog/changelog.go:54-61`): - `git`: `"{{ SHA }} {{ Message }}"` - `github`/`gitlab`/`gitea`: `"{{ SHA }}: {{ Message }} (@Login or AuthorName <AuthorEmail>)"`
+Default depends on backend. Uses the full SHA to match GoReleaser (`internal/pipe/changelog/changelog.go:54-61`): - `git` backend (default): `"{{ SHA }} {{ Message }}"` - `github`/`gitlab`/`gitea` backend: `"{{ SHA }}: {{ Message }} (@Login or AuthorName <AuthorEmail>)"` Falls back to `AuthorName <AuthorEmail>` when `Login` is empty (matching GoReleaser).
 
 When `abbrev < 0`, the default reduces to `"{{ Message }}"` (no hash prefix). |
 | `groups` | list of ChangelogGroup | — | Groups for organizing changelog entries by commit message prefix. |
