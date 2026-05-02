@@ -54,7 +54,7 @@ struct NfpmYamlConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     meta: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    umask: Option<String>,
+    umask: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     mtime: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -600,7 +600,11 @@ pub fn generate_nfpm_yaml_with_env(
         section: config.section.clone(),
         priority: config.priority.clone(),
         meta: config.meta,
-        umask: config.umask.map(|u| format!("0o{:03o}", u.value())),
+        // Emit umask as a plain decimal int — nfpm parses into `fs.FileMode`
+        // (uint32) and rejects YAML strings (`'0o002'`) with
+        // `cannot unmarshal !!str into fs.FileMode`. Octal-input form on the
+        // anodizer side is preserved by `StringOrU32`'s deserializer.
+        umask: config.umask.map(|u| u.value()),
         mtime: config.mtime.clone(),
         scripts,
         recommends: config.recommends.clone().unwrap_or_default(),
@@ -3216,7 +3220,9 @@ crates:
             "priority missing:\n{yaml}"
         );
         assert!(yaml.contains("meta: true"), "meta missing:\n{yaml}");
-        assert!(yaml.contains("umask: '0o002'"), "umask missing:\n{yaml}");
+        // Emitted as decimal int (not quoted "0o002") — nfpm parses to
+        // `fs.FileMode`/uint32 and rejects YAML strings.
+        assert!(yaml.contains("umask: 2"), "umask missing:\n{yaml}");
         assert!(
             yaml.contains("mtime: 2023-01-01T00:00:00Z")
                 || yaml.contains("mtime: '2023-01-01T00:00:00Z'"),
