@@ -28,6 +28,11 @@ variables:
 # Git tag discovery settings
 git:
   tag_sort: "-version:refname"
+  ignore_tags:
+    - "nightly"
+  ignore_tag_prefixes:
+    - "draft-"
+  prerelease_suffix: "-"
 
 # Auto-tagging configuration (used by `anodizer tag`)
 tag:
@@ -46,6 +51,11 @@ metadata:
   maintainers:
     - "TJ Smith"
   mod_timestamp: "{{ CommitTimestamp }}"
+  full_description:
+    from_file: README.md
+  commit_author:
+    name: TJ Smith
+    email: tj@jarvispro.io
 
 defaults:
   targets:
@@ -72,6 +82,11 @@ defaults:
     format_overrides:
       - os: windows
         formats: [zip]
+    hooks:
+      before:
+        - "echo packing {{ ProjectName }} {{ Tag }} format={{ Format }}"
+      after:
+        - "echo packed {{ ProjectName }} {{ Tag }} format={{ Format }}"
   checksum:
     algorithm: sha256
   # Publisher inheritance: `cargo: {}` opts every crate into crates.io
@@ -247,8 +262,9 @@ crates:
           - README.md
           - docs/configuration.md
     checksum:
-      name_template: "{{ ProjectName }}-{{ Version }}-checksums.txt"
+      name_template: "{{ ArtifactName }}.sha256"
       algorithm: sha256
+      split: true
     binstall:
       enabled: true
       pkg_url: "https://github.com/tj-smith47/anodizer/releases/download/v{{ Version }}/anodizer-{{ Version }}-{ target }.tar.gz"
@@ -261,7 +277,14 @@ crates:
       draft: false
       prerelease: auto
       make_latest: auto
+      mode: keep-existing
+      target_commitish: "{{ .Commit }}"
+      discussion_category_name: "Announcements"
+      replace_existing_draft: false
+      replace_existing_artifacts: false
       name_template: "{{ ProjectName }} {{ Tag }}"
+      header: |
+        ## What's new in {{ .Tag }}
       footer: |
         ---
         Released with [anodizer](https://github.com/tj-smith47/anodizer) 🦀
@@ -275,11 +298,20 @@ crates:
           name: homebrew-tap
         directory: Formula
         description: "A Rust-native release automation tool"
+        homepage: "https://github.com/tj-smith47/anodizer"
         license: MIT
         install: |
           bin.install "anodizer"
+        post_install: |
+          generate_completions_from_executable(bin/"anodizer", "completion")
         test: |
           system "#{bin}/anodizer", "--version"
+        caveats: |
+          Run `anodizer init` to scaffold a config in your repo.
+        dependencies:
+          - name: git
+            type: required
+        commit_msg_template: "anodizer {{ .Tag }}"
         commit_author:
           name: TJ Smith
           email: tj@jarvispro.io
@@ -288,7 +320,13 @@ crates:
           owner: tj-smith47
           name: scoop-bucket
         description: "A Rust-native release automation tool"
+        homepage: "https://github.com/tj-smith47/anodizer"
         license: MIT
+        depends:
+          - git
+        shortcuts:
+          - ["anodizer.exe", "Anodizer"]
+        commit_msg_template: "anodizer {{ .Tag }}"
         commit_author:
           name: TJ Smith
           email: tj@jarvispro.io
@@ -296,8 +334,20 @@ crates:
         repository:
           owner: tj-smith47
           name: anodizer
+        title: "Anodizer"
+        summary: "A Rust-native release automation tool"
         description: "A Rust-native release automation tool"
+        authors: "TJ Smith"
+        copyright: "Copyright © 2026 TJ Smith"
         license: MIT
+        require_license_acceptance: false
+        project_url: "https://github.com/tj-smith47/anodizer"
+        project_source_url: "https://github.com/tj-smith47/anodizer"
+        package_source_url: "https://github.com/tj-smith47/anodizer/tree/{{ .Tag }}/crates/cli"
+        docs_url: "https://github.com/tj-smith47/anodizer/blob/{{ .Tag }}/docs/configuration.md"
+        bug_tracker_url: "https://github.com/tj-smith47/anodizer/issues"
+        release_notes: "https://github.com/tj-smith47/anodizer/releases/tag/{{ .Tag }}"
+        icon_url: "https://raw.githubusercontent.com/tj-smith47/anodizer/main/assets/logo.png"
         tags:
           - release
           - automation
@@ -306,10 +356,24 @@ crates:
         repository:
           owner: tj-smith47
           name: winget-pkgs
+        short_description: "Rust-native release automation"
         description: "A Rust-native release automation tool"
+        homepage: "https://github.com/tj-smith47/anodizer"
         license: MIT
+        author: "TJ Smith"
+        copyright: "Copyright © 2026 TJ Smith"
         package_identifier: "TJSmith.Anodizer"
         publisher: "TJ Smith"
+        publisher_url: "https://github.com/tj-smith47"
+        publisher_support_url: "https://github.com/tj-smith47/anodizer/issues"
+        release_notes: "See release-notes URL for the full changelog."
+        release_notes_url: "https://github.com/tj-smith47/anodizer/releases/tag/{{ .Tag }}"
+        installation_notes: "Run `anodizer --help` after installation."
+        tags:
+          - release
+          - automation
+          - rust
+        commit_msg_template: "anodizer {{ .Tag }}"
         # Rust/MSVC binaries dynamically link against the VC++ 2015+
         # runtime. Without this dependency declared, winget's automated
         # validation fails at invocation time with STATUS_DLL_NOT_FOUND
@@ -339,6 +403,12 @@ crates:
         description: "A Rust-native release automation tool"
         license: mit
         skip_upload: false
+        formatter: alejandra
+        extra_install: |
+          installManPage share/man/man1/anodizer.1
+        post_install: |
+          echo "Installed anodizer. Run 'anodizer init' to scaffold a config."
+        commit_msg_template: "anodizer {{ .Tag }}"
         commit_author:
           name: TJ Smith
           email: tj@jarvispro.io
@@ -353,7 +423,8 @@ crates:
           name: TJ Smith
           email: tj@jarvispro.io
     nfpm:
-      - package_name: anodizer
+      - id: default
+        package_name: anodizer
         formats:
           - deb
           - rpm
@@ -364,14 +435,48 @@ crates:
         description: "A Rust-native release automation tool"
         license: MIT
         bindir: /usr/bin
+        section: utils
+        priority: optional
+        epoch: "1"
+        release: "1"
+        umask: "0o002"
+        mtime: "{{ CommitDate }}"
+        recommends:
+          - git
+        suggests:
+          - upx
+        provides:
+          - anodizer
         file_name_template: "{{ ProjectName }}_{{ RawVersion }}_{{ Os }}_{{ Arch }}"
         contents:
           - src: LICENSE
             dst: /usr/share/doc/anodizer/LICENSE
           - src: README.md
             dst: /usr/share/doc/anodizer/README.md
+        # GPG signing for deb / rpm / apk packages.
+        # Requires `GPG_KEY_PATH` env pointing at an exported secret key file:
+        #   gpg --export-secret-keys --armor <fingerprint> > ~/.gnupg/anodizer-signing.asc
+        #   export GPG_KEY_PATH=~/.gnupg/anodizer-signing.asc
+        # Same key material as `signs:` (which uses keyring lookup via fingerprint);
+        # nfpm-side tools (rpmsign / dpkg-sig) need a file path on disk.
+        deb:
+          signature:
+            key_file: "{{ .Env.GPG_KEY_PATH }}"
+            type: origin
+        rpm:
+          group: Development/Tools
+          packager: "TJ Smith <tj@jarvispro.io>"
+          signature:
+            key_file: "{{ .Env.GPG_KEY_PATH }}"
+        apk:
+          signature:
+            key_file: "{{ .Env.GPG_KEY_PATH }}"
     snapcrafts:
-      - name: anodizer
+      - id: default
+        name: anodizer
+        title: "Anodizer"
+        icon: "assets/logo.png"
+        base: core24
         summary: "A Rust-native release automation tool"
         description: |
           Anodizer is a release automation tool for Rust projects, inspired by
@@ -381,6 +486,8 @@ crates:
         confinement: strict
         license: MIT
         publish: true
+        channel_templates:
+          - "latest/stable"
         apps:
           anodizer:
             command: anodizer
@@ -429,8 +536,17 @@ template_files:
     mode: "0755"
 
 changelog:
+  use: github-native
+  title: "Changelog"
   header: "# Changelog for {{ ProjectName }}"
+  divider: "---"
   sort: asc
+  abbrev: 12
+  format: "* {{ .SHA }} {{ .Message }} ({{ .AuthorUsername }})"
+  paths:
+    - "crates/**"
+    - "Cargo.toml"
+    - "Cargo.lock"
   filters:
     exclude:
       - "^docs:"
@@ -449,6 +565,8 @@ changelog:
       order: 2
     - title: Others
       order: 999
+  footer: |
+    _Generated by anodizer._
 
 signs:
   - id: default
@@ -462,11 +580,15 @@ signs:
       - "{{ Signature }}"
       - "--detach-sig"
       - "{{ Artifact }}"
+    env:
+      - "GPG_TTY={{ Env.GPG_TTY }}"
+    if_condition: "{{ not .IsSnapshot }}"
 
 source:
   enabled: true
   format: tar.gz
   name_template: "{{ ProjectName }}-{{ Version }}-source"
+  prefix_template: "{{ ProjectName }}-{{ Version }}/"
   files:
     - "crates/**/*.rs"
     - "Cargo.toml"
@@ -475,8 +597,18 @@ source:
     - "README.md"
 
 sboms:
-  enabled: true
-  format: cyclonedx
+  - id: default
+    enabled: true
+    cmd: syft
+    args:
+      - "{{ .Artifact }}"
+      - "--output"
+      - "cyclonedx-json={{ .Document }}"
+    documents:
+      - "{{ .ArtifactName }}.cdx.json"
+    artifacts: archive
+    env:
+      - "SYFT_QUIET=true"
 
 upx:
   - id: default
@@ -485,6 +617,8 @@ upx:
     args:
       - "--best"
       - "--lzma"
+    compress: "9"
+    lzma: true
     # UPX doesn't support macOS ARM or Windows ARM binaries
     targets:
       - "x86_64-unknown-linux-gnu"
@@ -514,6 +648,9 @@ binary_signs:
       - "--bundle={{ Signature }}"
       - "--yes"
       - "{{ Artifact }}"
+    env:
+      - "COSIGN_EXPERIMENTAL=1"
+    if_condition: "{{ not .IsSnapshot }}"
 
 # Docker image signing
 docker_signs:
@@ -525,6 +662,9 @@ docker_signs:
       - "--key=env://COSIGN_KEY"
       - "--yes"
       - "{{ Artifact }}"
+    env:
+      - "COSIGN_EXPERIMENTAL=1"
+    if_condition: "{{ not .IsSnapshot }}"
 
 # Milestone closing — close GitHub milestones matching the release tag
 milestones:
@@ -595,6 +735,12 @@ announce:
     endpoint_url: "https://tj.jarvispro.io/webhooks/anodizer"
     content_type: application/json
     message_template: '{"project":"{{ ProjectName }}","tag":"{{ Tag }}","url":"{{ ReleaseURL }}"}'
+    headers:
+      X-Anodizer-Source: "release"
+    skip_tls_verify: false
+    expected_status_codes:
+      - 200
+      - 202
   telegram:
     enabled: false
     bot_token: "{{ Env.TELEGRAM_BOT_TOKEN }}"
@@ -621,6 +767,8 @@ announce:
       - "tj@jarvispro.io"
     subject_template: "{{ ProjectName }} {{ Tag }} released"
     message_template: "{{ ProjectName }} {{ Tag }} is now available at {{ ReleaseURL }}"
+    encryption: starttls
+    insecure_skip_verify: false
   reddit:
     enabled: false
     title_template: "{{ ProjectName }} {{ Tag }} released"
