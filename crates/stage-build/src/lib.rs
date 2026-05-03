@@ -39,28 +39,6 @@ pub use validation::*;
 
 mod workspace;
 
-// Re-export internal modules and std/core items into the crate root so that
-// `tests.rs`'s `use super::*` can resolve everything it needs without each
-// test file duplicating a long import list.
-#[cfg(test)]
-pub(crate) use anodizer_core::artifact::ArtifactKind;
-#[cfg(test)]
-pub(crate) use anodizer_core::config::{BuildIgnore, BuildOverride, CrossStrategy};
-#[cfg(test)]
-pub(crate) use anodizer_core::stage::Stage;
-#[cfg(test)]
-pub(crate) use profile::*;
-#[cfg(test)]
-pub(crate) use std::collections::HashMap;
-#[cfg(test)]
-pub(crate) use std::path::{Path, PathBuf};
-#[cfg(test)]
-pub(crate) use targets::*;
-#[cfg(test)]
-pub(crate) use universal::*;
-#[cfg(test)]
-pub(crate) use workspace::*;
-
 // ---------------------------------------------------------------------------
 // BuildStage
 // ---------------------------------------------------------------------------

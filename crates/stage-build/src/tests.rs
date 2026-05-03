@@ -1,8 +1,26 @@
 #![allow(clippy::field_reassign_with_default)]
 
-use super::*;
+// External crates
+use anodizer_core::artifact::ArtifactKind;
+use anodizer_core::config::{BuildIgnore, BuildOverride, CrossStrategy};
 use anodizer_core::log::{StageLogger, Verbosity};
+use anodizer_core::stage::Stage;
 use serial_test::serial;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+// Crate-internal items
+use super::BuildStage;
+use super::command::{
+    build_command, build_lib_command, crate_has_binary_target, detect_crate_type,
+    detect_cross_strategy, resolve_build_program, same_apple_family, same_windows_family,
+};
+use super::profile::{detect_amd64_variant, parse_amd64_variant_from_rustflags};
+use super::targets::{DEFAULT_TARGETS, KNOWN_TARGETS};
+use super::targets::{find_matching_override, is_target_ignored, resolve_target_env};
+use super::universal::build_universal_binary;
+use super::validation::{is_dynamically_linked, strip_glibc_suffix, target_for_validation};
+use super::workspace::{cargo_target_dir, check_workspace_package, resolve_reproducible_epoch};
 
 fn test_logger() -> StageLogger {
     StageLogger::new("build", Verbosity::Normal)
@@ -503,7 +521,6 @@ fn test_reproducible_build_sets_source_date_epoch_and_rustflags() {
 fn test_reproducible_build_appends_to_existing_rustflags() {
     // Verify that when RUSTFLAGS is pre-set in the per-target env, the
     // remap-path-prefix flag is appended rather than replacing it.
-    use std::collections::HashMap;
 
     use anodizer_core::config::{BuildConfig, Config, CrateConfig};
     use anodizer_core::context::{Context, ContextOptions};
@@ -586,7 +603,7 @@ fn register_binary(
     target: &str,
     path: std::path::PathBuf,
 ) {
-    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::artifact::Artifact;
     let binary_name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -607,7 +624,6 @@ fn register_binary(
 
 #[test]
 fn test_universal_binary_dry_run_registers_artifact() {
-    use anodizer_core::artifact::ArtifactKind;
     use anodizer_core::config::{Config, CrateConfig, UniversalBinaryConfig};
     use anodizer_core::context::{Context, ContextOptions};
 
@@ -683,7 +699,6 @@ fn test_universal_binary_dry_run_registers_artifact() {
 
 #[test]
 fn test_universal_binary_dry_run_uses_name_template() {
-    use anodizer_core::artifact::ArtifactKind;
     use anodizer_core::config::UniversalBinaryConfig;
     use anodizer_core::context::{Context, ContextOptions};
 
@@ -739,7 +754,6 @@ fn test_universal_binary_dry_run_uses_name_template() {
 
 #[test]
 fn test_universal_binary_skips_when_missing_arch() {
-    use anodizer_core::artifact::ArtifactKind;
     use anodizer_core::config::UniversalBinaryConfig;
     use anodizer_core::context::{Context, ContextOptions};
 
@@ -785,7 +799,6 @@ fn test_universal_binary_skips_when_missing_arch() {
 
 #[test]
 fn test_universal_binary_skips_for_different_crate() {
-    use anodizer_core::artifact::ArtifactKind;
     use anodizer_core::config::UniversalBinaryConfig;
     use anodizer_core::context::{Context, ContextOptions};
 
@@ -837,7 +850,6 @@ fn test_universal_binary_skips_for_different_crate() {
 
 #[test]
 fn test_universal_binary_artifact_has_correct_metadata() {
-    use anodizer_core::artifact::ArtifactKind;
     use anodizer_core::config::UniversalBinaryConfig;
     use anodizer_core::context::{Context, ContextOptions};
 
@@ -899,7 +911,7 @@ fn test_universal_binary_artifact_has_correct_metadata() {
 /// drop arbitrary metadata keys downstream stages emit.
 #[test]
 fn test_universal_binary_copies_full_extras_from_first_source() {
-    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::artifact::Artifact;
     use anodizer_core::config::UniversalBinaryConfig;
     use anodizer_core::context::{Context, ContextOptions};
 
@@ -972,7 +984,7 @@ fn test_universal_binary_copies_full_extras_from_first_source() {
 /// NOT be matched by its `binary`-key value.
 #[test]
 fn test_universal_binary_filter_id_only_no_binary_fallback() {
-    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::artifact::Artifact;
     use anodizer_core::config::UniversalBinaryConfig;
     use anodizer_core::context::{Context, ContextOptions};
 
@@ -1024,7 +1036,7 @@ fn test_universal_binary_filter_id_only_no_binary_fallback() {
 /// must produce `myapp_darwin_all/myapp`, not `myapp_darwin_all/myapp-bin`.
 #[test]
 fn test_universal_binary_default_name_uses_project_name() {
-    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::artifact::Artifact;
     use anodizer_core::config::UniversalBinaryConfig;
     use anodizer_core::context::{Context, ContextOptions};
 
