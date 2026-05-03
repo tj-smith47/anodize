@@ -1,4 +1,7 @@
-use super::*;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use super::{HumanDuration, StringOrBool, deserialize_string_or_bool_opt};
 
 // ---------------------------------------------------------------------------
 // NotarizeConfig (macOS code signing and notarization)

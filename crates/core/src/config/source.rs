@@ -1,4 +1,7 @@
-use super::*;
+use schemars::JsonSchema;
+use serde::{Deserialize, Deserializer, Serialize};
+
+use super::StringOrU32;
 
 // ---------------------------------------------------------------------------
 // SourceConfig

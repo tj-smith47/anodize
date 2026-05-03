@@ -1,4 +1,10 @@
-use super::*;
+use std::collections::HashMap;
+
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use super::archives::TemplatedExtraFile;
+use super::{StringOrBool, deserialize_string_or_bool_opt};
 
 // ---------------------------------------------------------------------------
 // SnapcraftConfig

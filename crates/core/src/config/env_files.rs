@@ -1,4 +1,5 @@
-use super::*;
+use schemars::JsonSchema;
+use serde::{Deserialize, Deserializer, Serialize};
 
 // ---------------------------------------------------------------------------
 // EnvFilesConfig — accepts list of .env paths OR structured token file paths

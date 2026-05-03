@@ -1,4 +1,9 @@
-use super::*;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use super::archives::{ArchiveFileSpec, ExtraFileSpec, TemplatedExtraFile};
+use super::build::BuildHooksConfig;
+use super::{StringOrBool, deserialize_string_or_bool_opt};
 
 // ---------------------------------------------------------------------------
 // DmgConfig

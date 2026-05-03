@@ -1,4 +1,7 @@
-use super::*;
+use schemars::JsonSchema;
+use serde::{Deserialize, Deserializer, Serialize};
+
+use super::{StringOrBool, deserialize_string_or_bool_opt};
 
 // ---------------------------------------------------------------------------
 // UpxConfig
