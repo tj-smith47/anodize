@@ -1,4 +1,10 @@
-use super::*;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use super::{
+    ExtraFileSpec, StringOrBool, TemplatedExtraFile, deserialize_string_or_bool_opt,
+    deserialize_string_or_vec_opt,
+};
 
 // ---------------------------------------------------------------------------
 // BlobConfig (S3/GCS/Azure cloud storage)
