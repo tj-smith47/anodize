@@ -195,7 +195,7 @@ fn serialize_human_duration<S: serde::Serializer>(
 /// Parse a humantime-style duration string. Recognizes `ms`, `s`, `m`, `h`,
 /// `d` units and concatenated forms like `"1h30m"`. Whitespace between
 /// components is tolerated.
-pub(crate) fn parse_humantime_duration(input: &str) -> Result<std::time::Duration, String> {
+pub(super) fn parse_humantime_duration(input: &str) -> Result<std::time::Duration, String> {
     let s = input.trim();
     if s.is_empty() {
         return Err("empty duration string".to_string());
@@ -326,7 +326,7 @@ where
 
 /// Custom deserializer for `Option<Vec<String>>` that accepts either a single
 /// string or an array of strings. Used by `BlobConfig.cache_control`.
-pub(crate) fn deserialize_string_or_vec_opt<'de, D>(
+pub(super) fn deserialize_string_or_vec_opt<'de, D>(
     deserializer: D,
 ) -> Result<Option<Vec<String>>, D::Error>
 where
