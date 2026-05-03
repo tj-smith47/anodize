@@ -1,5 +1,38 @@
 #![allow(clippy::field_reassign_with_default)]
-use super::*;
+
+// External crates
+use serde::Deserialize;
+
+// Inline items from config/mod.rs
+use super::{Config, ERR_DEFAULTS_AXIS_MISMATCH, IncludeFilePath, IncludeSpec, IncludeUrlConfig};
+use super::{
+    validate_defaults_axis, validate_format_overrides, validate_homebrew_cask_url_template,
+    validate_tag_sort, validate_version,
+};
+
+// Items re-exported from config submodules (all reachable as super::ItemName
+// because config/mod.rs does `pub use submod::*;` for each)
+use super::GitConfig;
+use super::HookEntry;
+use super::{ArchivesConfig, ChecksumConfig, ContentSource, ExtraFileSpec};
+use super::{ChangelogConfig, MilestoneConfig, SbomConfig};
+use super::{CrateConfig, CrossStrategy};
+use super::{
+    EnvFilesConfig, EnvFilesTokenConfig, load_env_files, load_token_files, read_token_file,
+};
+use super::{
+    ForceTokenKind, GitHubUrlsConfig, GitLabUrlsConfig, GiteaUrlsConfig, MakeLatestConfig,
+    ReleaseConfig,
+};
+use super::{HumanDuration, StringOrBool};
+use super::{
+    MacOSNativeArtifactKind, MacOSNativeNotarizeConfig, MacOSNativeSignNotarizeConfig,
+    MacOSNotarizeApiConfig, MacOSSignConfig,
+};
+
+// parse_humantime_duration is pub(super) in string_or_bool — accessible from
+// sibling child modules (tests lives under config, same parent as string_or_bool)
+use super::string_or_bool::parse_humantime_duration;
 
 #[test]
 fn test_minimal_yaml_config() {
