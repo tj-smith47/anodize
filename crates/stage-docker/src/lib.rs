@@ -1,2409 +1,53 @@
-use std::collections::{HashMap, HashSet};
-use std::fs;
-use std::path::PathBuf;
-use std::process::Command;
-use std::sync::OnceLock;
-use std::time::Duration;
-
-use anyhow::{Context as _, Result};
-
-use anodizer_core::artifact::{Artifact, ArtifactKind, matches_id_filter};
-use anodizer_core::config::{DockerDigestConfig, DockerRetryConfig, SkipPushConfig, StringOrBool};
-use anodizer_core::context::Context;
-use anodizer_core::log::StageLogger;
-use anodizer_core::stage::Stage;
-use anodizer_core::target::map_target;
+// ---------------------------------------------------------------------------
+// levenshtein_distance / find_image_digest
+// ---------------------------------------------------------------------------
+mod spelling;
 
 // ---------------------------------------------------------------------------
-// levenshtein_distance
+// is_retriable_error / docker_supports_provenance / check_buildx_driver
 // ---------------------------------------------------------------------------
-
-/// Compute Levenshtein edit distance between two strings.
-fn levenshtein_distance(a: &str, b: &str) -> usize {
-    let a_chars: Vec<char> = a.chars().collect();
-    let b_chars: Vec<char> = b.chars().collect();
-    let a_len = a_chars.len();
-    let b_len = b_chars.len();
-    if a_len == 0 {
-        return b_len;
-    }
-    if b_len == 0 {
-        return a_len;
-    }
-
-    let mut prev: Vec<usize> = (0..=b_len).collect();
-    let mut curr = vec![0usize; b_len + 1];
-
-    for (i, ca) in a_chars.iter().enumerate() {
-        curr[0] = i + 1;
-        for (j, cb) in b_chars.iter().enumerate() {
-            let cost = if ca == cb { 0 } else { 1 };
-            curr[j + 1] = (prev[j] + cost).min(prev[j + 1] + 1).min(curr[j] + 1);
-        }
-        std::mem::swap(&mut prev, &mut curr);
-    }
-    prev[b_len]
-}
+mod detect;
+pub use detect::{is_retriable_error, is_retriable_error_v2};
 
 // ---------------------------------------------------------------------------
-// find_image_digest
+// platform_to_arch / tag_suffix
 // ---------------------------------------------------------------------------
-
-/// Look up the digest for a docker image tag from the list of artifacts.
-///
-/// Searches for a `DockerImage` artifact whose `tag` metadata matches the given
-/// image reference and returns its `digest` metadata value (e.g.,
-/// `sha256:abc123...`).  The digest may be stored as the full
-/// `registry/repo@sha256:...` string (from `docker inspect`), so we extract
-/// just the `sha256:...` portion when present.
-fn find_image_digest(artifacts: &[Artifact], image: &str) -> Option<String> {
-    for a in artifacts {
-        if a.kind != ArtifactKind::DockerImage {
-            continue;
-        }
-        let tag = match a.metadata.get("tag") {
-            Some(t) => t,
-            None => continue,
-        };
-        if tag != image {
-            continue;
-        }
-        if let Some(digest) = a.metadata.get("digest") {
-            if digest.is_empty() {
-                return None;
-            }
-            // docker inspect returns "registry/repo@sha256:abc..." — extract
-            // just the "sha256:..." part for use in manifest references.
-            if let Some(at_pos) = digest.find('@') {
-                return Some(digest[at_pos + 1..].to_string());
-            }
-            // Already a bare digest (sha256:...)
-            return Some(digest.clone());
-        }
-    }
-    None
-}
+mod platform;
+pub use platform::platform_to_arch;
 
 // ---------------------------------------------------------------------------
-// is_retriable_error
+// parse_duration_string / resolve_retry_params
 // ---------------------------------------------------------------------------
-
-/// Determine whether a docker error message indicates a transient failure
-/// worth retrying. Matches GoReleaser's narrow `isRetriablePush`
-/// (internal/pipe/docker/docker.go:389-418): `io.EOF` plus the exact HTTP
-/// status set 500/502/503/504/506/510. Network-level failures (`dial tcp`,
-/// `connection refused`, TLS handshake, DNS `no such host`, `REFUSED_STREAM`,
-/// `timeout`) fast-fail — waiting through a 10× exponential backoff when the
-/// registry is unreachable just delays the inevitable error for the user.
-///
-/// Used by the legacy (V1) docker build path. V2 uses [`is_retriable_error_v2`].
-pub fn is_retriable_error(error_msg: &str) -> bool {
-    if error_msg == "EOF" || error_msg.ends_with(": EOF") || error_msg.contains("\nEOF\n") {
-        return true;
-    }
-    let retriable_patterns = [
-        "received unexpected HTTP status: 500 Internal Server Error",
-        "received unexpected HTTP status: 502 Bad Gateway",
-        "received unexpected HTTP status: 503 Service Unavailable",
-        "received unexpected HTTP status: 504 Gateway Timeout",
-        "received unexpected HTTP status: 506 Variant Also Negotiates",
-        "received unexpected HTTP status: 510 Not Extended",
-    ];
-    retriable_patterns.iter().any(|p| error_msg.contains(p))
-}
-
-/// V2-specific retry predicate. Matches GoReleaser's narrow
-/// `isRetriableManifestCreate` (`v2/docker.go:544-549`): only retries when
-/// the output contains `"manifest verification failed for digest"`. All
-/// other errors — network timeouts, build failures, registry 5xx — are
-/// considered fatal under V2, because V2 runs `buildx build --push` as a
-/// single atomic operation and its own internal retry already covers the
-/// lower-level transient cases.
-pub fn is_retriable_error_v2(error_msg: &str) -> bool {
-    error_msg
-        .to_lowercase()
-        .contains("manifest verification failed for digest")
-}
+mod retry;
+pub use retry::{parse_duration_string, resolve_retry_params};
 
 // ---------------------------------------------------------------------------
-// docker_supports_provenance  (cached probe)
+// build_docker_command / build_docker_v2_command / V2 resolve helpers / skip_push
 // ---------------------------------------------------------------------------
-
-/// Cached result of probing `docker buildx build --help` for `--provenance`.
-///
-/// GoReleaser probes `docker build --help` output before unconditionally
-/// adding `--provenance=false` and `--sbom=false`.  We do the same: run the
-/// help command once, cache the result, and only add the flags when the
-/// installed Docker version actually recognises them.
-static DOCKER_SUPPORTS_PROVENANCE: OnceLock<bool> = OnceLock::new();
-
-fn docker_supports_provenance() -> bool {
-    *DOCKER_SUPPORTS_PROVENANCE.get_or_init(|| {
-        // Capability probe — no context env injection needed (reads --help output only).
-        // Try `docker buildx build --help` first (buildx is the common path).
-        // Fall back to `docker build --help` for non-buildx installs.
-        let output = Command::new("docker")
-            .args(["buildx", "build", "--help"])
-            .output()
-            .or_else(|_| Command::new("docker").args(["build", "--help"]).output());
-
-        match output {
-            Ok(o) => {
-                let stdout = String::from_utf8_lossy(&o.stdout);
-                stdout.contains("--provenance")
-            }
-            Err(_) => false, // docker not available — skip the flags
-        }
-    })
-}
+mod command;
+pub use command::{
+    apply_docker_v2_defaults, build_docker_command, build_docker_v2_command,
+    generate_v2_image_tags, is_docker_v2_sbom_enabled, is_docker_v2_skipped, resolve_backend,
+    resolve_skip_push,
+};
 
 // ---------------------------------------------------------------------------
-// is_docker_daemon_available
+// DockerBuildJob / DockerBuildResult / execute_docker_build
 // ---------------------------------------------------------------------------
-
-/// Cached result of probing `docker info` for daemon availability.
-///
-/// `docker info` can take several seconds when the daemon is down, so we
-/// cache the result for the lifetime of the process — consistent with how
-/// `DOCKER_SUPPORTS_PROVENANCE` caches its probe result.
-static DOCKER_DAEMON_AVAILABLE: OnceLock<bool> = OnceLock::new();
-
-/// Check if the Docker daemon is available by running `docker info`.
-fn is_docker_daemon_available() -> bool {
-    *DOCKER_DAEMON_AVAILABLE.get_or_init(|| {
-        Command::new("docker")
-            .arg("info")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    })
-}
+mod build;
 
 // ---------------------------------------------------------------------------
-// check_buildx_driver
+// stage_artifacts_v2 / copy_dockerfile / warn_project_markers / stage_extra_files
 // ---------------------------------------------------------------------------
-
-/// Check the current buildx driver and warn if it is not one of the standard
-/// types ("docker-container" or "docker").
-///
-/// GoReleaser v2 validates the driver via `docker buildx inspect` and errors
-/// on invalid drivers. We warn rather than error to be lenient, but the
-/// check ensures users know their setup may not work for multi-platform builds.
-fn check_buildx_driver(log: &StageLogger) {
-    // Capability probe — no context env injection needed (reads driver info only).
-    let output = Command::new("docker").args(["buildx", "inspect"]).output();
-    match output {
-        Ok(o) => {
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            // Parse the Driver line from `docker buildx inspect` output.
-            // Example: "Driver:           docker-container"
-            for line in stdout.lines() {
-                if let Some(driver) = line.strip_prefix("Driver:") {
-                    let driver = driver.trim();
-                    if driver != "docker-container" && driver != "docker" {
-                        log.warn(&format!(
-                            "buildx driver '{}' is not 'docker-container' or 'docker'; \
-                             multi-platform builds may not work correctly",
-                            driver
-                        ));
-                    }
-                    return;
-                }
-            }
-            // Driver line not found in output — warn about unknown driver
-            log.warn("could not determine buildx driver from 'docker buildx inspect' output");
-        }
-        Err(_) => {
-            // docker buildx not available — skip the check
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// platform_to_arch
-// ---------------------------------------------------------------------------
-
-/// Extract the architecture component from a Docker platform string.
-///
-/// Handles three-component platform strings like `"linux/arm/v7"` by
-/// concatenating the arch and variant (e.g. `"armv7"`), which matches
-/// the output of [`map_target`] for armv7/armv6 Rust triples.
-///
-/// Examples:
-/// - `"linux/amd64"` → `"amd64"`
-/// - `"linux/arm64"` → `"arm64"`
-/// - `"linux/arm/v7"` → `"armv7"`
-/// - `"linux/arm/v6"` → `"armv6"`
-pub fn platform_to_arch(platform: &str) -> &str {
-    let parts: Vec<&str> = platform.split('/').collect();
-    match parts.as_slice() {
-        [_, arch, variant] => {
-            // For "linux/arm/v7" → "armv7", "linux/arm/v6" → "armv6"
-            // We need static strings since the return type is &str.
-            match (*arch, *variant) {
-                ("arm", "v6") => "armv6",
-                ("arm", "v7") => "armv7",
-                _ => variant,
-            }
-        }
-        [_, arch] => arch,
-        _ => platform,
-    }
-}
-
-// ---------------------------------------------------------------------------
-// tag_suffix
-// ---------------------------------------------------------------------------
-
-/// Extract the architecture portion of a platform string for use as a tag suffix.
-///
-/// Delegates to [`platform_to_arch`] since the logic is identical:
-/// - `"linux/amd64"` → `"amd64"`
-/// - `"linux/arm64"` → `"arm64"`
-/// - `"linux/arm/v7"` → `"armv7"`
-fn tag_suffix(platform: &str) -> String {
-    platform_to_arch(platform).to_string()
-}
-
-// ---------------------------------------------------------------------------
-// parse_duration_string
-// ---------------------------------------------------------------------------
-
-/// Parse a human-readable duration string into a [`Duration`].
-///
-/// Supported suffixes: `ms` (milliseconds), `s` (seconds), `m` (minutes).
-/// Examples: `"500ms"`, `"1s"`, `"30s"`, `"2m"`.
-///
-/// Returns an error if the string is empty, has an unknown suffix, or contains
-/// a non-numeric prefix.
-pub fn parse_duration_string(s: &str) -> Result<Duration> {
-    let s = s.trim();
-    if s.is_empty() {
-        anyhow::bail!("empty duration string");
-    }
-
-    if let Some(n) = s.strip_suffix("ms") {
-        let millis: u64 = n
-            .parse()
-            .with_context(|| format!("invalid milliseconds in duration '{s}'"))?;
-        Ok(Duration::from_millis(millis))
-    } else if let Some(n) = s.strip_suffix('m') {
-        let mins: u64 = n
-            .parse()
-            .with_context(|| format!("invalid minutes in duration '{s}'"))?;
-        Ok(Duration::from_secs(mins * 60))
-    } else if let Some(n) = s.strip_suffix('s') {
-        let secs: u64 = n
-            .parse()
-            .with_context(|| format!("invalid seconds in duration '{s}'"))?;
-        Ok(Duration::from_secs(secs))
-    } else if let Ok(secs) = s.parse::<u64>() {
-        // Bare number without suffix — treat as seconds (GoReleaser compat)
-        Ok(Duration::from_secs(secs))
-    } else {
-        anyhow::bail!(
-            "unknown duration suffix in '{s}'; expected ms, s, or m (e.g. '500ms', '1s', '2m')"
-        );
-    }
-}
-
-/// Resolve retry parameters from an optional [`DockerRetryConfig`].
-///
-/// Returns `(attempts, base_delay, max_delay)` with sensible defaults:
-/// - attempts defaults to 10 (matching GoReleaser's default)
-/// - delay defaults to 10s
-/// - max_delay defaults to 5m (caps exponential backoff at a reasonable ceiling)
-pub fn resolve_retry_params(
-    retry: &Option<DockerRetryConfig>,
-) -> Result<(u32, Duration, Option<Duration>)> {
-    // Default max_delay of 5 minutes prevents exponential backoff from growing
-    // to unreasonably long waits (e.g. 42 minutes at attempt 9 with 10s base).
-    let default_max_delay = Some(Duration::from_secs(300));
-
-    match retry {
-        None => Ok((10, Duration::from_secs(10), default_max_delay)),
-        Some(cfg) => {
-            let attempts = cfg.attempts.unwrap_or(10);
-            let base_delay = match &cfg.delay {
-                Some(d) => parse_duration_string(d)?,
-                None => Duration::from_secs(10),
-            };
-            let max_delay = match &cfg.max_delay {
-                Some(d) => Some(parse_duration_string(d)?),
-                None => default_max_delay,
-            };
-            Ok((attempts, base_delay, max_delay))
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// build_docker_command
-// ---------------------------------------------------------------------------
-
-/// Resolve the docker backend binary and subcommand for build operations.
-///
-/// Returns `(binary, subcommands)`:
-/// - `"docker"` backend  → `("docker", ["build"])`
-/// - `"buildx"` backend  → `("docker", ["buildx", "build"])`
-/// - `"podman"` backend  → `("podman", ["build"])`
-///
-/// When `use_backend` is `None`, the default is `"buildx"` if there are
-/// multiple platforms, otherwise `"docker"`.
-pub fn resolve_backend(
-    use_backend: Option<&str>,
-    _multi_platform: bool,
-) -> Result<(&str, Vec<&str>)> {
-    match use_backend {
-        Some("docker") => Ok(("docker", vec!["build"])),
-        Some("podman") => Ok(("podman", vec!["build"])),
-        Some("buildx") => Ok(("docker", vec!["buildx", "build"])),
-        Some(other) => {
-            anyhow::bail!(
-                "unknown docker backend '{}'; expected 'docker', 'buildx', or 'podman'",
-                other
-            );
-        }
-        // Default to plain docker (matching GoReleaser).
-        // Users must explicitly set `use: buildx` for buildx features
-        // including multi-platform builds.
-        None => Ok(("docker", vec!["build"])),
-    }
-}
-
-/// Construct the docker build command arguments.
-///
-/// * `staging_dir` – path to the directory that acts as the Docker build
-///   context (already contains the Dockerfile and binaries).
-/// * `platforms` – Docker platform strings, e.g. `["linux/amd64", "linux/arm64"]`.
-/// * `tags` – fully-qualified image tags.
-/// * `extra_flags` – rendered `build_flag_templates`.
-/// * `push` – when `true`, adds `--push` to the command.
-/// * `push_flags` – additional flags added to the command when pushing.
-/// * `labels` – OCI labels added as `--label key=value` flags.
-/// * `use_backend` – backend selection: `"docker"`, `"buildx"`, or `"podman"`.
-#[allow(clippy::too_many_arguments)]
-pub fn build_docker_command(
-    staging_dir: &str,
-    platforms: &[&str],
-    tags: &[&str],
-    extra_flags: &[String],
-    push: bool,
-    push_flags: &[String],
-    labels: &[(String, String)],
-    use_backend: Option<&str>,
-) -> Result<Vec<String>> {
-    let multi_platform = platforms.len() > 1;
-    let (binary, subcommands) = resolve_backend(use_backend, multi_platform)?;
-
-    let mut cmd: Vec<String> = Vec::new();
-    cmd.push(binary.to_string());
-    for sub in subcommands {
-        cmd.push(sub.to_string());
-    }
-
-    // Always use plain progress for CI-friendly, verbose output.
-    cmd.push("--progress=plain".to_string());
-
-    // --platform=linux/amd64,linux/arm64
-    if !platforms.is_empty() {
-        let platform_str = platforms.join(",");
-        cmd.push(format!("--platform={platform_str}"));
-    }
-
-    // --tag <tag> for each image tag
-    for tag in tags {
-        cmd.push("--tag".to_string());
-        cmd.push(tag.to_string());
-    }
-
-    // --label key=value for each OCI label
-    for (key, value) in labels {
-        cmd.push("--label".to_string());
-        cmd.push(format!("{}={}", key, value));
-    }
-
-    // Extra build flags (rendered build_flag_templates)
-    for flag in extra_flags {
-        cmd.push(flag.clone());
-    }
-
-    // Determine the effective backend for --load/--push logic.
-    // Default is "docker" (matching GoReleaser); users must explicitly set
-    // `use: buildx` for buildx features including multi-platform builds.
-    let effective_backend = use_backend.unwrap_or("docker");
-
-    // --push in live mode (unless skip_push).  The --push flag is only valid
-    // for buildx; plain `docker build` and `podman build` do NOT support it.
-    // For non-buildx backends, push is handled separately after the build via
-    // `docker push` / `podman push` per tag.
-    //
-    // When using buildx without --push, add --load so the image is available
-    // locally (otherwise the built image vanishes).  --load is incompatible
-    // with multi-platform builds, so only add it for single-platform buildx.
-    if push && effective_backend == "buildx" {
-        cmd.push("--push".to_string());
-        // Additional push flags (buildx only — these are build-time flags
-        // like --provenance that only make sense with buildx --push)
-        for flag in push_flags {
-            cmd.push(flag.clone());
-        }
-    } else if effective_backend == "buildx" && !multi_platform {
-        cmd.push("--load".to_string());
-    }
-
-    // Auto-add --provenance=false and --sbom=false for buildx builds, but
-    // only when Docker actually supports these flags (probed once and cached).
-    // Buildx defaults can inject unwanted attestation manifests and slow down
-    // CI — GoReleaser probes `docker build --help` before adding them.
-    if effective_backend == "buildx" && docker_supports_provenance() {
-        let flags_str = extra_flags.join(" ");
-        if !flags_str.contains("--provenance") {
-            cmd.push("--provenance=false".to_string());
-        }
-        if !flags_str.contains("--sbom") {
-            cmd.push("--sbom=false".to_string());
-        }
-    }
-
-    // Build context directory (positional, last argument)
-    cmd.push(staging_dir.to_string());
-
-    Ok(cmd)
-}
-
-// ---------------------------------------------------------------------------
-// build_docker_v2_command
-// ---------------------------------------------------------------------------
-
-/// Construct the docker build command arguments for a Docker V2 config.
-///
-/// V2 uses `images` + `tags` to generate image references, `build_args` map,
-/// `annotations` map, `sbom` flag, and arbitrary `flags`.
-///
-/// * `staging_dir` – path to the directory that acts as the Docker build context.
-/// * `platforms` – Docker platform strings, e.g. `["linux/amd64", "linux/arm64"]`.
-/// * `image_tags` – fully-qualified image:tag references (pre-computed from images x tags).
-/// * `build_args` – `--build-arg KEY=VALUE` pairs.
-/// * `annotations` – `--annotation KEY=VALUE` pairs.
-/// * `labels` – `--label KEY=VALUE` pairs.
-/// * `flags` – arbitrary extra flags passed directly.
-/// * `sbom` – when true, adds `--sbom=true`.
-/// * `push` – when `true`, adds `--push` to the command.
-/// * `load` – when `true`, adds `--load` for single-platform non-push builds
-///   (requires a running Docker daemon).
-#[allow(clippy::too_many_arguments)]
-pub fn build_docker_v2_command(
-    staging_dir: &str,
-    platforms: &[&str],
-    image_tags: &[String],
-    build_args: &[(String, String)],
-    annotations: &[(String, String)],
-    labels: &[(String, String)],
-    flags: &[String],
-    sbom: bool,
-    push: bool,
-    load: bool,
-) -> Result<Vec<String>> {
-    // V2 always uses buildx when platforms are specified
-    let multi_platform = platforms.len() > 1;
-    let (binary, subcommands) = resolve_backend(Some("buildx"), multi_platform)?;
-
-    let mut cmd: Vec<String> = Vec::new();
-    cmd.push(binary.to_string());
-    for sub in subcommands {
-        cmd.push(sub.to_string());
-    }
-
-    // Always use plain progress for CI-friendly, verbose output that helps
-    // diagnose buildx errors (e.g., COPY failures, attestation issues).
-    cmd.push("--progress=plain".to_string());
-
-    // --platform=linux/amd64,linux/arm64
-    if !platforms.is_empty() {
-        let platform_str = platforms.join(",");
-        cmd.push(format!("--platform={platform_str}"));
-    }
-
-    // --tag <tag> for each image:tag combination
-    for tag in image_tags {
-        cmd.push("--tag".to_string());
-        cmd.push(tag.clone());
-    }
-
-    // --build-arg KEY=VALUE
-    for (key, value) in build_args {
-        cmd.push("--build-arg".to_string());
-        cmd.push(format!("{}={}", key, value));
-    }
-
-    // --annotation KEY=VALUE
-    // For multi-platform builds, GoReleaser v2 prefixes annotation values with
-    // "index:" so they target the manifest index rather than individual platform images.
-    for (key, value) in annotations {
-        cmd.push("--annotation".to_string());
-        if multi_platform {
-            // Add "index:" prefix, but avoid double-prefixing if already present
-            let prefixed_key = if key.starts_with("index:") {
-                key.clone()
-            } else {
-                format!("index:{}", key)
-            };
-            cmd.push(format!("{}={}", prefixed_key, value));
-        } else {
-            cmd.push(format!("{}={}", key, value));
-        }
-    }
-
-    // --label KEY=VALUE
-    for (key, value) in labels {
-        cmd.push("--label".to_string());
-        cmd.push(format!("{}={}", key, value));
-    }
-
-    // Arbitrary extra flags
-    for flag in flags {
-        cmd.push(flag.clone());
-    }
-
-    // Use --attest=type=sbom for proper OCI attestation (matching GoReleaser v2)
-    // rather than the older --sbom=true flag.
-    if sbom {
-        cmd.push("--attest=type=sbom".to_string());
-    }
-
-    // --push / --load logic
-    if push {
-        cmd.push("--push".to_string());
-    } else if load && !multi_platform {
-        cmd.push("--load".to_string());
-    }
-    // When neither push nor load: buildx builds to cache only (no daemon needed)
-
-    // NOTE: GoReleaser V2 does NOT auto-add --provenance=false or --sbom=false.
-    // Only the legacy docker pipe does that. V2 relies on explicit user flags
-    // or the --attest=type=sbom flag set above.
-
-    // Write image digest to file for capture (GoReleaser V2 behavior).
-    // This works even without --push (no daemon needed for digest capture).
-    cmd.push(format!("--iidfile={}/id.txt", staging_dir));
-
-    // Build context directory (positional, last argument)
-    cmd.push(staging_dir.to_string());
-
-    Ok(cmd)
-}
-
-/// Evaluate whether a Docker V2 config is skipped.
-///
-/// Checks the `skip` field: if it's a template, renders it and checks for "true".
-/// Returns `true` when the config should be skipped. Surfaces template render
-/// errors instead of silently treating them as "not skipped".
-pub fn is_docker_v2_skipped(skip: &Option<StringOrBool>, ctx: &Context) -> Result<bool> {
-    match skip {
-        None => Ok(false),
-        Some(d) => d
-            .try_evaluates_to_true(|s| ctx.render_template(s))
-            .with_context(|| "docker_v2: render skip template"),
-    }
-}
-
-/// Resolve the docker digest configuration for a crate into job-level fields.
-///
-/// Returns `(skip_digest, digest_name_template)`.
-/// Errors if the `name_template` contains a template expression that fails to render.
-fn resolve_digest_config(
-    cfg: Option<&DockerDigestConfig>,
-    ctx: &Context,
-) -> Result<(bool, Option<String>)> {
-    let Some(dc) = cfg else {
-        return Ok((false, None));
-    };
-    let skip_digest = match &dc.skip {
-        None => false,
-        Some(d) => d
-            .try_evaluates_to_true(|s| ctx.render_template(s))
-            .with_context(|| "docker: render digest skip template")?,
-    };
-    let name_template = match dc.name_template.as_ref() {
-        Some(tmpl) => {
-            let rendered = ctx.render_template(tmpl).with_context(|| {
-                format!("docker: failed to render digest name_template '{}'", tmpl)
-            })?;
-            if rendered.is_empty() {
-                None
-            } else {
-                Some(rendered)
-            }
-        }
-        None => None,
-    };
-    Ok((skip_digest, name_template))
-}
-
-/// Apply GoReleaser-compatible defaults to a single Docker V2 config.
-///
-/// Mirrors `internal/pipe/docker/v2/docker.go::Default()`:
-///   - `id`         defaults to the project name
-///   - `dockerfile` defaults to `"Dockerfile"`
-///   - `tags`       defaults to `["{{ .Tag }}"]`
-///   - `platforms`  defaults to `["linux/amd64", "linux/arm64"]`
-///   - `sbom`       defaults to `Some(StringOrBool::Bool(true))`
-///
-/// Retry defaults are applied later by `resolve_retry_params` (10 attempts,
-/// 10s base, 5m max) so they aren't repeated here.
-pub fn apply_docker_v2_defaults(
-    mut cfg: anodizer_core::config::DockerV2Config,
-    project_name: &str,
-) -> anodizer_core::config::DockerV2Config {
-    if cfg.id.is_none() {
-        cfg.id = Some(project_name.to_string());
-    }
-    if cfg.dockerfile.is_empty() {
-        cfg.dockerfile = "Dockerfile".to_string();
-    }
-    if cfg.tags.is_empty() {
-        cfg.tags = vec!["{{ .Tag }}".to_string()];
-    }
-    if cfg.platforms.is_none() {
-        cfg.platforms = Some(vec!["linux/amd64".to_string(), "linux/arm64".to_string()]);
-    }
-    if cfg.sbom.is_none() {
-        cfg.sbom = Some(StringOrBool::Bool(true));
-    }
-    cfg
-}
-
-/// Evaluate whether the sbom flag should be added for a Docker V2 config.
-///
-/// The `sbom` field is a [`StringOrBool`]. When it evaluates to true, the
-/// `--attest=type=sbom` flag is added to the buildx command. Surfaces template
-/// render errors instead of silently treating them as "not enabled".
-///
-/// Default-on: matches GoReleaser `internal/pipe/docker/v2/docker.go:85-87`,
-/// which sets `SBOM = "true"` at `Default()` time. Users opt out with
-/// `sbom: false` (or a templated string evaluating to `"false"`).
-///
-/// The default-on policy is enforced in two complementary places:
-/// 1. The `Default()`-apply block populates `cfg.sbom = Some(Bool(true))` so
-///    the resolved config written to `dist/config.yaml` round-trips faithfully
-///    (matches the `resolved_*()` lazy-defaults pattern used elsewhere).
-/// 2. This helper's `None` branch returns `Ok(true)` so any caller that
-///    bypasses the `Default()` apply (tests, hypothetical alternate entry
-///    points) still observes the canonical default.
-pub fn is_docker_v2_sbom_enabled(sbom: &Option<StringOrBool>, ctx: &Context) -> Result<bool> {
-    match sbom {
-        None => Ok(true),
-        Some(s) => s
-            .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
-            .with_context(|| "docker_v2: render sbom template"),
-    }
-}
-
-/// Generate fully-qualified image references by combining each image with each tag.
-///
-/// For example, images=["ghcr.io/owner/app", "docker.io/owner/app"] and
-/// tags=["latest", "v1.0.0"] produces:
-/// - ghcr.io/owner/app:latest
-/// - ghcr.io/owner/app:v1.0.0
-/// - docker.io/owner/app:latest
-/// - docker.io/owner/app:v1.0.0
-pub fn generate_v2_image_tags(images: &[String], tags: &[String]) -> Vec<String> {
-    let mut result = Vec::with_capacity(images.len() * tags.len());
-    for image in images {
-        for tag in tags {
-            result.push(format!("{}:{}", image, tag));
-        }
-    }
-    result.sort();
-    result.dedup();
-    result
-}
-
-/// Resolve whether to skip push based on `SkipPushConfig` and prerelease status.
-pub fn resolve_skip_push(skip_push: &Option<SkipPushConfig>, ctx: &Context) -> bool {
-    match skip_push {
-        Some(SkipPushConfig::Bool(b)) => *b,
-        Some(SkipPushConfig::Auto) => {
-            // Skip push for prereleases
-            ctx.template_vars()
-                .get("Prerelease")
-                .map(|p| !p.is_empty())
-                .unwrap_or(false)
-        }
-        Some(SkipPushConfig::Template(tmpl)) => {
-            // GoReleaser docker.go:343,346: exact `"true"` / `"auto"`
-            // string match on the trimmed render, case-sensitive. `"TRUE"` or
-            // `"True"` must NOT skip push.
-            ctx.render_template(tmpl)
-                .map(|rendered| {
-                    let trimmed = rendered.trim();
-                    trimmed == "true"
-                        || (trimmed == "auto"
-                            && ctx
-                                .template_vars()
-                                .get("Prerelease")
-                                .map(|p| !p.is_empty())
-                                .unwrap_or(false))
-                })
-                .unwrap_or(false)
-        }
-        None => false,
-    }
-}
-
-// ---------------------------------------------------------------------------
-// list_staging_dir_recursive — diagnostic file listing
-// ---------------------------------------------------------------------------
-
-/// Recursively list files in the staging directory for COPY/ADD failure
-/// diagnostics.  Logs each entry as a warning so users can see exactly which
-/// files are staged.
-fn list_staging_dir_recursive(dir: &std::path::Path, root: &std::path::Path, log: &StageLogger) {
-    let entries = match fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-    let mut items: Vec<_> = entries.filter_map(|e| e.ok()).collect();
-    items.sort_by_key(|e| e.file_name());
-    for entry in items {
-        let path = entry.path();
-        let rel = path.strip_prefix(root).unwrap_or(&path);
-        if path.is_dir() {
-            log.warn(&format!("  {}/ (directory)", rel.display()));
-            list_staging_dir_recursive(&path, root, log);
-        } else {
-            log.warn(&format!("  {}", rel.display()));
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// find_sha256_digest — extract digest from docker push stdout
-// ---------------------------------------------------------------------------
-
-/// Extract a `sha256:<64-hex>` digest from text, typically the stdout of
-/// `docker push`.  Uses plain string parsing to avoid a regex dependency.
-fn find_sha256_digest(text: &str) -> Option<&str> {
-    for word in text.split_whitespace() {
-        if let Some(rest) = word.strip_prefix("sha256:")
-            && rest.len() >= 64
-            && rest[..64].chars().all(|c| c.is_ascii_hexdigit())
-        {
-            // Return exactly "sha256:" + 64 hex chars (ignore trailing chars)
-            return Some(&word[..71]);
-        }
-    }
-    None
-}
-
-// ---------------------------------------------------------------------------
-// DockerBuildJob — prepared data for a single docker build
-// ---------------------------------------------------------------------------
-
-/// All the information needed to execute a single docker build command.
-///
-/// The preparation phase (staging files, rendering templates, building the
-/// command) is done sequentially because it needs `&mut Context`.  The
-/// execution phase (running docker) can then run in parallel.
-struct DockerBuildJob {
-    /// Pre-built docker command arguments (binary + flags + context dir).
-    cmd_args: Vec<String>,
-    /// Human-readable backend label for log messages ("buildx", "docker", "podman").
-    backend_label: String,
-    /// Crate name (for error context).
-    crate_name: String,
-    /// Docker config index (for error context).
-    idx: usize,
-    /// Retry parameters.
-    max_attempts: u32,
-    base_delay: Duration,
-    max_delay: Option<Duration>,
-    /// Whether to push (and therefore capture digests after build).
-    should_push: bool,
-    /// Rendered image tags — used for digest capture and artifact registration.
-    rendered_tags: Vec<String>,
-    /// Docker platforms string (comma-separated, for artifact metadata).
-    platforms_str: String,
-    /// Staging directory path.
-    staging_dir: PathBuf,
-    /// Optional docker config id.
-    id: Option<String>,
-    /// Optional use_backend string.
-    use_backend: Option<String>,
-    /// Dist directory (for writing digest files).
-    dist: PathBuf,
-    /// Whether this is a V2 docker build (affects artifact type registration).
-    is_v2: bool,
-    /// Whether digest artifact creation is skipped.
-    skip_digest: bool,
-    /// Digest file name template (rendered). None = use default tag-based naming.
-    digest_name_template: Option<String>,
-    /// Context environment variables to inject into docker commands.
-    /// These come from .env files and config `env:` sections.
-    env_vars: HashMap<String, String>,
-    /// Rendered push flags — passed to `docker push` for legacy (non-buildx)
-    /// builds. For buildx builds these are baked into cmd_args via --push.
-    push_flags: Vec<String>,
-}
-
-/// Result of executing a single docker build job.
-struct DockerBuildResult {
-    /// Digests captured after a successful push, keyed by tag.
-    tag_digests: HashMap<String, String>,
-    /// Paths to digest files written to the dist directory.
-    digest_files: Vec<PathBuf>,
-}
-
-/// Execute a single docker build job with retry logic.
-///
-/// This is a free function (not a method) so it can be called from
-/// `std::thread::scope` spawned threads without borrowing `self`.
-fn execute_docker_build(job: &DockerBuildJob, log: &StageLogger) -> Result<DockerBuildResult> {
-    log.status(&format!("running: {}", job.cmd_args.join(" ")));
-
-    use anodizer_core::retry::{RetryPolicy, retry_sync};
-    use std::ops::ControlFlow;
-    let policy = RetryPolicy {
-        max_attempts: job.max_attempts,
-        base_delay: job.base_delay,
-        max_delay: job.max_delay.unwrap_or(Duration::MAX),
-    };
-    retry_sync(&policy, |attempt| {
-        if attempt > 1 {
-            log.warn(&format!(
-                "attempt {}/{} failed, retrying…",
-                attempt - 1,
-                job.max_attempts,
-            ));
-        }
-
-        let mut cmd = Command::new(&job.cmd_args[0]);
-        cmd.args(&job.cmd_args[1..])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-        for (key, value) in &job.env_vars {
-            cmd.env(key, value);
-        }
-        let mut output = match cmd.output() {
-            Ok(o) => o,
-            Err(e) => {
-                return Err(ControlFlow::Break(anyhow::Error::from(e).context(format!(
-                    "docker: execute {} for crate {} index {} (attempt {}/{})",
-                    job.backend_label, job.crate_name, job.idx, attempt, job.max_attempts
-                ))));
-            }
-        };
-
-        // Redact secrets from stdout/stderr before any output or logging.
-        let env_pairs: Vec<(String, String)> = job
-            .env_vars
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .chain(std::env::vars())
-            .collect();
-
-        if !output.stdout.is_empty() {
-            let redacted = anodizer_core::redact::redact_string(
-                &String::from_utf8_lossy(&output.stdout),
-                &env_pairs,
-            );
-            output.stdout = redacted.into_bytes();
-        }
-        if !output.stderr.is_empty() {
-            let redacted = anodizer_core::redact::redact_string(
-                &String::from_utf8_lossy(&output.stderr),
-                &env_pairs,
-            );
-            output.stderr = redacted.into_bytes();
-        }
-
-        {
-            use std::io::Write;
-            let _ = std::io::stdout().write_all(&output.stdout);
-            let _ = std::io::stderr().write_all(&output.stderr);
-        }
-
-        let stderr_text = String::from_utf8_lossy(&output.stderr).to_string();
-
-        match log.check_output(output, &format!("docker {}", job.backend_label)) {
-            Ok(_) => {
-                if attempt > 1 {
-                    log.status(&format!(
-                        "docker {} succeeded on attempt {}/{}",
-                        job.backend_label, attempt, job.max_attempts
-                    ));
-                }
-                Ok(())
-            }
-            Err(e) => {
-                let err_msg = format!("{:#}", e);
-                let is_retriable = if job.is_v2 {
-                    is_retriable_error_v2(&err_msg)
-                } else {
-                    is_retriable_error(&err_msg)
-                };
-                if !is_retriable {
-                    if stderr_text.contains("COPY") || stderr_text.contains("ADD") {
-                        log.warn(
-                            "the Dockerfile COPY/ADD failed — check that the \
-                             files referenced in your Dockerfile exist in the \
-                             staging directory; the available files may not match \
-                             what the Dockerfile expects",
-                        );
-                        log.warn("files in the staging directory:");
-                        list_staging_dir_recursive(&job.staging_dir, &job.staging_dir, log);
-                    }
-                    if stderr_text.contains("could not read certificates")
-                        || stderr_text.contains("server gave HTTP response to HTTPS client")
-                    {
-                        log.warn(
-                            "this may be a Docker context issue — \
-                             try running: docker context use default",
-                        );
-                    }
-                    log.warn(&format!(
-                        "docker {} failed with non-retriable error, not retrying",
-                        job.backend_label
-                    ));
-                    Err(ControlFlow::Break(e.context(format!(
-                        "docker: non-retriable failure for crate {} index {}",
-                        job.crate_name, job.idx
-                    ))))
-                } else {
-                    Err(ControlFlow::Continue(e))
-                }
-            }
-        }
-    })
-    .with_context(|| {
-        format!(
-            "docker: all {} attempts failed for crate {} index {}",
-            job.max_attempts, job.crate_name, job.idx
-        )
-    })?;
-
-    // Legacy (non-buildx) push: `docker push` / `podman push` per tag.
-    // Plain `docker build` does NOT support --push; only buildx does.
-    // GoReleaser's legacy docker pipe builds first, then pushes each tag
-    // separately with `docker push <image>`.
-    // Digests captured from `docker push` stdout (more reliable than inspect).
-    let mut push_stdout_digests: HashMap<String, String> = HashMap::new();
-
-    if job.should_push && !job.is_v2 && job.backend_label != "buildx" {
-        let push_bin = if job.backend_label == "podman" {
-            "podman"
-        } else {
-            "docker"
-        };
-        for tag in &job.rendered_tags {
-            log.status(&format!("pushing {}", tag));
-
-            let push_policy = anodizer_core::retry::RetryPolicy {
-                max_attempts: job.max_attempts,
-                base_delay: job.base_delay,
-                max_delay: job.max_delay.unwrap_or(Duration::MAX),
-            };
-            anodizer_core::retry::retry_sync(&push_policy, |attempt| {
-                use std::ops::ControlFlow;
-                if attempt > 1 {
-                    log.warn(&format!(
-                        "push attempt {}/{} for {} failed, retrying…",
-                        attempt - 1,
-                        job.max_attempts,
-                        tag,
-                    ));
-                }
-
-                let mut push_cmd = Command::new(push_bin);
-                push_cmd.arg("push").arg(tag);
-                for flag in &job.push_flags {
-                    push_cmd.arg(flag);
-                }
-                for (key, value) in &job.env_vars {
-                    push_cmd.env(key, value);
-                }
-                push_cmd
-                    .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::piped());
-
-                let push_output = match push_cmd.output() {
-                    Ok(o) => o,
-                    Err(e) => {
-                        return Err(ControlFlow::Break(anyhow::Error::from(e).context(format!(
-                            "docker: push {} for crate {} index {} (attempt {}/{})",
-                            tag, job.crate_name, job.idx, attempt, job.max_attempts
-                        ))));
-                    }
-                };
-
-                // Redact secrets from push output
-                let env_pairs: Vec<(String, String)> = job
-                    .env_vars
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .chain(std::env::vars())
-                    .collect();
-                let mut stdout_bytes = push_output.stdout;
-                let mut stderr_bytes = push_output.stderr;
-                if !stdout_bytes.is_empty() {
-                    let redacted = anodizer_core::redact::redact_string(
-                        &String::from_utf8_lossy(&stdout_bytes),
-                        &env_pairs,
-                    );
-                    stdout_bytes = redacted.into_bytes();
-                }
-                if !stderr_bytes.is_empty() {
-                    let redacted = anodizer_core::redact::redact_string(
-                        &String::from_utf8_lossy(&stderr_bytes),
-                        &env_pairs,
-                    );
-                    stderr_bytes = redacted.into_bytes();
-                }
-
-                {
-                    use std::io::Write;
-                    let _ = std::io::stdout().write_all(&stdout_bytes);
-                    let _ = std::io::stderr().write_all(&stderr_bytes);
-                }
-
-                if push_output.status.success() {
-                    if attempt > 1 {
-                        log.status(&format!(
-                            "docker push {} succeeded on attempt {}/{}",
-                            tag, attempt, job.max_attempts
-                        ));
-                    }
-                    let push_stdout = String::from_utf8_lossy(&stdout_bytes);
-                    if let Some(digest) = find_sha256_digest(&push_stdout) {
-                        push_stdout_digests.insert(tag.clone(), digest.to_string());
-                    }
-                    Ok(())
-                } else {
-                    let err_msg = String::from_utf8_lossy(&stderr_bytes).to_string();
-                    let err = anyhow::anyhow!("docker push {} failed: {}", tag, err_msg.trim());
-                    if is_retriable_error(&err_msg) {
-                        Err(ControlFlow::Continue(err))
-                    } else {
-                        Err(ControlFlow::Break(err.context(format!(
-                            "docker: push failed for crate {} index {} tag {}",
-                            job.crate_name, job.idx, tag
-                        ))))
-                    }
-                }
-            })
-            .with_context(|| {
-                format!(
-                    "docker: all {} push attempts failed for crate {} index {} tag {}",
-                    job.max_attempts, job.crate_name, job.idx, tag
-                )
-            })?;
-        }
-    }
-
-    // Capture digests after successful build (and push, for legacy)
-    let mut tag_digests = HashMap::new();
-    let mut digest_files = Vec::new();
-
-    if job.is_v2 {
-        // V2: read digest from --iidfile (works even without push).
-        // For multi-platform --push builds, older buildx versions may not
-        // populate the iidfile; the `if let Ok(...)` handles this gracefully.
-        // When present, the iidfile contains a single sha256 digest shared
-        // across all tags (it's the manifest list digest for multi-platform).
-        let iidfile = job.staging_dir.join("id.txt");
-        if let Ok(digest_content) = fs::read_to_string(&iidfile) {
-            let digest = digest_content.trim().to_string();
-            if !digest.is_empty() {
-                for tag in &job.rendered_tags {
-                    tag_digests.insert(tag.clone(), digest.clone());
-                }
-                // Write per-tag digest files
-                if !job.skip_digest {
-                    for tag in &job.rendered_tags {
-                        let safe_name = tag.replace(['/', ':'], "_");
-                        let digest_file = job.dist.join(format!("{}.digest", safe_name));
-                        if let Err(e) = fs::write(&digest_file, &digest) {
-                            log.warn(&format!(
-                                "failed to write digest file {}: {}",
-                                digest_file.display(),
-                                e
-                            ));
-                        } else {
-                            log.status(&format!("saved digest to {}", digest_file.display()));
-                            digest_files.push(digest_file);
-                        }
-                    }
-                }
-            }
-        }
-    } else if job.should_push {
-        // Legacy: capture digests — prefer push stdout, fall back to docker inspect.
-        for tag in &job.rendered_tags {
-            // First check if we captured the digest from `docker push` stdout.
-            // This is more reliable than `docker inspect` because it works even
-            // if the image was cleaned up after push (matches GoReleaser).
-            let digest = if let Some(d) = push_stdout_digests.get(tag) {
-                Some(d.clone())
-            } else {
-                // Fallback: `docker inspect` to read RepoDigests
-                let inspect_bin = if job.backend_label == "podman" {
-                    "podman"
-                } else {
-                    "docker"
-                };
-                let digest_output = {
-                    let mut inspect_cmd = Command::new(inspect_bin);
-                    inspect_cmd.args(["inspect", "--format", "{{index .RepoDigests 0}}", tag]);
-                    for (key, value) in &job.env_vars {
-                        inspect_cmd.env(key, value);
-                    }
-                    inspect_cmd.output()
-                };
-
-                if let Ok(output) = digest_output
-                    && output.status.success()
-                {
-                    let d = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                    if d.is_empty() { None } else { Some(d) }
-                } else {
-                    None
-                }
-            };
-
-            if let Some(digest) = digest {
-                tag_digests.insert(tag.clone(), digest.clone());
-
-                // Write per-tag digest file unless docker_digest.skip is truthy.
-                // Always use tag-based naming for per-tag files to avoid collisions
-                // when multiple tags exist. The name_template controls the artifact
-                // name (metadata), not the file path.
-                if !job.skip_digest {
-                    let safe_name = tag.replace(['/', ':'], "_");
-                    let filename = format!("{}.digest", safe_name);
-                    let digest_file = job.dist.join(&filename);
-                    if let Err(e) = fs::write(&digest_file, &digest) {
-                        log.warn(&format!(
-                            "failed to write digest file {}: {}",
-                            digest_file.display(),
-                            e
-                        ));
-                    } else {
-                        log.status(&format!("saved digest to {}", digest_file.display()));
-                        digest_files.push(digest_file);
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(DockerBuildResult {
-        tag_digests,
-        digest_files,
-    })
-}
-
-// ---------------------------------------------------------------------------
-// Shared staging helpers (used by both legacy and V2 paths)
-// ---------------------------------------------------------------------------
-
-/// Stage artifacts into docker build context using GoReleaser V2 layout.
-///
-/// V2 uses `<os>/<arch>/<name>` directory structure (matching `$TARGETPLATFORM`)
-/// and stages Binary, LinuxPackage, CArchive, and CShared artifacts.
-/// Artifacts with `goos == "all"` are copied into every platform directory.
-fn stage_artifacts_v2(
-    platforms: &[String],
-    staging_dir: &std::path::Path,
-    dry_run: bool,
-    ids_filter: Option<&Vec<String>>,
-    crate_name: &str,
-    ctx: &Context,
-    log: &StageLogger,
-) -> Result<()> {
-    let stageable_kinds = [
-        ArtifactKind::Binary,
-        ArtifactKind::LinuxPackage,
-        ArtifactKind::CArchive,
-        ArtifactKind::CShared,
-    ];
-
-    for platform in platforms {
-        let parts: Vec<&str> = platform.split('/').collect();
-        // Use full platform path (e.g., "linux/amd64") as directory structure
-        let platform_dir = staging_dir.join(platform.replace('/', std::path::MAIN_SEPARATOR_STR));
-        if !dry_run {
-            fs::create_dir_all(&platform_dir).with_context(|| {
-                format!("docker_v2: create platform dir {}", platform_dir.display())
-            })?;
-        }
-
-        let arch = platform_to_arch(platform);
-        let os = parts.first().copied().unwrap_or("linux");
-
-        let mut platform_artifact_count = 0usize;
-        for kind in &stageable_kinds {
-            let artifacts: Vec<_> = ctx
-                .artifacts
-                .by_kind_and_crate(*kind, crate_name)
-                .into_iter()
-                .filter(|a| {
-                    // Match by architecture, or goos == "all" (cross-platform artifacts)
-                    if let Some(target) = a.target.as_deref() {
-                        let (a_os, a_arch) = map_target(target);
-                        (a_os == os && a_arch == arch) || a_os == "all"
-                    } else {
-                        // No target = universal artifact, include everywhere
-                        true
-                    }
-                })
-                .filter(|a| matches_id_filter(a, ids_filter.map(Vec::as_slice)))
-                .collect();
-
-            platform_artifact_count += artifacts.len();
-            for artifact in artifacts {
-                let file_name = artifact
-                    .path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("artifact");
-                let dest = platform_dir.join(file_name);
-
-                if dry_run {
-                    log.status(&format!(
-                        "(dry-run) would copy {} -> {}",
-                        artifact.path.display(),
-                        dest.display()
-                    ));
-                } else {
-                    log.status(&format!(
-                        "staging {} -> {}",
-                        artifact.path.display(),
-                        dest.display()
-                    ));
-                    fs::copy(&artifact.path, &dest).with_context(|| {
-                        format!(
-                            "docker_v2: copy {} to {}",
-                            artifact.path.display(),
-                            dest.display()
-                        )
-                    })?;
-                }
-            }
-        }
-
-        if platform_artifact_count == 0 {
-            log.warn(&format!(
-                "no binaries found for platform {} — check ids/binary filters",
-                platform
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// Copy a Dockerfile into the staging directory.
-fn copy_dockerfile(
-    dockerfile: &str,
-    staging_dir: &std::path::Path,
-    dry_run: bool,
-    log: &StageLogger,
-    prefix: &str,
-) -> Result<()> {
-    let dockerfile_src = PathBuf::from(dockerfile);
-    let dockerfile_dest = staging_dir.join("Dockerfile");
-
-    if dry_run {
-        log.status(&format!(
-            "(dry-run) would copy Dockerfile {} -> {}",
-            dockerfile_src.display(),
-            dockerfile_dest.display()
-        ));
-    } else {
-        log.status(&format!(
-            "copying Dockerfile {} -> {}",
-            dockerfile_src.display(),
-            dockerfile_dest.display()
-        ));
-        fs::copy(&dockerfile_src, &dockerfile_dest).with_context(|| {
-            format!(
-                "{}: copy Dockerfile from {} to {}",
-                prefix,
-                dockerfile_src.display(),
-                dockerfile_dest.display()
-            )
-        })?;
-    }
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// warn_project_markers_in_extra_files
-// ---------------------------------------------------------------------------
-
-/// Project root markers that likely don't belong in Docker images.
-const PROJECT_MARKERS: &[&str] = &[
-    "go.mod",
-    "go.sum",
-    "Cargo.toml",
-    "Cargo.lock",
-    "pyproject.toml",
-    "setup.py",
-    "setup.cfg",
-    "package.json",
-    "package-lock.json",
-    "yarn.lock",
-    "Gemfile",
-    "Gemfile.lock",
-    "Makefile",
-    "CMakeLists.txt",
-    "pom.xml",
-    "build.gradle",
-    "build.gradle.kts",
-];
-
-fn warn_project_markers_in_extra_files(extra_files: &[String], log: &StageLogger, label: &str) {
-    for file in extra_files {
-        let filename = std::path::Path::new(file)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(file);
-        if PROJECT_MARKERS.contains(&filename) {
-            log.warn(&format!(
-                "{}: extra_files contains '{}' which looks like a project root marker — \
-                 this likely shouldn't be in a Docker image",
-                label, file
-            ));
-        }
-    }
-}
-
-/// Copy extra files into the staging directory.
-///
-/// Preserves relative directory structure for relative paths. For absolute
-/// paths, only the filename is used.
-fn stage_extra_files(
-    extra_files: &[String],
-    staging_dir: &std::path::Path,
-    dry_run: bool,
-    log: &StageLogger,
-    prefix: &str,
-) -> Result<()> {
-    for file_path in extra_files {
-        let src = PathBuf::from(file_path);
-        if src.is_dir() {
-            anyhow::bail!(
-                "{}: extra_files entry '{}' is a directory; only files are supported",
-                prefix,
-                file_path
-            );
-        }
-        let dest = if src.is_absolute() {
-            let file_name = src
-                .file_name()
-                .unwrap_or_else(|| std::ffi::OsStr::new(file_path));
-            staging_dir.join(file_name)
-        } else {
-            staging_dir.join(file_path)
-        };
-
-        if dry_run {
-            log.status(&format!(
-                "(dry-run) would copy extra file {} -> {}",
-                src.display(),
-                dest.display()
-            ));
-        } else {
-            if let Some(parent) = dest.parent() {
-                fs::create_dir_all(parent).with_context(|| {
-                    format!(
-                        "{}: create parent dirs for extra file {}",
-                        prefix,
-                        dest.display()
-                    )
-                })?;
-            }
-            log.status(&format!(
-                "copying extra file {} -> {}",
-                src.display(),
-                dest.display()
-            ));
-            fs::copy(&src, &dest).with_context(|| {
-                format!(
-                    "{}: copy extra file {} to {}",
-                    prefix,
-                    src.display(),
-                    dest.display()
-                )
-            })?;
-        }
-    }
-    Ok(())
-}
+mod staging;
+pub use staging::PROJECT_MARKERS;
 
 // ---------------------------------------------------------------------------
 // DockerStage
 // ---------------------------------------------------------------------------
+mod run;
 
 pub struct DockerStage;
-
-impl Stage for DockerStage {
-    fn name(&self) -> &str {
-        "docker"
-    }
-
-    fn run(&self, ctx: &mut Context) -> Result<()> {
-        let log = ctx.logger("docker");
-        let selected = ctx.options.selected_crates.clone();
-        let dry_run = ctx.options.dry_run;
-        let dist = ctx.config.dist.clone();
-        let parallelism = ctx.options.parallelism.max(1);
-
-        // Collect crates that have docker, docker_v2, or docker_manifests config
-        let crates: Vec<_> = ctx
-            .config
-            .crates
-            .iter()
-            .filter(|c| selected.is_empty() || selected.contains(&c.name))
-            .filter(|c| c.docker_v2.is_some() || c.docker_manifests.is_some())
-            .cloned()
-            .collect();
-
-        if crates.is_empty() {
-            return Ok(());
-        }
-
-        // Validate Docker V2 config ID uniqueness. Matches GoReleaser
-        // `internal/ids/ids.go:26-36` — duplicate IDs are a hard error in
-        // `v2/docker.go:93`, because downstream filters rely on IDs to
-        // disambiguate artifacts.
-        {
-            let mut v2_ids: HashSet<String> = HashSet::new();
-            for krate in &crates {
-                if let Some(ref v2_cfgs) = krate.docker_v2 {
-                    for v2_cfg in v2_cfgs {
-                        if let Some(ref id) = v2_cfg.id
-                            && !v2_ids.insert(id.clone())
-                        {
-                            anyhow::bail!(
-                                "found 2 docker_v2 with the ID '{}', please fix your config",
-                                id
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        // Validate the buildx driver once if any V2 configs exist (V2 always uses buildx).
-        if !dry_run && crates.iter().any(|c| c.docker_v2.is_some()) {
-            check_buildx_driver(&log);
-        }
-
-        let mut new_artifacts: Vec<Artifact> = Vec::new();
-        // Track image references pushed by docker_v2 multi-platform builds.
-        // These are already multi-arch manifest lists — docker_manifests must
-        // not try to re-create them from non-existent per-platform tags.
-        let mut v2_multiplatform_tags: HashSet<String> = HashSet::new();
-
-        // ==================================================================
-        // Phase 1: Prepare all docker build jobs sequentially
-        //
-        // This phase needs &mut Context for template rendering and artifact
-        // lookups.  Each job is fully self-contained after preparation.
-        // ==================================================================
-        let mut build_jobs: Vec<DockerBuildJob> = Vec::new();
-
-        for krate in &crates {
-            // ------------------------------------------------------------------
-            // Docker V2 configs
-            // ------------------------------------------------------------------
-            let docker_v2_configs = match krate.docker_v2.as_ref() {
-                Some(cfgs) => cfgs.clone(),
-                None => Vec::new(),
-            };
-
-            // Apply GoReleaser-compatible defaults to V2 configs.
-            let docker_v2_configs: Vec<_> = docker_v2_configs
-                .into_iter()
-                .map(|cfg| apply_docker_v2_defaults(cfg, &ctx.config.project_name))
-                .collect();
-
-            for (idx, v2_cfg) in docker_v2_configs.iter().enumerate() {
-                // Check disable — skip when template evaluates to true
-                if is_docker_v2_skipped(&v2_cfg.skip, ctx)? {
-                    log.status(&format!(
-                        "docker_v2[{}]: skipping config for crate {} (skip=true)",
-                        idx, krate.name
-                    ));
-                    continue;
-                }
-
-                // Template-render platforms and filter empty results (GoReleaser's tpl.ApplySlice)
-                let platforms: Vec<String> = v2_cfg
-                    .platforms
-                    .clone()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter_map(|p| ctx.render_template(&p).ok().filter(|r| !r.is_empty()))
-                    .collect();
-
-                // V2 always uses buildx
-                resolve_backend(Some("buildx"), platforms.len() > 1)?;
-
-                // Build staging directory — use "docker_v2" subdirectory to avoid
-                // collisions with legacy docker configs.
-                let staging_dir: PathBuf = dist
-                    .join("docker_v2")
-                    .join(&krate.name)
-                    .join(idx.to_string());
-
-                if !dry_run {
-                    fs::create_dir_all(&staging_dir).with_context(|| {
-                        format!("docker_v2: create staging dir {}", staging_dir.display())
-                    })?;
-                }
-
-                // Stage artifacts using V2 layout (os/arch/name, multiple artifact types)
-                stage_artifacts_v2(
-                    &platforms,
-                    &staging_dir,
-                    dry_run,
-                    v2_cfg.ids.as_ref(),
-                    &krate.name,
-                    ctx,
-                    &log,
-                )?;
-
-                // Template-render the Dockerfile path (GoReleaser does this via tmpl.New(ctx).Apply)
-                let rendered_dockerfile =
-                    ctx.render_template(&v2_cfg.dockerfile).with_context(|| {
-                        format!(
-                            "docker_v2: render dockerfile path '{}' for crate {}",
-                            v2_cfg.dockerfile, krate.name
-                        )
-                    })?;
-                copy_dockerfile(
-                    &rendered_dockerfile,
-                    &staging_dir,
-                    dry_run,
-                    &log,
-                    "docker_v2",
-                )?;
-
-                if let Some(ref extra_files) = v2_cfg.extra_files {
-                    warn_project_markers_in_extra_files(extra_files, &log, "docker_v2");
-                    stage_extra_files(extra_files, &staging_dir, dry_run, &log, "docker_v2")?;
-                }
-
-                // Render tags through template engine
-                let mut rendered_tags: Vec<String> = Vec::new();
-                for tag_tmpl in &v2_cfg.tags {
-                    let rendered = ctx.render_template(tag_tmpl).with_context(|| {
-                        format!(
-                            "docker_v2: render tag template '{}' for crate {}",
-                            tag_tmpl, krate.name
-                        )
-                    })?;
-                    if rendered.is_empty() {
-                        continue;
-                    }
-                    rendered_tags.push(rendered);
-                }
-
-                // Render images through template engine
-                let mut rendered_images: Vec<String> = Vec::new();
-                for img_tmpl in &v2_cfg.images {
-                    let rendered = ctx.render_template(img_tmpl).with_context(|| {
-                        format!(
-                            "docker_v2: render image template '{}' for crate {}",
-                            img_tmpl, krate.name
-                        )
-                    })?;
-                    if rendered.is_empty() {
-                        continue;
-                    }
-                    rendered_images.push(rendered);
-                }
-
-                // For snapshot builds, GoReleaser splits multi-platform configs
-                // into per-platform builds with --load (no push) and tag suffix.
-                // This builds each platform separately so images are available locally.
-                let snapshot_platforms: Vec<Vec<String>> =
-                    if ctx.is_snapshot() && platforms.len() > 1 {
-                        platforms.iter().map(|p| vec![p.clone()]).collect()
-                    } else {
-                        vec![platforms.clone()]
-                    };
-
-                for snapshot_plats in &snapshot_platforms {
-                    let mut per_plat_tags = rendered_tags.clone();
-
-                    // During snapshot, add platform arch suffix to each tag.
-                    if ctx.is_snapshot() && snapshot_plats.len() == 1 {
-                        let suffix = tag_suffix(&snapshot_plats[0]);
-                        for tag in &mut per_plat_tags {
-                            tag.push('-');
-                            tag.push_str(&suffix);
-                        }
-                    }
-
-                    // Generate image:tag combinations
-                    let image_tags = generate_v2_image_tags(&rendered_images, &per_plat_tags);
-
-                    if image_tags.is_empty() {
-                        log.warn(&format!(
-                        "docker_v2[{}]: no image tags produced for crate {} (images or tags resolved to empty); skipping",
-                        idx, krate.name
-                    ));
-                        continue;
-                    }
-
-                    // Render build_args (template-aware keys and values, matching GoReleaser's tplMapFlags)
-                    let mut rendered_build_args: Vec<(String, String)> = Vec::new();
-                    if let Some(ref args_map) = v2_cfg.build_args {
-                        for (key_tmpl, value_tmpl) in args_map {
-                            let rendered_key =
-                                ctx.render_template(key_tmpl).with_context(|| {
-                                    format!("docker_v2: render build_arg key '{}'", key_tmpl)
-                                })?;
-                            let rendered_value =
-                                ctx.render_template(value_tmpl).with_context(|| {
-                                    format!("docker_v2: render build_arg value for '{}'", key_tmpl)
-                                })?;
-                            // Skip entries where key or value is empty after templating
-                            if !rendered_key.is_empty() && !rendered_value.is_empty() {
-                                rendered_build_args.push((rendered_key, rendered_value));
-                            }
-                        }
-                        rendered_build_args.sort_by(|a, b| a.0.cmp(&b.0));
-                    }
-
-                    // Render annotations (template-aware keys and values)
-                    let mut rendered_annotations: Vec<(String, String)> = Vec::new();
-                    if let Some(ref ann_map) = v2_cfg.annotations {
-                        for (key_tmpl, value_tmpl) in ann_map {
-                            let rendered_key =
-                                ctx.render_template(key_tmpl).with_context(|| {
-                                    format!("docker_v2: render annotation key '{}'", key_tmpl)
-                                })?;
-                            let rendered_value =
-                                ctx.render_template(value_tmpl).with_context(|| {
-                                    format!("docker_v2: render annotation value for '{}'", key_tmpl)
-                                })?;
-                            if !rendered_key.is_empty() && !rendered_value.is_empty() {
-                                rendered_annotations.push((rendered_key, rendered_value));
-                            }
-                        }
-                        rendered_annotations.sort_by(|a, b| a.0.cmp(&b.0));
-                    }
-
-                    // Render labels (template-aware keys and values)
-                    let mut rendered_labels: Vec<(String, String)> = Vec::new();
-                    if let Some(ref label_map) = v2_cfg.labels {
-                        for (key_tmpl, value_tmpl) in label_map {
-                            let rendered_key =
-                                ctx.render_template(key_tmpl).with_context(|| {
-                                    format!("docker_v2: render label key '{}'", key_tmpl)
-                                })?;
-                            let rendered_value =
-                                ctx.render_template(value_tmpl).with_context(|| {
-                                    format!("docker_v2: render label value for '{}'", key_tmpl)
-                                })?;
-                            if !rendered_key.is_empty() && !rendered_value.is_empty() {
-                                rendered_labels.push((rendered_key, rendered_value));
-                            }
-                        }
-                        rendered_labels.sort_by(|a, b| a.0.cmp(&b.0));
-                    }
-
-                    // Render flags (template-aware, filter empty results)
-                    let mut rendered_flags: Vec<String> = Vec::new();
-                    if let Some(ref flag_list) = v2_cfg.flags {
-                        for flag_tmpl in flag_list {
-                            let rendered = ctx.render_template(flag_tmpl).with_context(|| {
-                                format!("docker_v2: render flag '{}'", flag_tmpl)
-                            })?;
-                            if !rendered.is_empty() {
-                                rendered_flags.push(rendered);
-                            }
-                        }
-                    }
-
-                    // Evaluate sbom — GoReleaser only adds SBOM in the Publish path (not snapshot).
-                    let sbom_enabled = if ctx.is_snapshot() {
-                        false
-                    } else {
-                        is_docker_v2_sbom_enabled(&v2_cfg.sbom, ctx)?
-                    };
-
-                    let platform_refs: Vec<&str> =
-                        snapshot_plats.iter().map(|s| s.as_str()).collect();
-                    let staging_str = staging_dir.to_string_lossy().into_owned();
-
-                    // Snapshot builds never push (GoReleaser uses --load per-platform).
-                    // The canonical `skip:` field (DEC-6) suppresses publish via
-                    // `is_active`-style gating earlier in the pipeline.
-                    let should_push = if ctx.is_snapshot() { false } else { !dry_run };
-
-                    // Determine whether --load is safe (requires a running daemon).
-                    // In snapshot mode, warn if daemon is unavailable and skip --load.
-                    let should_load = if ctx.is_snapshot() {
-                        let daemon_ok = is_docker_daemon_available();
-                        if !daemon_ok {
-                            log.warn(
-                                "docker daemon not available; snapshot build will skip --load \
-                             (image won't be loaded into local daemon)",
-                            );
-                        }
-                        daemon_ok
-                    } else {
-                        true
-                    };
-
-                    let cmd_args = build_docker_v2_command(
-                        &staging_str,
-                        &platform_refs,
-                        &image_tags,
-                        &rendered_build_args,
-                        &rendered_annotations,
-                        &rendered_labels,
-                        &rendered_flags,
-                        sbom_enabled,
-                        should_push,
-                        should_load,
-                    )?;
-
-                    // Resolve retry configuration
-                    let (max_attempts, base_delay, max_delay) = resolve_retry_params(&v2_cfg.retry)
-                        .with_context(|| {
-                            format!(
-                                "docker_v2: invalid retry config for crate {} index {}",
-                                krate.name, idx
-                            )
-                        })?;
-
-                    // Track multi-platform V2 tags so docker_manifests can skip
-                    // redundant manifest creation for images that are already
-                    // multi-arch manifest lists.
-                    if snapshot_plats.len() > 1 && should_push {
-                        for tag in &image_tags {
-                            v2_multiplatform_tags.insert(tag.clone());
-                        }
-                    }
-
-                    if dry_run {
-                        log.status(&format!("(dry-run) would run: {}", cmd_args.join(" ")));
-                        if max_attempts > 1 {
-                            log.status(&format!(
-                                "(dry-run) retry: up to {} attempts, base delay {:?}{}",
-                                max_attempts,
-                                base_delay,
-                                match max_delay {
-                                    Some(d) => format!(", max delay {:?}", d),
-                                    None => String::new(),
-                                }
-                            ));
-                        }
-                        // Register artifacts in dry-run
-                        for tag in &image_tags {
-                            let mut meta = HashMap::new();
-                            meta.insert("tag".to_string(), tag.clone());
-                            meta.insert("platforms".to_string(), snapshot_plats.join(","));
-                            meta.insert("api".to_string(), "v2".to_string());
-                            meta.insert("use".to_string(), "buildx".to_string());
-                            if let Some(ref id) = v2_cfg.id {
-                                meta.insert("id".to_string(), id.clone());
-                            }
-                            new_artifacts.push(Artifact {
-                                kind: ArtifactKind::DockerImageV2,
-                                name: tag.clone(),
-                                path: PathBuf::from(tag),
-                                target: None,
-                                crate_name: krate.name.clone(),
-                                metadata: meta,
-                                size: None,
-                            });
-                        }
-                    } else {
-                        // Resolve docker_digest config from the crate
-                        let (skip_digest, digest_name_template) =
-                            resolve_digest_config(krate.docker_digest.as_ref(), ctx)?;
-
-                        build_jobs.push(DockerBuildJob {
-                            cmd_args,
-                            backend_label: "buildx".to_string(),
-                            crate_name: krate.name.clone(),
-                            idx,
-                            max_attempts,
-                            base_delay,
-                            max_delay,
-                            should_push,
-                            rendered_tags: image_tags,
-                            platforms_str: snapshot_plats.join(","),
-                            staging_dir: staging_dir.clone(),
-                            id: v2_cfg.id.clone(),
-                            use_backend: Some("buildx".to_string()),
-                            dist: dist.clone(),
-                            is_v2: true,
-                            skip_digest,
-                            digest_name_template,
-                            env_vars: ctx.template_vars().all_config_env().clone(),
-                            push_flags: Vec::new(), // V2 always uses buildx; push flags baked into cmd_args
-                        });
-                    }
-                } // end for snapshot_plats
-            }
-        }
-
-        // ==================================================================
-        // Phase 2: Execute docker build jobs in parallel
-        //
-        // Uses std::thread::scope with a simple semaphore pattern (channel-
-        // based) bounded by ctx.parallelism, matching GoReleaser's
-        // semerrgroup.New(ctx.Parallelism) behavior.
-        // ==================================================================
-        if !build_jobs.is_empty() {
-            use std::sync::mpsc;
-
-            /// Drop guard that returns a semaphore token to the channel when
-            /// dropped, ensuring the token is returned even if the thread
-            /// panics. Without this, a panic would permanently consume a slot
-            /// and eventually deadlock the remaining threads.
-            struct SemaphoreGuard<'a> {
-                sender: &'a mpsc::SyncSender<()>,
-            }
-            impl Drop for SemaphoreGuard<'_> {
-                fn drop(&mut self) {
-                    // `send` cannot fail because thread::scope guarantees all
-                    // guards drop before sem_rx; spawning a detached thread
-                    // here would silently lose a token.
-                    let _ = self.sender.send(());
-                }
-            }
-
-            // Channel-based semaphore: pre-fill with `parallelism` tokens.
-            // Each thread takes a token before starting and returns it on
-            // completion.  This bounds active docker builds to `parallelism`.
-            let (sem_tx, sem_rx) = mpsc::sync_channel::<()>(parallelism);
-            for _ in 0..parallelism {
-                let _ = sem_tx.send(());
-            }
-
-            // Collect results in order (indexed by job position).
-            let job_count = build_jobs.len();
-            let log_ref = &log;
-            let results: Vec<Result<DockerBuildResult>> = std::thread::scope(|scope| {
-                let mut handles = Vec::with_capacity(job_count);
-
-                for job in &build_jobs {
-                    // Acquire a semaphore token (blocks if all slots are busy).
-                    let _ = sem_rx.recv();
-                    let sem_tx_ref = &sem_tx;
-
-                    let handle = scope.spawn(move || {
-                        // Guard returns the token on drop (including panic).
-                        let _guard = SemaphoreGuard { sender: sem_tx_ref };
-                        execute_docker_build(job, log_ref)
-                    });
-                    handles.push(handle);
-                }
-
-                handles
-                    .into_iter()
-                    .map(|h| {
-                        h.join().unwrap_or_else(|_| {
-                            Err(anyhow::anyhow!("docker build worker thread panicked"))
-                        })
-                    })
-                    .collect()
-            });
-
-            // ==================================================================
-            // Phase 3: Collect results and register artifacts
-            // ==================================================================
-            for (job, result) in build_jobs.iter().zip(results) {
-                let build_result = result?;
-                for tag in &job.rendered_tags {
-                    let mut meta = HashMap::new();
-                    meta.insert("tag".to_string(), tag.clone());
-                    meta.insert("platforms".to_string(), job.platforms_str.clone());
-                    if let Some(ref id) = job.id {
-                        meta.insert("id".to_string(), id.clone());
-                    }
-                    if let Some(ref backend) = job.use_backend {
-                        meta.insert("use".to_string(), backend.clone());
-                    }
-                    if let Some(d) = build_result.tag_digests.get(tag) {
-                        meta.insert("digest".to_string(), d.clone());
-                    }
-                    // V2 builds register as DockerImageV2; legacy as DockerImage.
-                    new_artifacts.push(Artifact {
-                        kind: if job.is_v2 {
-                            ArtifactKind::DockerImageV2
-                        } else {
-                            ArtifactKind::DockerImage
-                        },
-                        name: tag.clone(),
-                        path: PathBuf::from(tag),
-                        target: None,
-                        crate_name: job.crate_name.clone(),
-                        metadata: meta,
-                        size: None,
-                    });
-                }
-
-                // Register digest files as artifacts.
-                for digest_path in &build_result.digest_files {
-                    let artifact_name = if let Some(ref tmpl) = job.digest_name_template {
-                        // name_template controls the artifact name, not the file path
-                        tmpl.clone()
-                    } else {
-                        digest_path
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .to_string()
-                    };
-                    new_artifacts.push(Artifact {
-                        kind: ArtifactKind::DockerDigest,
-                        name: artifact_name,
-                        path: digest_path.clone(),
-                        target: None,
-                        crate_name: job.crate_name.clone(),
-                        metadata: HashMap::new(),
-                        size: None,
-                    });
-                }
-            }
-        }
-
-        // ==================================================================
-        // Docker manifests (must run after all builds complete, since they
-        // reference the built image digests)
-        // ==================================================================
-        let manifest_env_vars = ctx.template_vars().all_config_env().clone();
-        for krate in &crates {
-            // ------------------------------------------------------------------
-            // Docker manifests
-            // ------------------------------------------------------------------
-            if let Some(ref manifest_configs) = krate.docker_manifests {
-                for (midx, manifest_cfg) in manifest_configs.iter().enumerate() {
-                    let _ = midx;
-                    // Validate: image_templates must not be empty — a manifest
-                    // with zero images is always a configuration error.
-                    if manifest_cfg.image_templates.is_empty() {
-                        let fallback = format!("index {}", midx);
-                        let manifest_label = manifest_cfg.id.as_deref().unwrap_or(&fallback);
-                        anyhow::bail!(
-                            "docker manifest '{}': image_templates must not be empty",
-                            manifest_label
-                        );
-                    }
-
-                    // Render the manifest name template
-                    let manifest_name = ctx
-                        .render_template(&manifest_cfg.name_template)
-                        .with_context(|| {
-                            format!(
-                                "docker: render manifest name_template '{}' for crate {}",
-                                manifest_cfg.name_template, krate.name
-                            )
-                        })?;
-
-                    // Skip manifests whose target tag was already pushed as a
-                    // multi-arch manifest list by docker_v2.  docker_v2 with
-                    // --platform=linux/amd64,linux/arm64 --push creates a native
-                    // multi-arch manifest; docker_manifests would try to re-create
-                    // it from per-platform tags (e.g. :0.3.3-amd64) that don't
-                    // exist, causing "manifest unknown" errors.
-                    if v2_multiplatform_tags.contains(&manifest_name) {
-                        log.status(&format!(
-                            "docker: skipping manifest '{}' — already pushed as multi-arch by docker_v2",
-                            manifest_name
-                        ));
-                        continue;
-                    }
-
-                    // Render image templates, skipping entries that resolve
-                    // to empty strings (e.g. conditional templates that
-                    // evaluate to nothing for certain configurations).
-                    let mut rendered_images: Vec<String> = Vec::new();
-                    for tmpl in &manifest_cfg.image_templates {
-                        let img = ctx.render_template(tmpl).with_context(|| {
-                            format!(
-                                "docker: render manifest image_template '{}' for crate {}",
-                                tmpl, krate.name
-                            )
-                        })?;
-                        if img.trim().is_empty() {
-                            log.warn(&format!(
-                                "docker: manifest image_template '{}' rendered to empty string, skipping",
-                                tmpl
-                            ));
-                            continue;
-                        }
-                        rendered_images.push(img);
-                    }
-
-                    // Determine the binary for manifest commands
-                    let manifest_bin = match manifest_cfg.use_backend.as_deref() {
-                        Some("podman") => "podman",
-                        _ => "docker",
-                    };
-
-                    // Render create_flags through template engine
-                    let rendered_create_flags: Vec<String> = manifest_cfg
-                        .create_flags
-                        .as_deref()
-                        .unwrap_or(&[])
-                        .iter()
-                        .map(|f| ctx.render_template(f).unwrap_or_else(|_| f.clone()))
-                        .collect();
-
-                    // Render push_flags through template engine
-                    let rendered_push_flags: Vec<String> = manifest_cfg
-                        .push_flags
-                        .as_deref()
-                        .unwrap_or(&[])
-                        .iter()
-                        .map(|f| ctx.render_template(f).unwrap_or_else(|_| f.clone()))
-                        .collect();
-
-                    // Build `docker manifest create` command.
-                    // Pin image references to their digest (sha256:...) when
-                    // available, so the manifest references immutable content
-                    // rather than mutable tags.  Digests are captured during the
-                    // image push phase and stored in the `new_artifacts` list.
-                    let mut create_cmd: Vec<String> = vec![
-                        manifest_bin.to_string(),
-                        "manifest".to_string(),
-                        "create".to_string(),
-                        manifest_name.clone(),
-                    ];
-                    for img in &rendered_images {
-                        if let Some(digest) = find_image_digest(&new_artifacts, img) {
-                            let pinned = format!("{}@{}", img, digest);
-                            log.verbose(&format!("manifest: pinning {} to digest {}", img, digest));
-                            create_cmd.push(pinned);
-                        } else {
-                            // "Did you mean?" — find closest matching image by edit distance
-                            let all_image_names: Vec<&str> = new_artifacts
-                                .iter()
-                                .filter(|a| {
-                                    matches!(
-                                        a.kind,
-                                        ArtifactKind::DockerImage | ArtifactKind::DockerImageV2
-                                    )
-                                })
-                                .filter_map(|a| a.metadata.get("tag").map(|s| s.as_str()))
-                                .collect();
-
-                            // Distance > 0 to avoid suggesting the same name back (which
-                            // happens when `img` itself is in the candidate set but its
-                            // digest hadn't been recorded yet at lookup time — a stale-cache
-                            // race, not a typo).
-                            if let Some((suggestion, dist)) = all_image_names
-                                .iter()
-                                .map(|name| (name, levenshtein_distance(img, name)))
-                                .min_by_key(|&(_, d)| d)
-                                .filter(|&(_, d)| d > 0 && d <= img.len() / 2)
-                            {
-                                log.warn(&format!(
-                                    "could not find {:?}, did you mean {:?}? (edit distance: {})",
-                                    img, suggestion, dist
-                                ));
-                            } else {
-                                log.warn(&format!(
-                                    "no digest found for {}, using tag reference",
-                                    img
-                                ));
-                            }
-                            create_cmd.push(img.clone());
-                        }
-                    }
-                    for flag in &rendered_create_flags {
-                        create_cmd.push(flag.clone());
-                    }
-
-                    // Determine whether to push
-                    let manifest_skip_push = resolve_skip_push(&manifest_cfg.skip_push, ctx);
-                    let mut manifest_digest: Option<String> = None;
-
-                    if dry_run {
-                        log.status(&format!(
-                            "(dry-run) would run: {} manifest rm {}",
-                            manifest_bin, manifest_name
-                        ));
-                        log.status(&format!("(dry-run) would run: {}", create_cmd.join(" ")));
-                        if !manifest_skip_push {
-                            let mut push_cmd: Vec<String> = vec![
-                                manifest_bin.to_string(),
-                                "manifest".to_string(),
-                                "push".to_string(),
-                                manifest_name.clone(),
-                            ];
-                            for flag in &rendered_push_flags {
-                                push_cmd.push(flag.clone());
-                            }
-                            log.status(&format!("(dry-run) would run: {}", push_cmd.join(" ")));
-                        }
-                    } else {
-                        // Remove any existing manifest before recreating.
-                        // Matches GoReleaser `internal/pipe/docker/api_docker.go:26`:
-                        //   `_ = runCommand(ctx, ".", "docker", "manifest", "rm", manifest)`
-                        // — all errors ignored. A missing manifest is the common case
-                        // (first run / new tag), and any other failure (auth, network,
-                        // daemon offline) will surface when `manifest create` runs
-                        // right after, with a more actionable error.
-                        let mut rm_cmd = Command::new(manifest_bin);
-                        rm_cmd.args(["manifest", "rm", &manifest_name]);
-                        for (key, value) in &manifest_env_vars {
-                            rm_cmd.env(key, value);
-                        }
-                        let _ = rm_cmd.output();
-
-                        // Manifest create/push with retry logic — registry
-                        // operations can fail transiently. Uses the
-                        // manifest's retry config (same as docker build).
-                        let (manifest_max_attempts, manifest_base_delay, manifest_max_delay) =
-                            resolve_retry_params(&manifest_cfg.retry).with_context(|| {
-                                format!(
-                                    "docker: invalid retry config for manifest {} crate {}",
-                                    midx, krate.name
-                                )
-                            })?;
-
-                        {
-                            use anodizer_core::retry::{RetryPolicy, retry_sync};
-                            use std::ops::ControlFlow;
-                            let policy = RetryPolicy {
-                                max_attempts: manifest_max_attempts,
-                                base_delay: manifest_base_delay,
-                                max_delay: manifest_max_delay.unwrap_or(Duration::MAX),
-                            };
-                            retry_sync(&policy, |attempt| {
-                                if attempt > 1 {
-                                    log.warn(&format!(
-                                        "manifest create attempt {}/{} failed, retrying…",
-                                        attempt - 1,
-                                        manifest_max_attempts,
-                                    ));
-                                }
-                                log.status(&format!("running: {}", create_cmd.join(" ")));
-                                let mut create_command = Command::new(&create_cmd[0]);
-                                create_command.args(&create_cmd[1..]);
-                                for (key, value) in &manifest_env_vars {
-                                    create_command.env(key, value);
-                                }
-                                let output = match create_command.output() {
-                                    Ok(o) => o,
-                                    Err(e) => {
-                                        return Err(ControlFlow::Break(
-                                            anyhow::Error::from(e).context(format!(
-                                                "docker: manifest create for crate {} manifest {} (attempt {}/{})",
-                                                krate.name, midx, attempt, manifest_max_attempts
-                                            )),
-                                        ));
-                                    }
-                                };
-                                match log.check_output(output, "docker manifest create") {
-                                    Ok(_) => {
-                                        if attempt > 1 {
-                                            log.status(&format!(
-                                                "docker manifest create succeeded on attempt {}/{}",
-                                                attempt, manifest_max_attempts
-                                            ));
-                                        }
-                                        Ok(())
-                                    }
-                                    Err(e) => {
-                                        let err_msg = format!("{:#}", e);
-                                        if is_retriable_error(&err_msg) {
-                                            Err(ControlFlow::Continue(e))
-                                        } else {
-                                            Err(ControlFlow::Break(e))
-                                        }
-                                    }
-                                }
-                            })?;
-                        }
-
-                        // Push the manifest (with retry) and capture digest
-                        if !manifest_skip_push {
-                            let mut push_cmd: Vec<String> = vec![
-                                manifest_bin.to_string(),
-                                "manifest".to_string(),
-                                "push".to_string(),
-                                manifest_name.clone(),
-                            ];
-                            for flag in &rendered_push_flags {
-                                push_cmd.push(flag.clone());
-                            }
-
-                            use anodizer_core::retry::{RetryPolicy, retry_sync};
-                            use std::ops::ControlFlow;
-                            let policy = RetryPolicy {
-                                max_attempts: manifest_max_attempts,
-                                base_delay: manifest_base_delay,
-                                max_delay: manifest_max_delay.unwrap_or(Duration::MAX),
-                            };
-                            retry_sync(&policy, |attempt| {
-                                if attempt > 1 {
-                                    log.warn(&format!(
-                                        "manifest push attempt {}/{} failed, retrying…",
-                                        attempt - 1,
-                                        manifest_max_attempts,
-                                    ));
-                                }
-                                log.status(&format!("running: {}", push_cmd.join(" ")));
-                                let mut push_command = Command::new(&push_cmd[0]);
-                                push_command.args(&push_cmd[1..]);
-                                for (key, value) in &manifest_env_vars {
-                                    push_command.env(key, value);
-                                }
-                                let output = match push_command.output() {
-                                    Ok(o) => o,
-                                    Err(e) => {
-                                        return Err(ControlFlow::Break(
-                                            anyhow::Error::from(e).context(format!(
-                                                "docker: manifest push for crate {} manifest {} (attempt {}/{})",
-                                                krate.name, midx, attempt, manifest_max_attempts
-                                            )),
-                                        ));
-                                    }
-                                };
-                                // Capture stdout for digest extraction before checking status
-                                let push_stdout =
-                                    String::from_utf8_lossy(&output.stdout).to_string();
-                                match log.check_output(output, "docker manifest push") {
-                                    Ok(_) => {
-                                        if attempt > 1 {
-                                            log.status(&format!(
-                                                "docker manifest push succeeded on attempt {}/{}",
-                                                attempt, manifest_max_attempts
-                                            ));
-                                        }
-                                        // Extract digest from push output (sha256:64hexchars)
-                                        if let Some(start) = push_stdout.find("sha256:") {
-                                            let candidate = &push_stdout[start..];
-                                            if candidate.len() >= 71
-                                                && candidate[7..71]
-                                                    .chars()
-                                                    .all(|c| c.is_ascii_hexdigit())
-                                            {
-                                                manifest_digest = Some(candidate[..71].to_string());
-                                            }
-                                        }
-                                        Ok(())
-                                    }
-                                    Err(e) => {
-                                        let err_msg = format!("{:#}", e);
-                                        if is_retriable_error(&err_msg) {
-                                            Err(ControlFlow::Continue(e))
-                                        } else {
-                                            Err(ControlFlow::Break(e))
-                                        }
-                                    }
-                                }
-                            })?;
-                        }
-                    }
-
-                    // Register DockerManifest artifact
-                    let mut meta = HashMap::new();
-                    meta.insert("manifest".to_string(), manifest_name.clone());
-                    meta.insert("images".to_string(), rendered_images.join(","));
-                    if let Some(ref id) = manifest_cfg.id {
-                        meta.insert("id".to_string(), id.clone());
-                    }
-                    if let Some(ref digest) = manifest_digest {
-                        meta.insert("digest".to_string(), digest.clone());
-                    }
-
-                    new_artifacts.push(Artifact {
-                        kind: ArtifactKind::DockerManifest,
-                        name: manifest_name.clone(),
-                        path: PathBuf::from(&manifest_name),
-                        target: None,
-                        crate_name: krate.name.clone(),
-                        metadata: meta,
-                        size: None,
-                    });
-                }
-            }
-        }
-
-        // Write combined digests file (GoReleaser DockerDigest format).
-        // Format: `<hex_digest>  <image_name>` per line, sorted,
-        // where hex_digest is the sha256 hash WITHOUT the `sha256:` prefix.
-        if !dry_run {
-            let mut digest_lines: Vec<String> = Vec::new();
-            for artifact in &new_artifacts {
-                if let Some(digest) = artifact.metadata.get("digest") {
-                    let hex = digest.strip_prefix("sha256:").unwrap_or(digest);
-                    let name = artifact
-                        .metadata
-                        .get("tag")
-                        .or(artifact.metadata.get("name"))
-                        .or(artifact.metadata.get("manifest"))
-                        .cloned()
-                        .unwrap_or_default();
-                    if !hex.is_empty() && !name.is_empty() {
-                        digest_lines.push(format!("{}  {}", hex, name));
-                    }
-                }
-            }
-            if !digest_lines.is_empty() {
-                digest_lines.sort();
-                digest_lines.dedup();
-                // Resolve the first non-empty `docker_digest.name_template`
-                // across configured crates; fall back to `digests.txt`.
-                let mut rendered_name: Option<String> = None;
-                for krate in &ctx.config.crates {
-                    let Some(dc) = krate.docker_digest.as_ref() else {
-                        continue;
-                    };
-                    let Some(tmpl) = dc.name_template.as_ref() else {
-                        continue;
-                    };
-                    let rendered = ctx.render_template(tmpl).with_context(|| {
-                        format!(
-                            "docker: render docker_digest.name_template '{}' for crate {}",
-                            tmpl, krate.name
-                        )
-                    })?;
-                    if !rendered.is_empty() {
-                        rendered_name = Some(rendered);
-                        break;
-                    }
-                }
-                let digest_filename = rendered_name.unwrap_or_else(|| "digests.txt".to_string());
-                let digest_file = dist.join(&digest_filename);
-                if let Err(e) = fs::write(&digest_file, digest_lines.join("\n") + "\n") {
-                    log.warn(&format!(
-                        "failed to write combined digest file {}: {}",
-                        digest_file.display(),
-                        e
-                    ));
-                } else {
-                    log.status(&format!(
-                        "wrote combined digest file: {}",
-                        digest_file.display()
-                    ));
-                }
-            }
-        }
-
-        for artifact in new_artifacts {
-            ctx.artifacts.add(artifact);
-        }
-
-        Ok(())
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -2412,9 +56,19 @@ impl Stage for DockerStage {
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
+    use super::build::{DockerBuildJob, find_sha256_digest, list_staging_dir_recursive};
+    use super::platform::tag_suffix;
+    use super::spelling::levenshtein_distance;
     use super::*;
+    use std::collections::HashMap;
     use std::fs;
+    use std::path::PathBuf;
+    use std::time::Duration;
     use tempfile::TempDir;
+
+    use anodizer_core::artifact::ArtifactKind;
+    use anodizer_core::config::{SkipPushConfig, StringOrBool};
+    use anodizer_core::stage::Stage;
 
     #[test]
     fn test_platform_to_arch() {
@@ -2892,24 +546,24 @@ mod tests {
     fn test_config_docker_manifests_full() {
         use anodizer_core::config::Config;
         let yaml = r#"
-project_name: test
-crates:
-  - name: app
-    path: "."
-    tag_template: "v{{ version }}"
-    docker_manifests:
-      - name_template: "ghcr.io/owner/app:{{ .Version }}"
-        image_templates:
-          - "ghcr.io/owner/app:{{ .Version }}-amd64"
-          - "ghcr.io/owner/app:{{ .Version }}-arm64"
-        create_flags:
-          - "--amend"
-        push_flags:
-          - "--purge"
-        skip_push: auto
-        id: my-manifest
-        use: docker
-"#;
+    project_name: test
+    crates:
+      - name: app
+        path: "."
+        tag_template: "v{{ version }}"
+        docker_manifests:
+          - name_template: "ghcr.io/owner/app:{{ .Version }}"
+            image_templates:
+              - "ghcr.io/owner/app:{{ .Version }}-amd64"
+              - "ghcr.io/owner/app:{{ .Version }}-arm64"
+            create_flags:
+              - "--amend"
+            push_flags:
+              - "--purge"
+            skip_push: auto
+            id: my-manifest
+            use: docker
+    "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         let manifests = config.crates[0].docker_manifests.as_ref().unwrap();
         assert_eq!(manifests.len(), 1);
@@ -2927,12 +581,12 @@ crates:
     fn test_config_docker_manifests_omitted() {
         use anodizer_core::config::Config;
         let yaml = r#"
-project_name: test
-crates:
-  - name: app
-    path: "."
-    tag_template: "v{{ version }}"
-"#;
+    project_name: test
+    crates:
+      - name: app
+        path: "."
+        tag_template: "v{{ version }}"
+    "#;
         let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(config.crates[0].docker_manifests.is_none());
     }
@@ -3305,11 +959,11 @@ crates:
     fn test_docker_manifest_with_use_backend_podman() {
         use anodizer_core::config::DockerManifestConfig;
         let yaml = r#"
-name_template: "ghcr.io/owner/app:latest"
-image_templates:
-  - "ghcr.io/owner/app:latest-amd64"
-use: podman
-"#;
+    name_template: "ghcr.io/owner/app:latest"
+    image_templates:
+      - "ghcr.io/owner/app:latest-amd64"
+    use: podman
+    "#;
         let cfg: DockerManifestConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.use_backend.as_deref(), Some("podman"));
     }
@@ -3690,36 +1344,36 @@ use: podman
     #[test]
     fn test_docker_v2_config_parse_yaml() {
         let yaml = r#"
-id: myapp-docker
-ids:
-  - myapp-build
-dockerfile: Dockerfile.prod
-images:
-  - ghcr.io/owner/app
-  - docker.io/owner/app
-tags:
-  - latest
-  - "{{ .Version }}"
-labels:
-  maintainer: "dev@example.com"
-annotations:
-  org.opencontainers.image.source: "https://github.com/owner/app"
-extra_files:
-  - config.yaml
-platforms:
-  - linux/amd64
-  - linux/arm64
-build_args:
-  APP_VERSION: "{{ .Version }}"
-  BUILD_DATE: "2024-01-01"
-flags:
-  - "--no-cache"
-skip: false
-sbom: true
-retry:
-  attempts: 5
-  delay: "2s"
-"#;
+    id: myapp-docker
+    ids:
+      - myapp-build
+    dockerfile: Dockerfile.prod
+    images:
+      - ghcr.io/owner/app
+      - docker.io/owner/app
+    tags:
+      - latest
+      - "{{ .Version }}"
+    labels:
+      maintainer: "dev@example.com"
+    annotations:
+      org.opencontainers.image.source: "https://github.com/owner/app"
+    extra_files:
+      - config.yaml
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    build_args:
+      APP_VERSION: "{{ .Version }}"
+      BUILD_DATE: "2024-01-01"
+    flags:
+      - "--no-cache"
+    skip: false
+    sbom: true
+    retry:
+      attempts: 5
+      delay: "2s"
+    "#;
         let cfg: anodizer_core::config::DockerV2Config = serde_yaml_ng::from_str(yaml).unwrap();
 
         assert_eq!(cfg.id, Some("myapp-docker".to_string()));
@@ -3763,12 +1417,12 @@ retry:
     #[test]
     fn test_docker_v2_config_parse_minimal() {
         let yaml = r#"
-dockerfile: Dockerfile
-images:
-  - ghcr.io/owner/app
-tags:
-  - latest
-"#;
+    dockerfile: Dockerfile
+    images:
+      - ghcr.io/owner/app
+    tags:
+      - latest
+    "#;
         let cfg: anodizer_core::config::DockerV2Config = serde_yaml_ng::from_str(yaml).unwrap();
 
         assert_eq!(cfg.id, None);
@@ -3790,11 +1444,11 @@ tags:
     #[test]
     fn test_docker_v2_config_disable_as_bool() {
         let yaml = r#"
-dockerfile: Dockerfile
-images: ["img"]
-tags: ["latest"]
-skip: true
-"#;
+    dockerfile: Dockerfile
+    images: ["img"]
+    tags: ["latest"]
+    skip: true
+    "#;
         let cfg: anodizer_core::config::DockerV2Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.skip, Some(StringOrBool::Bool(true)));
     }
@@ -3802,11 +1456,11 @@ skip: true
     #[test]
     fn test_docker_v2_config_disable_as_template() {
         let yaml = r#"
-dockerfile: Dockerfile
-images: ["img"]
-tags: ["latest"]
-skip: "{{ if .IsSnapshot }}true{{ end }}"
-"#;
+    dockerfile: Dockerfile
+    images: ["img"]
+    tags: ["latest"]
+    skip: "{{ if .IsSnapshot }}true{{ end }}"
+    "#;
         let cfg: anodizer_core::config::DockerV2Config = serde_yaml_ng::from_str(yaml).unwrap();
         match cfg.skip {
             Some(StringOrBool::String(s)) => {
@@ -3819,11 +1473,11 @@ skip: "{{ if .IsSnapshot }}true{{ end }}"
     #[test]
     fn test_docker_v2_config_sbom_as_bool() {
         let yaml = r#"
-dockerfile: Dockerfile
-images: ["img"]
-tags: ["latest"]
-sbom: true
-"#;
+    dockerfile: Dockerfile
+    images: ["img"]
+    tags: ["latest"]
+    sbom: true
+    "#;
         let cfg: anodizer_core::config::DockerV2Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.sbom, Some(StringOrBool::Bool(true)));
     }
@@ -3831,11 +1485,11 @@ sbom: true
     #[test]
     fn test_docker_v2_config_sbom_as_string() {
         let yaml = r#"
-dockerfile: Dockerfile
-images: ["img"]
-tags: ["latest"]
-sbom: "true"
-"#;
+    dockerfile: Dockerfile
+    images: ["img"]
+    tags: ["latest"]
+    sbom: "true"
+    "#;
         let cfg: anodizer_core::config::DockerV2Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(cfg.sbom, Some(StringOrBool::String("true".to_string())));
     }
@@ -4086,22 +1740,22 @@ sbom: "true"
     #[test]
     fn test_docker_v2_crate_config_field() {
         let yaml = r#"
-crates:
-  - name: myapp
-    path: "."
-    tag_template: "v{{ .Version }}"
-    docker_v2:
-      - dockerfile: Dockerfile
-        images:
-          - ghcr.io/owner/app
-        tags:
-          - latest
-        build_args:
-          VERSION: "1.0.0"
-        annotations:
-          org.opencontainers.image.source: "https://github.com/owner/app"
-        sbom: true
-"#;
+    crates:
+      - name: myapp
+        path: "."
+        tag_template: "v{{ .Version }}"
+        docker_v2:
+          - dockerfile: Dockerfile
+            images:
+              - ghcr.io/owner/app
+            tags:
+              - latest
+            build_args:
+              VERSION: "1.0.0"
+            annotations:
+              org.opencontainers.image.source: "https://github.com/owner/app"
+            sbom: true
+    "#;
         let config: anodizer_core::config::Config = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.crates.len(), 1);
         let v2_configs = config.crates[0].docker_v2.as_ref().unwrap();
@@ -4571,9 +2225,9 @@ crates:
     fn test_docker_sign_config_output_bool() {
         use anodizer_core::config::DockerSignConfig;
         let yaml = r#"
-cmd: cosign
-output: true
-"#;
+    cmd: cosign
+    output: true
+    "#;
         let cfg: DockerSignConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(cfg.output.unwrap().as_bool());
     }
@@ -4582,9 +2236,9 @@ output: true
     fn test_docker_sign_config_output_string() {
         use anodizer_core::config::DockerSignConfig;
         let yaml = r#"
-cmd: cosign
-output: "false"
-"#;
+    cmd: cosign
+    output: "false"
+    "#;
         let cfg: DockerSignConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(!cfg.output.unwrap().as_bool());
     }
@@ -4593,8 +2247,8 @@ output: "false"
     fn test_docker_sign_config_output_missing() {
         use anodizer_core::config::DockerSignConfig;
         let yaml = r#"
-cmd: cosign
-"#;
+    cmd: cosign
+    "#;
         let cfg: DockerSignConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(cfg.output.is_none());
     }
@@ -4603,9 +2257,9 @@ cmd: cosign
     fn test_docker_sign_config_output_template_string() {
         use anodizer_core::config::DockerSignConfig;
         let yaml = r#"
-cmd: cosign
-output: "{{ .IsSnapshot }}"
-"#;
+    cmd: cosign
+    output: "{{ .IsSnapshot }}"
+    "#;
         let cfg: DockerSignConfig = serde_yaml_ng::from_str(yaml).unwrap();
         let output = cfg.output.unwrap();
         // Should be recognized as a template string, not a literal bool
@@ -4616,16 +2270,16 @@ output: "{{ .IsSnapshot }}"
     fn test_sign_config_output_string_or_bool() {
         use anodizer_core::config::SignConfig;
         let yaml_bool = r#"
-cmd: gpg
-output: true
-"#;
+    cmd: gpg
+    output: true
+    "#;
         let cfg: SignConfig = serde_yaml_ng::from_str(yaml_bool).unwrap();
         assert!(cfg.output.unwrap().as_bool());
 
         let yaml_str = r#"
-cmd: gpg
-output: "false"
-"#;
+    cmd: gpg
+    output: "false"
+    "#;
         let cfg2: SignConfig = serde_yaml_ng::from_str(yaml_str).unwrap();
         assert!(!cfg2.output.unwrap().as_bool());
     }
@@ -4634,9 +2288,9 @@ output: "false"
     fn test_docker_digest_config_parses() {
         use anodizer_core::config::DockerDigestConfig;
         let yaml = r#"
-skip: false
-name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
-"#;
+    skip: false
+    name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
+    "#;
         let cfg: DockerDigestConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(!cfg.skip.unwrap().as_bool());
         assert_eq!(
@@ -4658,8 +2312,8 @@ name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
     fn test_docker_digest_config_disable_template() {
         use anodizer_core::config::DockerDigestConfig;
         let yaml = r#"
-skip: "{{ .IsSnapshot }}"
-"#;
+    skip: "{{ .IsSnapshot }}"
+    "#;
         let cfg: DockerDigestConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(cfg.skip.unwrap().is_template());
     }
@@ -4989,7 +2643,7 @@ skip: "{{ .IsSnapshot }}"
     #[test]
     fn test_find_sha256_digest_from_push_output() {
         let output = "The push refers to repository [docker.io/library/myapp]\n\
-                       latest: digest: sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789 size: 528";
+                           latest: digest: sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789 size: 528";
         let digest = find_sha256_digest(output);
         assert_eq!(
             digest,
