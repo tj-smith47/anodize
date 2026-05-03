@@ -4,8 +4,6 @@ use std::process::{Command, Stdio};
 use anyhow::{Context as _, Result, bail};
 
 use anodizer_core::artifact::ArtifactKind;
-#[cfg(test)]
-use anodizer_core::config::SignConfig;
 use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
 
@@ -13,8 +11,6 @@ mod helpers;
 mod process;
 
 use helpers::{prepare_stdin_from, resolve_sign_args};
-#[cfg(test)]
-use helpers::{resolve_signature_path, should_sign_artifact};
 use process::{ArtifactFilter, process_sign_configs};
 
 // Helpers (should_sign_artifact, resolve_signature_path, prepare_stdin_from,

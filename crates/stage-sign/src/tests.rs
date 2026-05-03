@@ -1,5 +1,13 @@
-use super::*;
+use anodizer_core::artifact::ArtifactKind;
+use anodizer_core::config::SignConfig;
+use anodizer_core::stage::Stage;
 use anodizer_core::test_helpers::TestContextBuilder;
+
+use super::helpers::{
+    prepare_stdin_from, resolve_sign_args, resolve_signature_path, should_sign_artifact,
+};
+use super::process::{ArtifactFilter, process_sign_configs};
+use super::{DockerSignStage, SignStage};
 
 /// Return a shell command + args that writes `content_expr` to `dest_file`.
 /// On Unix: sh -c "echo $VAR > file"
