@@ -1,0 +1,300 @@
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use anyhow::{Context as _, Result};
+
+use anodizer_core::artifact::{Artifact, ArtifactKind, release_uploadable_kinds};
+use anodizer_core::config::{BlobConfig, ExtraFileSpec};
+use anodizer_core::context::Context;
+use anodizer_core::extrafiles;
+use anodizer_core::template;
+
+use object_store::path::Path as ObjectPath;
+use object_store::{ObjectStore, PutOptions};
+
+use crate::kms::{KmsProvider, encrypt_with_kms};
+use crate::provider::Provider;
+
+// ---------------------------------------------------------------------------
+// Put options — headers (cache-control, content-disposition)
+// ---------------------------------------------------------------------------
+
+/// Validate a single Cache-Control directive against the response-directive
+/// set defined in RFC 7234 §5.2.2 plus the `immutable` token added by RFC
+/// 8246. Directives may take a `=token` argument (e.g. `max-age=3600`,
+/// `s-maxage=120`); we accept the directive name regardless of its argument.
+pub(crate) fn validate_cache_control_directive(directive: &str) -> Result<()> {
+    const VALID_DIRECTIVES: &[&str] = &[
+        "must-revalidate",
+        "no-cache",
+        "no-store",
+        "no-transform",
+        "public",
+        "private",
+        "proxy-revalidate",
+        "max-age",
+        "s-maxage",
+        "stale-while-revalidate",
+        "stale-if-error",
+        "immutable",
+    ];
+    let trimmed = directive.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("blobs: cache_control entry is empty");
+    }
+    let name = trimmed.split('=').next().unwrap_or(trimmed).trim();
+    if !VALID_DIRECTIVES
+        .iter()
+        .any(|d| d.eq_ignore_ascii_case(name))
+    {
+        anyhow::bail!(
+            "blobs: invalid Cache-Control directive '{}'. Valid directives are: {}",
+            name,
+            VALID_DIRECTIVES.join(", ")
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn build_put_options(
+    config: &BlobConfig,
+    filename: &str,
+    ctx: &Context,
+) -> Result<PutOptions> {
+    use object_store::Attribute;
+
+    let mut attrs = object_store::Attributes::new();
+
+    // Cache-Control: join array with ", " (GoReleaser uses []string).
+    // Each directive is validated against the RFC-7234 §5.2 response-directive
+    // set so a typo (e.g. `max_age` instead of `max-age`) surfaces here rather
+    // than as a silent CDN miss in production.
+    if let Some(ref cc) = config.cache_control
+        && !cc.is_empty()
+    {
+        for directive in cc {
+            validate_cache_control_directive(directive)?;
+        }
+        attrs.insert(Attribute::CacheControl, cc.join(", ").into());
+    }
+
+    // Content-Disposition: only set when user provides a non-empty value.
+    // GoReleaser never force-defaults `attachment;filename=...` — letting the
+    // backend default preserves in-browser preview for images/PDFs/HTML.
+    // Sentinel `"-"` disables the header explicitly (kept for parity with users
+    // migrating from earlier anodizer configs).
+    if let Some(disp_template) = config.content_disposition.as_deref()
+        && !disp_template.is_empty()
+        && disp_template != "-"
+    {
+        // Render the template with the Filename variable added
+        let mut vars = ctx.template_vars().clone();
+        vars.set("Filename", filename);
+        let rendered = template::render(disp_template, &vars)
+            .with_context(|| format!("blobs: render content_disposition: {disp_template}"))?;
+        attrs.insert(Attribute::ContentDisposition, rendered.into());
+    }
+
+    // ACL is handled at the client level via x-amz-acl / x-goog-acl headers
+    // set in build_s3_store() / build_gcs_store(). No per-request handling needed.
+
+    Ok(PutOptions {
+        attributes: attrs,
+        ..Default::default()
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Extra files resolution — with template-rendered names
+// ---------------------------------------------------------------------------
+
+pub(crate) fn resolve_extra_files(
+    extra_files: &[ExtraFileSpec],
+    ctx: &Context,
+    log: &anodizer_core::log::StageLogger,
+) -> Result<Vec<(PathBuf, String)>> {
+    let resolved = extrafiles::resolve(extra_files, log)?;
+    let mut out = Vec::with_capacity(resolved.len());
+    for entry in resolved {
+        let upload_name = if let Some(ref name_tmpl) = entry.name_template {
+            let filename = entry
+                .path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("file");
+            let mut vars = ctx.template_vars().clone();
+            vars.set("Filename", filename);
+            template::render(name_tmpl, &vars)
+                .with_context(|| format!("blobs: render extra_files name: {name_tmpl}"))?
+        } else {
+            entry
+                .path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("file")
+                .to_string()
+        };
+        out.push((entry.path, upload_name));
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Artifact filtering
+// ---------------------------------------------------------------------------
+
+/// Collect artifacts to upload based on config filters.
+pub(crate) fn collect_artifacts<'a>(
+    ctx: &'a Context,
+    config: &BlobConfig,
+    crate_name: &str,
+) -> Vec<&'a Artifact> {
+    if config.extra_files_only.unwrap_or(false) {
+        return vec![];
+    }
+
+    // blob upload uses the canonical release-uploadable set — see
+    // `release_uploadable_kinds()` in `crates/core/src/artifact.rs` for the
+    // authoritative list. When `include_meta` is true, append Metadata.
+    let mut uploadable_kinds: Vec<ArtifactKind> = release_uploadable_kinds().to_vec();
+    if config.include_meta.unwrap_or(false) {
+        uploadable_kinds.push(ArtifactKind::Metadata);
+    }
+
+    ctx.artifacts
+        .all()
+        .iter()
+        .filter(|a| a.crate_name == crate_name)
+        .filter(|a| uploadable_kinds.contains(&a.kind))
+        .filter(|a| anodizer_core::artifact::matches_id_filter(a, config.ids.as_deref()))
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Upload execution
+// ---------------------------------------------------------------------------
+
+/// Upload a per-config batch of files with intra-config parallelism via
+/// tokio, given fully owned data. Phase 2 of `BlobStage::run` calls this
+/// on worker threads so `ctx` is never touched after Phase 1. `runtime`
+/// is shared across every blob job so we don't spin up one tokio
+/// thread pool per job.
+pub(crate) fn upload_files_owned(
+    runtime: &tokio::runtime::Runtime,
+    store: Arc<dyn ObjectStore>,
+    items: Vec<(PathBuf, String)>,
+    directory: String,
+    put_opts_per_item: Vec<PutOptions>,
+    parallelism: usize,
+    client_kms: Option<(String, KmsProvider)>,
+) -> Result<()> {
+    runtime.block_on(async move {
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(parallelism.max(1)));
+        let mut handles = Vec::new();
+
+        for ((local_path, remote_key), put_opts) in items.into_iter().zip(put_opts_per_item) {
+            let dir_trimmed = directory.trim_matches('/');
+            let object_key = if dir_trimmed.is_empty() {
+                remote_key.clone()
+            } else {
+                format!("{}/{}", dir_trimmed, remote_key)
+            };
+
+            let object_path = ObjectPath::from(object_key.as_str());
+
+            let store = Arc::clone(&store);
+            let sem = Arc::clone(&semaphore);
+            let path_display = local_path.display().to_string();
+            let local = local_path;
+            let key_display = object_key.clone();
+            let client_kms = client_kms.clone();
+
+            handles.push(tokio::spawn(async move {
+                let _permit = sem
+                    .acquire()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("semaphore error: {}", e))?;
+                let data = tokio::fs::read(&local).await.map_err(|e| {
+                    anyhow::anyhow!("blobs: read file for upload: {}: {}", path_display, e)
+                })?;
+
+                let upload_data = if let Some((kms_key, provider)) = client_kms {
+                    tokio::task::spawn_blocking(move || encrypt_with_kms(&data, &kms_key, provider))
+                        .await
+                        .map_err(|e| anyhow::anyhow!("KMS encryption task panicked: {}", e))??
+                } else {
+                    data
+                };
+
+                store
+                    .put_opts(&object_path, upload_data.into(), put_opts)
+                    .await
+                    .map_err(|e| handle_upload_error(e, &path_display, &key_display))?;
+                Ok::<(), anyhow::Error>(())
+            }));
+        }
+
+        for handle in handles {
+            handle
+                .await
+                .map_err(|e| anyhow::anyhow!("upload task panicked: {}", e))??;
+        }
+        Ok(())
+    })
+}
+
+pub(crate) fn format_remote_path(
+    provider: Provider,
+    bucket: &str,
+    directory: &str,
+    key: &str,
+) -> String {
+    let dir_trimmed = directory.trim_matches('/');
+    let scheme = provider.display_name();
+    if dir_trimmed.is_empty() {
+        format!("{}://{}/{}", scheme, bucket, key)
+    } else {
+        format!("{}://{}/{}/{}", scheme, bucket, dir_trimmed, key)
+    }
+}
+
+pub(crate) fn handle_upload_error(
+    err: object_store::Error,
+    local_path: &str,
+    remote_key: &str,
+) -> anyhow::Error {
+    match &err {
+        object_store::Error::NotFound { path, .. } => {
+            anyhow::anyhow!(
+                "blobs: bucket or object not found ({}): uploading {} -> {}",
+                path,
+                local_path,
+                remote_key
+            )
+        }
+        object_store::Error::Unauthenticated { path, .. } => {
+            anyhow::anyhow!(
+                "blobs: authentication failed — check credentials. Uploading {} -> {} ({})",
+                local_path,
+                remote_key,
+                path
+            )
+        }
+        object_store::Error::PermissionDenied { path, .. } => {
+            anyhow::anyhow!(
+                "blobs: access denied — check permissions. Uploading {} -> {} ({})",
+                local_path,
+                remote_key,
+                path
+            )
+        }
+        _ => {
+            anyhow::anyhow!(
+                "blobs: upload failed for {} -> {}: {}",
+                local_path,
+                remote_key,
+                err
+            )
+        }
+    }
+}

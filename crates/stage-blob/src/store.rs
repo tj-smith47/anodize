@@ -1,0 +1,168 @@
+use anyhow::{Context as _, Result};
+
+use anodizer_core::config::BlobConfig;
+use anodizer_core::context::Context;
+use anodizer_core::template;
+
+use object_store::ObjectStore;
+
+use crate::kms::{KmsProvider, parse_kms_provider};
+use crate::provider::Provider;
+
+// ---------------------------------------------------------------------------
+// Store construction — one function per provider
+// ---------------------------------------------------------------------------
+
+/// Build an `ObjectStore` for the given provider and config.
+/// All env-based credential chains are handled by the builder's `from_env()`.
+pub(crate) fn build_store(
+    provider: Provider,
+    config: &BlobConfig,
+    rendered_bucket: &str,
+    ctx: &Context,
+) -> Result<Box<dyn ObjectStore>> {
+    match provider {
+        Provider::S3 => build_s3_store(config, rendered_bucket, ctx),
+        Provider::Gcs => build_gcs_store(rendered_bucket, config),
+        Provider::AzBlob => build_azure_store(rendered_bucket),
+    }
+}
+
+pub(crate) fn build_s3_store(
+    config: &BlobConfig,
+    bucket: &str,
+    ctx: &Context,
+) -> Result<Box<dyn ObjectStore>> {
+    use object_store::aws::AmazonS3Builder;
+
+    let mut builder = AmazonS3Builder::from_env().with_bucket_name(bucket);
+
+    if let Some(ref region) = config.region {
+        let rendered = template::render(region, ctx.template_vars())
+            .with_context(|| format!("blobs: render region template: {region}"))?;
+        builder = builder.with_region(&rendered);
+    }
+
+    if let Some(ref endpoint) = config.endpoint {
+        let rendered = template::render(endpoint, ctx.template_vars())
+            .with_context(|| format!("blobs: render endpoint template: {endpoint}"))?;
+        builder = builder.with_endpoint(&rendered);
+
+        // Smart default: force path style when custom endpoint is set.
+        // MinIO, R2, DO Spaces, Backblaze B2 all need path-style addressing.
+        let force_path = config.s3_force_path_style.unwrap_or(true);
+        builder = builder.with_virtual_hosted_style_request(!force_path);
+    } else if let Some(force_path) = config.s3_force_path_style {
+        builder = builder.with_virtual_hosted_style_request(!force_path);
+    }
+
+    if config.disable_ssl.unwrap_or(false) {
+        builder = builder.with_allow_http(true);
+    }
+
+    // KMS server-side encryption: only set SSE-KMS on the S3 builder when the
+    // key is a plain ARN/ID (ServerSide). URL-schemed keys (awskms://, gcpkms://,
+    // azurekeyvault://) use client-side encryption — the data is encrypted before
+    // upload, so we must NOT also request server-side encryption.
+    if let Some(ref kms_key) = config.kms_key
+        && parse_kms_provider(kms_key) == KmsProvider::ServerSide
+    {
+        builder = builder.with_sse_kms_encryption(kms_key);
+    }
+
+    // S3 canned ACL via x-amz-acl header.
+    // We set it as a default header on the client — since each blob config
+    // gets its own ObjectStore client, this is per-config ACL.
+    if let Some(ref acl) = config.acl {
+        // Validate against the S3 canned ACL enum. Matches GoReleaser
+        // internal/pipe/blob/upload.go:113-119 exactly — `log-delivery-write`
+        // (a valid AWS S3 canned ACL) is omitted to match upstream.
+        const VALID_S3_ACLS: &[&str] = &[
+            "private",
+            "public-read",
+            "public-read-write",
+            "authenticated-read",
+            "aws-exec-read",
+            "bucket-owner-read",
+            "bucket-owner-full-control",
+        ];
+        if !VALID_S3_ACLS.contains(&acl.as_str()) {
+            anyhow::bail!(
+                "blobs: invalid S3 canned ACL '{}'. Valid values are: {}",
+                acl,
+                VALID_S3_ACLS.join(", ")
+            );
+        }
+
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::HeaderName::from_static("x-amz-acl"),
+            reqwest::header::HeaderValue::from_str(acl)
+                .with_context(|| format!("blobs: invalid ACL value: {acl}"))?,
+        );
+        let client_opts = object_store::ClientOptions::new().with_default_headers(headers);
+        builder = builder.with_client_options(client_opts);
+    }
+
+    Ok(Box::new(
+        builder
+            .build()
+            .context("blobs: failed to build S3 client")?,
+    ))
+}
+
+pub(crate) fn build_gcs_store(bucket: &str, config: &BlobConfig) -> Result<Box<dyn ObjectStore>> {
+    use object_store::gcp::GoogleCloudStorageBuilder;
+
+    let mut builder = GoogleCloudStorageBuilder::from_env().with_bucket_name(bucket);
+
+    // GCS predefined ACL via x-goog-acl header.
+    // Match the public list documented at
+    // https://cloud.google.com/storage/docs/access-control/lists#predefined-acl
+    // and the GCS XML API canned ACL set so a typo (e.g. `public-read` instead
+    // of `publicRead`) errors here rather than producing a 400 deep in upload.
+    if let Some(ref acl) = config.acl {
+        const VALID_GCS_ACLS: &[&str] = &[
+            "authenticatedRead",
+            "bucketOwnerFullControl",
+            "bucketOwnerRead",
+            "private",
+            "projectPrivate",
+            "publicRead",
+            "publicReadWrite",
+        ];
+        if !VALID_GCS_ACLS.contains(&acl.as_str()) {
+            anyhow::bail!(
+                "blobs: invalid GCS predefined ACL '{}'. Valid values are: {}",
+                acl,
+                VALID_GCS_ACLS.join(", ")
+            );
+        }
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::HeaderName::from_static("x-goog-acl"),
+            reqwest::header::HeaderValue::from_str(acl)
+                .with_context(|| format!("blobs: invalid ACL value: {acl}"))?,
+        );
+        let client_opts = object_store::ClientOptions::new().with_default_headers(headers);
+        builder = builder.with_client_options(client_opts);
+    }
+
+    Ok(Box::new(
+        builder
+            .build()
+            .context("blobs: failed to build GCS client")?,
+    ))
+}
+
+pub(crate) fn build_azure_store(container: &str) -> Result<Box<dyn ObjectStore>> {
+    use object_store::azure::MicrosoftAzureBuilder;
+
+    let builder = MicrosoftAzureBuilder::from_env().with_container_name(container);
+
+    Ok(Box::new(
+        builder
+            .build()
+            .context("blobs: failed to build Azure Blob client")?,
+    ))
+}
