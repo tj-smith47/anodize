@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 
 use super::aur_source::AurSourceConfig;
 use super::{StringOrBool, deserialize_string_or_bool_opt};
-use crate::publishers::{KrewConfig, NixConfig};
 
 mod homebrew;
 pub use homebrew::*;
@@ -18,6 +17,12 @@ pub use winget::*;
 
 mod aur;
 pub use aur::*;
+
+mod krew;
+pub use krew::*;
+
+mod nix;
+pub use nix::*;
 
 // ---------------------------------------------------------------------------
 // Shared publisher config types: RepositoryConfig, CommitAuthorConfig

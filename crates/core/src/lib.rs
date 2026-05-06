@@ -18,7 +18,6 @@ pub mod packagers;
 pub mod parallel;
 pub mod partial;
 pub mod pipe_skip;
-pub mod publishers;
 pub mod redact;
 pub mod retry;
 pub mod scm;

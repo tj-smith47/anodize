@@ -685,18 +685,6 @@ mod publishers;
 pub use publishers::*;
 
 // ---------------------------------------------------------------------------
-// KrewConfig + NixConfig — lifted to `crate::publishers`
-// ---------------------------------------------------------------------------
-//
-// Wave B carve completed. All publisher config types were lifted to
-// `crate::publishers` during the Wave 5 split. The re-exports below
-// preserve the historical
-// `anodizer_core::config::{KrewConfig, NixConfig, NixDependency}`
-// import paths used by `stage-publish/krew.rs` / `stage-publish/nix.rs`.
-
-pub use crate::publishers::{KrewConfig, NixConfig, NixDependency};
-
-// ---------------------------------------------------------------------------
 // DockerV2Config
 // ---------------------------------------------------------------------------
 

@@ -11,7 +11,7 @@ use super::nfpm::NfpmConfig;
 use super::notarize::NotarizeConfig;
 use super::publishers::{
     AurConfig, CargoPublishConfig, ChocolateyConfig, HomebrewCaskConfig, HomebrewConfig,
-    ScoopConfig, WingetConfig,
+    KrewConfig, NixConfig, ScoopConfig, WingetConfig,
 };
 use super::sbom::SbomConfig;
 use super::snapcraft::SnapcraftConfig;
@@ -19,8 +19,6 @@ use super::source::SourceConfig;
 use super::upx::UpxConfig;
 use super::{ChecksumConfig, CrossStrategy, DockerSignConfig, DockerV2Config, SignConfig};
 use crate::packagers::{MakeselfConfig, SrpmConfig};
-use crate::publishers::KrewConfig;
-use crate::publishers::NixConfig;
 
 // ---------------------------------------------------------------------------
 // Defaults
