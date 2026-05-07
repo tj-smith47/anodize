@@ -1,7 +1,9 @@
 use std::collections::HashMap;
+use std::ops::ControlFlow;
 
 use anodizer_core::log::StageLogger;
-use anyhow::Result;
+use anodizer_core::retry::{HttpError, RetryPolicy, is_retriable, retry_sync};
+use anyhow::{Context as _, Result};
 
 /// Validate the format of a subreddit name against Reddit's documented rules:
 /// 3–21 characters, ASCII letters / digits / underscore, no leading underscore.
@@ -45,7 +47,7 @@ pub struct RedditPost<'a> {
 ///    and `grant_type=password` to obtain a bearer token.
 /// 2. POST to `/api/submit` on `oauth.reddit.com` with the bearer token to
 ///    create the link post.
-pub fn send_reddit(post: &RedditPost<'_>, log: &StageLogger) -> Result<()> {
+pub fn send_reddit(post: &RedditPost<'_>, log: &StageLogger, policy: &RetryPolicy) -> Result<()> {
     let RedditPost {
         application_id,
         secret,
@@ -59,34 +61,62 @@ pub fn send_reddit(post: &RedditPost<'_>, log: &StageLogger) -> Result<()> {
 
     let client = reqwest::blocking::Client::builder()
         .user_agent(anodizer_core::http::USER_AGENT)
-        .build()?;
+        .build()
+        .context("reddit: build HTTP client")?;
 
-    // Step 1: Get OAuth token
-    let token_resp = client
-        .post("https://www.reddit.com/api/v1/access_token")
-        .basic_auth(application_id, Some(secret))
-        .form(&[
-            ("grant_type", "password"),
-            ("username", username),
-            ("password", password),
-        ])
-        .send()?;
+    // Step 1: Get OAuth token (retried).
+    let token_body = retry_sync(policy, |_attempt| {
+        match client
+            .post("https://www.reddit.com/api/v1/access_token")
+            .basic_auth(application_id, Some(secret))
+            .form(&[
+                ("grant_type", "password"),
+                ("username", username),
+                ("password", password),
+            ])
+            .send()
+        {
+            Err(e) => {
+                let err = anyhow::Error::new(HttpError::from_response(e, None))
+                    .context("reddit: OAuth token transport error");
+                if is_retriable(err.root_cause()) {
+                    Err(ControlFlow::Continue(err))
+                } else {
+                    Err(ControlFlow::Break(err))
+                }
+            }
+            Ok(resp) => {
+                let status = resp.status();
+                let body = resp
+                    .text()
+                    .unwrap_or_else(|e| format!("<body read failed: {e}>"));
+                if status.is_success() {
+                    Ok(body)
+                } else {
+                    let inner =
+                        anyhow::anyhow!("reddit: OAuth token request failed ({status}): {body}");
+                    let wrapped = anyhow::Error::new(HttpError::new(
+                        std::io::Error::other(inner.to_string()),
+                        status.as_u16(),
+                    ))
+                    .context(inner);
+                    if is_retriable(wrapped.root_cause()) {
+                        Err(ControlFlow::Continue(wrapped))
+                    } else {
+                        Err(ControlFlow::Break(wrapped))
+                    }
+                }
+            }
+        }
+    })?;
 
-    if !token_resp.status().is_success() {
-        let status = token_resp.status();
-        let body = token_resp
-            .text()
-            .unwrap_or_else(|e| format!("<body read failed: {e}>"));
-        anyhow::bail!("reddit: OAuth token request failed ({status}): {body}");
-    }
-
-    let token_body = token_resp.text()?;
-    let token_json: serde_json::Value = serde_json::from_str(&token_body)?;
+    let token_json: serde_json::Value = serde_json::from_str(&token_body)
+        .context("reddit: OAuth token response was not valid JSON")?;
     let access_token = token_json["access_token"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("reddit: missing access_token in OAuth response"))?;
 
-    // Step 2: Submit link
+    // Step 2: Submit link (retried; rate-limit headers logged from final response).
     let mut form = HashMap::new();
     form.insert("api_type", "json");
     form.insert("kind", "link");
@@ -94,25 +124,51 @@ pub fn send_reddit(post: &RedditPost<'_>, log: &StageLogger) -> Result<()> {
     form.insert("title", title);
     form.insert("url", url);
 
-    let submit_resp = client
-        .post("https://oauth.reddit.com/api/submit")
-        .bearer_auth(access_token)
-        .form(&form)
-        .send()?;
-
-    log_rate_limit(submit_resp.headers(), log);
-
-    if !submit_resp.status().is_success() {
-        let status = submit_resp.status();
-        let body = submit_resp
-            .text()
-            .unwrap_or_else(|e| format!("<body read failed: {e}>"));
-        anyhow::bail!("reddit: submit failed ({status}): {body}");
-    }
+    let submit_body = retry_sync(policy, |_attempt| {
+        match client
+            .post("https://oauth.reddit.com/api/submit")
+            .bearer_auth(access_token)
+            .form(&form)
+            .send()
+        {
+            Err(e) => {
+                let err = anyhow::Error::new(HttpError::from_response(e, None))
+                    .context("reddit: submit transport error");
+                if is_retriable(err.root_cause()) {
+                    Err(ControlFlow::Continue(err))
+                } else {
+                    Err(ControlFlow::Break(err))
+                }
+            }
+            Ok(resp) => {
+                log_rate_limit(resp.headers(), log);
+                let status = resp.status();
+                let body = resp
+                    .text()
+                    .unwrap_or_else(|e| format!("<body read failed: {e}>"));
+                if status.is_success() {
+                    Ok(body)
+                } else {
+                    let inner = anyhow::anyhow!("reddit: submit failed ({status}): {body}");
+                    let wrapped = anyhow::Error::new(HttpError::new(
+                        std::io::Error::other(inner.to_string()),
+                        status.as_u16(),
+                    ))
+                    .context(inner);
+                    if is_retriable(wrapped.root_cause()) {
+                        Err(ControlFlow::Continue(wrapped))
+                    } else {
+                        Err(ControlFlow::Break(wrapped))
+                    }
+                }
+            }
+        }
+    })?;
 
     // Reddit returns 200 even on failure — check json.errors
-    let submit_body: serde_json::Value = serde_json::from_str(&submit_resp.text()?)?;
-    if let Some(errors) = submit_body
+    let submit_json: serde_json::Value =
+        serde_json::from_str(&submit_body).context("reddit: submit response was not valid JSON")?;
+    if let Some(errors) = submit_json
         .get("json")
         .and_then(|j| j.get("errors"))
         .and_then(|e| e.as_array())

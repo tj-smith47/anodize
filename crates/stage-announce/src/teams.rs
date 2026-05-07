@@ -1,3 +1,4 @@
+use anodizer_core::retry::RetryPolicy;
 use anyhow::Result;
 use serde_json::json;
 
@@ -116,9 +117,16 @@ pub(crate) fn teams_payload(message: &str, opts: &TeamsOptions<'_>) -> String {
 // ---------------------------------------------------------------------------
 
 /// POST to a Microsoft Teams incoming webhook using an Adaptive Card.
-pub fn send_teams(webhook_url: &str, message: &str, opts: &TeamsOptions<'_>) -> Result<()> {
+///
+/// `policy` controls retry behaviour for transport-level / 5xx / 429 failures.
+pub fn send_teams(
+    webhook_url: &str,
+    message: &str,
+    opts: &TeamsOptions<'_>,
+    policy: &RetryPolicy,
+) -> Result<()> {
     let payload = teams_payload(message, opts);
-    post_json(webhook_url, &payload, "teams")
+    post_json(webhook_url, &payload, "teams", policy)
 }
 
 // ---------------------------------------------------------------------------

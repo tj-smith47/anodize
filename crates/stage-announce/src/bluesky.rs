@@ -1,5 +1,8 @@
-use anyhow::Result;
+use anodizer_core::retry::RetryPolicy;
+use anyhow::{Context as _, Result};
 use serde_json::json;
+
+use crate::helpers::retry_http;
 
 /// Default Bluesky PDS (Personal Data Server). Override via
 /// `bluesky.pds_url` in config to target a self-hosted PDS.
@@ -11,35 +14,31 @@ pub fn send_bluesky(
     message: &str,
     release_url: Option<&str>,
     pds_url: Option<&str>,
+    policy: &RetryPolicy,
 ) -> Result<()> {
     let pds_url = pds_url
         .map(|s| s.trim_end_matches('/').to_string())
         .unwrap_or_else(|| DEFAULT_PDS_URL.to_string());
     let client = reqwest::blocking::Client::builder()
         .user_agent(anodizer_core::http::USER_AGENT)
-        .build()?;
+        .build()
+        .context("bluesky: build HTTP client")?;
 
     // Step 1: Create session (login)
-    let session_resp = client
-        .post(format!("{pds_url}/xrpc/com.atproto.server.createSession"))
-        .header("Content-Type", "application/json")
-        .body(
-            json!({
-                "identifier": username,
-                "password": app_password,
-            })
-            .to_string(),
-        )
-        .send()?;
-
-    if !session_resp.status().is_success() {
-        let status = session_resp.status();
-        let body = anodizer_core::http::body_of_blocking(session_resp);
-        anyhow::bail!("bluesky: login failed ({status}): {body}");
-    }
-
-    let session_text = session_resp.text()?;
-    let session: serde_json::Value = serde_json::from_str(&session_text)?;
+    let session_payload = json!({
+        "identifier": username,
+        "password": app_password,
+    })
+    .to_string();
+    let session_text = retry_http("bluesky", "createSession", policy, || {
+        client
+            .post(format!("{pds_url}/xrpc/com.atproto.server.createSession"))
+            .header("Content-Type", "application/json")
+            .body(session_payload.clone())
+            .send()
+    })?;
+    let session: serde_json::Value = serde_json::from_str(&session_text)
+        .context("bluesky: createSession response was not valid JSON")?;
     let access_jwt = session["accessJwt"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("bluesky: missing accessJwt in session response"))?;
@@ -70,20 +69,17 @@ pub fn send_bluesky(
         "repo": did,
         "collection": "app.bsky.feed.post",
         "record": record,
-    });
+    })
+    .to_string();
 
-    let create_resp = client
-        .post(format!("{pds_url}/xrpc/com.atproto.repo.createRecord"))
-        .bearer_auth(access_jwt)
-        .header("Content-Type", "application/json")
-        .body(create_body.to_string())
-        .send()?;
-
-    if !create_resp.status().is_success() {
-        let status = create_resp.status();
-        let body = anodizer_core::http::body_of_blocking(create_resp);
-        anyhow::bail!("bluesky: post creation failed ({status}): {body}");
-    }
+    let _ = retry_http("bluesky", "createRecord", policy, || {
+        client
+            .post(format!("{pds_url}/xrpc/com.atproto.repo.createRecord"))
+            .bearer_auth(access_jwt)
+            .header("Content-Type", "application/json")
+            .body(create_body.clone())
+            .send()
+    })?;
 
     Ok(())
 }

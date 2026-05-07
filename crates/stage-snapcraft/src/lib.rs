@@ -16,6 +16,8 @@ mod yaml;
 mod tests;
 
 pub use build_stage::SnapcraftStage;
-pub use command::{resolve_effective_channels, snapcraft_command, snapcraft_upload_command};
+pub use command::{
+    is_retriable_snap_push, resolve_effective_channels, snapcraft_command, snapcraft_upload_command,
+};
 pub use generate::generate_snap_yaml;
 pub use publish_stage::SnapcraftPublishStage;

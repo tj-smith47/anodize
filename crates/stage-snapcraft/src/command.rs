@@ -69,3 +69,34 @@ pub fn resolve_effective_channels(
         ]
     })
 }
+
+// ---------------------------------------------------------------------------
+// 5xx retry classifier — Q8.1
+// ---------------------------------------------------------------------------
+
+/// Return `true` if the combined stdout/stderr of a failed `snapcraft upload`
+/// invocation looks like a transient Snap Store 5xx response that should be
+/// retried.
+///
+/// Mirrors GoReleaser upstream commit eb944f9 (`isRetriableSnapPush` in
+/// `internal/pipe/snapcraft/snapcraft.go`), which scans the `snapcraft`
+/// CLI's combined output for `[500]`, `[502]`, `[503]`, `[504]` bracketed
+/// status markers (the format snapcraft itself prints when the Store
+/// returns a server error).
+///
+/// We additionally accept the canonical `5xx <Reason>` text forms
+/// (`500 Internal Server Error`, `502 Bad Gateway`, `503 Service
+/// Unavailable`, `504 Gateway Timeout`) so a future change to snapcraft's
+/// error formatter that drops the `[NNN]` brackets does not silently
+/// regress retry coverage.
+pub fn is_retriable_snap_push(combined_output: &str) -> bool {
+    const BRACKETED: &[&str] = &["[500]", "[502]", "[503]", "[504]"];
+    const TEXT: &[&str] = &[
+        "500 Internal Server Error",
+        "502 Bad Gateway",
+        "503 Service Unavailable",
+        "504 Gateway Timeout",
+    ];
+    BRACKETED.iter().any(|m| combined_output.contains(m))
+        || TEXT.iter().any(|m| combined_output.contains(m))
+}

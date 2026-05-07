@@ -785,3 +785,193 @@ fn test_render_commit_msg_custom_template() {
     );
     assert_eq!(msg, "release: mytool v2.0.0");
 }
+
+// -----------------------------------------------------------------------
+// Cask tests (Q1.1 sha256/url ordering, Q1.2 generate_completions)
+// -----------------------------------------------------------------------
+
+use super::cask::{
+    CaskArchEntry, CaskParams, CaskPlatformBlock, generate_cask, render_generate_completions,
+};
+use anodizer_core::config::HomebrewCaskGeneratedCompletions;
+
+fn empty_cask_params<'a>(name: &'a str, version: &'a str) -> CaskParams<'a> {
+    CaskParams {
+        name,
+        display_name: name,
+        alternative_names: &[],
+        version,
+        sha256: "deadbeef",
+        url: "https://example.com/x.tar.gz",
+        homepage: None,
+        description: None,
+        app: None,
+        binaries: &[],
+        caveats: None,
+        zap: &[],
+        uninstall: &[],
+        custom_block: None,
+        service: None,
+        manpages: &[],
+        completions_bash: None,
+        completions_zsh: None,
+        completions_fish: None,
+        depends_on: &[],
+        conflicts_with: &[],
+        preflight: None,
+        postflight: None,
+        uninstall_preflight: None,
+        uninstall_postflight: None,
+        platforms: Vec::new(),
+        generate_completions: None,
+    }
+}
+
+/// Q1.1 — per-arch blocks must emit `sha256` before `url` (upstream commit
+/// 87b542b). Drift back to `url`-then-`sha256` will trip this regression.
+#[test]
+fn test_cask_per_arch_emits_sha256_before_url() {
+    let mut params = empty_cask_params("test", "0.1.0");
+    params.platforms = vec![CaskPlatformBlock {
+        os_block: "macos".to_string(),
+        arches: vec![
+            CaskArchEntry {
+                arch_block: "intel".to_string(),
+                url: "https://example.com/test_Darwin_x86_64.tar.gz".to_string(),
+                sha256: "macintel-hash".to_string(),
+            },
+            CaskArchEntry {
+                arch_block: "arm".to_string(),
+                url: "https://example.com/test_Darwin_arm64.tar.gz".to_string(),
+                sha256: "macarm-hash".to_string(),
+            },
+        ],
+    }];
+    let cask = generate_cask(&params).unwrap();
+
+    // Each per-arch block must have sha256 before url.
+    for hash in ["macintel-hash", "macarm-hash"] {
+        let sha_idx = cask
+            .find(&format!("sha256 \"{}\"", hash))
+            .unwrap_or_else(|| panic!("sha256 line for {hash} missing\n{cask}"));
+        // The matching url comes immediately after.
+        let url_after = cask[sha_idx..].find("url \"").unwrap_or_else(|| {
+            panic!("expected url after sha256 for {hash}\n{cask}");
+        });
+        // And no `url` line should precede this sha256 inside the arch block.
+        let arch_start = cask[..sha_idx]
+            .rfind("on_")
+            .expect("arch block start not found");
+        assert!(
+            !cask[arch_start..sha_idx].contains("url \""),
+            "url should not precede sha256 inside the per-arch block (drift to GR pre-87b542b ordering)\n{cask}"
+        );
+        let _ = url_after;
+    }
+}
+
+/// Q1.2 — `render_generate_completions` formats the directive exactly the
+/// way upstream `generateCompletionsString` does (commit bb9062f).
+#[test]
+fn test_render_generate_completions_full() {
+    let g = HomebrewCaskGeneratedCompletions {
+        executable: Some("bin/myapp".to_string()),
+        args: Some(vec!["completions".to_string()]),
+        base_name: Some("myapp".to_string()),
+        shell_parameter_format: Some("cobra".to_string()),
+        shells: Some(vec![
+            "bash".to_string(),
+            "zsh".to_string(),
+            "fish".to_string(),
+            "pwsh".to_string(),
+        ]),
+    };
+    let rendered = render_generate_completions(&g).unwrap();
+    assert_eq!(
+        rendered,
+        "generate_completions_from_executable \"bin/myapp\", \"completions\",\n    \
+             base_name: \"myapp\",\n    \
+             shell_parameter_format: :cobra,\n    \
+             shells: [:bash, :zsh, :fish, :pwsh]"
+    );
+}
+
+#[test]
+fn test_render_generate_completions_minimal() {
+    let g = HomebrewCaskGeneratedCompletions {
+        executable: Some("bin/myapp".to_string()),
+        args: None,
+        base_name: None,
+        shell_parameter_format: None,
+        shells: None,
+    };
+    let rendered = render_generate_completions(&g).unwrap();
+    assert_eq!(
+        rendered,
+        "generate_completions_from_executable \"bin/myapp\""
+    );
+}
+
+#[test]
+fn test_render_generate_completions_executable_only_with_format() {
+    // Mirrors upstream `generate_completions_default_executable.rb.golden`.
+    let g = HomebrewCaskGeneratedCompletions {
+        executable: Some("myapp".to_string()),
+        args: None,
+        base_name: None,
+        shell_parameter_format: Some("cobra".to_string()),
+        shells: None,
+    };
+    let rendered = render_generate_completions(&g).unwrap();
+    assert_eq!(
+        rendered,
+        "generate_completions_from_executable \"myapp\",\n    shell_parameter_format: :cobra"
+    );
+}
+
+#[test]
+fn test_render_generate_completions_unknown_format_quotes_string() {
+    // Unknown formats fall back to a quoted string (mirrors upstream
+    // knownShellParameterFormats fallthrough).
+    let g = HomebrewCaskGeneratedCompletions {
+        executable: Some("bin/myapp".to_string()),
+        args: None,
+        base_name: None,
+        shell_parameter_format: Some("custom-fmt".to_string()),
+        shells: None,
+    };
+    let rendered = render_generate_completions(&g).unwrap();
+    assert!(
+        rendered.contains("shell_parameter_format: \"custom-fmt\""),
+        "unknown format should be a quoted string\n{rendered}"
+    );
+}
+
+#[test]
+fn test_render_generate_completions_empty_executable_returns_none() {
+    let g = HomebrewCaskGeneratedCompletions::default();
+    assert!(render_generate_completions(&g).is_none());
+}
+
+/// Q1.2 — the `generate_completions_from_executable` directive must render
+/// AFTER the `postflight` stanza. Upstream commit bb9062f / GR issue #5958.
+#[test]
+fn test_cask_generate_completions_renders_after_postflight() {
+    let mut params = empty_cask_params("test", "0.1.0");
+    params.postflight = Some("system_command \"chmod\", args: [\"+x\", \"#{bin}/test\"]");
+    params.generate_completions = Some(
+        "generate_completions_from_executable \"bin/myapp\",\n    shell_parameter_format: :cobra"
+            .to_string(),
+    );
+    let cask = generate_cask(&params).unwrap();
+    let post_idx = cask
+        .find("postflight do")
+        .expect("postflight stanza missing");
+    let comp_idx = cask
+        .find("generate_completions_from_executable")
+        .expect("generate_completions missing");
+    assert!(
+        comp_idx > post_idx,
+        "generate_completions must render after postflight\n{cask}"
+    );
+}

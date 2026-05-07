@@ -13,7 +13,9 @@ use anodizer_core::context::{Context, ContextOptions};
 use anodizer_core::stage::Stage;
 use tempfile::TempDir;
 
-use crate::command::{resolve_effective_channels, snapcraft_command, snapcraft_upload_command};
+use crate::command::{
+    is_retriable_snap_push, resolve_effective_channels, snapcraft_command, snapcraft_upload_command,
+};
 use crate::generate::generate_snap_yaml;
 use crate::{SnapcraftPublishStage, SnapcraftStage};
 
@@ -2020,4 +2022,55 @@ fn test_new_app_fields_omitted_when_empty() {
         "watchdog-timeout should be omitted\n{yaml}"
     );
     assert!(!yaml.contains("hooks:"), "hooks should be omitted\n{yaml}");
+}
+
+// -----------------------------------------------------------------------
+// Q8.1 — snapcraft 5xx retry classifier
+// -----------------------------------------------------------------------
+
+#[test]
+fn snapcraft_5xx_classifies_retriable() {
+    // Bracketed-status form (canonical upstream `isRetriableSnapPush`
+    // shape, mirroring GR commit eb944f9).
+    for marker in ["[500]", "[502]", "[503]", "[504]"] {
+        let combined = format!("snapcraft: server returned {marker} while pushing snap\n");
+        assert!(
+            is_retriable_snap_push(&combined),
+            "expected retriable for marker {marker}: {combined}"
+        );
+    }
+
+    // Reason-text form (defense-in-depth: the snapcraft CLI may format
+    // server errors without the `[NNN]` brackets in some versions).
+    for marker in [
+        "500 Internal Server Error",
+        "502 Bad Gateway",
+        "503 Service Unavailable",
+        "504 Gateway Timeout",
+    ] {
+        let combined = format!("snapcraft: store returned '{marker}'\n");
+        assert!(
+            is_retriable_snap_push(&combined),
+            "expected retriable for marker {marker}: {combined}"
+        );
+    }
+}
+
+#[test]
+fn snapcraft_non_5xx_classifies_unrecoverable() {
+    // 4xx and auth failures must NOT be retried — they would just burn
+    // retry budget against a permanently-broken request.
+    for combined in [
+        "snapcraft: 401 Unauthorized — please run `snapcraft login`",
+        "snapcraft: 403 Forbidden",
+        "snapcraft: 404 Not Found",
+        "[400] Bad Request: malformed snap",
+        "could not parse snap.yaml",
+        "snap failed validation: missing summary",
+    ] {
+        assert!(
+            !is_retriable_snap_push(combined),
+            "expected NOT retriable: {combined}"
+        );
+    }
 }

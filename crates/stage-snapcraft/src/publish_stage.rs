@@ -1,12 +1,16 @@
+use std::ops::ControlFlow;
 use std::process::Command;
 
 use anyhow::{Context as _, Result};
 
 use anodizer_core::artifact::ArtifactKind;
 use anodizer_core::context::Context;
+use anodizer_core::retry::retry_sync;
 use anodizer_core::stage::Stage;
 
-use crate::command::{resolve_effective_channels, snapcraft_upload_command};
+use crate::command::{
+    is_retriable_snap_push, resolve_effective_channels, snapcraft_upload_command,
+};
 
 // ---------------------------------------------------------------------------
 // SnapcraftPublishStage — uploads previously built .snap artifacts
@@ -27,6 +31,10 @@ impl Stage for SnapcraftPublishStage {
 
         let selected = ctx.options.selected_crates.clone();
         let dry_run = ctx.options.dry_run;
+        // Q8.1 — wrap snapcraft upload in retry. Mirrors GR upstream
+        // commit eb944f9 (`isRetriableSnapPush`): 5xx Store responses
+        // (500/502/503/504) are transient, every other failure is fatal.
+        let retry_policy = ctx.config.retry.unwrap_or_default().to_policy();
 
         // Collect crates that have snapcraft config with publish: true
         let crates: Vec<_> = ctx
@@ -125,36 +133,69 @@ impl Stage for SnapcraftPublishStage {
                         log.status(&format!("(dry-run) would run: {}", upload_args.join(" "),));
                         continue;
                     }
-                    log.status(&format!("running: {}", upload_args.join(" ")));
-                    let upload_output = Command::new(&upload_args[0])
-                        .args(&upload_args[1..])
-                        .output()
-                        .with_context(|| {
-                            format!(
-                                "execute snapcraft upload for crate {} snap {}",
-                                krate.name, snap_path
-                            )
-                        })?;
 
-                    // Review-pending responses from the Snap Store should be
-                    // warnings, not fatal errors — the snap was uploaded
-                    // successfully but needs human review.
-                    if !upload_output.status.success() {
+                    let max_attempts = retry_policy.max_attempts.max(1);
+                    retry_sync(&retry_policy, |attempt| {
+                        if attempt > 1 {
+                            log.warn(&format!(
+                                "snapcraft upload attempt {}/{} failed (5xx), retrying…",
+                                attempt - 1,
+                                max_attempts,
+                            ));
+                        }
+                        log.status(&format!("running: {}", upload_args.join(" ")));
+                        let upload_output = match Command::new(&upload_args[0])
+                            .args(&upload_args[1..])
+                            .output()
+                        {
+                            Ok(o) => o,
+                            Err(e) => {
+                                // Spawning snapcraft itself failed (binary missing,
+                                // permission denied) — not a transient Store error.
+                                return Err(ControlFlow::Break(anyhow::Error::from(e).context(
+                                    format!(
+                                        "execute snapcraft upload for crate {} snap {}",
+                                        krate.name, snap_path
+                                    ),
+                                )));
+                            }
+                        };
+
+                        if upload_output.status.success() {
+                            return Ok(());
+                        }
+
+                        // Review-pending responses from the Snap Store should be
+                        // warnings, not fatal errors — the snap was uploaded
+                        // successfully but needs human review.
                         const REVIEW_PENDING_STRINGS: &[&str] = &[
                             "Waiting for previous upload",
                             "A human will soon review your snap",
                             "(NEEDS REVIEW)",
                         ];
-
                         let stderr = String::from_utf8_lossy(&upload_output.stderr);
                         let stdout = String::from_utf8_lossy(&upload_output.stdout);
                         let combined = format!("{}{}", stdout, stderr);
                         if REVIEW_PENDING_STRINGS.iter().any(|s| combined.contains(s)) {
                             log.warn(&format!("snap upload pending review: {}", combined.trim()));
-                        } else {
-                            log.check_output(upload_output, "snapcraft upload")?;
+                            return Ok(());
                         }
-                    }
+
+                        // Materialize the failure as an anyhow::Error via
+                        // `log.check_output`, which preserves stderr/stdout for
+                        // operators reading the log.
+                        let err = match log.check_output(upload_output, "snapcraft upload") {
+                            Ok(_) => return Ok(()),
+                            Err(e) => e,
+                        };
+                        if is_retriable_snap_push(&combined) {
+                            Err(ControlFlow::Continue(err))
+                        } else {
+                            // Auth failures, malformed snap, quota errors, etc.
+                            // fast-fail without burning retry budget.
+                            Err(ControlFlow::Break(err))
+                        }
+                    })?;
                 }
             }
         }

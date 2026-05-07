@@ -21,7 +21,9 @@ mod publish_top;
 #[cfg(test)]
 mod tests;
 
-pub use cask::{CaskArchEntry, CaskParams, CaskPlatformBlock, generate_cask};
+pub use cask::{
+    CaskArchEntry, CaskParams, CaskPlatformBlock, generate_cask, render_generate_completions,
+};
 pub(crate) use commit_msg::{render_commit_msg, render_commit_msg_with_prev};
 pub use formula::{FormulaOptions, generate_formula, generate_formula_with_opts};
 pub use publish_cask::publish_cask;

@@ -1,3 +1,4 @@
+use anodizer_core::retry::RetryPolicy;
 use anyhow::Result;
 use serde_json::json;
 
@@ -51,9 +52,16 @@ pub(crate) fn slack_payload(message: &str, opts: &SlackOptions<'_>) -> String {
 // ---------------------------------------------------------------------------
 
 /// POST a Slack incoming-webhook payload with optional overrides.
-pub fn send_slack(webhook_url: &str, message: &str, opts: &SlackOptions<'_>) -> Result<()> {
+///
+/// `policy` controls retry behaviour for transport-level / 5xx / 429 failures.
+pub fn send_slack(
+    webhook_url: &str,
+    message: &str,
+    opts: &SlackOptions<'_>,
+    policy: &RetryPolicy,
+) -> Result<()> {
     let payload = slack_payload(message, opts);
-    post_json(webhook_url, &payload, "slack")
+    post_json(webhook_url, &payload, "slack", policy)
 }
 
 // ---------------------------------------------------------------------------

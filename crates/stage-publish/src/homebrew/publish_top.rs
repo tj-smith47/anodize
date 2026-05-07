@@ -193,6 +193,10 @@ pub fn publish_top_level_homebrew_casks(ctx: &Context, log: &StageLogger) -> Res
             uninstall_preflight,
             uninstall_postflight,
             platforms: Vec::new(), // Top-level cask uses single artifact
+            generate_completions: cask_cfg
+                .generate_completions_from_executable
+                .as_ref()
+                .and_then(super::cask::render_generate_completions),
         };
 
         let content = generate_cask(&params)?;

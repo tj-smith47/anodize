@@ -1,4 +1,7 @@
-use anyhow::Result;
+use std::ops::ControlFlow;
+
+use anodizer_core::retry::{HttpError, RetryPolicy, is_retriable, retry_sync};
+use anyhow::{Context as _, Result};
 use serde_json::json;
 
 const GRAPHQL_URL: &str = "https://api.opencollective.com/graphql/v2";
@@ -74,36 +77,117 @@ pub(crate) fn build_publish_body(update_id: &str) -> serde_json::Value {
     })
 }
 
+/// Categorise an OpenCollective HTTP response into a structured error.
+///
+/// Q7.1 mirror of upstream commit 206120a (#6512): callers see distinct
+/// messages for 401-unauthorized, 5xx-server-error, and other 4xx
+/// rejections. GraphQL APIs return HTTP 200 even on mutation failures —
+/// errors are in the response body, not the status code — so this only
+/// classifies HTTP-level failures (`!status.is_success()`).
+pub(crate) fn classify_opencollective_status(
+    stage: &str,
+    status: reqwest::StatusCode,
+    body: &str,
+) -> String {
+    match status.as_u16() {
+        401 => format!(
+            "opencollective: {stage} unauthorized (401) — check OPENCOLLECTIVE_TOKEN: {body}"
+        ),
+        403 => format!(
+            "opencollective: {stage} forbidden (403) — token lacks the required scope: {body}"
+        ),
+        s if (500..600).contains(&s) => format!(
+            "opencollective: {stage} server error ({status}) — upstream is unhealthy, retrying: {body}"
+        ),
+        _ => format!("opencollective: {stage} failed ({status}): {body}"),
+    }
+}
+
+/// Single-shot HTTP POST with retry + categorised error wrapping.
+fn do_mutation(
+    client: &reqwest::blocking::Client,
+    stage: &str,
+    token: &str,
+    body_payload: String,
+    policy: &RetryPolicy,
+) -> Result<String> {
+    retry_sync(policy, |_attempt| {
+        match client
+            .post(GRAPHQL_URL)
+            .header("Personal-Token", token)
+            .header("Content-Type", "application/json")
+            .body(body_payload.clone())
+            .send()
+        {
+            Err(e) => {
+                let err = anyhow::Error::new(HttpError::from_response(e, None))
+                    .context(format!("opencollective: {stage} transport error"));
+                if is_retriable(err.root_cause()) {
+                    Err(ControlFlow::Continue(err))
+                } else {
+                    Err(ControlFlow::Break(err))
+                }
+            }
+            Ok(resp) => {
+                let status = resp.status();
+                let body = resp
+                    .text()
+                    .unwrap_or_else(|e| format!("<body read failed: {e}>"));
+                if status.is_success() {
+                    Ok(body)
+                } else {
+                    let msg = classify_opencollective_status(stage, status, &body);
+                    let wrapped = anyhow::Error::new(HttpError::new(
+                        std::io::Error::other(msg.clone()),
+                        status.as_u16(),
+                    ))
+                    .context(msg);
+                    if is_retriable(wrapped.root_cause()) {
+                        Err(ControlFlow::Continue(wrapped))
+                    } else {
+                        Err(ControlFlow::Break(wrapped))
+                    }
+                }
+            }
+        }
+    })
+    .with_context(|| format!("opencollective: {stage} exhausted retry attempts"))
+}
+
 /// Create and publish an update on OpenCollective.
 ///
 /// Two-step GraphQL flow:
 /// 1. `createUpdate` mutation — creates a draft update with title and HTML body
 /// 2. `publishUpdate` mutation — publishes the update to all collective members
 ///
+/// Q7.1 — error categorisation mirrors upstream commit 206120a: 401, 5xx, and
+/// other 4xx rejections all surface distinct messages, GraphQL `errors` arrays
+/// are decoded and reported, and malformed JSON responses are caught with a
+/// dedicated error rather than panicking.
+///
 /// The publish step is unconditionally attempted whenever step 1 yields a valid
 /// `update_id`, even if the response also includes a non-fatal `errors` array.
 /// A draft created with warnings is still publishable, and silently abandoning
 /// it would leave the collective with an unpublished update.
-pub fn send_opencollective(token: &str, slug: &str, title: &str, html: &str) -> Result<()> {
+pub fn send_opencollective(
+    token: &str,
+    slug: &str,
+    title: &str,
+    html: &str,
+    policy: &RetryPolicy,
+) -> Result<()> {
     let client = reqwest::blocking::Client::new();
 
-    let resp = client
-        .post(GRAPHQL_URL)
-        .header("Personal-Token", token)
-        .header("Content-Type", "application/json")
-        .body(build_create_body(slug, title, html).to_string())
-        .send()?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp
-            .text()
-            .unwrap_or_else(|e| format!("<body read failed: {e}>"));
-        anyhow::bail!("opencollective: createUpdate failed ({status}): {body}");
-    }
-
-    let resp_text = resp.text()?;
-    let resp_json: serde_json::Value = serde_json::from_str(&resp_text)?;
+    let resp_text = do_mutation(
+        &client,
+        "createUpdate",
+        token,
+        build_create_body(slug, title, html).to_string(),
+        policy,
+    )?;
+    let resp_json: serde_json::Value = serde_json::from_str(&resp_text).with_context(|| {
+        format!("opencollective: createUpdate response was not valid JSON: {resp_text}")
+    })?;
     let update_id = resp_json["data"]["createUpdate"]["id"].as_str();
     let create_errors = resp_json.get("errors");
     let update_id = match (update_id, create_errors) {
@@ -116,23 +200,17 @@ pub fn send_opencollective(token: &str, slug: &str, title: &str, html: &str) -> 
         }
     };
 
-    let resp = client
-        .post(GRAPHQL_URL)
-        .header("Personal-Token", token)
-        .header("Content-Type", "application/json")
-        .body(build_publish_body(&update_id).to_string())
-        .send()?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp
-            .text()
-            .unwrap_or_else(|e| format!("<body read failed: {e}>"));
-        anyhow::bail!("opencollective: publishUpdate failed ({status}): {body}");
-    }
-
-    let publish_text = resp.text()?;
-    let publish_json: serde_json::Value = serde_json::from_str(&publish_text)?;
+    let publish_text = do_mutation(
+        &client,
+        "publishUpdate",
+        token,
+        build_publish_body(&update_id).to_string(),
+        policy,
+    )?;
+    let publish_json: serde_json::Value =
+        serde_json::from_str(&publish_text).with_context(|| {
+            format!("opencollective: publishUpdate response was not valid JSON: {publish_text}")
+        })?;
     if let Some(errors) = publish_json.get("errors") {
         anyhow::bail!("opencollective: publishUpdate returned errors: {errors}");
     }

@@ -1,3 +1,4 @@
+use anodizer_core::retry::RetryPolicy;
 use anyhow::Result;
 use serde_json::json;
 
@@ -67,13 +68,16 @@ pub(crate) fn mattermost_payload(message: &str, opts: &MattermostOptions<'_>) ->
 // ---------------------------------------------------------------------------
 
 /// POST to a Mattermost incoming webhook.
+///
+/// `policy` controls retry behaviour for transport-level / 5xx / 429 failures.
 pub fn send_mattermost(
     webhook_url: &str,
     message: &str,
     opts: &MattermostOptions<'_>,
+    policy: &RetryPolicy,
 ) -> Result<()> {
     let payload = mattermost_payload(message, opts);
-    post_json(webhook_url, &payload, "mattermost")
+    post_json(webhook_url, &payload, "mattermost", policy)
 }
 
 // ---------------------------------------------------------------------------

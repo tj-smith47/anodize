@@ -1,4 +1,7 @@
+use std::ops::ControlFlow;
+
 use anodizer_core::log::StageLogger;
+use anodizer_core::retry::{HttpError, RetryPolicy, is_retriable, retry_sync};
 use anyhow::Result;
 use serde_json::json;
 
@@ -47,9 +50,19 @@ pub fn validate_token_shape(token: &str) -> Result<()> {
 /// 1. Resolve the profile URN via `/v2/userinfo` (newer, uses `sub` field).
 ///    Falls back to `/v2/me` (legacy, uses `id` field) only on 403 Forbidden.
 /// 2. POST the share to `/v2/shares`.
-pub fn send_linkedin(access_token: &str, message: &str, log: &StageLogger) -> Result<()> {
+///
+/// Q7.1 — error categorisation mirrors upstream commit 0944b0e: API errors
+/// (HTTP 4xx/5xx) wrap the response body in the surfaced error message,
+/// transport errors are classified separately. `policy` enables retry on
+/// 5xx / 429 / network failures via `retryx.HTTP` semantics.
+pub fn send_linkedin(
+    access_token: &str,
+    message: &str,
+    log: &StageLogger,
+    policy: &RetryPolicy,
+) -> Result<()> {
     let client = reqwest::blocking::Client::new();
-    let profile_urn = get_profile_urn(&client, access_token)?;
+    let profile_urn = get_profile_urn(&client, access_token, policy)?;
 
     let share = json!({
         "owner": profile_urn,
@@ -57,22 +70,49 @@ pub fn send_linkedin(access_token: &str, message: &str, log: &StageLogger) -> Re
         "distribution": { "linkedInDistributionTarget": {} }
     });
 
-    let resp = client
-        .post(format!("{API_BASE}/v2/shares"))
-        .bearer_auth(access_token)
-        .header("Content-Type", "application/json")
-        .header("X-Restli-Protocol-Version", "2.0.0")
-        .body(share.to_string())
-        .send()?;
+    let resp_text = retry_sync(policy, |_attempt| {
+        let send_result = client
+            .post(format!("{API_BASE}/v2/shares"))
+            .bearer_auth(access_token)
+            .header("Content-Type", "application/json")
+            .header("X-Restli-Protocol-Version", "2.0.0")
+            .body(share.to_string())
+            .send();
 
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = anodizer_core::http::body_of_blocking(resp);
-        anyhow::bail!("linkedin: share failed ({status}): {body}");
-    }
+        match send_result {
+            Err(e) => {
+                let err = anyhow::Error::new(HttpError::from_response(e, None))
+                    .context("linkedin: POST /v2/shares transport error");
+                if is_retriable(err.root_cause()) {
+                    Err(ControlFlow::Continue(err))
+                } else {
+                    Err(ControlFlow::Break(err))
+                }
+            }
+            Ok(resp) => {
+                let status = resp.status();
+                let body = anodizer_core::http::body_of_blocking(resp);
+                if status.is_success() {
+                    Ok(body)
+                } else {
+                    // Q7.1 mirror: include the body in the error message so
+                    // users can see LinkedIn's structured error response.
+                    let inner = anyhow::anyhow!("linkedin: share failed ({status}): {body}");
+                    let wrapped = anyhow::Error::new(HttpError::new(
+                        std::io::Error::other(inner.to_string()),
+                        status.as_u16(),
+                    ))
+                    .context(inner);
+                    if is_retriable(wrapped.root_cause()) {
+                        Err(ControlFlow::Continue(wrapped))
+                    } else {
+                        Err(ControlFlow::Break(wrapped))
+                    }
+                }
+            }
+        }
+    })?;
 
-    // Extract activity URL from response (matches GoReleaser behavior).
-    let resp_text = anodizer_core::http::body_of_blocking(resp);
     let resp_json: serde_json::Value = serde_json::from_str(&resp_text)
         .map_err(|e| anyhow::anyhow!("linkedin: failed to parse share response: {e}"))?;
     let activity = resp_json
@@ -90,25 +130,62 @@ pub fn send_linkedin(access_token: &str, message: &str, log: &StageLogger) -> Re
 ///
 /// Tries `/v2/userinfo` first (newer endpoint, `sub` field).  Falls back to
 /// `/v2/me` (legacy, `id` field) only when the newer endpoint returns 403.
-fn get_profile_urn(client: &reqwest::blocking::Client, access_token: &str) -> Result<String> {
-    // Try newer /v2/userinfo endpoint first.
-    let resp = client
-        .get(format!("{API_BASE}/v2/userinfo"))
-        .bearer_auth(access_token)
-        .send()?;
+fn get_profile_urn(
+    client: &reqwest::blocking::Client,
+    access_token: &str,
+    policy: &RetryPolicy,
+) -> Result<String> {
+    let outcome = retry_sync(policy, |_attempt| {
+        match client
+            .get(format!("{API_BASE}/v2/userinfo"))
+            .bearer_auth(access_token)
+            .send()
+        {
+            Err(e) => {
+                let err = anyhow::Error::new(HttpError::from_response(e, None))
+                    .context("linkedin: GET /v2/userinfo transport error");
+                if is_retriable(err.root_cause()) {
+                    Err(ControlFlow::Continue(err))
+                } else {
+                    Err(ControlFlow::Break(err))
+                }
+            }
+            Ok(resp) => {
+                let status = resp.status();
+                if status == reqwest::StatusCode::FORBIDDEN {
+                    // Distinct sentinel: 403 means "fall back to legacy
+                    // endpoint" rather than retry.
+                    return Err(ControlFlow::Break(anyhow::anyhow!("__linkedin_fallback__")));
+                }
+                let body = anodizer_core::http::body_of_blocking(resp);
+                if status.is_success() {
+                    Ok(body)
+                } else {
+                    let inner =
+                        anyhow::anyhow!("linkedin: GET /v2/userinfo failed ({status}): {body}");
+                    let wrapped = anyhow::Error::new(HttpError::new(
+                        std::io::Error::other(inner.to_string()),
+                        status.as_u16(),
+                    ))
+                    .context(inner);
+                    if is_retriable(wrapped.root_cause()) {
+                        Err(ControlFlow::Continue(wrapped))
+                    } else {
+                        Err(ControlFlow::Break(wrapped))
+                    }
+                }
+            }
+        }
+    });
 
-    if resp.status() == reqwest::StatusCode::FORBIDDEN {
-        // Permission issue — fall back to legacy endpoint.
-        return get_profile_urn_legacy(client, access_token);
-    }
+    let text = match outcome {
+        Ok(text) => text,
+        Err(e) if e.to_string().contains("__linkedin_fallback__") => {
+            return get_profile_urn_legacy(client, access_token, policy);
+        }
+        Err(e) => return Err(e),
+    };
 
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = anodizer_core::http::body_of_blocking(resp);
-        anyhow::bail!("linkedin: GET /v2/userinfo failed ({status}): {body}");
-    }
-
-    let text = resp.text()?;
     let json: serde_json::Value = serde_json::from_str(&text)?;
     let sub = json["sub"]
         .as_str()
@@ -120,23 +197,50 @@ fn get_profile_urn(client: &reqwest::blocking::Client, access_token: &str) -> Re
 fn get_profile_urn_legacy(
     client: &reqwest::blocking::Client,
     access_token: &str,
+    policy: &RetryPolicy,
 ) -> Result<String> {
-    let resp = client
-        .get(format!("{API_BASE}/v2/me"))
-        .bearer_auth(access_token)
-        .send()?;
+    let text = retry_sync(policy, |_attempt| {
+        match client
+            .get(format!("{API_BASE}/v2/me"))
+            .bearer_auth(access_token)
+            .send()
+        {
+            Err(e) => {
+                let err = anyhow::Error::new(HttpError::from_response(e, None))
+                    .context("linkedin: GET /v2/me transport error");
+                if is_retriable(err.root_cause()) {
+                    Err(ControlFlow::Continue(err))
+                } else {
+                    Err(ControlFlow::Break(err))
+                }
+            }
+            Ok(resp) => {
+                let status = resp.status();
+                if status == reqwest::StatusCode::FORBIDDEN {
+                    return Err(ControlFlow::Break(anyhow::anyhow!(
+                        "linkedin: forbidden — please check your permissions"
+                    )));
+                }
+                let body = anodizer_core::http::body_of_blocking(resp);
+                if status.is_success() {
+                    Ok(body)
+                } else {
+                    let inner = anyhow::anyhow!("linkedin: GET /v2/me failed ({status}): {body}");
+                    let wrapped = anyhow::Error::new(HttpError::new(
+                        std::io::Error::other(inner.to_string()),
+                        status.as_u16(),
+                    ))
+                    .context(inner);
+                    if is_retriable(wrapped.root_cause()) {
+                        Err(ControlFlow::Continue(wrapped))
+                    } else {
+                        Err(ControlFlow::Break(wrapped))
+                    }
+                }
+            }
+        }
+    })?;
 
-    if resp.status() == reqwest::StatusCode::FORBIDDEN {
-        anyhow::bail!("linkedin: forbidden — please check your permissions");
-    }
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = anodizer_core::http::body_of_blocking(resp);
-        anyhow::bail!("linkedin: GET /v2/me failed ({status}): {body}");
-    }
-
-    let text = resp.text()?;
     let json: serde_json::Value = serde_json::from_str(&text)?;
     let id = json["id"]
         .as_str()

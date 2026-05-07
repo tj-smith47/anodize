@@ -1,8 +1,11 @@
+use std::ops::ControlFlow;
+use std::process::Command;
+
 use anodizer_core::config::EmailEncryption;
+use anodizer_core::retry::{Retriable, RetryPolicy, is_network_error, retry_sync};
 use anodizer_core::template::{self, TemplateVars};
 use anyhow::{Context, Result};
 use chrono::Utc;
-use std::process::Command;
 
 use lettre::message::header::ContentType;
 use lettre::transport::smtp::authentication::Credentials;
@@ -50,7 +53,16 @@ pub(crate) fn resolve_encryption(mode: EmailEncryption, port: u16) -> EmailEncry
 // ---------------------------------------------------------------------------
 
 /// Send an email via SMTP using the lettre crate.
-pub fn send_smtp(params: &EmailParams<'_>, smtp: &SmtpParams<'_>) -> Result<()> {
+///
+/// `policy` enables retry on transient SMTP failures (P1.3). Lettre errors
+/// are classified via [`anodizer_core::retry::is_network_error`] — connection
+/// resets, EOF, timeouts and similar transients retry; auth and policy
+/// failures (550, 535, etc.) fast-fail.
+pub fn send_smtp(
+    params: &EmailParams<'_>,
+    smtp: &SmtpParams<'_>,
+    policy: &RetryPolicy,
+) -> Result<()> {
     let from = sanitize_header(params.from)
         .parse()
         .context("invalid 'from' address")?;
@@ -71,7 +83,7 @@ pub fn send_smtp(params: &EmailParams<'_>, smtp: &SmtpParams<'_>) -> Result<()> 
     let port = smtp.port;
     let encryption = resolve_encryption(smtp.encryption, port);
 
-    let mut transport = match encryption {
+    let mut transport_builder = match encryption {
         EmailEncryption::Tls | EmailEncryption::Auto => SmtpTransport::relay(smtp.host)
             .context(format!(
                 "failed to create SMTPS transport for {}",
@@ -93,14 +105,43 @@ pub fn send_smtp(params: &EmailParams<'_>, smtp: &SmtpParams<'_>) -> Result<()> 
             .dangerous_accept_invalid_certs(true)
             .build()
             .context("failed to build TLS parameters")?;
-        transport = transport.tls(Tls::Required(tls));
+        transport_builder = transport_builder.tls(Tls::Required(tls));
     }
+    let transport = transport_builder.build();
 
-    transport
-        .build()
-        .send(&email)
-        .context("failed to send email via SMTP")?;
-    Ok(())
+    retry_sync(policy, |_attempt| match transport.send(&email) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            // Classify lettre errors via Display string against
+            // is_network_error. Persistent SMTP errors (5xx codes) are
+            // fast-failed; transient (network reset, broken pipe, timeout)
+            // get marked Retriable so is_retriable() routes to retry.
+            let display = e.to_string();
+            let err = anyhow::Error::new(e).context("failed to send email via SMTP");
+            if is_network_error(err.root_cause()) || is_transient_smtp_error(&display) {
+                Err(ControlFlow::Continue(anyhow::Error::new(Retriable::new(
+                    std::io::Error::other(err.to_string()),
+                ))))
+            } else {
+                Err(ControlFlow::Break(err))
+            }
+        }
+    })
+    .context("smtp: send exhausted retry attempts")
+}
+
+/// Classify SMTP error strings as transient. SMTP protocol replies
+/// `4xx` are temporary failures (e.g. `421 service not available`,
+/// `450 mailbox unavailable`) and should retry; `5xx` are permanent.
+pub(crate) fn is_transient_smtp_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("421 ") || lower.contains("450 ") || lower.contains("451 ") {
+        return true;
+    }
+    if lower.contains("temporary") || lower.contains("try again") {
+        return true;
+    }
+    false
 }
 
 // ---------------------------------------------------------------------------

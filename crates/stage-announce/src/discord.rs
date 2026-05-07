@@ -1,3 +1,4 @@
+use anodizer_core::retry::RetryPolicy;
 use anyhow::Result;
 use serde_json::json;
 
@@ -48,9 +49,16 @@ pub(crate) fn discord_payload(message: &str, opts: &DiscordOptions<'_>) -> Strin
 // ---------------------------------------------------------------------------
 
 /// POST a Discord webhook with an embed payload.
-pub fn send_discord(webhook_url: &str, message: &str, opts: &DiscordOptions<'_>) -> Result<()> {
+///
+/// `policy` controls retry behaviour for transport-level / 5xx / 429 failures.
+pub fn send_discord(
+    webhook_url: &str,
+    message: &str,
+    opts: &DiscordOptions<'_>,
+    policy: &RetryPolicy,
+) -> Result<()> {
     let payload = discord_payload(message, opts);
-    post_json(webhook_url, &payload, "discord")
+    post_json(webhook_url, &payload, "discord", policy)
 }
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,8 @@
 use std::collections::HashMap;
+use std::ops::ControlFlow;
 
-use anyhow::Result;
+use anodizer_core::retry::{HttpError, RetryPolicy, is_retriable, retry_sync};
+use anyhow::{Context as _, Result};
 
 // ---------------------------------------------------------------------------
 // Status code helpers
@@ -28,6 +30,11 @@ pub(crate) fn is_expected_status(status: u16, expected: &[u16]) -> bool {
 /// TLS certificates (mirrors GoReleaser's `skip_tls_verify` webhook option).
 ///
 /// The response status is validated against `expected_status_codes`.
+///
+/// Q7.1 — error messages include the response body so users can debug
+/// upstream rejections without re-running with verbose logs (mirrors
+/// upstream commit bba909e). `policy` enables retry on 5xx / 429 / network
+/// failures (P1.3).
 pub fn send_webhook(
     endpoint_url: &str,
     message: &str,
@@ -35,6 +42,7 @@ pub fn send_webhook(
     content_type: &str,
     skip_tls_verify: bool,
     expected_status_codes: &[u16],
+    policy: &RetryPolicy,
 ) -> Result<()> {
     let effective_ct = if content_type.is_empty() {
         "application/json; charset=utf-8"
@@ -45,26 +53,55 @@ pub fn send_webhook(
     let client = reqwest::blocking::Client::builder()
         .user_agent(anodizer_core::http::USER_AGENT)
         .danger_accept_invalid_certs(skip_tls_verify)
-        .build()?;
+        .build()
+        .context("webhook: build HTTP client")?;
 
-    let mut builder = client
-        .post(endpoint_url)
-        .header("Content-Type", effective_ct)
-        .body(message.to_string());
+    retry_sync(policy, |_attempt| {
+        let mut builder = client
+            .post(endpoint_url)
+            .header("Content-Type", effective_ct)
+            .body(message.to_string());
+        for (key, value) in headers {
+            builder = builder.header(key.as_str(), value.as_str());
+        }
 
-    for (key, value) in headers {
-        builder = builder.header(key.as_str(), value.as_str());
-    }
-
-    let resp = builder.send()?;
-    let status = resp.status().as_u16();
-    if !is_expected_status(status, expected_status_codes) {
-        let body = anodizer_core::http::body_of_blocking(resp);
-        anyhow::bail!(
-            "webhook returned unexpected status {status} (expected one of {expected_status_codes:?}): {body}"
-        );
-    }
-    Ok(())
+        match builder.send() {
+            Err(e) => {
+                let err = anyhow::Error::new(HttpError::from_response(e, None))
+                    .context("webhook: failed to send POST request");
+                if is_retriable(err.root_cause()) {
+                    Err(ControlFlow::Continue(err))
+                } else {
+                    Err(ControlFlow::Break(err))
+                }
+            }
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                if is_expected_status(status, expected_status_codes) {
+                    Ok(())
+                } else {
+                    let body = anodizer_core::http::body_of_blocking(resp);
+                    // Q7.1 mirror — wrap the status-derived error with the
+                    // response body so users see it in the surfaced message.
+                    let inner = anyhow::anyhow!(
+                        "webhook returned unexpected status {status} (expected one of \
+                         {expected_status_codes:?}): {body}"
+                    );
+                    let wrapped = anyhow::Error::new(HttpError::new(
+                        std::io::Error::other(inner.to_string()),
+                        status,
+                    ))
+                    .context(inner);
+                    if is_retriable(wrapped.root_cause()) {
+                        Err(ControlFlow::Continue(wrapped))
+                    } else {
+                        Err(ControlFlow::Break(wrapped))
+                    }
+                }
+            }
+        }
+    })
+    .context("webhook: POST exhausted retry attempts")
 }
 
 // ---------------------------------------------------------------------------

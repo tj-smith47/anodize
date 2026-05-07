@@ -21,8 +21,8 @@ cask "{{ name }}" do
 
 {% if has_platforms %}{% for plat in platforms %}  on_{{ plat.os_block }} do
 {% for arch_entry in plat.arches %}    on_{{ arch_entry.arch_block }} do
-      url "{{ arch_entry.url }}"
       sha256 "{{ arch_entry.sha256 }}"
+      url "{{ arch_entry.url }}"
     end
 {% endfor %}  end
 
@@ -45,6 +45,8 @@ cask "{{ name }}" do
 {% endif %}{% if has_postflight %}  postflight do
 {{ postflight }}
   end
+{% endif %}{% if has_generate_completions %}
+  {{ generate_completions }}
 {% endif %}{% if has_uninstall_preflight %}  uninstall_preflight do
 {{ uninstall_preflight }}
   end
@@ -72,16 +74,16 @@ cask "{{ name }}" do
 /// Multi-platform cask architecture entry (within an OS block).
 #[derive(serde::Serialize, Clone)]
 pub struct CaskArchEntry {
-    arch_block: String, // "intel" or "arm"
-    url: String,
-    sha256: String,
+    pub(super) arch_block: String, // "intel" or "arm"
+    pub(super) url: String,
+    pub(super) sha256: String,
 }
 
 /// Multi-platform cask OS block (on_macos / on_linux).
 #[derive(serde::Serialize, Clone)]
 pub struct CaskPlatformBlock {
-    os_block: String, // "macos" or "linux"
-    arches: Vec<CaskArchEntry>,
+    pub(super) os_block: String, // "macos" or "linux"
+    pub(super) arches: Vec<CaskArchEntry>,
 }
 
 /// Parameters for cask generation.
@@ -138,6 +140,78 @@ pub struct CaskParams<'a> {
     pub uninstall_postflight: Option<&'a str>,
     /// Multi-platform entries (when set, replaces top-level url/sha256).
     pub platforms: Vec<CaskPlatformBlock>,
+    /// Pre-rendered `generate_completions_from_executable` line (without the
+    /// trailing newline). When `Some`, the cask emits an empty line + the
+    /// directive after the `postflight` stanza. Build via
+    /// [`render_generate_completions`] from a `HomebrewCaskGeneratedCompletions`.
+    pub generate_completions: Option<String>,
+}
+
+/// Recognised `shell_parameter_format` values (mirrors GoReleaser's
+/// `knownShellParameterFormats`). Unknown values fall back to a quoted
+/// string so user input round-trips without surprise.
+const KNOWN_SHELL_PARAMETER_FORMATS: &[&str] =
+    &["arg", "clap", "click", "cobra", "flag", "none", "typer"];
+
+/// Render a `generate_completions_from_executable` directive from config.
+///
+/// Returns `None` when no executable is configured (matches GoReleaser
+/// `generateCompletionsString` returning `""` in that case). The returned
+/// string has no trailing newline and is intended to be injected directly
+/// into the cask template.
+///
+/// Output shape mirrors upstream (`internal/pipe/cask/template.go`):
+///
+/// ```ruby
+/// generate_completions_from_executable "bin/myapp", "completions",
+///     base_name: "myapp",
+///     shell_parameter_format: :cobra,
+///     shells: [:bash, :zsh, :fish, :pwsh]
+/// ```
+pub fn render_generate_completions(
+    g: &anodizer_core::config::HomebrewCaskGeneratedCompletions,
+) -> Option<String> {
+    let exec = g.executable.as_deref().filter(|s| !s.is_empty())?;
+
+    let mut args: Vec<String> = Vec::with_capacity(1 + g.args.as_deref().map_or(0, |a| a.len()));
+    args.push(format!("\"{}\"", exec));
+    if let Some(extra) = g.args.as_deref() {
+        for a in extra {
+            args.push(format!("\"{}\"", a));
+        }
+    }
+
+    let mut kwargs: Vec<String> = Vec::new();
+    if let Some(name) = g.base_name.as_deref().filter(|s| !s.is_empty()) {
+        kwargs.push(format!("base_name: \"{}\"", name));
+    }
+    if let Some(fmt) = g
+        .shell_parameter_format
+        .as_deref()
+        .filter(|s| !s.is_empty())
+    {
+        if KNOWN_SHELL_PARAMETER_FORMATS.contains(&fmt) {
+            kwargs.push(format!("shell_parameter_format: :{}", fmt));
+        } else {
+            kwargs.push(format!("shell_parameter_format: \"{}\"", fmt));
+        }
+    }
+    if let Some(shells) = g.shells.as_deref().filter(|s| !s.is_empty()) {
+        let joined = shells
+            .iter()
+            .map(|s| format!(":{}", s))
+            .collect::<Vec<_>>()
+            .join(", ");
+        kwargs.push(format!("shells: [{}]", joined));
+    }
+
+    let mut out = String::from("generate_completions_from_executable ");
+    out.push_str(&args.join(", "));
+    if !kwargs.is_empty() {
+        out.push_str(",\n    ");
+        out.push_str(&kwargs.join(",\n    "));
+    }
+    Some(out)
 }
 
 /// Generate a Homebrew Cask Ruby file string from the given parameters.
@@ -224,6 +298,17 @@ pub fn generate_cask(params: &CaskParams<'_>) -> Result<String> {
     ctx.insert(
         "uninstall_postflight",
         params.uninstall_postflight.unwrap_or(""),
+    );
+
+    // generate_completions_from_executable (rendered after postflight; see
+    // upstream commit bb9062f / GR issue #5958 — postflight may strip the
+    // macOS quarantine attribute, which must run before Homebrew executes
+    // the binary to generate completions).
+    let has_generate_completions = params.generate_completions.is_some();
+    ctx.insert("has_generate_completions", &has_generate_completions);
+    ctx.insert(
+        "generate_completions",
+        params.generate_completions.as_deref().unwrap_or(""),
     );
 
     anodizer_core::template::render_static(&tera, "cask", &ctx, "homebrew")
@@ -519,6 +604,10 @@ pub(super) fn generate_cask_from_context(
             .as_ref()
             .and_then(|h| h.post.as_ref())
             .and_then(|p| p.uninstall.as_deref()),
+        generate_completions: cask_cfg
+            .generate_completions_from_executable
+            .as_ref()
+            .and_then(render_generate_completions),
     };
 
     Ok(CaskGenResult {

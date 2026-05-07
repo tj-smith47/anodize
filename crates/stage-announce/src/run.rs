@@ -56,6 +56,13 @@ impl Stage for AnnounceStage {
         // Collect errors from all providers instead of failing fast on the first one.
         let mut errors: Vec<String> = vec![];
 
+        // P1.3 — wire `Config.retry` into every announcer that makes a
+        // network call. `RetryConfig::default()` matches GR's defaults
+        // (10 attempts × 10s base × 5m cap); per-call retry classifies 5xx
+        // / 429 / transport failures as retriable and 4xx as fast-fail via
+        // `core::retry::is_retriable` + `HttpError`.
+        let retry_policy = ctx.config.retry.unwrap_or_default().to_policy();
+
         // ----------------------------------------------------------------
         // Discord
         // ----------------------------------------------------------------
@@ -125,7 +132,7 @@ impl Stage for AnnounceStage {
                     icon_url: icon_url.as_deref(),
                 };
                 dispatch(ctx, "discord", &message, || {
-                    discord::send_discord(&url, &message, &opts)
+                    discord::send_discord(&url, &message, &opts, &retry_policy)
                 })
             })()
         {
@@ -180,6 +187,7 @@ impl Stage for AnnounceStage {
                         category_id,
                         &title,
                         &message,
+                        &retry_policy,
                     )
                 })
             })()
@@ -235,7 +243,7 @@ impl Stage for AnnounceStage {
                         blocks: blocks.as_ref(),
                         attachments: attachments.as_ref(),
                     };
-                    slack::send_slack(&url, &message, &opts)
+                    slack::send_slack(&url, &message, &opts, &retry_policy)
                 })
             })()
         {
@@ -330,6 +338,7 @@ impl Stage for AnnounceStage {
                         &content_type,
                         skip_tls,
                         &expected_codes,
+                        &retry_policy,
                     )
                 })
             })()
@@ -426,6 +435,7 @@ impl Stage for AnnounceStage {
                         &message,
                         parse_mode.as_deref(),
                         message_thread_id,
+                        &retry_policy,
                     )
                 })
             })()
@@ -469,7 +479,7 @@ impl Stage for AnnounceStage {
                     icon_url: icon_url.as_deref(),
                 };
                 dispatch(ctx, "teams", &message, || {
-                    teams::send_teams(&url, &message, &opts)
+                    teams::send_teams(&url, &message, &opts, &retry_policy)
                 })
             })()
         {
@@ -516,14 +526,11 @@ impl Stage for AnnounceStage {
                     .render_template_opt(cfg.username.as_deref().or(Some(DEFAULT_DISPLAY_NAME)))?;
                 let icon_url = ctx.render_template_opt(cfg.icon_url.as_deref())?;
                 let icon_emoji = ctx.render_template_opt(cfg.icon_emoji.as_deref())?;
-                // Default color to "#2D313E" (GoReleaser default).
-                // DELIBERATE UPSTREAM-BUG FIX: we read `cfg.color` from the
-                // `MattermostAnnounce` config. GoReleaser's
-                // mattermost.go:48-49,82 mistakenly reads `TeamsAnnounce.Color`
-                // — a cross-pipe read that ignores user-supplied
-                // `mattermost.color`. This is intentional in anodizer; do NOT
-                // "correct" it to read from a Teams config during a future
-                // parity audit.
+                // Default color to "#2D313E" (GoReleaser default). We read
+                // from `MattermostAnnounce.color` — anodizer always has, even
+                // before upstream commit 7e7f9b2 fixed the GR cross-pipe bug
+                // where mattermost mistakenly consulted `TeamsAnnounce.Color`.
+                // Pinned by `test_mattermost_reads_own_color_not_teams`.
                 let color_val = cfg.color.clone().unwrap_or_else(|| "#2D313E".to_string());
                 // Default title to "{{ ProjectName }} {{ Tag }} is out!" (GoReleaser default).
                 let title_template = cfg
@@ -541,7 +548,7 @@ impl Stage for AnnounceStage {
                     title: title.as_deref(),
                 };
                 dispatch(ctx, "mattermost", &message, || {
-                    mattermost::send_mattermost(&url, &message, &opts)
+                    mattermost::send_mattermost(&url, &message, &opts, &retry_policy)
                 })
             })()
         {
@@ -603,6 +610,7 @@ impl Stage for AnnounceStage {
                             url: &url,
                         },
                         &log,
+                        &retry_policy,
                     )
                 })
             })()
@@ -638,6 +646,7 @@ impl Stage for AnnounceStage {
                         access_token,
                         access_token_secret,
                         &message,
+                        &retry_policy,
                     )
                 })
             })()
@@ -667,7 +676,7 @@ impl Stage for AnnounceStage {
                 let message = render_message(ctx, cfg.message_template.as_deref())?;
                 let access_token = require_env("mastodon", "MASTODON_ACCESS_TOKEN")?;
                 dispatch(ctx, "mastodon", &message, || {
-                    mastodon::send_mastodon(&server, &access_token, &message)
+                    mastodon::send_mastodon(&server, &access_token, &message, &retry_policy)
                 })
             })()
         {
@@ -706,6 +715,7 @@ impl Stage for AnnounceStage {
                         &message,
                         release_url.as_deref(),
                         pds_url.as_deref(),
+                        &retry_policy,
                     )
                 })
             })()
@@ -735,7 +745,7 @@ impl Stage for AnnounceStage {
                 linkedin::validate_token_shape(&access_token)?;
                 let log = ctx.logger("announce");
                 dispatch(ctx, "linkedin", &message, || {
-                    linkedin::send_linkedin(&access_token, &message, &log)
+                    linkedin::send_linkedin(&access_token, &message, &log, &retry_policy)
                 })
             })()
         {
@@ -775,7 +785,7 @@ impl Stage for AnnounceStage {
                 let token = require_env("opencollective", "OPENCOLLECTIVE_TOKEN")?;
                 opencollective::validate_token_shape(&token)?;
                 dispatch(ctx, "opencollective", &title, || {
-                    opencollective::send_opencollective(&token, &slug, &title, &html)
+                    opencollective::send_opencollective(&token, &slug, &title, &html, &retry_policy)
                 })
             })()
         {
@@ -873,7 +883,7 @@ impl Stage for AnnounceStage {
                         encryption,
                     };
                     dispatch(ctx, "email (smtp)", &log_line, || {
-                        email::send_smtp(&email_params, &smtp_params)
+                        email::send_smtp(&email_params, &smtp_params, &retry_policy)
                     })?;
                 } else {
                     dispatch(ctx, "email", &log_line, || {

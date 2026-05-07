@@ -1,41 +1,81 @@
-use anyhow::Result;
-use base64::Engine;
 use std::collections::BTreeMap;
+use std::ops::ControlFlow;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use anodizer_core::retry::{HttpError, RetryPolicy, is_retriable, retry_sync};
+use anyhow::{Context as _, Result};
+use base64::Engine;
+
 /// Post a tweet via Twitter API v2 with OAuth 1.0a user-context authentication.
+///
+/// `policy` enables retry on 5xx / 429 / network failures (P1.3). The OAuth
+/// header is rebuilt on every attempt so the `oauth_timestamp` and
+/// `oauth_nonce` are fresh — Twitter rejects replays.
 pub fn send_twitter(
     consumer_key: &str,
     consumer_secret: &str,
     access_token: &str,
     access_token_secret: &str,
     message: &str,
+    policy: &RetryPolicy,
 ) -> Result<()> {
     let url = "https://api.x.com/2/tweets";
-    let auth_header = build_oauth1_header(
-        "POST",
-        url,
-        consumer_key,
-        consumer_secret,
-        access_token,
-        access_token_secret,
-    )?;
-    let body = serde_json::json!({ "text": message });
-
+    let body = serde_json::json!({ "text": message }).to_string();
     let client = reqwest::blocking::Client::new();
-    let resp = client
-        .post(url)
-        .header("Authorization", auth_header)
-        .header("Content-Type", "application/json")
-        .body(body.to_string())
-        .send()?;
 
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = anodizer_core::http::body_of_blocking(resp);
-        anyhow::bail!("twitter: API request failed ({status}): {body}");
-    }
-    Ok(())
+    retry_sync(policy, |_attempt| {
+        // Re-sign on every attempt: oauth_nonce + oauth_timestamp must be
+        // fresh per RFC 5849 §3.3 to avoid replay rejection.
+        let auth_header = match build_oauth1_header(
+            "POST",
+            url,
+            consumer_key,
+            consumer_secret,
+            access_token,
+            access_token_secret,
+        ) {
+            Ok(h) => h,
+            Err(e) => return Err(ControlFlow::Break(e)),
+        };
+
+        match client
+            .post(url)
+            .header("Authorization", auth_header)
+            .header("Content-Type", "application/json")
+            .body(body.clone())
+            .send()
+        {
+            Err(e) => {
+                let err = anyhow::Error::new(HttpError::from_response(e, None))
+                    .context("twitter: failed to send POST request");
+                if is_retriable(err.root_cause()) {
+                    Err(ControlFlow::Continue(err))
+                } else {
+                    Err(ControlFlow::Break(err))
+                }
+            }
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    Ok(())
+                } else {
+                    let body = anodizer_core::http::body_of_blocking(resp);
+                    let inner = anyhow::anyhow!("twitter: API request failed ({status}): {body}");
+                    let wrapped = anyhow::Error::new(HttpError::new(
+                        std::io::Error::other(inner.to_string()),
+                        status.as_u16(),
+                    ))
+                    .context(inner);
+                    if is_retriable(wrapped.root_cause()) {
+                        Err(ControlFlow::Continue(wrapped))
+                    } else {
+                        Err(ControlFlow::Break(wrapped))
+                    }
+                }
+            }
+        }
+    })
+    .context("twitter: POST exhausted retry attempts")
 }
 
 fn build_oauth1_header(
