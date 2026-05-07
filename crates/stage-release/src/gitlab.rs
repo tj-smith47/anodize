@@ -10,6 +10,7 @@
 
 use std::path::Path;
 
+use anodizer_core::retry::{RetryPolicy, SuccessClass, retry_http_async};
 use anodizer_core::url::percent_encode_path_segment;
 use anyhow::{Context as _, Result, bail};
 use reqwest::Client;
@@ -127,6 +128,12 @@ pub(crate) fn build_gitlab_client(
 /// applies mode-based body composition (keep-existing / append / prepend /
 /// replace) and updates via PUT. If it does not exist, creates via POST.
 ///
+/// `policy` is the user-configured `Config.retry` block (or its default of 10
+/// attempts × 10s base × 5m cap) — every HTTP call inside this function and
+/// the asset-upload sibling routes through [`retry_http_async`] using this
+/// policy so 5xx / 429 / network-error responses are retried with backoff
+/// instead of failing fast.
+///
 /// Returns the tag name (GitLab's release identifier).
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn gitlab_create_release(
@@ -138,22 +145,78 @@ pub(crate) async fn gitlab_create_release(
     body: &str,
     commit: &str,
     release_mode: &str,
+    policy: &RetryPolicy,
 ) -> Result<String> {
     let api = api_url.trim_end_matches('/');
     let encoded = encode_project_id(project_id);
     let encoded_tag = encode_tag(tag);
 
-    // Try to get the existing release for this tag.
+    // Try to get the existing release for this tag. The success branch needs
+    // to inspect status (403/404 = "create") so we cannot use Strict success
+    // class here — instead, fast-fail on 4xx is unwanted for the GET probe;
+    // we accept 403/404 as a legitimate "not found" signal. The simplest
+    // correct shape is a manual classify: route 5xx + transport errors
+    // through retry_http_async (success_class=Strict makes 4xx a Break),
+    // catch the Break for 403/404, and treat it as the "create" branch.
+    //
+    // Concretely: try the GET; if it 4xx-fast-fails with 403/404, fall
+    // through to the create-POST. Anything else propagates.
     let get_url = format!("{}/projects/{}/releases/{}", api, encoded, encoded_tag);
-    let get_resp = client
-        .get(&get_url)
-        .send()
-        .await
-        .context("gitlab: GET release by tag")?;
+    let get_outcome = retry_http_async(
+        "gitlab: GET release by tag",
+        policy,
+        SuccessClass::Strict,
+        |_| client.get(&get_url).send(),
+        |status, body| format!("gitlab: GET release by tag failed (HTTP {status}): {body}"),
+    )
+    .await;
 
-    let status = get_resp.status().as_u16();
+    let create_branch = match get_outcome {
+        Ok(get_resp) => {
+            // Release exists — update it with mode-based body composition.
+            let existing: serde_json::Value = get_resp
+                .json()
+                .await
+                .context("gitlab: parse existing release JSON")?;
+            let existing_body = existing["description"].as_str();
+            let final_body = compose_body_for_mode(release_mode, existing_body, body);
 
-    if status == 403 || status == 404 {
+            let update_url = format!("{}/projects/{}/releases/{}", api, encoded, encoded_tag);
+            let payload = serde_json::json!({
+                "name": name,
+                "description": final_body,
+            });
+
+            retry_http_async(
+                "gitlab: PUT update release",
+                policy,
+                SuccessClass::Strict,
+                |_| client.put(&update_url).json(&payload).send(),
+                |status, body| format!("gitlab: update release failed (HTTP {status}): {body}"),
+            )
+            .await?;
+            false
+        }
+        Err(err) => {
+            // Inspect the chain for HttpError(403|404) — those are the
+            // "release does not exist, create it" signal. Anything else
+            // (5xx exhaustion, transport failure, other 4xx) propagates.
+            let status_code = err
+                .chain()
+                .find_map(|e| {
+                    e.downcast_ref::<anodizer_core::retry::HttpError>()
+                        .map(|h| h.status)
+                })
+                .unwrap_or(0);
+            if status_code == 403 || status_code == 404 {
+                true
+            } else {
+                return Err(err);
+            }
+        }
+    };
+
+    if create_branch {
         // Release does not exist — create it.
         let create_url = format!("{}/projects/{}/releases", api, encoded);
         let payload = serde_json::json!({
@@ -163,53 +226,14 @@ pub(crate) async fn gitlab_create_release(
             "tag_name": tag,
         });
 
-        let resp = client
-            .post(&create_url)
-            .json(&payload)
-            .send()
-            .await
-            .context("gitlab: POST create release")?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = anodizer_core::http::body_of(resp).await;
-            bail!("gitlab: create release failed (HTTP {}): {}", status, text);
-        }
-    } else if get_resp.status().is_success() {
-        // Release exists — update it with mode-based body composition.
-        let existing: serde_json::Value = get_resp
-            .json()
-            .await
-            .context("gitlab: parse existing release JSON")?;
-        let existing_body = existing["description"].as_str();
-        let final_body = compose_body_for_mode(release_mode, existing_body, body);
-
-        let update_url = format!("{}/projects/{}/releases/{}", api, encoded, encoded_tag);
-        let payload = serde_json::json!({
-            "name": name,
-            "description": final_body,
-        });
-
-        let resp = client
-            .put(&update_url)
-            .json(&payload)
-            .send()
-            .await
-            .context("gitlab: PUT update release")?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = anodizer_core::http::body_of(resp).await;
-            bail!("gitlab: update release failed (HTTP {}): {}", status, text);
-        }
-    } else {
-        // Unexpected error.
-        let text = anodizer_core::http::body_of(get_resp).await;
-        bail!(
-            "gitlab: check existing release failed (HTTP {}): {}",
-            status,
-            text
-        );
+        retry_http_async(
+            "gitlab: POST create release",
+            policy,
+            SuccessClass::Strict,
+            |_| client.post(&create_url).json(&payload).send(),
+            |status, body| format!("gitlab: create release failed (HTTP {status}): {body}"),
+        )
+        .await?;
     }
 
     Ok(tag.to_string())
@@ -230,6 +254,9 @@ pub(crate) async fn gitlab_create_release(
 /// When `replace_existing` is true and the link creation returns HTTP 400/422
 /// (duplicate), the existing link with the same name is deleted and the POST
 /// is retried — matching GoReleaser's `replace_existing_artifacts` behavior.
+///
+/// `policy` is the user-configured `Config.retry` block (or default 10 × 10s
+/// × 5m cap) — every HTTP call routes through [`retry_http_async`].
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn gitlab_upload_asset(
     client: &Client,
@@ -243,6 +270,7 @@ pub(crate) async fn gitlab_upload_asset(
     use_package_registry: bool,
     download_url: &str,
     replace_existing: bool,
+    policy: &RetryPolicy,
 ) -> Result<()> {
     let api = api_url.trim_end_matches('/');
     let encoded = encode_project_id(project_id);
@@ -257,11 +285,20 @@ pub(crate) async fn gitlab_upload_asset(
             version,
             file_name,
             file_path,
+            policy,
         )
         .await?
     } else {
-        upload_via_project_uploads(client, api, &encoded, file_path, file_name, download_url)
-            .await?
+        upload_via_project_uploads(
+            client,
+            api,
+            &encoded,
+            file_path,
+            file_name,
+            download_url,
+            policy,
+        )
+        .await?
     };
 
     // Create a release link for the uploaded asset.
@@ -286,6 +323,11 @@ pub(crate) async fn gitlab_upload_asset(
         path_field: direct_asset_path,
     });
 
+    // First attempt at creating the link. We don't use retry_http_async
+    // directly here because the 400/422 "already exists" status is part of
+    // the replace-existing control flow: those statuses are 4xx (would
+    // fast-fail under the helper's classifier), but we want to react to
+    // them by deleting the conflicting link and retrying.
     let resp = client
         .post(&links_api)
         .json(&payload)
@@ -302,69 +344,74 @@ pub(crate) async fn gitlab_upload_asset(
     // find and delete the conflicting link, then retry the POST.
     if (status_code == 400 || status_code == 422) && replace_existing {
         let text = anodizer_core::http::body_of(resp).await;
-        // List existing links to find the conflicting one.
-        let list_resp = client
-            .get(&links_api)
-            .send()
-            .await
-            .context("gitlab: GET existing release links for replace")?;
+        // List existing links to find the conflicting one. This GET goes
+        // through retry_http_async so transient 5xx don't lose our chance to
+        // dedup the existing link.
+        let list_resp = retry_http_async(
+            "gitlab: GET existing release links",
+            policy,
+            SuccessClass::Strict,
+            |_| client.get(&links_api).send(),
+            |status, body| {
+                format!("gitlab: list existing release links failed (HTTP {status}): {body}")
+            },
+        )
+        .await;
 
-        if list_resp.status().is_success() {
-            let links: Vec<serde_json::Value> = list_resp
-                .json()
-                .await
-                .context("gitlab: parse release links JSON")?;
+        match list_resp {
+            Ok(list_resp) => {
+                let links: Vec<serde_json::Value> = list_resp
+                    .json()
+                    .await
+                    .context("gitlab: parse release links JSON")?;
 
-            for link in &links {
-                if link["name"].as_str() == Some(file_name)
-                    && let Some(link_id) = link["id"].as_u64()
-                {
-                    let delete_url = format!("{}/{}", links_api, link_id);
-                    let del_resp = client.delete(&delete_url).send().await.with_context(|| {
-                        format!(
-                            "gitlab: DELETE existing release link '{}' (id={})",
-                            file_name, link_id
+                for link in &links {
+                    if link["name"].as_str() == Some(file_name)
+                        && let Some(link_id) = link["id"].as_u64()
+                    {
+                        let delete_url = format!("{}/{}", links_api, link_id);
+                        retry_http_async(
+                            "gitlab: DELETE existing release link",
+                            policy,
+                            SuccessClass::Strict,
+                            |_| client.delete(&delete_url).send(),
+                            |status, body| {
+                                format!(
+                                    "gitlab: delete existing link '{}' (id={}) failed (HTTP {status}): {body}",
+                                    file_name, link_id
+                                )
+                            },
                         )
-                    })?;
-                    if !del_resp.status().is_success() {
-                        bail!(
-                            "gitlab: delete existing link '{}' failed (HTTP {}): {}",
-                            file_name,
-                            del_resp.status(),
-                            anodizer_core::http::body_of(del_resp).await
-                        );
+                        .await?;
+                        break;
                     }
-                    break;
                 }
             }
-        } else {
-            // Could not list links — report the original error.
-            bail!(
-                "gitlab: create release link for '{}' failed (HTTP {}): {}",
-                file_name,
-                status_code,
-                text
-            );
+            Err(_) => {
+                // Could not list links — report the original error.
+                bail!(
+                    "gitlab: create release link for '{}' failed (HTTP {}): {}",
+                    file_name,
+                    status_code,
+                    text
+                );
+            }
         }
 
         // Retry the POST after deleting the conflicting link.
-        let retry_resp = client
-            .post(&links_api)
-            .json(&payload)
-            .send()
-            .await
-            .context("gitlab: POST create release link (retry after delete)")?;
-
-        if !retry_resp.status().is_success() {
-            let retry_status = retry_resp.status();
-            let retry_text = anodizer_core::http::body_of(retry_resp).await;
-            bail!(
-                "gitlab: create release link for '{}' failed on retry (HTTP {}): {}",
-                file_name,
-                retry_status,
-                retry_text
-            );
-        }
+        retry_http_async(
+            "gitlab: POST create release link (retry after delete)",
+            policy,
+            SuccessClass::Strict,
+            |_| client.post(&links_api).json(&payload).send(),
+            |status, body| {
+                format!(
+                    "gitlab: create release link for '{}' failed on retry (HTTP {status}): {body}",
+                    file_name
+                )
+            },
+        )
+        .await?;
     } else {
         let text = anodizer_core::http::body_of(resp).await;
         bail!(
@@ -425,6 +472,7 @@ fn is_pre_v17(version_str: &str) -> bool {
 /// ```text
 /// PUT {api}/projects/{id}/packages/generic/{package}/{version}/{filename}
 /// ```
+#[allow(clippy::too_many_arguments)]
 async fn upload_via_package_registry(
     client: &Client,
     api: &str,
@@ -433,6 +481,7 @@ async fn upload_via_package_registry(
     version: &str,
     file_name: &str,
     file_path: &Path,
+    policy: &RetryPolicy,
 ) -> Result<String> {
     let data = tokio::fs::read(file_path)
         .await
@@ -447,24 +496,27 @@ async fn upload_via_package_registry(
         encode_path_segment(file_name),
     );
 
-    let resp = client
-        .put(&upload_url)
-        .header("Content-Type", "application/octet-stream")
-        .body(data)
-        .send()
-        .await
-        .with_context(|| format!("gitlab: PUT upload '{}' to package registry", file_name))?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let text = anodizer_core::http::body_of(resp).await;
-        bail!(
-            "gitlab: package registry upload '{}' failed (HTTP {}): {}",
-            file_name,
-            status,
-            text
-        );
-    }
+    // Clone the body bytes per attempt — `RequestBuilder::body` consumes
+    // them, and reqwest's reqwest::Body is move-only.
+    retry_http_async(
+        "gitlab: PUT upload to package registry",
+        policy,
+        SuccessClass::Strict,
+        |_| {
+            client
+                .put(&upload_url)
+                .header("Content-Type", "application/octet-stream")
+                .body(data.clone())
+                .send()
+        },
+        |status, body| {
+            format!(
+                "gitlab: package registry upload '{}' failed (HTTP {status}): {body}",
+                file_name
+            )
+        },
+    )
+    .await?;
 
     // The link URL for package registry assets is the same upload URL.
     Ok(upload_url)
@@ -486,6 +538,7 @@ async fn upload_via_project_uploads(
     file_path: &Path,
     file_name: &str,
     download_url: &str,
+    policy: &RetryPolicy,
 ) -> Result<String> {
     let data = tokio::fs::read(file_path)
         .await
@@ -493,30 +546,33 @@ async fn upload_via_project_uploads(
 
     let upload_url = format!("{}/projects/{}/uploads", api, encoded_project_id);
 
-    let file_part = reqwest::multipart::Part::bytes(data)
-        .file_name(file_name.to_string())
-        .mime_str("application/octet-stream")
-        .context("gitlab: set MIME type for upload")?;
-
-    let form = reqwest::multipart::Form::new().part("file", file_part);
-
-    let resp = client
-        .post(&upload_url)
-        .multipart(form)
-        .send()
-        .await
-        .with_context(|| format!("gitlab: POST upload '{}' as project attachment", file_name))?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let text = anodizer_core::http::body_of(resp).await;
-        bail!(
-            "gitlab: project upload '{}' failed (HTTP {}): {}",
-            file_name,
-            status,
-            text
-        );
-    }
+    // Multipart `Form` is move-only, so each retry attempt rebuilds it from
+    // the cloned body bytes. `mime_str("application/octet-stream")` is
+    // structurally infallible (a valid RFC-2045 token) so the error arm is
+    // marked unreachable — same pattern as cloudsmith.rs::retry_request.
+    let resp = retry_http_async(
+        "gitlab: POST project upload",
+        policy,
+        SuccessClass::Strict,
+        |_| {
+            let file_part = match reqwest::multipart::Part::bytes(data.clone())
+                .file_name(file_name.to_string())
+                .mime_str("application/octet-stream")
+            {
+                Ok(p) => p,
+                Err(_) => unreachable!("application/octet-stream is a valid MIME type"),
+            };
+            let form = reqwest::multipart::Form::new().part("file", file_part);
+            client.post(&upload_url).multipart(form).send()
+        },
+        |status, body| {
+            format!(
+                "gitlab: project upload '{}' failed (HTTP {status}): {body}",
+                file_name
+            )
+        },
+    )
+    .await?;
 
     let body: serde_json::Value = resp
         .json()
@@ -761,5 +817,100 @@ mod tests {
         unsafe { std::env::set_var("CI_JOB_TOKEN", "") };
         assert!(!resolve_use_job_token(true, ""));
         unsafe { std::env::remove_var("CI_JOB_TOKEN") };
+    }
+
+    // -- gitlab_create_release retry behaviour (P1.4) ------------------------
+    //
+    // Pin: a 503 on the GET-release-by-tag probe must be retried (transient
+    // GitLab 5xx), not fast-failed. Mirror the equivalent core::retry test
+    // (`retry_http_async_retries_5xx_then_succeeds`) but at the publisher
+    // layer so the caller-supplied policy reaches the helper.
+
+    fn spawn_oneshot_http_responder(
+        responses: Vec<&'static str>,
+    ) -> (
+        std::net::SocketAddr,
+        std::sync::Arc<std::sync::atomic::AtomicU32>,
+    ) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::time::Duration;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("local_addr");
+        let counter = std::sync::Arc::new(AtomicU32::new(0));
+        let counter_inner = counter.clone();
+        std::thread::spawn(move || {
+            for (i, resp) in responses.iter().enumerate() {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(pair) => pair,
+                    Err(_) => return,
+                };
+                counter_inner.fetch_add(1, Ordering::SeqCst);
+                let mut buf = [0u8; 8192];
+                let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+                if i == responses.len() - 1 {
+                    break;
+                }
+            }
+        });
+        (addr, counter)
+    }
+
+    #[tokio::test]
+    async fn gitlab_create_release_retries_5xx_on_get_probe() {
+        use std::sync::atomic::Ordering;
+        use std::time::Duration;
+
+        // Sequence: 503 on the GET probe, then 200 with an empty release JSON
+        // (release exists), then 200 on the PUT update. The retry helper
+        // should swallow the 503 and proceed.
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 23\r\n\r\n{\"description\":\"old\"}\r\n",
+            "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+        ]);
+
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .expect("client");
+        let policy = RetryPolicy {
+            max_attempts: 3,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(2),
+        };
+        let api_url = format!("http://{addr}");
+
+        let result = gitlab_create_release(
+            &client,
+            &api_url,
+            "myorg/myproj",
+            "v1.0.0",
+            "Release v1.0.0",
+            "new body",
+            "abc123",
+            "replace",
+            &policy,
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "expected success after 5xx retry, got: {:?}",
+            result.err().map(|e| format!("{e:#}"))
+        );
+        // Three connections total: one retried GET (1 503 + 1 200 = 2) plus
+        // one PUT = 3.
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "expected 3 connections (503-retry GET, 200 GET, 200 PUT)"
+        );
     }
 }

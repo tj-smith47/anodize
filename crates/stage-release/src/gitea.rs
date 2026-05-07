@@ -19,8 +19,9 @@
 
 use std::path::Path;
 
+use anodizer_core::retry::{RetryPolicy, SuccessClass, retry_http_async};
 use anodizer_core::url::percent_encode_path_segment as encode_segment;
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result};
 use reqwest::Client;
 
 use crate::release_body::compose_body_for_mode;
@@ -77,6 +78,10 @@ pub(crate) fn build_gitea_client(token: &str, skip_tls_verify: bool) -> Result<C
 /// does not exist, creates via POST.
 ///
 /// Returns the numeric release ID (Gitea uses integer IDs).
+///
+/// `policy` is the user-configured `Config.retry` block (or default 10 × 10s
+/// × 5m cap) — every HTTP call routes through [`retry_http_async`] so 5xx /
+/// 429 / network-error responses retry with exponential backoff.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn gitea_create_release(
     client: &Client,
@@ -90,13 +95,14 @@ pub(crate) async fn gitea_create_release(
     draft: bool,
     prerelease: bool,
     release_mode: &str,
+    policy: &RetryPolicy,
 ) -> Result<u64> {
     let api = api_url.trim_end_matches('/');
     let enc_owner = encode_segment(owner);
     let enc_repo = encode_segment(repo);
 
     // Try to find an existing release by listing all releases and matching tag.
-    let existing = find_release_by_tag(client, api, &enc_owner, &enc_repo, tag).await?;
+    let existing = find_release_by_tag(client, api, &enc_owner, &enc_repo, tag, policy).await?;
 
     if let Some((release_id, existing_body)) = existing {
         // Release exists — update it with mode-based body composition.
@@ -115,18 +121,14 @@ pub(crate) async fn gitea_create_release(
             "prerelease": prerelease,
         });
 
-        let resp = client
-            .patch(&update_url)
-            .json(&payload)
-            .send()
-            .await
-            .context("gitea: PATCH update release")?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = anodizer_core::http::body_of(resp).await;
-            bail!("gitea: update release failed (HTTP {}): {}", status, text);
-        }
+        retry_http_async(
+            "gitea: PATCH update release",
+            policy,
+            SuccessClass::Strict,
+            |_| client.patch(&update_url).json(&payload).send(),
+            |status, body| format!("gitea: update release failed (HTTP {status}): {body}"),
+        )
+        .await?;
 
         Ok(release_id)
     } else {
@@ -141,18 +143,14 @@ pub(crate) async fn gitea_create_release(
             "prerelease": prerelease,
         });
 
-        let resp = client
-            .post(&create_url)
-            .json(&payload)
-            .send()
-            .await
-            .context("gitea: POST create release")?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = anodizer_core::http::body_of(resp).await;
-            bail!("gitea: create release failed (HTTP {}): {}", status, text);
-        }
+        let resp = retry_http_async(
+            "gitea: POST create release",
+            policy,
+            SuccessClass::Strict,
+            |_| client.post(&create_url).json(&payload).send(),
+            |status, body| format!("gitea: create release failed (HTTP {status}): {body}"),
+        )
+        .await?;
 
         let json: serde_json::Value = resp
             .json()
@@ -181,6 +179,7 @@ async fn find_release_by_tag(
     enc_owner: &str,
     enc_repo: &str,
     tag: &str,
+    policy: &RetryPolicy,
 ) -> Result<Option<(u64, Option<String>)>> {
     const MAX_PAGES: u32 = 10;
     const PAGE_SIZE: u32 = 50;
@@ -191,17 +190,14 @@ async fn find_release_by_tag(
             api, enc_owner, enc_repo, page, PAGE_SIZE
         );
 
-        let resp = client
-            .get(&url)
-            .send()
-            .await
-            .with_context(|| format!("gitea: GET releases page {}", page))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = anodizer_core::http::body_of(resp).await;
-            bail!("gitea: list releases failed (HTTP {}): {}", status, text);
-        }
+        let resp = retry_http_async(
+            &format!("gitea: GET releases page {page}"),
+            policy,
+            SuccessClass::Strict,
+            |_| client.get(&url).send(),
+            |status, body| format!("gitea: list releases failed (HTTP {status}): {body}"),
+        )
+        .await?;
 
         let releases: Vec<serde_json::Value> = resp
             .json()
@@ -239,6 +235,7 @@ async fn find_release_by_tag(
 /// ```
 ///
 /// The file is sent as the `attachment` form field.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn gitea_upload_asset(
     client: &Client,
     api_url: &str,
@@ -247,6 +244,7 @@ pub(crate) async fn gitea_upload_asset(
     release_id: u64,
     file_path: &Path,
     file_name: &str,
+    policy: &RetryPolicy,
 ) -> Result<()> {
     let api = api_url.trim_end_matches('/');
     let enc_owner = encode_segment(owner);
@@ -262,35 +260,33 @@ pub(crate) async fn gitea_upload_asset(
         .await
         .with_context(|| format!("gitea: read file {}", file_path.display()))?;
 
-    let file_part = reqwest::multipart::Part::bytes(data)
-        .file_name(file_name.to_string())
-        .mime_str("application/octet-stream")
-        .context("gitea: set MIME type for upload")?;
-
-    let form = reqwest::multipart::Form::new().part("attachment", file_part);
-
-    let resp = client
-        .post(&upload_url)
-        .multipart(form)
-        .send()
-        .await
-        .with_context(|| {
+    // Multipart Form is move-only — rebuild per attempt from the cloned
+    // body bytes. `mime_str("application/octet-stream")` is structurally
+    // infallible (a valid RFC-2045 token); same pattern as gitlab.rs and
+    // cloudsmith.rs::retry_request.
+    retry_http_async(
+        "gitea: POST upload asset",
+        policy,
+        SuccessClass::Strict,
+        |_| {
+            let file_part = match reqwest::multipart::Part::bytes(data.clone())
+                .file_name(file_name.to_string())
+                .mime_str("application/octet-stream")
+            {
+                Ok(p) => p,
+                Err(_) => unreachable!("application/octet-stream is a valid MIME type"),
+            };
+            let form = reqwest::multipart::Form::new().part("attachment", file_part);
+            client.post(&upload_url).multipart(form).send()
+        },
+        |status, body| {
             format!(
-                "gitea: POST upload '{}' to release {}",
+                "gitea: upload asset '{}' to release {} failed (HTTP {status}): {body}",
                 file_name, release_id
             )
-        })?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let text = anodizer_core::http::body_of(resp).await;
-        bail!(
-            "gitea: upload asset '{}' failed (HTTP {}): {}",
-            file_name,
-            status,
-            text
-        );
-    }
+        },
+    )
+    .await?;
 
     Ok(())
 }
@@ -306,6 +302,7 @@ pub(crate) async fn gitea_delete_asset_by_name(
     repo: &str,
     release_id: u64,
     file_name: &str,
+    policy: &RetryPolicy,
 ) -> Result<bool> {
     let api = api_url.trim_end_matches('/');
     let enc_owner = encode_segment(owner);
@@ -317,21 +314,14 @@ pub(crate) async fn gitea_delete_asset_by_name(
         api, enc_owner, enc_repo, release_id
     );
 
-    let resp = client
-        .get(&list_url)
-        .send()
-        .await
-        .context("gitea: GET release assets for delete")?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let text = anodizer_core::http::body_of(resp).await;
-        bail!(
-            "gitea: list release assets failed (HTTP {}): {}",
-            status,
-            text
-        );
-    }
+    let resp = retry_http_async(
+        "gitea: GET release assets",
+        policy,
+        SuccessClass::Strict,
+        |_| client.get(&list_url).send(),
+        |status, body| format!("gitea: list release assets failed (HTTP {status}): {body}"),
+    )
+    .await?;
 
     let assets: Vec<serde_json::Value> = resp
         .json()
@@ -349,21 +339,19 @@ pub(crate) async fn gitea_delete_asset_by_name(
                 api, enc_owner, enc_repo, release_id, asset_id
             );
 
-            let del_resp = client.delete(&delete_url).send().await.with_context(|| {
-                format!(
-                    "gitea: DELETE asset '{}' (id={}) from release {}",
-                    file_name, asset_id, release_id
-                )
-            })?;
-
-            if !del_resp.status().is_success() {
-                bail!(
-                    "gitea: delete asset '{}' failed (HTTP {}): {}",
-                    file_name,
-                    del_resp.status(),
-                    anodizer_core::http::body_of(del_resp).await
-                );
-            }
+            retry_http_async(
+                "gitea: DELETE asset",
+                policy,
+                SuccessClass::Strict,
+                |_| client.delete(&delete_url).send(),
+                |status, body| {
+                    format!(
+                        "gitea: delete asset '{}' (id={}) from release {} failed (HTTP {status}): {body}",
+                        file_name, asset_id, release_id
+                    )
+                },
+            )
+            .await?;
 
             return Ok(true);
         }
@@ -480,5 +468,101 @@ mod tests {
 
         // Ensure client was built successfully (implies headers are valid)
         drop(client);
+    }
+
+    // -- gitea_create_release retry behaviour (P1.4) -------------------------
+    //
+    // Pin: a 503 on the find-release-by-tag GET must retry through
+    // `retry_http_async` rather than fast-fail. Mirrors the gitlab equivalent
+    // and the core retry::tests::retry_http_async_retries_5xx_then_succeeds
+    // test, but exercises the policy plumbing end-to-end at the publisher.
+
+    fn spawn_oneshot_http_responder(
+        responses: Vec<&'static str>,
+    ) -> (
+        std::net::SocketAddr,
+        std::sync::Arc<std::sync::atomic::AtomicU32>,
+    ) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::time::Duration;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("local_addr");
+        let counter = std::sync::Arc::new(AtomicU32::new(0));
+        let counter_inner = counter.clone();
+        std::thread::spawn(move || {
+            for (i, resp) in responses.iter().enumerate() {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(pair) => pair,
+                    Err(_) => return,
+                };
+                counter_inner.fetch_add(1, Ordering::SeqCst);
+                let mut buf = [0u8; 8192];
+                let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+                if i == responses.len() - 1 {
+                    break;
+                }
+            }
+        });
+        (addr, counter)
+    }
+
+    #[tokio::test]
+    async fn gitea_create_release_retries_5xx_on_list_releases() {
+        use std::sync::atomic::Ordering;
+        use std::time::Duration;
+
+        // Sequence: 503 on the GET releases list, then 200 with an empty
+        // array (release does not exist), then 201 on the POST create with
+        // a fake id. The retry helper should retry past the 503 and the
+        // create succeeds.
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n[]",
+            "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: 9\r\n\r\n{\"id\":42}",
+        ]);
+
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .expect("client");
+        let policy = RetryPolicy {
+            max_attempts: 3,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(2),
+        };
+        let api_url = format!("http://{addr}");
+
+        let result = gitea_create_release(
+            &client,
+            &api_url,
+            "myorg",
+            "myrepo",
+            "v1.0.0",
+            "abc123",
+            "Release v1.0.0",
+            "release body",
+            false,
+            false,
+            "replace",
+            &policy,
+        )
+        .await;
+
+        match result {
+            Ok(id) => assert_eq!(id, 42, "release id should be parsed from create response"),
+            Err(e) => panic!("expected success after 5xx retry, got: {e:#}"),
+        }
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "expected 3 connections (503-retry GET, 200 GET, 201 POST)"
+        );
     }
 }

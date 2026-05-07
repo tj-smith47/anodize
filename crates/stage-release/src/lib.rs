@@ -30,6 +30,19 @@ mod tests;
 /// Matches GoReleaser: 10 attempts, 50ms initial delay, 30s cap.
 /// Retries on every failure (GoReleaser wraps all upload errors as
 /// `RetriableError`).
+///
+/// # Layering note
+///
+/// As of P1.4, gitlab/gitea publishers themselves call `retry_http_async`
+/// internally with the user's `Config.retry` policy. Wrapping those
+/// already-retrying calls in `retry_upload` (here) produces nested-retry
+/// behavior: the inner helper exhausts its policy first, then this outer
+/// loop retries up to its own 10 attempts. The total worst-case latency
+/// grows accordingly. This is intentional for now to preserve the
+/// GoReleaser-parity behavior of treating upload errors as
+/// always-retriable; the per-publisher inner policy gives the user a
+/// configurable surface that didn't exist before, and the outer loop
+/// stays as the GR-aligned safety net.
 pub(crate) async fn retry_upload<F, Fut>(operation_name: &str, mut f: F) -> Result<()>
 where
     F: FnMut() -> Fut,

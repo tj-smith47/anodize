@@ -1,9 +1,8 @@
 use std::collections::HashMap;
-use std::ops::ControlFlow;
 
 use anodizer_core::config::StringOrBool;
 use anodizer_core::context::Context;
-use anodizer_core::retry::{HttpError, RetryPolicy, is_retriable, retry_sync};
+use anodizer_core::retry::{RetryPolicy, SuccessClass, retry_http_blocking};
 use anyhow::{Context as _, Result};
 
 // ---------------------------------------------------------------------------
@@ -142,6 +141,12 @@ pub(crate) fn render_json_template(
 /// Used by every announcer that doesn't go through `crate::http::post_json`
 /// (bluesky, reddit, twitter, discourse, …) so the retry policy is consistent
 /// across providers.
+///
+/// Thin adapter over [`retry_http_blocking`] that drops the status from the
+/// `(StatusCode, String)` return tuple to keep the announce-callsite
+/// signature (`-> Result<String>`) backward-compatible. The classification
+/// logic (HttpError + is_retriable + as_ref vs root_cause) lives in the core
+/// helper — pinned by `crates/core/src/retry.rs::classifier_5xx_via_anyhow_chain_uses_as_ref`.
 pub(crate) fn retry_http<F>(
     provider: &str,
     stage: &str,
@@ -151,41 +156,15 @@ pub(crate) fn retry_http<F>(
 where
     F: FnMut() -> reqwest::Result<reqwest::blocking::Response>,
 {
-    retry_sync(policy, |_attempt| match send() {
-        Err(e) => {
-            let err = anyhow::Error::new(HttpError::from_response(e, None))
-                .context(format!("{provider}: {stage} transport error"));
-            // `as_ref()` exposes the top of the chain (`HttpError`) so
-            // `is_retriable` can downcast and inspect status; `root_cause()`
-            // skips past `HttpError` to the leaf and would mis-classify 5xx.
-            // Pinned by `tests::announce_retry_classifier_matches_5xx_via_anyhow_chain`.
-            if is_retriable(err.as_ref()) {
-                Err(ControlFlow::Continue(err))
-            } else {
-                Err(ControlFlow::Break(err))
-            }
-        }
-        Ok(resp) => {
-            let status = resp.status();
-            let body = anodizer_core::http::body_of_blocking(resp);
-            if status.is_success() {
-                Ok(body)
-            } else {
-                let inner = anyhow::anyhow!("{provider}: {stage} failed ({status}): {body}");
-                let wrapped = anyhow::Error::new(HttpError::new(
-                    std::io::Error::other(inner.to_string()),
-                    status.as_u16(),
-                ))
-                .context(inner);
-                if is_retriable(wrapped.as_ref()) {
-                    Err(ControlFlow::Continue(wrapped))
-                } else {
-                    Err(ControlFlow::Break(wrapped))
-                }
-            }
-        }
-    })
-    .with_context(|| format!("{provider}: {stage} exhausted retry attempts"))
+    let label = format!("{provider}: {stage}");
+    let (_status, body) = retry_http_blocking(
+        &label,
+        policy,
+        SuccessClass::Strict,
+        |_attempt| send(),
+        |status, body| format!("{provider}: {stage} failed ({status}): {body}"),
+    )?;
+    Ok(body)
 }
 
 /// Resolve the effective webhook header set: start with user-supplied

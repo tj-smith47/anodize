@@ -615,6 +615,13 @@ impl Stage for super::ReleaseStage {
                         log.warn("use_existing_draft has no effect on GitLab (draft releases are not supported)");
                     }
 
+                    // Per-publisher retry policy (Wave-1 RetryConfig). 5xx /
+                    // 429 / network errors retry with exponential backoff
+                    // through `retry_http_async` inside every gitlab_*
+                    // function. Default: 10 attempts × 10s base × 5m cap
+                    // (matches GoReleaser `pkg/config.Retry` defaults).
+                    let policy = ctx.config.retry.unwrap_or_default().to_policy();
+
                     let url = rt.block_on(async {
                         let client =
                             gitlab::build_gitlab_client(&token_str, skip_tls, use_job_token)?;
@@ -629,6 +636,7 @@ impl Stage for super::ReleaseStage {
                             &release_body,
                             &commit_sha,
                             &release_mode,
+                            &policy,
                         )
                         .await?;
 
@@ -685,6 +693,7 @@ impl Stage for super::ReleaseStage {
                                 let project_name_for_pkg = project_name_for_pkg.clone();
                                 let version_for_pkg = version_for_pkg.clone();
                                 let download_url = download_url.clone();
+                                let policy_inner = policy;
 
                                 join_set.spawn(async move {
                                     let _permit = sem
@@ -706,6 +715,7 @@ impl Stage for super::ReleaseStage {
                                             use_pkg_registry,
                                             &download_url,
                                             replace_existing_artifacts,
+                                            &policy_inner,
                                         )
                                     })
                                     .await
@@ -796,6 +806,10 @@ impl Stage for super::ReleaseStage {
                         );
                     }
 
+                    // Per-publisher retry policy (Wave-1 RetryConfig). Same
+                    // shape and rationale as the GitLab branch above.
+                    let policy = ctx.config.retry.unwrap_or_default().to_policy();
+
                     let url = rt.block_on(async {
                         let client = gitea::build_gitea_client(&token_str, skip_tls)?;
 
@@ -812,6 +826,7 @@ impl Stage for super::ReleaseStage {
                             draft,
                             prerelease,
                             &release_mode,
+                            &policy,
                         )
                         .await?;
 
@@ -866,6 +881,7 @@ impl Stage for super::ReleaseStage {
                                 let owner = repo_cfg.owner.clone();
                                 let repo = repo_cfg.name.clone();
                                 let tag = tag.clone();
+                                let policy_inner = policy;
 
                                 join_set.spawn(async move {
                                     let _permit = sem
@@ -877,27 +893,34 @@ impl Stage for super::ReleaseStage {
                                     // same name exists, delete it before uploading.
                                     if replace_existing_artifacts {
                                         gitea::gitea_delete_asset_by_name(
-                                        &client,
-                                        &api_url,
-                                        &owner,
-                                        &repo,
-                                        release_id,
-                                        &file_name,
-                                    )
-                                    .await
-                                    .with_context(|| {
-                                        format!(
-                                            "gitea: delete existing asset '{}' from release {}",
-                                            file_name, release_id
+                                            &client,
+                                            &api_url,
+                                            &owner,
+                                            &repo,
+                                            release_id,
+                                            &file_name,
+                                            &policy_inner,
                                         )
-                                    })?;
+                                        .await
+                                        .with_context(|| {
+                                            format!(
+                                                "gitea: delete existing asset '{}' from release {}",
+                                                file_name, release_id
+                                            )
+                                        })?;
                                     }
 
                                     let op_name = format!("gitea: upload '{}'", file_name);
                                     retry_upload(&op_name, || {
                                         gitea::gitea_upload_asset(
-                                            &client, &api_url, &owner, &repo, release_id, &path,
+                                            &client,
+                                            &api_url,
+                                            &owner,
+                                            &repo,
+                                            release_id,
+                                            &path,
                                             &file_name,
+                                            &policy_inner,
                                         )
                                     })
                                     .await

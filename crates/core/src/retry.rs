@@ -153,9 +153,9 @@ pub enum SuccessClass {
 /// Replaces three nearly-identical retry loops:
 /// - `stage-publish/cloudsmith.rs::retry_request`
 /// - `stage-publish/artifactory.rs::upload_single_artifact` (inline)
-/// - `stage-announce/helpers.rs::retry_http` (kept as-is — see Q-fix #2:
-///   bundling all four would have ballooned the change beyond the
-///   review-mandated minimum-LOC budget).
+/// - `stage-announce/helpers.rs::retry_http` (now wraps this helper; see
+///   announce/helpers.rs for the thin adapter that returns the body string
+///   instead of `(StatusCode, String)`).
 pub fn retry_http_blocking<F, M>(
     label: &str,
     policy: &RetryPolicy,
@@ -210,6 +210,98 @@ where
             }
         }
     })
+    .with_context(|| format!("{label}: exhausted retry attempts"))
+}
+
+/// Async sibling of [`retry_http_blocking`] for `reqwest::Client` (non-blocking)
+/// call sites such as the GitLab and Gitea release publishers.
+///
+/// Each attempt invokes `send` (a fresh future) and:
+///
+/// 1. On `Err` (transport-level): wraps in [`HttpError::from_response`] +
+///    a `<label>: HTTP transport error` context, classifies via
+///    [`is_retriable`] (network-substring + EOF chain match), and dispatches
+///    `Continue`/`Break`.
+/// 2. On non-success status: drains the body via `Response::text().await`,
+///    formats the outer message via `error_msg`, wraps in [`HttpError::new`]
+///    with the upstream status, and classifies (5xx/429 → `Continue`, 4xx →
+///    `Break`).
+/// 3. On success status: returns the raw [`reqwest::Response`] for the
+///    caller to consume (e.g. `.json()`, `.text()`, header inspection).
+///
+/// `success_class` mirrors the blocking variant: `Strict` rejects 3xx,
+/// `AllowRedirects` accepts them. Most async API clients want `Strict`
+/// (their reqwest::Client follows redirects by default, so a surfaced 3xx
+/// is itself an error).
+pub async fn retry_http_async<F, Fut, M>(
+    label: &str,
+    policy: &RetryPolicy,
+    success_class: SuccessClass,
+    mut send: F,
+    error_msg: M,
+) -> anyhow::Result<reqwest::Response>
+where
+    F: FnMut(u32) -> Fut,
+    Fut: std::future::Future<Output = Result<reqwest::Response, reqwest::Error>>,
+    M: Fn(reqwest::StatusCode, &str) -> String,
+{
+    use anyhow::Context as _;
+    retry_async(policy, |attempt| {
+        let fut = send(attempt);
+        let error_msg = &error_msg;
+        async move {
+            match fut.await {
+                Ok(resp) => {
+                    let status = resp.status();
+                    let succeeded = match success_class {
+                        SuccessClass::Strict => status.is_success(),
+                        SuccessClass::AllowRedirects => {
+                            status.is_success() || status.is_redirection()
+                        }
+                    };
+                    if succeeded {
+                        Ok(resp)
+                    } else {
+                        let body = resp
+                            .text()
+                            .await
+                            .unwrap_or_else(|e| format!("<failed to read body: {e}>"));
+                        let msg = error_msg(status, &body);
+                        let inner = anyhow::anyhow!("{msg}");
+                        let wrapped = anyhow::Error::new(HttpError::new(
+                            std::io::Error::other(inner.to_string()),
+                            status.as_u16(),
+                        ))
+                        .context(inner);
+                        // `as_ref()` exposes the top of the chain (`HttpError`)
+                        // so `is_retriable` can downcast and inspect status.
+                        // `root_cause()` would skip past `HttpError` to the leaf
+                        // io::Error and mis-classify 5xx as fast-fail (the
+                        // canonical Impl-F bug). Pinned by
+                        // `classifier_5xx_via_anyhow_chain_uses_as_ref`.
+                        if is_retriable(wrapped.as_ref()) {
+                            Err(ControlFlow::Continue(wrapped))
+                        } else {
+                            Err(ControlFlow::Break(wrapped))
+                        }
+                    }
+                }
+                Err(e) => {
+                    // Transport-layer failure: wrap in HttpError(status=0) so
+                    // the chain-walking classifier can see network-error
+                    // substrings via the inner io::Error message.
+                    let err = anyhow::Error::new(HttpError::from_response(e, None))
+                        .context(format!("{label}: HTTP transport error"));
+                    if is_retriable(err.as_ref()) {
+                        Err(ControlFlow::Continue(err))
+                    } else {
+                        Err(ControlFlow::Break(err))
+                    }
+                }
+            }
+        }
+    })
+    .await
     .with_context(|| format!("{label}: exhausted retry attempts"))
 }
 
@@ -936,5 +1028,138 @@ mod tests {
         );
         let (status, _) = result.expect("3xx is success under AllowRedirects");
         assert_eq!(status.as_u16(), 307);
+    }
+
+    // ----- retry_http_async behavioural tests ------------------------------
+    //
+    // Mirrors the blocking suite but drives an async reqwest::Client against
+    // the same hand-rolled TCP responder (running on a worker thread, so the
+    // tokio reactor is free to drive the client futures). reqwest::Error has
+    // no public constructor — the transport-error branch is exercised
+    // indirectly via the gitlab/gitea integration tests that point at a
+    // dropped listener.
+
+    #[tokio::test]
+    async fn retry_http_async_success_returns_first_attempt() {
+        let (addr, calls) =
+            spawn_oneshot_http_responder(vec!["HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"]);
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .expect("client");
+        let policy = RetryPolicy {
+            max_attempts: 3,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(2),
+        };
+        let result = retry_http_async(
+            "test",
+            &policy,
+            SuccessClass::Strict,
+            |_| client.get(format!("http://{addr}/")).send(),
+            |_, _| String::from("should not be called on success"),
+        )
+        .await;
+        let resp = result.expect("success");
+        assert_eq!(resp.status().as_u16(), 200);
+        let body = resp.text().await.expect("body");
+        assert_eq!(body, "ok");
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "single attempt");
+    }
+
+    #[tokio::test]
+    async fn retry_http_async_retries_5xx_then_succeeds() {
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",
+        ]);
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .expect("client");
+        let policy = RetryPolicy {
+            max_attempts: 3,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(2),
+        };
+        let result = retry_http_async(
+            "test",
+            &policy,
+            SuccessClass::Strict,
+            |_| client.get(format!("http://{addr}/")).send(),
+            |status, body| format!("{status}: {body}"),
+        )
+        .await;
+        let resp = result.expect("eventually succeeds");
+        assert_eq!(resp.status().as_u16(), 200);
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "one retry then success");
+    }
+
+    #[tokio::test]
+    async fn retry_http_async_4xx_fast_fails_no_retry() {
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nnot found",
+        ]);
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .expect("client");
+        let policy = RetryPolicy {
+            max_attempts: 5,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(2),
+        };
+        let result = retry_http_async(
+            "myscope",
+            &policy,
+            SuccessClass::Strict,
+            |_| client.get(format!("http://{addr}/")).send(),
+            |status, body| format!("custom error: {status} body={body}"),
+        )
+        .await;
+        let err = result.expect_err("4xx must fast-fail");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("custom error"),
+            "error formatter must be invoked on non-success; got: {chain}"
+        );
+        assert!(chain.contains("404"), "status must be in chain: {chain}");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "4xx must NOT retry (only one connection accepted)"
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_http_async_429_retries_then_succeeds() {
+        // 429 (Too Many Requests) is the second retriable class alongside
+        // 5xx. Ensures the helper doesn't accidentally fast-fail on rate
+        // limits — a regression here would defeat the whole point of
+        // wiring retry into release publishers.
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 429 Too Many Requests\r\nContent-Length: 0\r\n\r\n",
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",
+        ]);
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .expect("client");
+        let policy = RetryPolicy {
+            max_attempts: 3,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(2),
+        };
+        let result = retry_http_async(
+            "test",
+            &policy,
+            SuccessClass::Strict,
+            |_| client.get(format!("http://{addr}/")).send(),
+            |status, body| format!("{status}: {body}"),
+        )
+        .await;
+        let resp = result.expect("429 retried then success");
+        assert_eq!(resp.status().as_u16(), 200);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 }
