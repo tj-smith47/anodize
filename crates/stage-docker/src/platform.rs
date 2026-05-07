@@ -14,18 +14,21 @@
 /// - `"linux/arm/v7"` → `"armv7"`
 /// - `"linux/arm/v6"` → `"armv6"`
 pub fn platform_to_arch(platform: &str) -> &str {
-    let parts: Vec<&str> = platform.split('/').collect();
-    match parts.as_slice() {
-        [_, arch, variant] => {
+    // Zero-alloc walk of the slash-separated components. Avoids the previous
+    // `split('/').collect::<Vec<_>>()` allocation on a hot path that runs once
+    // per docker tag.
+    let mut parts = platform.split('/');
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some(_), Some(arch), Some(variant), None) => {
             // For "linux/arm/v7" → "armv7", "linux/arm/v6" → "armv6"
             // We need static strings since the return type is &str.
-            match (*arch, *variant) {
+            match (arch, variant) {
                 ("arm", "v6") => "armv6",
                 ("arm", "v7") => "armv7",
                 _ => variant,
             }
         }
-        [_, arch] => arch,
+        (Some(_), Some(arch), None, None) => arch,
         _ => platform,
     }
 }

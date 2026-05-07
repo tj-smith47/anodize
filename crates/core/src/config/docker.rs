@@ -17,9 +17,12 @@ use super::{StringOrBool, deserialize_string_or_bool_opt};
 /// `stage-docker::resolve_retry_params` emits a one-shot deprecation warning.
 /// New configs should leave this field unset.
 //
-// Note: `#[deprecated]` on a field is unstable, so the deprecation lives
-// in rustdoc + the runtime warn. JSON-schema consumers see the doc comment
-// via schemars.
+// Note: `#[deprecated]` on the type cascades through derive-generated impls
+// (Default, Serialize, JsonSchema, ...) and is hard to silence cleanly, so the
+// deprecation lives in (a) this rustdoc prose, (b) the runtime `tracing::warn!`
+// fired once per process by `stage-docker::resolve_retry_params`, and (c) the
+// schemars-generated JSON-schema description carries the same prose for
+// editor / IDE consumers.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct DockerRetryConfig {

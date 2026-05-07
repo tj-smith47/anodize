@@ -128,6 +128,28 @@ impl Stage for super::DockerStage {
                 // V2 always uses buildx
                 resolve_backend(Some("buildx"), platforms.len() > 1)?;
 
+                // Template-render the Dockerfile path FIRST so an empty
+                // template short-circuits before we touch the filesystem
+                // (avoids orphan staging dirs / stale staged artifacts when
+                // `dockerfile: "{{ if .IsSnapshot }}Dockerfile{{ end }}"`
+                // renders to "" during release).
+                // GR parity (commit d788340): check the *rendered* template
+                // for emptiness — not the raw template.
+                let rendered_dockerfile =
+                    ctx.render_template(&v2_cfg.dockerfile).with_context(|| {
+                        format!(
+                            "docker_v2: render dockerfile path '{}' for crate {}",
+                            v2_cfg.dockerfile, krate.name
+                        )
+                    })?;
+                if rendered_dockerfile.trim().is_empty() {
+                    log.status(&format!(
+                        "docker_v2[{}]: skipping crate {} — dockerfile template rendered empty",
+                        idx, krate.name
+                    ));
+                    continue;
+                }
+
                 // Build staging directory — use "docker_v2" subdirectory to avoid
                 // collisions with legacy docker configs.
                 let staging_dir: PathBuf = dist
@@ -152,26 +174,6 @@ impl Stage for super::DockerStage {
                     &log,
                 )?;
 
-                // Template-render the Dockerfile path (GoReleaser does this via tmpl.New(ctx).Apply)
-                let rendered_dockerfile =
-                    ctx.render_template(&v2_cfg.dockerfile).with_context(|| {
-                        format!(
-                            "docker_v2: render dockerfile path '{}' for crate {}",
-                            v2_cfg.dockerfile, krate.name
-                        )
-                    })?;
-                // GR parity (commit d788340): check the *rendered* template for
-                // emptiness (not the raw template). Lets users write
-                // `dockerfile: "{{ if .IsSnapshot }}Dockerfile{{ end }}"` and
-                // skip the build cleanly during release instead of attempting
-                // to copy a non-existent file.
-                if rendered_dockerfile.trim().is_empty() {
-                    log.status(&format!(
-                        "docker_v2[{}]: skipping crate {} — dockerfile template rendered empty",
-                        idx, krate.name
-                    ));
-                    continue;
-                }
                 copy_dockerfile(
                     &rendered_dockerfile,
                     &staging_dir,
@@ -432,18 +434,15 @@ impl Stage for super::DockerStage {
                             max_attempts,
                             base_delay,
                             max_delay,
-                            should_push,
                             rendered_tags: image_tags,
                             platforms_str: snapshot_plats.join(","),
                             staging_dir: staging_dir.clone(),
                             id: v2_cfg.id.clone(),
                             use_backend: Some("buildx".to_string()),
                             dist: dist.clone(),
-                            is_v2: true,
                             skip_digest,
                             digest_name_template,
                             env_vars: ctx.template_vars().all_config_env().clone(),
-                            push_flags: Vec::new(), // V2 always uses buildx; push flags baked into cmd_args
                         });
                     }
                 } // end for snapshot_plats
@@ -531,13 +530,9 @@ impl Stage for super::DockerStage {
                     if let Some(d) = build_result.tag_digests.get(tag) {
                         meta.insert("digest".to_string(), d.clone());
                     }
-                    // V2 builds register as DockerImageV2; legacy as DockerImage.
+                    // All anodizer docker builds are V2 → register as DockerImageV2.
                     new_artifacts.push(Artifact {
-                        kind: if job.is_v2 {
-                            ArtifactKind::DockerImageV2
-                        } else {
-                            ArtifactKind::DockerImage
-                        },
+                        kind: ArtifactKind::DockerImageV2,
                         name: tag.clone(),
                         path: PathBuf::from(tag),
                         target: None,
