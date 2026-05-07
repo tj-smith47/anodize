@@ -170,7 +170,8 @@ pub fn classify_http_sync(
 #[derive(Debug)]
 pub struct HttpError {
     /// The wrapped error (transport, decode, or status-derived message).
-    pub source: Box<dyn StdError + Send + Sync + 'static>,
+    /// Reachable via the [`StdError::source`] trait method (not directly).
+    source: Box<dyn StdError + Send + Sync + 'static>,
     /// HTTP status code; `0` for transport-level failures.
     pub status: u16,
 }
@@ -186,6 +187,16 @@ impl HttpError {
             source: Box::new(source),
             status,
         }
+    }
+
+    /// Wrap a transport-layer error with the status code from the (possibly
+    /// missing) response. Mirrors GoReleaser `retryx.HTTP(err, resp)`.
+    /// `None` resp yields status `0` (network-level failure).
+    pub fn from_response<E>(err: E, resp: Option<&reqwest::Response>) -> Self
+    where
+        E: StdError + Send + Sync + 'static,
+    {
+        Self::new(err, resp.map(|r| r.status().as_u16()).unwrap_or(0))
     }
 }
 
@@ -209,12 +220,14 @@ impl StdError for HttpError {
 /// returning 422 because of a transient race condition) and wants the retry
 /// loop to ignore the usual 4xx fast-fail.
 #[derive(Debug)]
-pub struct Retriable(pub Box<dyn StdError + Send + Sync + 'static>);
+pub struct Retriable(Box<dyn StdError + Send + Sync + 'static>);
 
 impl Retriable {
-    /// Construct a `Retriable` wrapper. Returns `None` for a `None` input so
-    /// the helper can be threaded through nullable error pipelines without an
-    /// extra `if err.is_some()` check at the call site.
+    /// Wrap any error so [`is_retriable`] returns `true` regardless of class.
+    /// Use this when a caller knows a 4xx is transient (e.g. a 422 from an
+    /// idempotent registry write losing a race) and wants to override the
+    /// usual fast-fail. For `Option<E>` inputs, see [`is_retriable_opt`] —
+    /// this constructor itself is non-nullable.
     pub fn new<E>(source: E) -> Self
     where
         E: StdError + Send + Sync + 'static,
@@ -551,6 +564,30 @@ mod tests {
         let inner = StrErr("inner");
         let e = HttpError::new(inner, 503);
         assert!(e.source().is_some());
+    }
+
+    #[test]
+    fn from_response_nil_resp_yields_status_zero() {
+        // Mirrors GR `retryx.HTTP(err, nil)` — no response means status 0.
+        // Use a concrete `io::Error` since `reqwest::Error` cannot be
+        // synthesised in tests; the API accepts any `E: StdError + Send + Sync`.
+        let inner = io::Error::other("connect: dial tcp");
+        let e = HttpError::from_response(inner, None);
+        assert_eq!(e.status, 0);
+    }
+
+    #[test]
+    fn from_response_unwrap_chain_visible() {
+        // The inner error must remain reachable via the StdError chain so
+        // is_retriable's network-error matcher can still see the cause.
+        let inner = io::Error::other("connection reset by peer");
+        let e = HttpError::from_response(inner, None);
+        assert!(
+            e.source().is_some(),
+            "inner error must be reachable via source()"
+        );
+        // And classification must walk through to the network-error matcher.
+        assert!(is_retriable(&e));
     }
 
     #[test]

@@ -61,7 +61,19 @@ impl RetryConfig {
 
     /// Bridge to the internal [`RetryPolicy`] consumed by
     /// [`crate::retry::retry_sync`] / [`crate::retry::retry_async`].
+    ///
+    /// If `max_delay < delay`, every backoff is immediately capped to
+    /// `max_delay`. This is parity-correct passthrough (GR behaves the same)
+    /// but almost certainly a config mistake, so a `tracing::warn!` fires
+    /// once at conversion time to surface the issue in logs.
     pub fn to_policy(&self) -> RetryPolicy {
+        if self.max_delay.duration() < self.delay.duration() {
+            tracing::warn!(
+                delay = ?self.delay.duration(),
+                max_delay = ?self.max_delay.duration(),
+                "retry.max_delay is less than retry.delay; backoff will be capped at max_delay"
+            );
+        }
         RetryPolicy {
             max_attempts: self.attempts.max(1),
             base_delay: self.delay.duration(),
@@ -151,6 +163,22 @@ max_delay: 1h30m
             max_delay: HumanDuration(std::time::Duration::from_secs(2)),
         };
         assert_eq!(c.to_policy().max_attempts, 1);
+    }
+
+    #[test]
+    fn to_policy_max_delay_below_delay_does_not_panic() {
+        // Invalid config (max_delay < delay) is parity-correct passthrough:
+        // every backoff is immediately capped at max_delay. The conversion
+        // emits a tracing::warn! but must not panic.
+        let c = RetryConfig {
+            attempts: 3,
+            delay: HumanDuration(std::time::Duration::from_secs(10)),
+            max_delay: HumanDuration(std::time::Duration::from_secs(1)),
+        };
+        let p = c.to_policy();
+        assert_eq!(p.max_attempts, 3);
+        assert_eq!(p.base_delay, std::time::Duration::from_secs(10));
+        assert_eq!(p.max_delay, std::time::Duration::from_secs(1));
     }
 
     #[test]
