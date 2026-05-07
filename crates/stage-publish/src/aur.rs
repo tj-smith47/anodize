@@ -1449,4 +1449,55 @@ mod tests {
         );
         assert_eq!(resolved.provides[0], "");
     }
+
+    /// Regression for GoReleaser parity P9.1 (commit cba5b9f):
+    /// `aur.skip_upload: "{{ .IsSnapshot }}"` must template-expand
+    /// before its bool/auto/empty interpretation. On a snapshot run
+    /// the rendered value is `"true"` and the publish path must
+    /// short-circuit to `Ok(())` (no git-push attempt).
+    #[test]
+    fn aur_skip_upload_template_expands_to_true_on_snapshot() {
+        use anodizer_core::config::{AurConfig, Config, CrateConfig, PublishConfig, StringOrBool};
+        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::log::{StageLogger, Verbosity};
+
+        let mut config = Config::default();
+        config.project_name = "mytool".to_string();
+        config.crates = vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                aur: Some(AurConfig {
+                    git_url: Some("ssh://aur@aur.archlinux.org/mytool.git".to_string()),
+                    description: Some("A great tool".to_string()),
+                    skip_upload: Some(StringOrBool::String("{{ .IsSnapshot }}".to_string())),
+                    // ids filter that matches nothing — would normally
+                    // hard-fail with "no linux archives matched", but the
+                    // skip_upload short-circuit must run BEFORE the
+                    // archive check.
+                    ids: Some(vec!["nonexistent".to_string()]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                snapshot: true,
+                ..Default::default()
+            },
+        );
+        // Populate IsSnapshot template var (normally done by populate_git_vars).
+        ctx.template_vars_mut().set("IsSnapshot", "true");
+
+        let log = StageLogger::new("publish", Verbosity::Normal);
+        publish_to_aur(&ctx, "mytool", &log).expect(
+            "skip_upload='{{ .IsSnapshot }}' on snapshot must short-circuit \
+             to Ok(()) before the archive-set check (GR cba5b9f)",
+        );
+    }
 }

@@ -107,11 +107,13 @@ fn test_filter_artifacts_all() {
     assert!(should_sign_artifact(ArtifactKind::DiskImage, "all").unwrap());
     assert!(should_sign_artifact(ArtifactKind::MacOsPackage, "all").unwrap());
 
-    // GoReleaser includes Signature + Certificate in the "all" list — anodizer
-    // matches that for parity. (On a fresh run there are no prior Signature /
-    // Certificate artifacts, so this does not cause recursive signing.)
-    assert!(should_sign_artifact(ArtifactKind::Signature, "all").unwrap());
-    assert!(should_sign_artifact(ArtifactKind::Certificate, "all").unwrap());
+    // Signature + Certificate are excluded from the `all` filter (GoReleaser
+    // 87a55ea / #6509). Although both kinds are otherwise release-uploadable,
+    // signing them on a re-run of the stage would produce `.sig.sig` /
+    // `.pem.sig` chains and corrupt checksums. See
+    // `re_sign_idempotency_does_not_chain_signatures` below.
+    assert!(!should_sign_artifact(ArtifactKind::Signature, "all").unwrap());
+    assert!(!should_sign_artifact(ArtifactKind::Certificate, "all").unwrap());
 
     // Kinds not in release_uploadable_kinds — users must opt in via the
     // dedicated `binary` / `snap` filters.
@@ -130,7 +132,10 @@ fn test_filter_artifacts_any_alias() {
     // "any" is an alias for "all"
     assert!(should_sign_artifact(ArtifactKind::Archive, "any").unwrap());
     assert!(should_sign_artifact(ArtifactKind::UploadableBinary, "any").unwrap());
-    assert!(should_sign_artifact(ArtifactKind::Signature, "any").unwrap());
+    // Signature + Certificate excluded from `any` (alias of `all`) — see
+    // `re_sign_idempotency_does_not_chain_signatures`.
+    assert!(!should_sign_artifact(ArtifactKind::Signature, "any").unwrap());
+    assert!(!should_sign_artifact(ArtifactKind::Certificate, "any").unwrap());
     assert!(!should_sign_artifact(ArtifactKind::Binary, "any").unwrap());
     assert!(!should_sign_artifact(ArtifactKind::DockerImage, "any").unwrap());
 }
@@ -138,6 +143,35 @@ fn test_filter_artifacts_any_alias() {
 #[test]
 fn test_filter_artifacts_none() {
     assert!(!should_sign_artifact(ArtifactKind::Checksum, "none").unwrap());
+}
+
+/// Regression for GoReleaser parity P4.2 (commit 87a55ea / #6509):
+/// signing a previously-signed dist must not chain `*.sig.sig` /
+/// `*.pem.sig` files. The `all` and `any` filters explicitly skip the
+/// `Signature` and `Certificate` kinds even though both are otherwise
+/// release-uploadable (signatures DO get uploaded to GitHub releases —
+/// they're excluded from re-signing, not from upload).
+#[test]
+fn re_sign_idempotency_does_not_chain_signatures() {
+    // The bug: on a re-run of the sign stage, prior `.sig` / `.pem`
+    // artifacts already in the registry would match `artifacts: all` and
+    // be fed back through the signing command, producing nested
+    // signatures and corrupting `checksums.txt` (since checksums.txt.sig
+    // would itself be signed).
+    for filter in ["all", "any"] {
+        assert!(
+            !should_sign_artifact(ArtifactKind::Signature, filter).unwrap(),
+            "Signature must be excluded from `{filter}` filter (#6509)"
+        );
+        assert!(
+            !should_sign_artifact(ArtifactKind::Certificate, filter).unwrap(),
+            "Certificate must be excluded from `{filter}` filter (#6509)"
+        );
+    }
+
+    // Sanity: a normal release-uploadable kind (Archive) is still signed.
+    assert!(should_sign_artifact(ArtifactKind::Archive, "all").unwrap());
+    assert!(should_sign_artifact(ArtifactKind::Archive, "any").unwrap());
 }
 
 #[test]
@@ -312,8 +346,10 @@ fn test_artifacts_filter_selects_correct_kinds() {
     assert!(should_sign_artifact(ArtifactKind::Installer, "all").unwrap());
     assert!(should_sign_artifact(ArtifactKind::DiskImage, "all").unwrap());
     assert!(should_sign_artifact(ArtifactKind::MacOsPackage, "all").unwrap());
-    assert!(should_sign_artifact(ArtifactKind::Signature, "all").unwrap());
-    assert!(should_sign_artifact(ArtifactKind::Certificate, "all").unwrap());
+    // Signature + Certificate are excluded from `all` to prevent
+    // recursive signing (GR 87a55ea / #6509).
+    assert!(!should_sign_artifact(ArtifactKind::Signature, "all").unwrap());
+    assert!(!should_sign_artifact(ArtifactKind::Certificate, "all").unwrap());
 
     // Kinds outside release_uploadable_kinds — use dedicated `binary` /
     // `snap` filters to opt in.
@@ -2317,8 +2353,11 @@ fn test_all_filter_includes_release_uploadable_types() {
     assert!(should_sign_artifact(ArtifactKind::Sbom, "all").unwrap());
     assert!(should_sign_artifact(ArtifactKind::Checksum, "all").unwrap());
     assert!(should_sign_artifact(ArtifactKind::UploadableFile, "all").unwrap());
-    assert!(should_sign_artifact(ArtifactKind::Signature, "all").unwrap());
-    assert!(should_sign_artifact(ArtifactKind::Certificate, "all").unwrap());
+    // Signature + Certificate are excluded from `all` (GR 87a55ea
+    // / #6509) so re-running sign on a partially-built dist does not
+    // produce `*.sig.sig` chains.
+    assert!(!should_sign_artifact(ArtifactKind::Signature, "all").unwrap());
+    assert!(!should_sign_artifact(ArtifactKind::Certificate, "all").unwrap());
 
     // These are NOT in release_uploadable_kinds() — use the dedicated
     // `binary` / `snap` filters to opt in.

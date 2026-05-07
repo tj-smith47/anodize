@@ -365,6 +365,7 @@ dependencies = [
  "anodizer-core",
  "anyhow",
  "chrono",
+ "glob",
  "serde",
  "serde_json",
  "tempfile",

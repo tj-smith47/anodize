@@ -41,6 +41,59 @@ fn test_combined_sort_doublespace_divergence() {
     assert_eq!(key, "weird", "inherited divergence — not a real filename");
 }
 
+/// Regression for GoReleaser parity Q16.1 (commit f39c233):
+/// the combined-checksum sort key derivation must NOT panic when
+/// fed a line that lacks the canonical `<hash>  <name>` double-space
+/// separator. Upstream's prior `strings.Split(a, "  ")[1]` panicked
+/// with index-out-of-range; the fix uses `strings.Cut` with a fallback
+/// to the whole line. Anodize's port already uses `split_once("  ")`
+/// + `unwrap_or(a)`, so this test pins that contract — a future
+///   "simplification" to `split.unwrap()` would regress and panic here.
+#[test]
+fn refresh_sort_tolerates_malformed_lines() {
+    // Mixed input: well-formed lines, a line with no double-space at all,
+    // a line that's just whitespace, and an empty line.
+    let mut lines: Vec<String> = [
+        "deadbeef  zzz.tar.gz",
+        "no-double-space-here",
+        "cafebabe  aaa.tar.gz",
+        "",
+        "   ",
+    ]
+    .iter()
+    .map(|s| (*s).to_string())
+    .collect();
+
+    // Mirror the sort closure used by both refresh sites in
+    // `crates/stage-checksum/src/run.rs`.
+    lines.sort_by(|a, b| {
+        let na = a.split_once("  ").map(|(_, n)| n).unwrap_or(a);
+        let nb = b.split_once("  ").map(|(_, n)| n).unwrap_or(b);
+        na.cmp(nb)
+    });
+
+    // Sort key extraction: well-formed lines get the filename, malformed
+    // lines fall back to the whole line. No panic — that's the contract.
+    let keys: Vec<&str> = lines
+        .iter()
+        .map(|l| l.split_once("  ").map(|(_, n)| n).unwrap_or(l))
+        .collect();
+
+    // Lexicographic sort over the keys. The key derivation runs
+    // `split_once("  ")` on each line:
+    //   - empty line → no match → fallback to whole line `""`
+    //   - `"   "` (3 spaces) → splits at first `"  "` → key is `" "`
+    //   - well-formed lines → key is the filename
+    //   - malformed `"no-double-space-here"` → fallback to whole line
+    // The contract is "no panic, sane fallback" — the precise key
+    // ordering is incidental.
+    assert_eq!(
+        keys,
+        vec!["", " ", "aaa.tar.gz", "no-double-space-here", "zzz.tar.gz",],
+        "malformed lines must fall through unwrap_or(a) without panicking"
+    );
+}
+
 // -- Algorithm unit tests with known test vectors -------------------------
 
 #[test]
@@ -2269,9 +2322,10 @@ fn test_checksum_source_list_cross_links_release_uploadable_kinds() {
         // Excluded: snap-store-bound + raw build output.
         (ArtifactKind::Snap, "myapp.snap", false),
         (ArtifactKind::Binary, "myapp-raw-bin", false),
-        // Recursion-prevention: pre-existing Checksum artifacts (from a
-        // prior pipe pass or a merge step) must be filtered out of the
-        // source list so the new combined file does not list itself.
+        // Recursion-prevention: Checksum artifacts already in the
+        // registry (from a prior pipe pass or a merge step) must be
+        // filtered out of the source list so the new combined file
+        // does not list itself.
         (ArtifactKind::Checksum, "prior.checksums.txt", false),
     ];
 

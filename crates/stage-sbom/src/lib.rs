@@ -567,15 +567,39 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
 
         let mut any_doc_found = false;
         for doc_path in &rendered_docs {
-            let full_path = dist.join(doc_path);
-            if full_path.exists() {
+            // Each rendered document path is glob-expanded against `dist`,
+            // matching GoReleaser's `internal/pipe/sbom/sbom.go`. This lets a
+            // user write `documents: ["*.spdx.json"]` and get a separate
+            // registered artifact per matched file (e.g.
+            // `myproj-1.0.spdx.json`), rather than one artifact whose name
+            // is the literal glob pattern. Mirrors GR commit 292203e:
+            // `Name: filepath.Base(match)` (NOT `filepath.Base(path)`).
+            let full_pattern = dist.join(doc_path);
+            let pattern_str = full_pattern.to_string_lossy().into_owned();
+            let entries = glob::glob(&pattern_str).with_context(|| {
+                format!(
+                    "sbom[{}]: invalid glob pattern '{}' for document",
+                    id, pattern_str
+                )
+            })?;
+
+            for entry in entries {
+                let match_path = entry.with_context(|| {
+                    format!(
+                        "sbom[{}]: failed to read glob match for '{}'",
+                        id, pattern_str
+                    )
+                })?;
+                if !match_path.exists() {
+                    continue;
+                }
                 // Check the file is non-empty — a zero-byte SBOM is useless
-                let file_len = std::fs::metadata(&full_path).map(|m| m.len()).unwrap_or(0);
+                let file_len = std::fs::metadata(&match_path).map(|m| m.len()).unwrap_or(0);
                 if file_len == 0 {
                     bail!(
                         "sbom[{}]: command succeeded but produced empty output file '{}'",
                         id,
-                        doc_path
+                        match_path.display()
                     );
                 }
                 any_doc_found = true;
@@ -583,14 +607,14 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
                 let mut metadata = HashMap::new();
                 metadata.insert("sbom_id".to_string(), id.to_string());
 
-                let name = full_path
+                let name = match_path
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default();
                 ctx.artifacts.add(Artifact {
                     kind: ArtifactKind::Sbom,
                     name,
-                    path: full_path,
+                    path: match_path,
                     target: None,
                     crate_name: project_name.clone(),
                     metadata,
@@ -734,4 +758,83 @@ fn run_sbom_builtin(
     });
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anodizer_core::artifact::ArtifactKind;
+    use anodizer_core::config::SbomConfig;
+    use anodizer_core::stage::Stage;
+    use anodizer_core::test_helpers::TestContextBuilder;
+
+    /// Regression for GoReleaser parity P8.1 (commit 292203e):
+    /// when `documents:` contains a glob pattern that matches multiple
+    /// files, each match must be registered as its own SBOM artifact
+    /// using the matched filename — NOT the unexpanded glob pattern.
+    ///
+    /// Before the fix, `documents: ["*.spdx.json"]` produced (at most)
+    /// one artifact whose `name` was the literal `*.spdx.json`, since
+    /// the path was passed through `dist.join(...).file_name()` without
+    /// glob expansion. Downstream stages (checksum, release-upload,
+    /// signing) would then fail to find the file on disk.
+    #[cfg(unix)]
+    #[test]
+    fn sbom_documents_glob_expands_to_matched_filenames() {
+        let tmpdir = tempfile::tempdir().expect("tempdir");
+        let dist = tmpdir.path().to_path_buf();
+
+        // Pre-create two files matching the glob, plus one that does
+        // not, to assert filtering precision.
+        std::fs::write(dist.join("alpha.spdx.json"), b"{\"a\":1}").unwrap();
+        std::fs::write(dist.join("beta.spdx.json"), b"{\"b\":1}").unwrap();
+        std::fs::write(dist.join("ignored.json"), b"{\"x\":1}").unwrap();
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myproj")
+            .dist(dist.clone())
+            .add_sbom(SbomConfig {
+                id: Some("globbed".into()),
+                cmd: Some("true".into()),
+                args: Some(vec![]),
+                documents: Some(vec!["*.spdx.json".into()]),
+                artifacts: Some("any".into()),
+                env: Some(vec![]),
+                ..Default::default()
+            })
+            .build();
+
+        SbomStage.run(&mut ctx).expect("sbom stage");
+
+        let names: std::collections::BTreeSet<String> = ctx
+            .artifacts
+            .all()
+            .iter()
+            .filter(|a| a.kind == ArtifactKind::Sbom)
+            .map(|a| a.name.clone())
+            .collect();
+
+        let expected: std::collections::BTreeSet<String> = ["alpha.spdx.json", "beta.spdx.json"]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        assert_eq!(
+            names, expected,
+            "SBOM artifact names must be the glob-matched filenames, \
+             not the literal `*.spdx.json` pattern (GR 292203e)"
+        );
+
+        // Each matched file must register a distinct on-disk path.
+        let paths: std::collections::BTreeSet<PathBuf> = ctx
+            .artifacts
+            .all()
+            .iter()
+            .filter(|a| a.kind == ArtifactKind::Sbom)
+            .map(|a| a.path.clone())
+            .collect();
+        assert_eq!(paths.len(), 2, "expected 2 distinct SBOM paths");
+        for p in &paths {
+            assert!(p.exists(), "registered SBOM path must exist: {:?}", p);
+        }
+    }
 }

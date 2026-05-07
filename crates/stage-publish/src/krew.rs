@@ -906,4 +906,52 @@ mod tests {
         assert!(arches.contains(&"amd64"));
         assert!(arches.contains(&"arm64"));
     }
+
+    /// Regression for GoReleaser parity P9.1 (commit cba5b9f):
+    /// `krew.skip_upload: "{{ .IsSnapshot }}"` must template-expand
+    /// before its bool/auto/empty interpretation. On a snapshot run
+    /// the rendered value is `"true"` and the publish path must
+    /// short-circuit to `Ok(())` BEFORE the missing-repository check.
+    #[test]
+    fn krew_skip_upload_template_expands_to_true_on_snapshot() {
+        use anodizer_core::config::{Config, CrateConfig, KrewConfig, PublishConfig, StringOrBool};
+        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::log::{StageLogger, Verbosity};
+
+        let mut config = Config::default();
+        config.project_name = "mytool".to_string();
+        config.crates = vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                krew: Some(KrewConfig {
+                    // repository intentionally None — would normally
+                    // hard-fail with "no repository config", but the
+                    // skip_upload short-circuit must run BEFORE the
+                    // repository-missing check.
+                    repository: None,
+                    skip_upload: Some(StringOrBool::String("{{ .IsSnapshot }}".to_string())),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                snapshot: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("IsSnapshot", "true");
+
+        let log = StageLogger::new("publish", Verbosity::Normal);
+        publish_to_krew(&ctx, "mytool", &log).expect(
+            "skip_upload='{{ .IsSnapshot }}' on snapshot must short-circuit \
+             to Ok(()) before the repository-missing check (GR cba5b9f)",
+        );
+    }
 }

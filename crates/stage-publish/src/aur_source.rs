@@ -487,6 +487,7 @@ fn generate_source_pkgbuild(
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
 
@@ -704,6 +705,43 @@ crates:
         assert!(
             result.is_err(),
             "amd64_variant: v9000 must be rejected by the typed enum"
+        );
+    }
+
+    /// Regression for GoReleaser parity P9.1 (commit cba5b9f):
+    /// `aur_sources[*].skip_upload: "{{ .IsSnapshot }}"` must
+    /// template-expand before its bool/auto/empty interpretation. On
+    /// a snapshot run the rendered value is `"true"` and the publish
+    /// path must skip the entry without touching git.
+    #[test]
+    fn aur_sources_skip_upload_template_expands_to_true_on_snapshot() {
+        use anodizer_core::config::{AurSourceConfig, Config, StringOrBool};
+        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::log::{StageLogger, Verbosity};
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.aur_sources = Some(vec![AurSourceConfig {
+            // git_url intentionally unset — should_skip_publisher must
+            // short-circuit before this becomes a problem.
+            description: Some("a thing".to_string()),
+            skip_upload: Some(StringOrBool::String("{{ .IsSnapshot }}".to_string())),
+            ..Default::default()
+        }]);
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                snapshot: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("IsSnapshot", "true");
+
+        let log = StageLogger::new("publish", Verbosity::Normal);
+        publish_top_level_aur_sources(&mut ctx, &log).expect(
+            "skip_upload='{{ .IsSnapshot }}' on snapshot must skip the \
+             entry without reaching the git push path (GR cba5b9f)",
         );
     }
 }

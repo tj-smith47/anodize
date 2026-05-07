@@ -23,7 +23,13 @@ use anodizer_core::log::StageLogger;
 ///   sign.go filter which includes Archive, Binary, LinuxPackage,
 ///   SourceArchive, Makeself, Flatpak, Sbom, Snap, MacOsPackage,
 ///   Installer, DiskImage, Checksum, but NOT internal types like
-///   Signature, Certificate, DockerImage, BrewFormula, etc.)
+///   DockerImage, BrewFormula, etc.). `Signature` and `Certificate`
+///   ARE in `release_uploadable_kinds()` (they DO get uploaded), but
+///   are explicitly excluded from this filter so re-running the sign
+///   stage on a partially-built dist doesn't produce `*.sig.sig` /
+///   `*.pem.sig` chains. Mirrors GoReleaser
+///   `internal/pipe/sign/sign.go:101-110`
+///   (`Not(ByTypes(Signature, Certificate))`, fix #6509).
 /// - `"source"`        → only `ArtifactKind::SourceArchive`
 /// - `"archive"`       → only `ArtifactKind::Archive`
 /// - `"binary"`        → only `ArtifactKind::Binary`
@@ -39,7 +45,8 @@ use anodizer_core::log::StageLogger;
 pub(crate) fn should_sign_artifact(kind: ArtifactKind, filter: &str) -> Result<bool> {
     match filter {
         "none" => Ok(false),
-        "all" | "any" => Ok(is_release_uploadable(kind)),
+        "all" | "any" => Ok(is_release_uploadable(kind)
+            && !matches!(kind, ArtifactKind::Signature | ArtifactKind::Certificate)),
         "source" => Ok(kind == ArtifactKind::SourceArchive),
         "archive" => Ok(kind == ArtifactKind::Archive),
         "binary" => Ok(kind == ArtifactKind::Binary),
