@@ -155,7 +155,11 @@ where
         Err(e) => {
             let err = anyhow::Error::new(HttpError::from_response(e, None))
                 .context(format!("{provider}: {stage} transport error"));
-            if is_retriable(err.root_cause()) {
+            // `as_ref()` exposes the top of the chain (`HttpError`) so
+            // `is_retriable` can downcast and inspect status; `root_cause()`
+            // skips past `HttpError` to the leaf and would mis-classify 5xx.
+            // Pinned by `tests::announce_retry_classifier_matches_5xx_via_anyhow_chain`.
+            if is_retriable(err.as_ref()) {
                 Err(ControlFlow::Continue(err))
             } else {
                 Err(ControlFlow::Break(err))
@@ -173,7 +177,7 @@ where
                     status.as_u16(),
                 ))
                 .context(inner);
-                if is_retriable(wrapped.root_cause()) {
+                if is_retriable(wrapped.as_ref()) {
                     Err(ControlFlow::Continue(wrapped))
                 } else {
                     Err(ControlFlow::Break(wrapped))

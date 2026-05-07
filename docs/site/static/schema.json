@@ -5637,7 +5637,8 @@
             "type": "string"
           }
         }
-      }
+      },
+      "additionalProperties": false
     },
     "HomebrewCaskHook": {
       "description": "Individual hook for install/uninstall phases.",

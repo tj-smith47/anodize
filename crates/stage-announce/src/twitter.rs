@@ -11,6 +11,13 @@ use base64::Engine;
 /// `policy` enables retry on 5xx / 429 / network failures (P1.3). The OAuth
 /// header is rebuilt on every attempt so the `oauth_timestamp` and
 /// `oauth_nonce` are fresh — Twitter rejects replays.
+///
+/// Note: this announcer does NOT route through `helpers::retry_http`
+/// because the OAuth-signing step must run inside the retry loop (with a
+/// fresh nonce/timestamp per attempt), and `retry_http`'s closure does
+/// not have a structured way to fail-fast on a signing error. The
+/// retry-classification logic is otherwise identical to `retry_http`'s
+/// — `is_retriable(err.as_ref())` is the canonical predicate.
 pub fn send_twitter(
     consumer_key: &str,
     consumer_secret: &str,
@@ -48,7 +55,7 @@ pub fn send_twitter(
             Err(e) => {
                 let err = anyhow::Error::new(HttpError::from_response(e, None))
                     .context("twitter: failed to send POST request");
-                if is_retriable(err.root_cause()) {
+                if is_retriable(err.as_ref()) {
                     Err(ControlFlow::Continue(err))
                 } else {
                     Err(ControlFlow::Break(err))
@@ -66,7 +73,7 @@ pub fn send_twitter(
                         status.as_u16(),
                     ))
                     .context(inner);
-                    if is_retriable(wrapped.root_cause()) {
+                    if is_retriable(wrapped.as_ref()) {
                         Err(ControlFlow::Continue(wrapped))
                     } else {
                         Err(ControlFlow::Break(wrapped))

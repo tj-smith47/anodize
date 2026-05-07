@@ -122,7 +122,7 @@ fn do_mutation(
             Err(e) => {
                 let err = anyhow::Error::new(HttpError::from_response(e, None))
                     .context(format!("opencollective: {stage} transport error"));
-                if is_retriable(err.root_cause()) {
+                if is_retriable(err.as_ref()) {
                     Err(ControlFlow::Continue(err))
                 } else {
                     Err(ControlFlow::Break(err))
@@ -142,7 +142,7 @@ fn do_mutation(
                         status.as_u16(),
                     ))
                     .context(msg);
-                    if is_retriable(wrapped.root_cause()) {
+                    if is_retriable(wrapped.as_ref()) {
                         Err(ControlFlow::Continue(wrapped))
                     } else {
                         Err(ControlFlow::Break(wrapped))

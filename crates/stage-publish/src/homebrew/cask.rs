@@ -71,7 +71,6 @@ cask "{{ name }}" do
 // ---------------------------------------------------------------------------
 
 /// Multi-platform cask architecture entry (within an OS block).
-/// Multi-platform cask architecture entry (within an OS block).
 #[derive(serde::Serialize, Clone)]
 pub struct CaskArchEntry {
     pub(super) arch_block: String, // "intel" or "arm"

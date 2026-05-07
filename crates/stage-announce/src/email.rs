@@ -118,7 +118,7 @@ pub fn send_smtp(
             // get marked Retriable so is_retriable() routes to retry.
             let display = e.to_string();
             let err = anyhow::Error::new(e).context("failed to send email via SMTP");
-            if is_network_error(err.root_cause()) || is_transient_smtp_error(&display) {
+            if is_network_error(err.as_ref()) || is_transient_smtp_error(&display) {
                 Err(ControlFlow::Continue(anyhow::Error::new(Retriable::new(
                     std::io::Error::other(err.to_string()),
                 ))))
@@ -133,13 +133,53 @@ pub fn send_smtp(
 /// Classify SMTP error strings as transient. SMTP protocol replies
 /// `4xx` are temporary failures (e.g. `421 service not available`,
 /// `450 mailbox unavailable`) and should retry; `5xx` are permanent.
+///
+/// Only structured `4yz` reply codes are honored. The previous heuristic
+/// that retried on any message containing `"temporary"` or `"try again"`
+/// was a footgun: real auth-failure replies routinely include those phrases
+/// (e.g. `535 5.7.8 Username and Password not accepted ... (temporarily
+/// disabled)`), which made anodizer hammer the relay with bad credentials
+/// instead of fast-failing.
 pub(crate) fn is_transient_smtp_error(message: &str) -> bool {
-    let lower = message.to_ascii_lowercase();
-    if lower.contains("421 ") || lower.contains("450 ") || lower.contains("451 ") {
-        return true;
+    // 5yz responses are permanent — never retry, regardless of any
+    // transient-sounding prose elsewhere in the message.
+    if has_smtp_response_code(message, b'5') {
+        return false;
     }
-    if lower.contains("temporary") || lower.contains("try again") {
-        return true;
+    // 4yz responses are transient per RFC 5321 §4.2.1.
+    has_smtp_response_code(message, b'4')
+}
+
+/// Returns `true` when `message` contains a token of the shape `Cyz` (where
+/// `C` is the requested class digit, `y` and `z` are any digits) bordered
+/// by ASCII whitespace, end-of-string, or the dash continuation character
+/// from RFC 5321 §4.2.1 multi-line replies. This keeps us from matching
+/// `5.7.8` reply enhancement codes or arbitrary digit triples inside
+/// freeform prose.
+fn has_smtp_response_code(message: &str, class: u8) -> bool {
+    let bytes = message.as_bytes();
+    if bytes.len() < 3 {
+        return false;
+    }
+    for i in 0..=(bytes.len() - 3) {
+        // Boundary check: previous byte must be start-of-string or
+        // whitespace (the typical reply prefix shape).
+        let at_boundary = i == 0 || bytes[i - 1].is_ascii_whitespace();
+        if !at_boundary {
+            continue;
+        }
+        if bytes[i] != class || !bytes[i + 1].is_ascii_digit() || !bytes[i + 2].is_ascii_digit() {
+            continue;
+        }
+        // Trailing boundary: must be end-of-string, whitespace, or `-`
+        // (the SMTP multi-line reply continuation marker).
+        let trailing_ok = match bytes.get(i + 3) {
+            None => true,
+            Some(b) => b.is_ascii_whitespace() || *b == b'-',
+        };
+        if trailing_ok {
+            return true;
+        }
     }
     false
 }
@@ -361,6 +401,65 @@ mod tests {
             resolve_encryption(EmailEncryption::Auto, 2525),
             EmailEncryption::Starttls
         );
+    }
+
+    // ---- is_transient_smtp_error (auth-fail substring trap regression) ---
+
+    #[test]
+    fn auth_fail_with_temporarily_disabled_message_does_not_retry() {
+        // The exact bug: 5xx auth-rejection messages routinely include the
+        // word "temporarily". The old heuristic retried these, hammering
+        // the relay with bad credentials. Now we honor the 5yz code first.
+        let msg = "535 5.7.8 Username and Password not accepted, account temporarily disabled (try again later)";
+        assert!(
+            !is_transient_smtp_error(msg),
+            "5xx auth-fail must NOT classify as transient: {msg}"
+        );
+    }
+
+    #[test]
+    fn smtp_4xx_response_code_classifies_retriable() {
+        for msg in [
+            "421 service not available, closing transmission channel",
+            "450 mailbox temporarily unavailable",
+            "451 requested action aborted: local error in processing",
+            "452 requested action not taken: insufficient system storage",
+        ] {
+            assert!(
+                is_transient_smtp_error(msg),
+                "4xx must classify as transient: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn smtp_5xx_other_codes_do_not_retry() {
+        for msg in [
+            "550 5.1.1 mailbox unavailable",
+            "552 message size exceeds limit",
+            "553 mailbox name not allowed",
+            "554 transaction failed",
+        ] {
+            assert!(
+                !is_transient_smtp_error(msg),
+                "5xx must NOT classify as transient: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn smtp_no_response_code_does_not_match() {
+        // Without a structured response code we defer to the network-error
+        // matcher (handled at the call-site). This helper alone must not
+        // false-positive on freeform prose containing the digit "4".
+        assert!(!is_transient_smtp_error("connection refused"));
+        assert!(!is_transient_smtp_error("4 retries left"));
+    }
+
+    #[test]
+    fn smtp_multiline_continuation_dash_is_recognised() {
+        // RFC 5321 §4.2.1 multi-line reply: `421-` introduces a continuation.
+        assert!(is_transient_smtp_error("421-service unavailable"));
     }
 
     #[test]

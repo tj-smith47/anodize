@@ -1,3 +1,5 @@
+use std::error::Error as StdError;
+use std::fmt;
 use std::ops::ControlFlow;
 
 use anodizer_core::log::StageLogger;
@@ -6,6 +8,21 @@ use anyhow::Result;
 use serde_json::json;
 
 const API_BASE: &str = "https://api.linkedin.com";
+
+/// Typed sentinel signaling that `/v2/userinfo` returned 403 and the caller
+/// should fall back to the legacy `/v2/me` endpoint. Replaces the previous
+/// `__linkedin_fallback__` magic-string sentinel routed through error
+/// messages — typed downcast is robust to message rewrites.
+#[derive(Debug)]
+struct LinkedinFallback;
+
+impl fmt::Display for LinkedinFallback {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("linkedin: /v2/userinfo returned 403, fall back to /v2/me")
+    }
+}
+
+impl StdError for LinkedinFallback {}
 
 /// Loose structural check on a LinkedIn access token. LinkedIn issues
 /// signed JWTs (3 dot-separated base64url segments) and opaque OAuth tokens
@@ -83,7 +100,7 @@ pub fn send_linkedin(
             Err(e) => {
                 let err = anyhow::Error::new(HttpError::from_response(e, None))
                     .context("linkedin: POST /v2/shares transport error");
-                if is_retriable(err.root_cause()) {
+                if is_retriable(err.as_ref()) {
                     Err(ControlFlow::Continue(err))
                 } else {
                     Err(ControlFlow::Break(err))
@@ -103,7 +120,7 @@ pub fn send_linkedin(
                         status.as_u16(),
                     ))
                     .context(inner);
-                    if is_retriable(wrapped.root_cause()) {
+                    if is_retriable(wrapped.as_ref()) {
                         Err(ControlFlow::Continue(wrapped))
                     } else {
                         Err(ControlFlow::Break(wrapped))
@@ -144,7 +161,7 @@ fn get_profile_urn(
             Err(e) => {
                 let err = anyhow::Error::new(HttpError::from_response(e, None))
                     .context("linkedin: GET /v2/userinfo transport error");
-                if is_retriable(err.root_cause()) {
+                if is_retriable(err.as_ref()) {
                     Err(ControlFlow::Continue(err))
                 } else {
                     Err(ControlFlow::Break(err))
@@ -153,9 +170,10 @@ fn get_profile_urn(
             Ok(resp) => {
                 let status = resp.status();
                 if status == reqwest::StatusCode::FORBIDDEN {
-                    // Distinct sentinel: 403 means "fall back to legacy
-                    // endpoint" rather than retry.
-                    return Err(ControlFlow::Break(anyhow::anyhow!("__linkedin_fallback__")));
+                    // Typed sentinel: 403 means "fall back to legacy
+                    // endpoint" rather than retry. The downcast at the
+                    // call-site is robust to error-message rewrites.
+                    return Err(ControlFlow::Break(anyhow::Error::new(LinkedinFallback)));
                 }
                 let body = anodizer_core::http::body_of_blocking(resp);
                 if status.is_success() {
@@ -168,7 +186,7 @@ fn get_profile_urn(
                         status.as_u16(),
                     ))
                     .context(inner);
-                    if is_retriable(wrapped.root_cause()) {
+                    if is_retriable(wrapped.as_ref()) {
                         Err(ControlFlow::Continue(wrapped))
                     } else {
                         Err(ControlFlow::Break(wrapped))
@@ -180,7 +198,7 @@ fn get_profile_urn(
 
     let text = match outcome {
         Ok(text) => text,
-        Err(e) if e.to_string().contains("__linkedin_fallback__") => {
+        Err(e) if e.downcast_ref::<LinkedinFallback>().is_some() => {
             return get_profile_urn_legacy(client, access_token, policy);
         }
         Err(e) => return Err(e),
@@ -208,7 +226,7 @@ fn get_profile_urn_legacy(
             Err(e) => {
                 let err = anyhow::Error::new(HttpError::from_response(e, None))
                     .context("linkedin: GET /v2/me transport error");
-                if is_retriable(err.root_cause()) {
+                if is_retriable(err.as_ref()) {
                     Err(ControlFlow::Continue(err))
                 } else {
                     Err(ControlFlow::Break(err))
@@ -231,7 +249,7 @@ fn get_profile_urn_legacy(
                         status.as_u16(),
                     ))
                     .context(inner);
-                    if is_retriable(wrapped.root_cause()) {
+                    if is_retriable(wrapped.as_ref()) {
                         Err(ControlFlow::Continue(wrapped))
                     } else {
                         Err(ControlFlow::Break(wrapped))

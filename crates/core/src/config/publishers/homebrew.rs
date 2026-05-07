@@ -316,7 +316,7 @@ pub struct HomebrewCaskConflictEntry {
 
 /// Auto-generate shell completions from an executable.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct HomebrewCaskGeneratedCompletions {
     /// Binary to generate completions from.
     pub executable: Option<String>,

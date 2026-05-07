@@ -69,7 +69,7 @@ pub fn send_webhook(
             Err(e) => {
                 let err = anyhow::Error::new(HttpError::from_response(e, None))
                     .context("webhook: failed to send POST request");
-                if is_retriable(err.root_cause()) {
+                if is_retriable(err.as_ref()) {
                     Err(ControlFlow::Continue(err))
                 } else {
                     Err(ControlFlow::Break(err))
@@ -92,7 +92,7 @@ pub fn send_webhook(
                         status,
                     ))
                     .context(inner);
-                    if is_retriable(wrapped.root_cause()) {
+                    if is_retriable(wrapped.as_ref()) {
                         Err(ControlFlow::Continue(wrapped))
                     } else {
                         Err(ControlFlow::Break(wrapped))

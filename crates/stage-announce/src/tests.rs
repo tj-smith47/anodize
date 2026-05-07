@@ -2208,3 +2208,33 @@ fn test_resolve_webhook_headers_basic_auth_priority_over_bearer() {
         "basic auth must take priority over bearer token"
     );
 }
+
+/// Cross-announcer regression pin for the `is_retriable(...root_cause())`
+/// bug: the announce stage wraps `HttpError(status=503)` in an
+/// `anyhow::Error` via `.context(...)`. A leaf-walking classifier
+/// (`root_cause()`) misses the `HttpError` and would (incorrectly)
+/// classify the failure as non-retriable. The correct API is
+/// `as_ref()` (returns the top of the chain).
+///
+/// Failing this test on every change in announce/* retry-classifier sites
+/// is what would have caught the bug at PR-time. Drift here is the canary.
+#[test]
+fn announce_retry_classifier_matches_5xx_via_anyhow_chain() {
+    use anodizer_core::retry::{HttpError, is_retriable};
+    let inner = anyhow::anyhow!("provider: HTTP 503 — body");
+    let wrapped = anyhow::Error::new(HttpError::new(
+        std::io::Error::other(inner.to_string()),
+        503,
+    ))
+    .context(inner);
+    assert!(
+        is_retriable(wrapped.as_ref()),
+        "5xx must classify retriable via as_ref()"
+    );
+    // Drift-guard: prove root_cause() walks past HttpError to the leaf
+    // — that's the exact API mistake the announce sites had.
+    assert!(
+        !is_retriable(wrapped.root_cause()),
+        "root_cause() reaches the leaf — wrong API for chain-walk classification"
+    );
+}

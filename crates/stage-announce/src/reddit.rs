@@ -79,7 +79,7 @@ pub fn send_reddit(post: &RedditPost<'_>, log: &StageLogger, policy: &RetryPolic
             Err(e) => {
                 let err = anyhow::Error::new(HttpError::from_response(e, None))
                     .context("reddit: OAuth token transport error");
-                if is_retriable(err.root_cause()) {
+                if is_retriable(err.as_ref()) {
                     Err(ControlFlow::Continue(err))
                 } else {
                     Err(ControlFlow::Break(err))
@@ -100,7 +100,7 @@ pub fn send_reddit(post: &RedditPost<'_>, log: &StageLogger, policy: &RetryPolic
                         status.as_u16(),
                     ))
                     .context(inner);
-                    if is_retriable(wrapped.root_cause()) {
+                    if is_retriable(wrapped.as_ref()) {
                         Err(ControlFlow::Continue(wrapped))
                     } else {
                         Err(ControlFlow::Break(wrapped))
@@ -134,7 +134,7 @@ pub fn send_reddit(post: &RedditPost<'_>, log: &StageLogger, policy: &RetryPolic
             Err(e) => {
                 let err = anyhow::Error::new(HttpError::from_response(e, None))
                     .context("reddit: submit transport error");
-                if is_retriable(err.root_cause()) {
+                if is_retriable(err.as_ref()) {
                     Err(ControlFlow::Continue(err))
                 } else {
                     Err(ControlFlow::Break(err))
@@ -155,7 +155,7 @@ pub fn send_reddit(post: &RedditPost<'_>, log: &StageLogger, policy: &RetryPolic
                         status.as_u16(),
                     ))
                     .context(inner);
-                    if is_retriable(wrapped.root_cause()) {
+                    if is_retriable(wrapped.as_ref()) {
                         Err(ControlFlow::Continue(wrapped))
                     } else {
                         Err(ControlFlow::Break(wrapped))

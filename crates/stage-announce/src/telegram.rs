@@ -77,7 +77,7 @@ pub fn send_telegram(
                 let msg = redact_bot_token(&e.to_string(), bot_token);
                 let err = anyhow::Error::new(HttpError::from_response(e, None))
                     .context(format!("telegram: failed to send POST request: {msg}"));
-                if is_retriable(err.root_cause()) {
+                if is_retriable(err.as_ref()) {
                     Err(ControlFlow::Continue(err))
                 } else {
                     Err(ControlFlow::Break(err))
@@ -95,7 +95,7 @@ pub fn send_telegram(
                         status.as_u16(),
                     ))
                     .context(inner);
-                    return if is_retriable(wrapped.root_cause()) {
+                    return if is_retriable(wrapped.as_ref()) {
                         Err(ControlFlow::Continue(wrapped))
                     } else {
                         Err(ControlFlow::Break(wrapped))
