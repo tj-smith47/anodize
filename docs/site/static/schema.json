@@ -4341,6 +4341,7 @@
       }
     },
     "DockerRetryConfig": {
+      "description": "Per-pipe retry configuration for `docker.retry` / `docker_manifest.retry`.\n\n**Deprecated**: prefer the top-level `retry:` block ([`super::RetryConfig`]) which applies to docker pipes (and every other network-bound stage) via `Project.Retry`. When a per-pipe block is present alongside the top-level block, the per-pipe values win for back-compat, but `stage-docker::resolve_retry_params` emits a one-shot deprecation warning. New configs should leave this field unset.",
       "type": "object",
       "properties": {
         "attempts": {

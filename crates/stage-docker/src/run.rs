@@ -160,6 +160,18 @@ impl Stage for super::DockerStage {
                             v2_cfg.dockerfile, krate.name
                         )
                     })?;
+                // GR parity (commit d788340): check the *rendered* template for
+                // emptiness (not the raw template). Lets users write
+                // `dockerfile: "{{ if .IsSnapshot }}Dockerfile{{ end }}"` and
+                // skip the build cleanly during release instead of attempting
+                // to copy a non-existent file.
+                if rendered_dockerfile.trim().is_empty() {
+                    log.status(&format!(
+                        "docker_v2[{}]: skipping crate {} — dockerfile template rendered empty",
+                        idx, krate.name
+                    ));
+                    continue;
+                }
                 copy_dockerfile(
                     &rendered_dockerfile,
                     &staging_dir,
@@ -351,14 +363,19 @@ impl Stage for super::DockerStage {
                         should_load,
                     )?;
 
-                    // Resolve retry configuration
-                    let (max_attempts, base_delay, max_delay) = resolve_retry_params(&v2_cfg.retry)
-                        .with_context(|| {
-                            format!(
-                                "docker_v2: invalid retry config for crate {} index {}",
-                                krate.name, idx
-                            )
-                        })?;
+                    // Resolve retry configuration: per-pipe `docker_v2.retry`
+                    // takes precedence (with deprecation warning) over the
+                    // top-level `Project.Retry`; defaults apply when neither
+                    // is set.
+                    let (max_attempts, base_delay, max_delay) =
+                        resolve_retry_params(&v2_cfg.retry, &ctx.config.retry).with_context(
+                            || {
+                                format!(
+                                    "docker_v2: invalid retry config for crate {} index {}",
+                                    krate.name, idx
+                                )
+                            },
+                        )?;
 
                     // Track multi-platform V2 tags so docker_manifests can skip
                     // redundant manifest creation for images that are already
@@ -742,14 +759,17 @@ impl Stage for super::DockerStage {
 
                         // Manifest create/push with retry logic — registry
                         // operations can fail transiently. Uses the
-                        // manifest's retry config (same as docker build).
+                        // manifest's retry config (same as docker build):
+                        // per-pipe wins (with deprecation warning) over the
+                        // top-level `Project.Retry`; defaults apply otherwise.
                         let (manifest_max_attempts, manifest_base_delay, manifest_max_delay) =
-                            resolve_retry_params(&manifest_cfg.retry).with_context(|| {
-                                format!(
-                                    "docker: invalid retry config for manifest {} crate {}",
-                                    midx, krate.name
-                                )
-                            })?;
+                            resolve_retry_params(&manifest_cfg.retry, &ctx.config.retry)
+                                .with_context(|| {
+                                    format!(
+                                        "docker: invalid retry config for manifest {} crate {}",
+                                        midx, krate.name
+                                    )
+                                })?;
 
                         {
                             use anodizer_core::retry::{RetryPolicy, retry_sync};

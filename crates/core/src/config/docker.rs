@@ -8,6 +8,18 @@ use super::{StringOrBool, deserialize_string_or_bool_opt};
 
 // Use `DockerV2Config` (canonical) for docker image builds.
 
+/// Per-pipe retry configuration for `docker.retry` / `docker_manifest.retry`.
+///
+/// **Deprecated**: prefer the top-level `retry:` block ([`super::RetryConfig`])
+/// which applies to docker pipes (and every other network-bound stage) via
+/// `Project.Retry`. When a per-pipe block is present alongside the top-level
+/// block, the per-pipe values win for back-compat, but
+/// `stage-docker::resolve_retry_params` emits a one-shot deprecation warning.
+/// New configs should leave this field unset.
+//
+// Note: `#[deprecated]` on a field is unstable, so the deprecation lives
+// in rustdoc + the runtime warn. JSON-schema consumers see the doc comment
+// via schemars.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default)]
 pub struct DockerRetryConfig {

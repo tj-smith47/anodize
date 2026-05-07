@@ -1,7 +1,9 @@
 #![allow(clippy::field_reassign_with_default)]
 
 use super::DockerStage;
-use super::build::{DockerBuildJob, find_sha256_digest, list_staging_dir_recursive};
+use super::build::{
+    DockerBuildJob, find_sha256_digest, format_v2_created_images_log, list_staging_dir_recursive,
+};
 use super::command::{
     apply_docker_v2_defaults, build_docker_command, build_docker_v2_command,
     generate_v2_image_tags, is_docker_v2_sbom_enabled, is_docker_v2_skipped, resolve_backend,
@@ -81,6 +83,22 @@ fn test_stage_skips_without_docker_config() {
 fn test_platform_to_arch_no_slash() {
     // Fallback: no slash in string returns the whole string
     assert_eq!(platform_to_arch("amd64"), "amd64");
+}
+
+#[test]
+fn parse_platform_no_arch_does_not_panic() {
+    // Q2.1 (GR commit 9e9f87c): the Go version panicked on `"linux"` because
+    // `strings.Split("linux", "/")` returns a single-element slice and the
+    // code indexed `parts[1]`. The Rust API uses `match parts.as_slice()`
+    // and falls through to `_ => platform`, so the single-element case is
+    // impossible-by-construction. This regression test asserts the
+    // contract: `platform_to_arch("linux")` MUST return without panicking,
+    // and the contract is "echo back the input string when no arch is
+    // present".
+    assert_eq!(platform_to_arch("linux"), "linux");
+    assert_eq!(platform_to_arch(""), "");
+    // Tag-suffix path goes through the same parser; verify it's also safe.
+    assert_eq!(tag_suffix("linux"), "linux".to_string());
 }
 
 #[test]
@@ -441,7 +459,7 @@ fn test_parse_duration_string_invalid_number() {
 
 #[test]
 fn test_resolve_retry_params_none() {
-    let (attempts, delay, max_delay) = resolve_retry_params(&None).unwrap();
+    let (attempts, delay, max_delay) = resolve_retry_params(&None, &None).unwrap();
     assert_eq!(attempts, 10);
     assert_eq!(delay, Duration::from_secs(10));
     // Default max_delay is 5 minutes to prevent unbounded backoff
@@ -456,7 +474,7 @@ fn test_resolve_retry_params_defaults() {
         delay: None,
         max_delay: None,
     });
-    let (attempts, delay, max_delay) = resolve_retry_params(&cfg).unwrap();
+    let (attempts, delay, max_delay) = resolve_retry_params(&cfg, &None).unwrap();
     assert_eq!(attempts, 10);
     assert_eq!(delay, Duration::from_secs(10));
     // Default max_delay is 5 minutes to prevent unbounded backoff
@@ -471,7 +489,7 @@ fn test_resolve_retry_params_full() {
         delay: Some("500ms".to_string()),
         max_delay: Some("10s".to_string()),
     });
-    let (attempts, delay, max_delay) = resolve_retry_params(&cfg).unwrap();
+    let (attempts, delay, max_delay) = resolve_retry_params(&cfg, &None).unwrap();
     assert_eq!(attempts, 3);
     assert_eq!(delay, Duration::from_millis(500));
     assert_eq!(max_delay, Some(Duration::from_secs(10)));
@@ -485,7 +503,53 @@ fn test_resolve_retry_params_invalid_delay() {
         delay: Some("invalid".to_string()),
         max_delay: None,
     });
-    assert!(resolve_retry_params(&cfg).is_err());
+    assert!(resolve_retry_params(&cfg, &None).is_err());
+}
+
+// P1.6 — top-level Project.Retry is consulted when per-pipe is absent;
+// per-pipe wins (with deprecation warning) when both are set.
+#[test]
+fn test_docker_retry_warns_when_per_pipe_set_and_falls_back_to_top_level_when_not() {
+    use anodizer_core::config::{DockerRetryConfig, HumanDuration, RetryConfig};
+
+    // Case 1: neither set → defaults
+    let (a, d, m) = resolve_retry_params(&None, &None).unwrap();
+    assert_eq!(a, 10);
+    assert_eq!(d, Duration::from_secs(10));
+    assert_eq!(m, Some(Duration::from_secs(300)));
+
+    // Case 2: only top-level set → top-level wins (no warning expected)
+    let top = Some(RetryConfig {
+        attempts: 4,
+        delay: HumanDuration(Duration::from_millis(250)),
+        max_delay: HumanDuration(Duration::from_secs(7)),
+    });
+    let (a, d, m) = resolve_retry_params(&None, &top).unwrap();
+    assert_eq!(a, 4);
+    assert_eq!(d, Duration::from_millis(250));
+    assert_eq!(m, Some(Duration::from_secs(7)));
+
+    // Case 3: per-pipe set (overrides top-level, fires deprecation warn).
+    // We can't easily intercept tracing output here without a subscriber,
+    // so we verify the values are taken from per-pipe and rely on the
+    // OnceLock + tracing::warn! contract documented in retry.rs.
+    let per_pipe = Some(DockerRetryConfig {
+        attempts: Some(2),
+        delay: Some("100ms".to_string()),
+        max_delay: Some("500ms".to_string()),
+    });
+    let (a, d, m) = resolve_retry_params(&per_pipe, &top).unwrap();
+    assert_eq!(a, 2);
+    assert_eq!(d, Duration::from_millis(100));
+    assert_eq!(m, Some(Duration::from_millis(500)));
+
+    // Case 4: per-pipe set, top-level absent — same precedence, still uses
+    // per-pipe. (The OnceLock means the warn fired once in case 3 and
+    // won't fire again here, but the value resolution must still be correct.)
+    let (a, d, m) = resolve_retry_params(&per_pipe, &None).unwrap();
+    assert_eq!(a, 2);
+    assert_eq!(d, Duration::from_millis(100));
+    assert_eq!(m, Some(Duration::from_millis(500)));
 }
 
 // -----------------------------------------------------------------------
@@ -1504,6 +1568,108 @@ fn test_docker_v2_dry_run_registers_artifacts() {
         assert_eq!(img.metadata.get("api").unwrap(), "v2");
         assert_eq!(img.metadata.get("id").unwrap(), "myapp-v2");
     }
+}
+
+/// Q3.1 (GR commit e7a4afa, issue #6515): the v2 build log line emits
+/// `images` and `digest` as separate fields, not as a single
+/// `image@digest` blob.
+///
+/// Capturing `tracing` output here would need a full `tracing_subscriber`
+/// fixture, which adds dev-dep weight. Instead, we extract the
+/// human-readable status line into a pure helper
+/// (`format_v2_created_images_log`) and assert its shape directly. The
+/// `tracing::info!(images = …, digest = …)` macro at the call site uses
+/// the same two-field shape — verified by code inspection in build.rs.
+#[test]
+fn v2_digest_log_split_emits_images_and_digest_as_separate_fields() {
+    let images = vec![
+        "ghcr.io/owner/app:v1.0.0".to_string(),
+        "ghcr.io/owner/app:latest".to_string(),
+    ];
+    let digest = "sha256:deadbeef".to_string();
+    let line = format_v2_created_images_log(&images, &digest);
+
+    // Both fields are independently addressable: a log scraper can match
+    // `images=…` and `digest=…` without splitting on `@`.
+    assert!(
+        line.contains("images=ghcr.io/owner/app:v1.0.0,ghcr.io/owner/app:latest"),
+        "log line should expose `images=` field with comma-joined tags: {line}",
+    );
+    assert!(
+        line.contains("digest=sha256:deadbeef"),
+        "log line should expose `digest=` field separately: {line}",
+    );
+    // The pre-fix shape `image@digest` MUST NOT appear.
+    assert!(
+        !line.contains("ghcr.io/owner/app:v1.0.0@sha256:deadbeef"),
+        "log line must NOT embed image@digest in a single field (regression: GR e7a4afa): {line}",
+    );
+}
+
+/// P5.1 (GR commit d788340): when the `dockerfile:` template renders to the
+/// empty string, the v2 build must skip cleanly instead of attempting to
+/// copy a non-existent file.
+///
+/// This is the equivalent of GR's `dockerfile: "{{ if .IsSnapshot }}Dockerfile{{ end }}"`
+/// during a release (IsSnapshot=false) — the rendered string is empty, so
+/// the pipe should bail with "skipping … rendered empty" and produce no
+/// artifacts.
+#[test]
+fn dockerfile_template_renders_to_empty_skips_pipe() {
+    use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    // Note: NO dockerfile written — if the skip logic is broken and the
+    // pipe attempts to copy, the missing-file error would surface as a
+    // distinct failure mode than the clean skip we expect.
+
+    let v2_cfg = DockerV2Config {
+        id: Some("myapp-v2".to_string()),
+        images: vec!["ghcr.io/owner/myapp".to_string()],
+        tags: vec!["{{ Tag }}".to_string()],
+        // Tera analog of GR's `{{ if .IsSnapshot }}Dockerfile{{ end }}`.
+        // With IsSnapshot=false (default Context), this renders to "".
+        dockerfile: "{% if IsSnapshot %}Dockerfile{% endif %}".to_string(),
+        platforms: Some(vec!["linux/amd64".to_string()]),
+        ..Default::default()
+    };
+
+    let crate_cfg = CrateConfig {
+        name: "myapp".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        docker_v2: Some(vec![v2_cfg]),
+        ..Default::default()
+    };
+
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![crate_cfg];
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+    let stage = DockerStage;
+    // Must succeed with a clean skip — not error out trying to copy a
+    // missing Dockerfile.
+    stage.run(&mut ctx).expect("clean skip, not copy failure");
+
+    // No DockerImageV2 artifacts should be registered for the skipped pipe.
+    let images = ctx.artifacts.by_kind(ArtifactKind::DockerImageV2);
+    assert!(
+        images.is_empty(),
+        "expected no v2 images when dockerfile template renders empty, got {:?}",
+        images.iter().map(|a| &a.name).collect::<Vec<_>>(),
+    );
 }
 
 #[test]

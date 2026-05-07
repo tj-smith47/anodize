@@ -237,6 +237,7 @@ dependencies = [
  "anyhow",
  "serde_yaml_ng",
  "tempfile",
+ "tracing",
 ]
 
 [[package]]

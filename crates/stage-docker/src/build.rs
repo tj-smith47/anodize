@@ -44,6 +44,19 @@ pub(crate) fn list_staging_dir_recursive(
 // find_sha256_digest — extract digest from docker push stdout
 // ---------------------------------------------------------------------------
 
+/// Format the v2 created-images log line with `images` and `digest` as
+/// **separate** fields. GR parity (commit e7a4afa, issue #6515): older
+/// versions embedded `image@digest` in a single field, which was hard to
+/// parse from log aggregators. Now each field is independently
+/// addressable.
+pub(crate) fn format_v2_created_images_log(images: &[String], digest: &str) -> String {
+    format!(
+        "created images: images={} digest={}",
+        images.join(","),
+        digest
+    )
+}
+
 /// Extract a `sha256:<64-hex>` digest from text, typically the stdout of
 /// `docker push`.  Uses plain string parsing to avoid a regex dependency.
 pub(crate) fn find_sha256_digest(text: &str) -> Option<&str> {
@@ -376,6 +389,17 @@ pub(crate) fn execute_docker_build(
         if let Ok(digest_content) = fs::read_to_string(&iidfile) {
             let digest = digest_content.trim().to_string();
             if !digest.is_empty() {
+                // GR parity (commit e7a4afa): emit the created-images log with
+                // `images` and `digest` as *separate* structured fields rather
+                // than embedding `image@digest` in a single field. Easier to
+                // query in log aggregators and matches GR's `WithField("images",
+                // ...).WithField("digest", ...)` shape.
+                tracing::info!(
+                    images = %job.rendered_tags.join("\n"),
+                    digest = %digest,
+                    "created images",
+                );
+                log.status(&format_v2_created_images_log(&job.rendered_tags, &digest));
                 for tag in &job.rendered_tags {
                     tag_digests.insert(tag.clone(), digest.clone());
                 }
