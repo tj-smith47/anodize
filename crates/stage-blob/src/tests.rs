@@ -1104,6 +1104,62 @@ fn test_q9_1_template_resolved_provider_exercises_s3_acl_validator() {
     );
 }
 
+#[test]
+fn test_q9_1_templated_provider_routes_through_s3_acl_validator() {
+    // Composed end-to-end test: this is the contract the prior two tests
+    // pinned independently — render-then-dispatch happens together, and a
+    // templated provider value resolving to "s3" plus an invalid ACL must
+    // be rejected by the S3-arm validator. The earlier dry-run + direct
+    // `build_s3_store` tests cover the two halves; this one rules out a
+    // regression where rendering and dispatch grow apart (e.g. a future
+    // refactor that bypasses Provider::parse for templated values).
+    //
+    // Drives the validation path via `validate_only`, the crate-private
+    // hook added in `run.rs` for exactly this purpose: render the
+    // templated provider, dispatch via `Provider::parse`, then `build_store`
+    // — but stop short of the network upload.
+    let config = BlobConfig {
+        provider: "{{ ProviderName }}".to_string(),
+        bucket: "my-bucket".to_string(),
+        acl: Some("invalid-acl-value".to_string()),
+        ..Default::default()
+    };
+
+    let mut ctx_opts = ContextOptions::default();
+    // Crucially NOT dry_run: validate_only ignores the dry-run flag, so a
+    // future change that wires this into a stage entry point can't quietly
+    // short-circuit on dry_run and skip the validator.
+    ctx_opts.dry_run = false;
+    let mut ctx = Context::new(
+        anodizer_core::config::Config {
+            project_name: "test".to_string(),
+            ..Default::default()
+        },
+        ctx_opts,
+    );
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("ProjectName", "test");
+    ctx.template_vars_mut().set("ProviderName", "s3");
+
+    let result = crate::run::validate_only(&config, &ctx);
+    assert!(
+        result.is_err(),
+        "templated provider that renders to 's3' must reach the S3 ACL \
+         validator and reject 'invalid-acl-value'; got Ok"
+    );
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("invalid S3 canned ACL"),
+        "validator error must name the S3 ACL rejection (proves the \
+         template rendered, dispatched into S3, and reached the ACL gate); \
+         got: {err}"
+    );
+    assert!(
+        err.contains("invalid-acl-value"),
+        "validator error should echo the offending ACL value, got: {err}"
+    );
+}
+
 // -----------------------------------------------------------------------
 // StringOrBool unit tests
 // -----------------------------------------------------------------------

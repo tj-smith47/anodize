@@ -2,11 +2,10 @@ use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::context::Context;
 use anodizer_core::hashing::sha256_file;
 use anodizer_core::log::StageLogger;
-use anodizer_core::retry::{HttpError, RetryPolicy, is_retriable, retry_sync};
+use anodizer_core::retry::{RetryPolicy, SuccessClass, retry_http_blocking};
 use anyhow::{Context as _, Result, bail};
 use std::collections::HashMap;
 use std::fs;
-use std::ops::ControlFlow;
 
 // ---------------------------------------------------------------------------
 // validate_upload_mode
@@ -243,11 +242,11 @@ pub fn render_artifact_url(
 
 /// Upload a single artifact to the target URL.
 ///
-/// Wraps the request in [`retry_sync`] using `policy` so transport errors,
-/// 5xx responses, and 429s retry per the user's `retry:` config (mirrors
-/// GoReleaser `internal/pipe/upload/upload.go::doUpload` which also wraps
-/// uploads in `retryx.Do`). 4xx responses fast-fail through
-/// [`ControlFlow::Break`].
+/// Drives the per-attempt request through [`retry_http_blocking`], which
+/// applies the shared `retry_sync` machinery: transport errors, 5xx
+/// responses, and 429s retry per the user's `retry:` config (mirrors
+/// GoReleaser `internal/pipe/upload/upload.go::doUpload`); 4xx responses
+/// fast-fail.
 #[allow(clippy::too_many_arguments)]
 pub fn upload_single_artifact(
     client: &reqwest::blocking::Client,
@@ -290,6 +289,12 @@ pub fn upload_single_artifact(
     // Pre-compute rendered custom-header values so we don't re-render on
     // every retry attempt (and so render failures fail-fast outside the
     // retry loop, where they belong).
+    //
+    // A render failure here surfaces as a configuration error (bad template
+    // syntax, missing variable, …); silently keeping the unrendered value
+    // would push `{{ ... }}` literals onto the wire as header values, which
+    // Artifactory typically rejects with a confusing 400. Honest fail-fast
+    // matches what the comment above promises.
     let mut rendered_headers: Vec<(String, String)> = Vec::with_capacity(custom_headers.len());
     for (k, v) in custom_headers {
         let mut vars = ctx.template_vars().clone();
@@ -304,85 +309,68 @@ pub fn upload_single_artifact(
             vars.set("Arch", &arch);
             vars.set("Target", target);
         }
-        let rendered_v = anodizer_core::template::render(v, &vars).unwrap_or_else(|_| v.clone());
+        let rendered_v = anodizer_core::template::render(v, &vars).with_context(|| {
+            format!(
+                "artifactory: rendering custom header '{}' for '{}'",
+                k,
+                artifact.name()
+            )
+        })?;
         rendered_headers.push((k.clone(), rendered_v));
     }
 
+    // Validate the HTTP method up-front so the per-attempt send closure
+    // can't see an unsupported value (and so a typo fails-fast outside
+    // the retry loop, where it belongs — rebuilding the same Break error
+    // on every attempt is wasted work).
     let method_upper = method.to_uppercase();
-    let resp = retry_sync(policy, |attempt| {
-        if attempt > 1 {
-            log.verbose(&format!(
-                "artifactory: retrying upload of {} (attempt {})",
-                artifact.name(),
-                attempt
-            ));
-        }
+    match method_upper.as_str() {
+        "PUT" | "POST" => {}
+        other => bail!("artifactory: unsupported HTTP method '{}'", other),
+    }
 
-        let mut req = match method_upper.as_str() {
-            "PUT" => client.put(url),
-            "POST" => client.post(url),
-            other => {
-                return Err(ControlFlow::Break(anyhow::anyhow!(
-                    "artifactory: unsupported HTTP method '{}'",
-                    other
-                )));
+    let label = format!("artifactory: upload of '{}'", artifact.name());
+    let art_name = artifact.name().to_string();
+    let (status, _body) = retry_http_blocking(
+        &label,
+        policy,
+        SuccessClass::AllowRedirects,
+        |attempt| {
+            if attempt > 1 {
+                log.verbose(&format!(
+                    "artifactory: retrying upload of {art_name} (attempt {attempt})"
+                ));
             }
-        };
-
-        if !username.is_empty() && !password.is_empty() {
-            req = req.basic_auth(username, Some(password));
-        }
-        if !checksum_header.is_empty() {
-            req = req.header(checksum_header, &checksum);
-        }
-        for (k, v) in &rendered_headers {
-            req = req.header(k.as_str(), v);
-        }
-        req = req.header("Content-Length", body.len().to_string());
-
-        match req.body(body.clone()).send() {
-            Ok(resp) => {
-                let status = resp.status();
-                if status.is_success() || status.is_redirection() {
-                    Ok(status)
-                } else {
-                    // Decode Artifactory's `{"errors":[{...}]}` envelope so
-                    // the error message carries upstream status + message,
-                    // then wrap in HttpError so `is_retriable` routes
-                    // 5xx/429 to retry and 4xx to fast-fail.
-                    let resp_body = anodizer_core::http::body_of_blocking(resp);
-                    let detail = decode_artifactory_error_body(&resp_body);
-                    let inner = anyhow::anyhow!(
-                        "artifactory: upload of '{}' failed: {} {} — {}",
-                        artifact.name(),
-                        method_upper,
-                        status,
-                        detail
-                    );
-                    let wrapped = anyhow::Error::new(HttpError::new(
-                        std::io::Error::other(inner.to_string()),
-                        status.as_u16(),
-                    ))
-                    .context(inner);
-                    if is_retriable(wrapped.as_ref()) {
-                        Err(ControlFlow::Continue(wrapped))
-                    } else {
-                        Err(ControlFlow::Break(wrapped))
-                    }
-                }
+            let mut req = match method_upper.as_str() {
+                "PUT" => client.put(url),
+                // Validated above; the only other accepted value.
+                _ => client.post(url),
+            };
+            if !username.is_empty() && !password.is_empty() {
+                req = req.basic_auth(username, Some(password));
             }
-            Err(e) => {
-                // Transport-layer (DNS/connect/TLS/timeout) — always retriable.
-                // Same shape as `core::retry::classify_http_sync` for the
-                // `Err` branch.
-                let err = anyhow::Error::new(HttpError::from_response(e, None))
-                    .context(format!("artifactory: HTTP request failed for '{}'", url));
-                Err(ControlFlow::Continue(err))
+            if !checksum_header.is_empty() {
+                req = req.header(checksum_header, &checksum);
             }
-        }
-    })?;
+            for (k, v) in &rendered_headers {
+                req = req.header(k.as_str(), v);
+            }
+            req = req.header("Content-Length", body.len().to_string());
+            req.body(body.clone()).send()
+        },
+        |status, resp_body| {
+            // Decode Artifactory's `{"errors":[{...}]}` envelope so the
+            // error message carries upstream status + message; the helper
+            // wraps this in HttpError so is_retriable routes 5xx/429 to
+            // retry and 4xx to fast-fail.
+            let detail = decode_artifactory_error_body(resp_body);
+            format!(
+                "artifactory: upload of '{art_name}' failed: {method_upper} {status} — {detail}"
+            )
+        },
+    )?;
 
-    log.status(&format!("uploaded {} ({})", artifact.name(), resp));
+    log.status(&format!("uploaded {} ({})", artifact.name(), status));
     Ok(())
 }
 

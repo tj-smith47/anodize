@@ -1,10 +1,9 @@
 use anodizer_core::artifact::ArtifactKind;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
-use anodizer_core::retry::{HttpError, RetryPolicy, is_retriable, retry_sync};
+use anodizer_core::retry::{RetryPolicy, SuccessClass, retry_http_blocking};
 use anyhow::{Context as _, Result, bail};
 use std::collections::HashMap;
-use std::ops::ControlFlow;
 
 // ---------------------------------------------------------------------------
 // Helper functions
@@ -59,12 +58,10 @@ fn hex_lower(bytes: &[u8]) -> String {
     out
 }
 
-/// Retry an HTTP request builder, classifying via [`is_retriable`].
-/// `build_send` is called per attempt — it must construct a fresh request
-/// (so multipart bodies can be rebuilt) and call `.send()`. 5xx/429 +
-/// transport errors retry; 4xx fast-fails. Returns the body string on
-/// success, threading the upstream HTTP status into the error chain so a
-/// subsequent `is_retriable` check (if any) can still see the status.
+/// Retry an HTTP request builder, threading classification through the
+/// shared [`retry_http_blocking`] helper. `build_send` is called per attempt
+/// so multipart bodies can be rebuilt. 5xx/429 + transport errors retry;
+/// 4xx fast-fails. Returns `(status, body)` on success.
 fn retry_request<F>(
     label: &str,
     art_name: &str,
@@ -75,50 +72,26 @@ fn retry_request<F>(
 where
     F: FnMut() -> Result<reqwest::blocking::Response, reqwest::Error>,
 {
-    retry_sync(policy, |attempt| {
-        if attempt > 1 {
-            log.verbose(&format!(
-                "cloudsmith: retrying {} for '{}' (attempt {})",
-                label, art_name, attempt
-            ));
-        }
-        match build_send() {
-            Ok(resp) => {
-                let status = resp.status();
-                let body = resp
-                    .text()
-                    .unwrap_or_else(|e| format!("<failed to read body: {}>", e));
-                if status.is_success() {
-                    Ok((status, body))
-                } else {
-                    let inner = anyhow::anyhow!(
-                        "cloudsmith {} for '{}' returned HTTP {}: {}",
-                        label,
-                        art_name,
-                        status,
-                        body.trim()
-                    );
-                    let wrapped = anyhow::Error::new(HttpError::new(
-                        std::io::Error::other(inner.to_string()),
-                        status.as_u16(),
-                    ))
-                    .context(inner);
-                    if is_retriable(wrapped.as_ref()) {
-                        Err(ControlFlow::Continue(wrapped))
-                    } else {
-                        Err(ControlFlow::Break(wrapped))
-                    }
-                }
-            }
-            Err(e) => {
-                let err = anyhow::Error::new(HttpError::from_response(e, None)).context(format!(
-                    "cloudsmith {} transport error for '{}'",
-                    label, art_name
+    let scope = format!("cloudsmith {label} for '{art_name}'");
+    retry_http_blocking(
+        &scope,
+        policy,
+        SuccessClass::Strict,
+        |attempt| {
+            if attempt > 1 {
+                log.verbose(&format!(
+                    "cloudsmith: retrying {label} for '{art_name}' (attempt {attempt})"
                 ));
-                Err(ControlFlow::Continue(err))
             }
-        }
-    })
+            build_send()
+        },
+        |status, body| {
+            format!(
+                "cloudsmith {label} for '{art_name}' returned HTTP {status}: {}",
+                body.trim()
+            )
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -430,13 +403,14 @@ pub fn publish_to_cloudsmith(ctx: &Context, log: &StageLogger) -> Result<()> {
                     .mime_str("application/octet-stream")
                 {
                     Ok(p) => p,
-                    Err(_e) => {
-                        // mime_str only fails on unparsable MIME; "application/octet-stream"
-                        // is always valid, so this branch is unreachable in practice.
-                        // Synthesize a transport-style error so the retry helper sees a
-                        // reqwest::Error and we don't widen the closure return type.
-                        return client.post("data:,").body(Vec::<u8>::new()).send();
-                    }
+                    // `mime_str` only fails on unparsable MIME; the literal
+                    // `"application/octet-stream"` is hard-coded and a valid
+                    // RFC-2045 token, so this arm is structurally unreachable.
+                    // Use `unreachable!` (rather than the previous "synthesize
+                    // a transport error against `data:,`" hack) — that hack
+                    // produced spurious URL-scheme errors that masked real
+                    // bugs and tripped the anti-pattern hook on `unwrap_or`.
+                    Err(_) => unreachable!("application/octet-stream is a valid MIME type"),
                 };
                 form = form.part("file", file_part);
                 client.post(&presigned_url).multipart(form).send()

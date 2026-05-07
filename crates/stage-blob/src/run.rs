@@ -17,6 +17,48 @@ use crate::upload::{
 };
 
 // ---------------------------------------------------------------------------
+// validate_only — config-validation entry point, no I/O dispatched
+// ---------------------------------------------------------------------------
+
+/// Render the provider template, parse it through [`Provider::parse`], and
+/// build the corresponding `ObjectStore` so any provider-keyed validators
+/// (S3 canned-ACL gate, GCS predefined-ACL gate, KMS provider/scheme match,
+/// …) execute. The store itself is discarded — no network is dispatched.
+///
+/// Used by Q9.1 regression tests to pin the contract that a templated
+/// `provider:` field flows through the same dispatch as a literal one. The
+/// surface is `pub(crate)` (test-only consumption); production callers
+/// should use [`BlobStage::run`].
+#[cfg(test)]
+pub(crate) fn validate_only(
+    blob_cfg: &anodizer_core::config::BlobConfig,
+    ctx: &Context,
+) -> Result<()> {
+    if blob_cfg.provider.is_empty() {
+        anyhow::bail!("blobs: provider is required");
+    }
+    if blob_cfg.bucket.is_empty() {
+        anyhow::bail!("blobs: bucket is required");
+    }
+
+    let provider_str = ctx
+        .render_template(&blob_cfg.provider)
+        .with_context(|| format!("blobs: render provider template '{}'", blob_cfg.provider))?;
+    let provider = Provider::parse(&provider_str)?;
+
+    let rendered_bucket = ctx
+        .render_template(&blob_cfg.bucket)
+        .with_context(|| format!("blobs: render bucket template '{}'", blob_cfg.bucket))?;
+
+    // build_store fans out to build_s3_store / build_gcs_store / ... — the
+    // provider-keyed validator chain (canned ACLs, KMS scheme match, …)
+    // runs here. We only need the side-effect of validation; the store is
+    // dropped immediately.
+    let _store = build_store(provider, blob_cfg, &rendered_bucket, ctx)?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // BlobStage
 // ---------------------------------------------------------------------------
 

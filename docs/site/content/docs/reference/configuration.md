@@ -171,7 +171,7 @@ Top-level lifecycle hooks for `before` and `after` blocks. Each block has `pre` 
 ## `changelog`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `abbrev` | integer | — | Hash abbreviation length. Default: 0 (no truncation, emit the full SHA). Set to -1 to omit the hash entirely; positive values truncate to N chars. Mirrors GoReleaser `internal/pipe/changelog/changelog.go`'s `abbrevEntry`. |
+| `abbrev` | integer | — | Hash abbreviation length. Default: 0 (no truncation, emit the full SHA). Set to -1 to omit the hash entirely; positive values truncate to N chars. Values below `-1` are clamped to `-1` for parity with GoReleaser (whose `git log --abbrev=N` panics for `-2`, `-3`, ...). Mirrors GoReleaser `internal/pipe/changelog/changelog.go`'s `abbrevEntry`. |
 | `ai` | ChangelogAiConfig | — | AI-powered changelog enhancement configuration. |
 | `divider` | string | — | Divider string inserted between changelog groups (e.g. `"---"`). Supports templates. |
 | `filters` | ChangelogFilters | — | Commit message filters to include or exclude from the changelog. |

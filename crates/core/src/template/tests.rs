@@ -895,6 +895,14 @@ fn test_reverse_filter_function_invalid_regex_returns_error() {
         &vars,
     );
     assert!(result.is_err(), "invalid regex must produce an error");
+    // Mirror the forward-filter sibling: assert the error chain mentions
+    // the specific failure mode so we don't accept a generic Tera error
+    // (e.g. an arity / arg-name change) as a pass.
+    let err = format!("{:?}", result.unwrap_err());
+    assert!(
+        err.to_lowercase().contains("invalid regex"),
+        "expected 'invalid regex' in error chain, got: {err}"
+    );
 }
 
 #[test]
@@ -923,6 +931,14 @@ fn test_reverse_filter_pipe_invalid_regex_returns_error() {
     assert!(
         result.is_err(),
         "invalid regex in pipe form must produce an error"
+    );
+    // Symmetry with forward-filter pipe sibling: assert the error chain
+    // names the failure mode so a future Tera bump or filter-name rename
+    // doesn't silently degrade this to a generic-error pass.
+    let err = format!("{:?}", result.unwrap_err());
+    assert!(
+        err.to_lowercase().contains("invalid regex"),
+        "expected 'invalid regex' in error chain, got: {err}"
     );
 }
 

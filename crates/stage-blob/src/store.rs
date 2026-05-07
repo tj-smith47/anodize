@@ -14,16 +14,37 @@ use crate::provider::Provider;
 // Store construction — one function per provider
 // ---------------------------------------------------------------------------
 
+/// Hard cap on `object_store::RetryConfig::retry_timeout`. The upstream
+/// docs warn that signed S3/GCS/Azure credentials typically expire on the
+/// order of 15 minutes, so a `retry_timeout` longer than ~5 minutes risks
+/// the entire retry budget being spent on a request whose credentials
+/// silently expired mid-flight. We pin 5 minutes — enough for several
+/// exponential-backoff cycles, short enough to fail before the credentials
+/// do.
+const OBJECT_STORE_RETRY_TIMEOUT_CAP: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
 /// Bridge anodizer's user-facing [`RetryConfig`] (top-level `retry:` block)
 /// into [`object_store::RetryConfig`] so the bucket SDK retries align with
 /// every other HTTP-uploading publisher. `attempts` includes the first try
 /// (matches GoReleaser semantics), so we subtract one to get `max_retries`.
+///
+/// `retry_timeout` is `min(max_delay × attempts, 5 minutes)`. The naive
+/// product (without the cap) yields ~50 minutes for the
+/// [`RetryConfig::default`] (5m × 10), well past any signed-URL credential
+/// lifetime — see [`OBJECT_STORE_RETRY_TIMEOUT_CAP`].
 pub(crate) fn to_object_store_retry(cfg: &RetryConfig) -> ObjectStoreRetryConfig {
-    let max_retries = cfg.attempts.saturating_sub(1) as usize;
+    let policy = cfg.to_policy();
+    let max_retries = policy.max_attempts.saturating_sub(1) as usize;
+    let raw_total = policy.max_delay.saturating_mul(policy.max_attempts.max(1));
+    let retry_timeout = std::cmp::min(raw_total, OBJECT_STORE_RETRY_TIMEOUT_CAP);
     ObjectStoreRetryConfig {
         max_retries,
-        retry_timeout: cfg.max_delay.duration().saturating_mul(cfg.attempts.max(1)),
-        ..Default::default()
+        retry_timeout,
+        backoff: object_store::BackoffConfig {
+            init_backoff: policy.base_delay,
+            max_backoff: policy.max_delay,
+            base: 2.0,
+        },
     }
 }
 
@@ -194,4 +215,59 @@ pub(crate) fn build_azure_store(
             .build()
             .context("blobs: failed to build Azure Blob client")?,
     ))
+}
+
+#[cfg(test)]
+mod retry_bridge_tests {
+    use super::*;
+
+    #[test]
+    fn default_retry_timeout_is_capped_at_five_minutes() {
+        // Default is 10 attempts × 5m max_delay = 50m raw, must be capped to 5m
+        // so signed-URL credentials can't silently expire mid-retry.
+        let bridged = to_object_store_retry(&RetryConfig::default());
+        assert_eq!(bridged.retry_timeout, OBJECT_STORE_RETRY_TIMEOUT_CAP);
+        assert_eq!(bridged.retry_timeout, std::time::Duration::from_secs(300));
+    }
+
+    #[test]
+    fn small_retry_budget_passes_through_uncapped() {
+        // Below the cap: raw_total wins. 3 × 1s = 3s, well under 5m.
+        let cfg = RetryConfig {
+            attempts: 3,
+            delay: anodizer_core::config::HumanDuration(std::time::Duration::from_secs(1)),
+            max_delay: anodizer_core::config::HumanDuration(std::time::Duration::from_secs(1)),
+        };
+        let bridged = to_object_store_retry(&cfg);
+        assert_eq!(bridged.retry_timeout, std::time::Duration::from_secs(3));
+    }
+
+    #[test]
+    fn max_retries_subtracts_one_from_attempts() {
+        // GR semantics: `attempts` includes the first try; `max_retries` does not.
+        let cfg = RetryConfig {
+            attempts: 4,
+            ..RetryConfig::default()
+        };
+        assert_eq!(to_object_store_retry(&cfg).max_retries, 3);
+    }
+
+    #[test]
+    fn backoff_is_threaded_through() {
+        let cfg = RetryConfig {
+            attempts: 5,
+            delay: anodizer_core::config::HumanDuration(std::time::Duration::from_millis(250)),
+            max_delay: anodizer_core::config::HumanDuration(std::time::Duration::from_secs(2)),
+        };
+        let bridged = to_object_store_retry(&cfg);
+        assert_eq!(
+            bridged.backoff.init_backoff,
+            std::time::Duration::from_millis(250)
+        );
+        assert_eq!(
+            bridged.backoff.max_backoff,
+            std::time::Duration::from_secs(2)
+        );
+        assert_eq!(bridged.backoff.base, 2.0);
+    }
 }

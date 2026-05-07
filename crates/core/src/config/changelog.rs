@@ -38,7 +38,9 @@ pub struct ChangelogConfig {
     pub use_source: Option<String>,
     /// Hash abbreviation length. Default: 0 (no truncation, emit the full
     /// SHA). Set to -1 to omit the hash entirely; positive values truncate
-    /// to N chars. Mirrors GoReleaser `internal/pipe/changelog/changelog.go`'s
+    /// to N chars. Values below `-1` are clamped to `-1` for parity with
+    /// GoReleaser (whose `git log --abbrev=N` panics for `-2`, `-3`, ...).
+    /// Mirrors GoReleaser `internal/pipe/changelog/changelog.go`'s
     /// `abbrevEntry`.
     pub abbrev: Option<i32>,
     /// Template for each changelog commit line. Available variables: SHA (full hash), ShortSHA (abbreviated), Message (commit subject), AuthorName, AuthorEmail, Login (per-commit GitHub username, `github` backend only), Logins (per-entry comma-separated list of GitHub usernames for that commit, `github` backend only), AllLogins (comma-separated list of all GitHub usernames across the entire release, `github` backend only).<br><br>Default depends on backend (mirrors GoReleaser `internal/pipe/changelog/changelog.go`'s `formatEntry`, which uses the full SHA):<br>&bull; `git` backend (default): `"{{ SHA }} {{ Message }}"`<br>&bull; `github`/`gitlab`/`gitea` backend: `"{{ SHA }}: {{ Message }} (@Login or AuthorName <AuthorEmail>)"` — falls back to `AuthorName <AuthorEmail>` when `Login` is empty.<br><br>When `abbrev < 0`, the default reduces to `"{{ Message }}"` (no hash prefix).
