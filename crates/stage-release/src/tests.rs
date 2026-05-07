@@ -307,6 +307,7 @@ async fn test_retry_upload_succeeds_immediately() {
 
 #[tokio::test]
 async fn test_retry_upload_retries_transient_errors() {
+    // Network-substring errors are classified retriable by `is_retriable`.
     let attempt = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
     let attempt_clone = attempt.clone();
     let result = retry_upload("test", move || {
@@ -314,7 +315,7 @@ async fn test_retry_upload_retries_transient_errors() {
         async move {
             let n = attempt.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if n < 2 {
-                anyhow::bail!("HTTP 500 Internal Server Error");
+                anyhow::bail!("connection reset by peer");
             }
             Ok(())
         }
@@ -325,23 +326,58 @@ async fn test_retry_upload_retries_transient_errors() {
 }
 
 #[tokio::test]
-async fn test_retry_upload_retries_all_errors() {
-    // GoReleaser retries ALL upload errors. Verify non-5xx errors are also retried.
+async fn retry_upload_fast_fails_4xx_via_inner_classifier() {
+    // Regression guard: the outer `retry_upload` MUST honor the inner
+    // `retry_http_async` 4xx fast-fail decision. Pre-fix, the outer arm
+    // retried every Err unconditionally, amplifying the inner's correct
+    // fast-fail by 10×. After the fix, an `HttpError { status: 422 }` in
+    // the chain breaks immediately (single attempt).
+    use anodizer_core::retry::HttpError;
+    let attempt = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let attempt_clone = attempt.clone();
+    let result = retry_upload("test", move || {
+        let attempt = attempt_clone.clone();
+        async move {
+            attempt.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let inner = HttpError::new(std::io::Error::other("422"), 422);
+            Err::<(), _>(anyhow::Error::new(inner).context("upload failed"))
+        }
+    })
+    .await;
+    assert!(result.is_err(), "4xx must surface as Err");
+    assert_eq!(
+        attempt.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "4xx must NOT retry — fast-fail honors inner classifier"
+    );
+}
+
+#[tokio::test]
+async fn retry_upload_retries_5xx() {
+    // Symmetry with the 4xx case: a 503 in the chain is retriable, so the
+    // outer loop must continue until success (or exhaustion).
+    use anodizer_core::retry::HttpError;
     let attempt = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
     let attempt_clone = attempt.clone();
     let result = retry_upload("test", move || {
         let attempt = attempt_clone.clone();
         async move {
             let n = attempt.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            if n < 1 {
-                anyhow::bail!("HTTP 403: forbidden");
+            if n < 2 {
+                let inner = HttpError::new(std::io::Error::other("503"), 503);
+                Err(anyhow::Error::new(inner).context("upload failed"))
+            } else {
+                Ok(())
             }
-            Ok(())
         }
     })
     .await;
     assert!(result.is_ok());
-    assert_eq!(attempt.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(
+        attempt.load(std::sync::atomic::Ordering::SeqCst),
+        3,
+        "5xx must retry until success"
+    );
 }
 
 // ---- build_release_body tests ----

@@ -189,6 +189,11 @@ where
                         status.as_u16(),
                     ))
                     .context(inner);
+                    // `as_ref()` is the head of the chain; `is_retriable` walks
+                    // `.source()` to reach `HttpError`. `root_cause()` would
+                    // unwrap past `HttpError` to the io::Error leaf and miss
+                    // the status. Pinned by
+                    // `classifier_5xx_via_anyhow_chain_uses_as_ref`.
                     if is_retriable(wrapped.as_ref()) {
                         Err(ControlFlow::Continue(wrapped))
                     } else {
@@ -273,11 +278,10 @@ where
                             status.as_u16(),
                         ))
                         .context(inner);
-                        // `as_ref()` exposes the top of the chain (`HttpError`)
-                        // so `is_retriable` can downcast and inspect status.
-                        // `root_cause()` would skip past `HttpError` to the leaf
-                        // io::Error and mis-classify 5xx as fast-fail (the
-                        // canonical Impl-F bug). Pinned by
+                        // `as_ref()` is the head of the chain; `is_retriable`
+                        // walks `.source()` to reach `HttpError`. `root_cause()`
+                        // would unwrap past `HttpError` to the io::Error leaf
+                        // and miss the status. Pinned by
                         // `classifier_5xx_via_anyhow_chain_uses_as_ref`.
                         if is_retriable(wrapped.as_ref()) {
                             Err(ControlFlow::Continue(wrapped))
@@ -440,20 +444,25 @@ impl StdError for Retriable {
 /// Returns `true` if the message looks like a transient network-layer failure.
 ///
 /// Mirrors GoReleaser `retryx.IsNetworkError`. Substring-matches the lowercased
-/// `Display` form of the error against the standard set of transient phrases:
-/// `connection reset`, `network is unreachable`, `connection closed`,
-/// `connection refused`, `tls handshake timeout`, `i/o timeout`,
-/// `broken pipe`, `timeout awaiting response headers`,
+/// `Display` form of every link in the error chain against the standard set
+/// of transient phrases: `connection reset`, `network is unreachable`,
+/// `connection closed`, `connection refused`, `tls handshake timeout`,
+/// `i/o timeout`, `broken pipe`, `timeout awaiting response headers`,
 /// `context deadline exceeded`. Also recognises [`io::ErrorKind::UnexpectedEof`]
 /// and bare `io::Error` EOF wrappings via `downcast_ref` traversal of the
 /// error chain.
+///
+/// Walks `.source()` for both the EOF check AND the substring check — Rust's
+/// `Display` impls do NOT inherit the wrapped error's text the way Go's
+/// `err.Error()` does, so a reqwest "Connection refused" message buried under
+/// an anyhow context would otherwise be invisible to the head-only string.
 pub fn is_network_error(err: &(dyn StdError + 'static)) -> bool {
-    // 1. Walk the source chain for an io::Error that is EOF / UnexpectedEof.
-    //    Rust has no equivalent of Go's `io.EOF` sentinel, so we treat
-    //    `ErrorKind::UnexpectedEof` and any `io::Error` whose Display form is
-    //    `"EOF"` (the convention crates like `rustls` use) as the analog.
     let mut cur: Option<&(dyn StdError + 'static)> = Some(err);
     while let Some(e) = cur {
+        // 1a. EOF / UnexpectedEof check — Rust has no equivalent of Go's
+        //     `io.EOF` sentinel, so we treat `ErrorKind::UnexpectedEof` and
+        //     any `io::Error` whose Display form is `"EOF"` (rustls / hyper
+        //     convention) as the analog.
         if let Some(io_err) = e.downcast_ref::<io::Error>() {
             if io_err.kind() == io::ErrorKind::UnexpectedEof {
                 return true;
@@ -463,12 +472,18 @@ pub fn is_network_error(err: &(dyn StdError + 'static)) -> bool {
                 return true;
             }
         }
+
+        // 1b. Substring match on each link's own Display (NOT the full
+        //     chain "{e:#}" form, which would double-count the same text on
+        //     deeper links). Lowercased once per link.
+        let s = e.to_string().to_lowercase();
+        if NETWORK_ERROR_NEEDLES.iter().any(|n| s.contains(n)) {
+            return true;
+        }
+
         cur = e.source();
     }
-
-    // 2. Substring match against the lowercased Display form.
-    let s = err.to_string().to_lowercase();
-    NETWORK_ERROR_NEEDLES.iter().any(|n| s.contains(n))
+    false
 }
 
 /// The set of substrings classified as transient by GoReleaser's
@@ -1034,10 +1049,11 @@ mod tests {
     //
     // Mirrors the blocking suite but drives an async reqwest::Client against
     // the same hand-rolled TCP responder (running on a worker thread, so the
-    // tokio reactor is free to drive the client futures). reqwest::Error has
-    // no public constructor — the transport-error branch is exercised
-    // indirectly via the gitlab/gitea integration tests that point at a
-    // dropped listener.
+    // tokio reactor is free to drive the client futures). The transport-error
+    // arm (Err(reqwest::Error)) is exercised by
+    // `retry_http_{async,blocking}_transport_error_retries_then_fails` below,
+    // which bind an ephemeral port, drop the listener, then point the client
+    // at the now-defunct address.
 
     #[tokio::test]
     async fn retry_http_async_success_returns_first_attempt() {
@@ -1161,5 +1177,109 @@ mod tests {
         let resp = result.expect("429 retried then success");
         assert_eq!(resp.status().as_u16(), 200);
         assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    // ----- transport-error behavioural tests -------------------------------
+    //
+    // The transport-error arm (Err(reqwest::Error) — connection refused, EOF,
+    // TLS handshake failure, etc.) is the single most reviewer-load-bearing
+    // path: it's the one the helper claims to retry and that publishers rely
+    // on for resilience against transient network blips. The pattern below
+    // binds an ephemeral 127.0.0.1 port, captures the address, drops the
+    // listener, then points the client at the defunct address — every
+    // attempt yields a connection-refused at the OS level.
+    //
+    // We verify:
+    //   1. the helper retries (attempt counter > 1)
+    //   2. eventually surfaces an Err with the configured label in the chain
+    // The outer attempt counter is incremented inside the closure, so it
+    // sees one bump per attempt regardless of the underlying transport
+    // outcome.
+
+    fn drop_listener_addr() -> std::net::SocketAddr {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
+        let addr = listener.local_addr().expect("local_addr");
+        // Explicit drop so the port is freed before the test client dials it.
+        // On Linux + macOS, a connect() to an unbound localhost port returns
+        // ECONNREFUSED synchronously — exactly the transport-error class we
+        // want is_retriable to inspect.
+        drop(listener);
+        addr
+    }
+
+    #[test]
+    fn retry_http_blocking_transport_error_retries_then_fails() {
+        let addr = drop_listener_addr();
+        let attempts = std::sync::Arc::new(AtomicU32::new(0));
+        let attempts_inner = attempts.clone();
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_millis(500))
+            .build()
+            .expect("client");
+        let policy = RetryPolicy {
+            max_attempts: 3,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(2),
+        };
+        let result = retry_http_blocking(
+            "test-transport",
+            &policy,
+            SuccessClass::Strict,
+            |_| {
+                attempts_inner.fetch_add(1, Ordering::SeqCst);
+                client.get(format!("http://{addr}/")).send()
+            },
+            |_, _| String::from("non-success branch should not be reached"),
+        );
+        let err = result.expect_err("transport error must surface as Err");
+        let chain = format!("{err:#}");
+        assert!(
+            attempts.load(Ordering::SeqCst) > 1,
+            "transport error must be retried; got {} attempts; chain={chain}",
+            attempts.load(Ordering::SeqCst)
+        );
+        assert!(
+            chain.contains("test-transport"),
+            "label must surface in error chain; got: {chain}"
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_http_async_transport_error_retries_then_fails() {
+        let addr = drop_listener_addr();
+        let attempts = std::sync::Arc::new(AtomicU32::new(0));
+        let attempts_inner = attempts.clone();
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_millis(500))
+            .build()
+            .expect("client");
+        let policy = RetryPolicy {
+            max_attempts: 3,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(2),
+        };
+        let result = retry_http_async(
+            "test-transport-async",
+            &policy,
+            SuccessClass::Strict,
+            |_| {
+                attempts_inner.fetch_add(1, Ordering::SeqCst);
+                client.get(format!("http://{addr}/")).send()
+            },
+            |_, _| String::from("non-success branch should not be reached"),
+        )
+        .await;
+        let err = result.expect_err("transport error must surface as Err");
+        assert!(
+            attempts.load(Ordering::SeqCst) > 1,
+            "transport error must be retried; got {} attempts",
+            attempts.load(Ordering::SeqCst)
+        );
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("test-transport-async"),
+            "label must surface in error chain; got: {chain}"
+        );
     }
 }
