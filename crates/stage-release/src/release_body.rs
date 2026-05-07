@@ -268,6 +268,48 @@ pub(crate) fn build_release_json(
     json
 }
 
+/// Build the JSON body for the un-draft (publish) PATCH on `/repos/{o}/{r}/releases/{id}`.
+///
+/// Mirrors GoReleaser `internal/client/github.go::PublishRelease` post-commits
+/// 6ecba31 + 2e17678:
+///
+/// - Always sends `draft = false`.
+/// - Re-renders the release `name` (callers pass the already-rendered template
+///   value) so a stale draft created with an older name template is corrected
+///   on publish.
+/// - Sends `prerelease = true` when `prerelease` is set; GoReleaser only sends
+///   the field when true (omitted == GitHub default of "preserve").
+/// - Sends `make_latest = "false"` whenever `prerelease` is true, regardless of
+///   the user's `make_latest` template — a prerelease cannot be the latest.
+///   When `prerelease` is false, the user's `make_latest` value (if any) is
+///   sent verbatim.
+/// - Sends `discussion_category_name` only on publish (GitHub ignores it on
+///   draft creation, matching GR behaviour).
+pub(crate) fn build_publish_patch_body(
+    release_name: &str,
+    prerelease: bool,
+    make_latest: &Option<octocrab::repos::releases::MakeLatest>,
+    discussion_category: &Option<String>,
+) -> serde_json::Value {
+    let mut body = serde_json::json!({ "draft": false });
+    if !release_name.is_empty() {
+        body["name"] = serde_json::Value::String(release_name.to_string());
+    }
+    if prerelease {
+        body["prerelease"] = serde_json::Value::Bool(true);
+        // Force make_latest=false for prereleases. Mirrors GoReleaser commit
+        // 6ecba31: a prerelease cannot also be marked "latest", regardless of
+        // the user's `make_latest` template.
+        body["make_latest"] = serde_json::Value::String("false".to_string());
+    } else if let Some(ml) = make_latest {
+        body["make_latest"] = serde_json::Value::String(ml.to_string());
+    }
+    if let Some(dc) = discussion_category {
+        body["discussion_category_name"] = serde_json::json!(dc);
+    }
+    body
+}
+
 /// Resolve the GitHub release tag for a crate.
 ///
 /// If `release_tag_override` is `Some`, render it as a template and use the

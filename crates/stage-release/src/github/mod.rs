@@ -14,26 +14,26 @@ use anyhow::{Context as _, Result};
 use octocrab::repos::releases::MakeLatest;
 
 use crate::release_body::{
-    GITHUB_RELEASE_BODY_MAX_CHARS, build_release_json, compose_body_for_mode,
+    GITHUB_RELEASE_BODY_MAX_CHARS, build_publish_patch_body, build_release_json,
+    compose_body_for_mode,
 };
 use crate::{release_log, resolve_release_repo};
 
 mod assets;
 mod client;
 mod rate_limit;
-mod username;
 
 pub(crate) use assets::{delete_release_asset_by_name, find_release_asset_size};
 pub(crate) use client::build_octocrab_client;
 pub(crate) use rate_limit::check_github_rate_limit;
-// `resolve_github_username` and `check_github_search_rate_limit` are tracked
-// for future use (commit author resolution in changelog enrichment); they
-// retain `#[allow(dead_code)]` from before the carve. Re-export them so the
-// hook-checked source is reachable from a single point.
-#[allow(unused_imports)]
-pub(crate) use rate_limit::check_github_search_rate_limit;
-#[allow(unused_imports)]
-pub(crate) use username::resolve_github_username;
+// NOTE: A `resolve_github_username` helper used to live alongside this mod
+// (search-users API fallback for resolving commit author emails). Upstream
+// removed the Search API call entirely in commit 17315a5 (parity item P3),
+// leaving only the `users.noreply.github.com` pattern parser, which had no
+// callers in anodizer. The whole module was deleted to satisfy the no-
+// dead-code anti-pattern rule. When a future consumer (e.g. changelog
+// co-author enrichment in `stage-changelog/src/fetch/github.rs`) needs
+// noreply parsing, re-introduce a focused helper in that crate's module.
 
 /// Run the GitHub release backend for one crate.
 ///
@@ -652,17 +652,62 @@ pub(crate) fn run_github_backend(
                 "/repos/{}/{}/releases/{}",
                 github.owner, github.name, release_id_raw
             );
-            let mut publish_body = serde_json::json!({ "draft": false });
-            if let Some(ml) = make_latest {
-                publish_body["make_latest"] = serde_json::Value::String(ml.to_string());
-            }
-            if let Some(dc) = discussion_category_name {
-                publish_body["discussion_category_name"] = serde_json::json!(dc);
-            }
-            octo.patch::<octocrab::models::repos::Release, _, _>(
-                publish_route,
-                Some(&publish_body),
-            )
+            // Build the publish PATCH body via the GR-aligned helper:
+            // - includes `name` (re-rendered name_template) so the published
+            //   release reflects the current template, even if the draft was
+            //   created with an older name (GR commit 2e17678).
+            // - forces `make_latest=false` whenever `prerelease` is true,
+            //   regardless of the user's `make_latest` template (GR commit
+            //   6ecba31). A prerelease can never be the latest.
+            let publish_body = build_publish_patch_body(
+                release_name,
+                prerelease,
+                make_latest,
+                discussion_category_name,
+            );
+            // Wire `Config.retry` (Wave 1 RetryConfig) into the publish PATCH:
+            // GitHub occasionally 502s during un-draft if the release has many
+            // assets attached, and the retry policy is the user-configurable
+            // surface for this. Under-default (10 attempts × 10s base × 5m
+            // cap) matches GoReleaser's `pkg/config.Retry` defaults.
+            let policy = ctx.config.retry.unwrap_or_default().to_policy();
+            anodizer_core::retry::retry_async(&policy, |attempt| {
+                let publish_route = publish_route.clone();
+                let publish_body = publish_body.clone();
+                let octo = octo.clone();
+                async move {
+                    use std::ops::ControlFlow;
+                    match octo
+                        .patch::<octocrab::models::repos::Release, _, _>(
+                            publish_route,
+                            Some(&publish_body),
+                        )
+                        .await
+                    {
+                        Ok(release) => Ok(release),
+                        Err(err) => {
+                            let status = match &err {
+                                octocrab::Error::GitHub { source, .. } => {
+                                    source.status_code.as_u16()
+                                }
+                                _ => 0,
+                            };
+                            let wrapped =
+                                anodizer_core::retry::HttpError::new(err, status);
+                            if anodizer_core::retry::is_retriable(&wrapped) {
+                                tracing::warn!(
+                                    attempt,
+                                    status,
+                                    "release: publish PATCH failed (retriable)"
+                                );
+                                Err(ControlFlow::Continue(anyhow::Error::new(wrapped)))
+                            } else {
+                                Err(ControlFlow::Break(anyhow::Error::new(wrapped)))
+                            }
+                        }
+                    }
+                }
+            })
             .await
             .with_context(|| {
                 format!(

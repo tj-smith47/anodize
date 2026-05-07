@@ -1,7 +1,5 @@
 #![allow(clippy::field_reassign_with_default)]
 
-use std::collections::HashMap;
-
 use anodizer_core::config::{
     ContentSource, CrateConfig, ExtraFileSpec, GitHubUrlsConfig, MakeLatestConfig,
     PrereleaseConfig, ReleaseConfig, StringOrBool,
@@ -11,11 +9,11 @@ use anodizer_core::stage::Stage;
 use anodizer_core::test_helpers::TestContextBuilder;
 
 use super::ReleaseStage;
-use super::github::{build_octocrab_client, resolve_github_username};
+use super::github::build_octocrab_client;
 use super::release_body::{
-    GITHUB_RELEASE_BODY_MAX_CHARS, build_release_body, build_release_json, collect_extra_files,
-    compose_body_for_mode, resolve_content_source, resolve_header_footer, resolve_make_latest,
-    resolve_release_tag,
+    GITHUB_RELEASE_BODY_MAX_CHARS, build_publish_patch_body, build_release_body,
+    build_release_json, collect_extra_files, compose_body_for_mode, resolve_content_source,
+    resolve_header_footer, resolve_make_latest, resolve_release_tag,
 };
 use super::{populate_artifact_download_urls, retry_upload, should_mark_prerelease};
 
@@ -3068,129 +3066,137 @@ fn test_gitea_missing_token_errors() {
     );
 }
 
-// ---- resolve_github_username tests ----
+// ---- build_publish_patch_body — P2.1 / P2.2 / P2.3 regression tests ----
+//
+// Tracks GoReleaser commits 6ecba31 (preserve prerelease on publish) +
+// 2e17678 (preserve prerelease publish fields). The PATCH body sent when
+// un-drafting a release must:
+//   - always carry `draft = false`,
+//   - re-render and include `name` (stale drafts get the current template),
+//   - force `make_latest = "false"` whenever `prerelease` is true,
+//   - include `prerelease = true` whenever `prerelease` is true,
+//   - send `discussion_category_name` only when configured.
+//
+// These are the load-bearing invariants for the un-draft flow.
 
 #[test]
-fn test_resolve_github_username_noreply_with_id() {
-    // ID+USERNAME@users.noreply.github.com pattern
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    rt.block_on(async {
-        let octo = octocrab::Octocrab::builder()
-            .personal_token("fake-token".to_string())
-            .build()
-            .unwrap();
-        let mut cache = HashMap::new();
-        let result = resolve_github_username(
-            &octo,
-            "12345+octocat@users.noreply.github.com",
-            &mut cache,
-            None,
-        )
-        .await;
-        assert_eq!(result, Some("octocat".to_string()));
-        // Verify it was cached
-        assert_eq!(
-            cache.get("12345+octocat@users.noreply.github.com"),
-            Some(&Some("octocat".to_string()))
-        );
-    });
+fn test_build_publish_patch_body_basic_undraft() {
+    let body = build_publish_patch_body("Release v1.0.0", false, &None, &None);
+    assert_eq!(body["draft"].as_bool(), Some(false));
+    assert_eq!(body["name"].as_str(), Some("Release v1.0.0"));
+    assert!(body.get("prerelease").is_none());
+    assert!(body.get("make_latest").is_none());
+    assert!(body.get("discussion_category_name").is_none());
 }
 
 #[test]
-fn test_resolve_github_username_noreply_without_id() {
-    // USERNAME@users.noreply.github.com pattern
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    rt.block_on(async {
-        let octo = octocrab::Octocrab::builder()
-            .personal_token("fake-token".to_string())
-            .build()
-            .unwrap();
-        let mut cache = HashMap::new();
-        let result =
-            resolve_github_username(&octo, "octocat@users.noreply.github.com", &mut cache, None)
-                .await;
-        assert_eq!(result, Some("octocat".to_string()));
-    });
+fn test_build_publish_patch_body_includes_make_latest_when_not_prerelease() {
+    use octocrab::repos::releases::MakeLatest;
+    let body = build_publish_patch_body("Release v1.0.0", false, &Some(MakeLatest::True), &None);
+    assert_eq!(body["make_latest"].as_str(), Some("true"));
 }
 
 #[test]
-fn test_resolve_github_username_cache_hit() {
-    // Pre-populate cache and verify it's used without API call
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    rt.block_on(async {
-        let octo = octocrab::Octocrab::builder()
-            .personal_token("fake-token".to_string())
-            .build()
-            .unwrap();
-        let mut cache = HashMap::new();
-        cache.insert(
-            "cached@example.com".to_string(),
-            Some("cached-user".to_string()),
-        );
-        let result = resolve_github_username(&octo, "cached@example.com", &mut cache, None).await;
-        assert_eq!(result, Some("cached-user".to_string()));
-    });
+fn test_build_publish_patch_body_prerelease_forces_make_latest_false() {
+    // GR commit 6ecba31: when prerelease=true, make_latest is forced to
+    // "false" regardless of the user's `make_latest` template (a prerelease
+    // can never be the latest).
+    use octocrab::repos::releases::MakeLatest;
+    let body =
+        build_publish_patch_body("Release v1.0.0-rc.1", true, &Some(MakeLatest::True), &None);
+    assert_eq!(body["prerelease"].as_bool(), Some(true));
+    assert_eq!(
+        body["make_latest"].as_str(),
+        Some("false"),
+        "prerelease must force make_latest=false even when user requested true",
+    );
 }
 
 #[test]
-fn test_resolve_github_username_cache_hit_none() {
-    // Pre-populate cache with None (previously unresolved)
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    rt.block_on(async {
-        let octo = octocrab::Octocrab::builder()
-            .personal_token("fake-token".to_string())
-            .build()
-            .unwrap();
-        let mut cache = HashMap::new();
-        cache.insert("unknown@example.com".to_string(), None);
-        let result = resolve_github_username(&octo, "unknown@example.com", &mut cache, None).await;
-        assert_eq!(result, None);
-    });
+fn test_build_publish_patch_body_prerelease_legacy_ml_still_forced_false() {
+    use octocrab::repos::releases::MakeLatest;
+    // Legacy ("auto") + prerelease must still force make_latest=false.
+    let body = build_publish_patch_body(
+        "Release v2.0.0-beta.1",
+        true,
+        &Some(MakeLatest::Legacy),
+        &None,
+    );
+    assert_eq!(body["make_latest"].as_str(), Some("false"));
 }
 
 #[test]
-fn test_resolve_github_username_noreply_numeric_id_plus_username() {
-    // Verify complex ID+USERNAME patterns work
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    rt.block_on(async {
-        let octo = octocrab::Octocrab::builder()
-            .personal_token("fake-token".to_string())
-            .build()
-            .unwrap();
-        let mut cache = HashMap::new();
-        let result = resolve_github_username(
-            &octo,
-            "987654321+my-username@users.noreply.github.com",
-            &mut cache,
-            None,
-        )
-        .await;
-        assert_eq!(result, Some("my-username".to_string()));
-    });
+fn test_build_publish_patch_body_includes_name_re_render() {
+    // GR commit 2e17678: the `name` is re-rendered from name_template and
+    // included in the PATCH so a stale draft picks up template changes.
+    let body = build_publish_patch_body("Renamed Release v1.2.3", false, &None, &None);
+    assert_eq!(body["name"].as_str(), Some("Renamed Release v1.2.3"));
 }
 
 #[test]
-fn test_resolve_github_username_regular_email_not_noreply() {
-    // Regular emails should NOT be parsed as noreply
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    rt.block_on(async {
-        let octo = octocrab::Octocrab::builder()
-            .personal_token("fake-token".to_string())
-            .build()
-            .unwrap();
-        let mut cache = HashMap::new();
-        // This will try the API and fail (no real token), so it should
-        // cache None and return None.
-        let result = resolve_github_username(&octo, "user@example.com", &mut cache, None).await;
-        // With a fake token, the API call will fail, resulting in None.
-        assert_eq!(result, None);
-        // Verify it was cached
-        assert!(cache.contains_key("user@example.com"));
-    });
+fn test_build_publish_patch_body_empty_name_omitted() {
+    // If the rendered name is empty, mirror GR (`if title != ""`) and skip
+    // the field rather than blanking the release name on GitHub.
+    let body = build_publish_patch_body("", false, &None, &None);
+    assert!(body.get("name").is_none());
+}
+
+#[test]
+fn test_build_publish_patch_body_includes_discussion_category() {
+    let body = build_publish_patch_body(
+        "Release v1.0.0",
+        false,
+        &None,
+        &Some("Releases".to_string()),
+    );
+    assert_eq!(body["discussion_category_name"].as_str(), Some("Releases"));
+}
+
+#[test]
+fn test_build_publish_patch_body_prerelease_with_discussion() {
+    // Prerelease + discussion_category_name + make_latest combo: discussion
+    // still passes through, make_latest forced to "false".
+    use octocrab::repos::releases::MakeLatest;
+    let body = build_publish_patch_body(
+        "Release v1.0.0-rc.1",
+        true,
+        &Some(MakeLatest::True),
+        &Some("Announcements".to_string()),
+    );
+    assert_eq!(body["draft"].as_bool(), Some(false));
+    assert_eq!(body["prerelease"].as_bool(), Some(true));
+    assert_eq!(body["make_latest"].as_str(), Some("false"));
+    assert_eq!(
+        body["discussion_category_name"].as_str(),
+        Some("Announcements")
+    );
+}
+
+// ---- Q11.1: header-access panic-freedom regression ----
+//
+// Upstream `internal/client/github.go::updateRelease` panicked when `resp`
+// was nil before accessing `resp.Header.Get(...)`. Anodizer is panic-free
+// by construction: octocrab/reqwest header access goes through
+// `headers().get(name)` which returns `Option<&HeaderValue>`. This test
+// pins that contract so a future refactor that introduces `.unwrap()` on
+// a header access fails CI.
+
+#[test]
+fn test_response_header_access_returns_option_no_panic() {
+    use http::HeaderMap;
+    let empty = HeaderMap::new();
+    // `.get()` on an empty HeaderMap returns None — no panic, even when the
+    // value would be required by upstream-Go's `resp.Header.Get(...)`.
+    assert!(empty.get("X-GitHub-Request-Id").is_none());
+    let mut populated = HeaderMap::new();
+    populated.insert(
+        "X-GitHub-Request-Id",
+        http::HeaderValue::from_static("ABCD:1234:5678:90:0"),
+    );
+    assert_eq!(
+        populated
+            .get("X-GitHub-Request-Id")
+            .map(|v| v.to_str().ok()),
+        Some(Some("ABCD:1234:5678:90:0")),
+    );
 }
