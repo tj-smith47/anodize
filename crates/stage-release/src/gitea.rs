@@ -27,6 +27,50 @@ use reqwest::Client;
 use crate::release_body::compose_body_for_mode;
 
 // ---------------------------------------------------------------------------
+// Backend ctx + per-call specs
+// ---------------------------------------------------------------------------
+//
+// Bundle the long argument lists in `gitea_create_release`,
+// `gitea_upload_asset`, and `gitea_delete_asset_by_name` so each function
+// signature stays under clippy's 7-argument threshold without an
+// `#[allow(clippy::too_many_arguments)]` suppression. Mirrors gitlab.rs's
+// `GitlabCtx`/`GitlabReleaseSpec`/`GitlabAssetSpec` shape.
+
+/// Backend identity for a Gitea API call sequence.
+///
+/// Carries the HTTP client, base API URL, owner/repo coordinates, and retry
+/// policy — i.e. everything that's constant for a whole release-publish
+/// loop. Per-release fields (tag, name, body, …) live in
+/// [`GiteaReleaseSpec`]; per-asset fields live in [`GiteaAssetSpec`].
+#[derive(Clone, Copy)]
+pub(crate) struct GiteaCtx<'a> {
+    pub client: &'a Client,
+    pub api_url: &'a str,
+    pub owner: &'a str,
+    pub repo: &'a str,
+    pub policy: &'a RetryPolicy,
+}
+
+/// Release metadata used by [`gitea_create_release`].
+#[derive(Clone, Copy)]
+pub(crate) struct GiteaReleaseSpec<'a> {
+    pub tag: &'a str,
+    pub commit: &'a str,
+    pub name: &'a str,
+    pub body: &'a str,
+    pub draft: bool,
+    pub prerelease: bool,
+    pub release_mode: &'a str,
+}
+
+/// File-on-disk identity used by every asset-upload call.
+#[derive(Clone, Copy)]
+pub(crate) struct GiteaAssetSpec<'a> {
+    pub file_path: &'a Path,
+    pub file_name: &'a str,
+}
+
+// ---------------------------------------------------------------------------
 // Public helpers
 // ---------------------------------------------------------------------------
 
@@ -79,24 +123,29 @@ pub(crate) fn build_gitea_client(token: &str, skip_tls_verify: bool) -> Result<C
 ///
 /// Returns the numeric release ID (Gitea uses integer IDs).
 ///
-/// `policy` is the user-configured `Config.retry` block (or default 10 × 10s
-/// × 5m cap) — every HTTP call routes through [`retry_http_async`] so 5xx /
-/// 429 / network-error responses retry with exponential backoff.
-#[allow(clippy::too_many_arguments)]
+/// `ctx.policy` is the user-configured `Config.retry` block (or default 10 ×
+/// 10s × 5m cap) — every HTTP call routes through [`retry_http_async`] so
+/// 5xx / 429 / network-error responses retry with exponential backoff.
 pub(crate) async fn gitea_create_release(
-    client: &Client,
-    api_url: &str,
-    owner: &str,
-    repo: &str,
-    tag: &str,
-    commit: &str,
-    name: &str,
-    body: &str,
-    draft: bool,
-    prerelease: bool,
-    release_mode: &str,
-    policy: &RetryPolicy,
+    ctx: &GiteaCtx<'_>,
+    spec: &GiteaReleaseSpec<'_>,
 ) -> Result<u64> {
+    let GiteaCtx {
+        client,
+        api_url,
+        owner,
+        repo,
+        policy,
+    } = *ctx;
+    let GiteaReleaseSpec {
+        tag,
+        commit,
+        name,
+        body,
+        draft,
+        prerelease,
+        release_mode,
+    } = *spec;
     let api = api_url.trim_end_matches('/');
     let enc_owner = encode_segment(owner);
     let enc_repo = encode_segment(repo);
@@ -235,17 +284,22 @@ async fn find_release_by_tag(
 /// ```
 ///
 /// The file is sent as the `attachment` form field.
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn gitea_upload_asset(
-    client: &Client,
-    api_url: &str,
-    owner: &str,
-    repo: &str,
+    ctx: &GiteaCtx<'_>,
     release_id: u64,
-    file_path: &Path,
-    file_name: &str,
-    policy: &RetryPolicy,
+    asset: &GiteaAssetSpec<'_>,
 ) -> Result<()> {
+    let GiteaCtx {
+        client,
+        api_url,
+        owner,
+        repo,
+        policy,
+    } = *ctx;
+    let GiteaAssetSpec {
+        file_path,
+        file_name,
+    } = *asset;
     let api = api_url.trim_end_matches('/');
     let enc_owner = encode_segment(owner);
     let enc_repo = encode_segment(repo);
@@ -296,14 +350,17 @@ pub(crate) async fn gitea_upload_asset(
 /// Lists the release's attachments, finds one matching `file_name`, and
 /// deletes it. Used for `replace_existing_artifacts` support.
 pub(crate) async fn gitea_delete_asset_by_name(
-    client: &Client,
-    api_url: &str,
-    owner: &str,
-    repo: &str,
+    ctx: &GiteaCtx<'_>,
     release_id: u64,
     file_name: &str,
-    policy: &RetryPolicy,
 ) -> Result<bool> {
+    let GiteaCtx {
+        client,
+        api_url,
+        owner,
+        repo,
+        policy,
+    } = *ctx;
     let api = api_url.trim_end_matches('/');
     let enc_owner = encode_segment(owner);
     let enc_repo = encode_segment(repo);
@@ -539,21 +596,23 @@ mod tests {
         };
         let api_url = format!("http://{addr}");
 
-        let result = gitea_create_release(
-            &client,
-            &api_url,
-            "myorg",
-            "myrepo",
-            "v1.0.0",
-            "abc123",
-            "Release v1.0.0",
-            "release body",
-            false,
-            false,
-            "replace",
-            &policy,
-        )
-        .await;
+        let ctx = GiteaCtx {
+            client: &client,
+            api_url: &api_url,
+            owner: "myorg",
+            repo: "myrepo",
+            policy: &policy,
+        };
+        let spec = GiteaReleaseSpec {
+            tag: "v1.0.0",
+            commit: "abc123",
+            name: "Release v1.0.0",
+            body: "release body",
+            draft: false,
+            prerelease: false,
+            release_mode: "replace",
+        };
+        let result = gitea_create_release(&ctx, &spec).await;
 
         match result {
             Ok(id) => assert_eq!(id, 42, "release id should be parsed from create response"),

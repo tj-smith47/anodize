@@ -18,6 +18,56 @@ use reqwest::Client;
 use crate::release_body::compose_body_for_mode;
 
 // ---------------------------------------------------------------------------
+// Backend ctx + per-call specs
+// ---------------------------------------------------------------------------
+//
+// These bundle the long argument lists in `gitlab_create_release`,
+// `gitlab_upload_asset`, and `upload_via_package_registry` so each function
+// signature stays under clippy's 7-argument threshold without an
+// `#[allow(clippy::too_many_arguments)]` suppression. The fields stay
+// borrowed (`&str`/`&Path`) — these structs are short-lived call-frame
+// shapes, not owned config.
+
+/// Backend identity for a GitLab API call sequence.
+///
+/// Carries the HTTP client, base API URL, project_id, and retry policy — i.e.
+/// everything that's constant for a whole release-publish loop. Per-release
+/// fields (tag, name, body, …) live in [`GitlabReleaseSpec`]; per-asset
+/// fields live in [`GitlabAssetSpec`].
+#[derive(Clone, Copy)]
+pub(crate) struct GitlabCtx<'a> {
+    pub client: &'a Client,
+    pub api_url: &'a str,
+    pub project_id: &'a str,
+    pub policy: &'a RetryPolicy,
+}
+
+/// Release metadata used by [`gitlab_create_release`].
+#[derive(Clone, Copy)]
+pub(crate) struct GitlabReleaseSpec<'a> {
+    pub tag: &'a str,
+    pub name: &'a str,
+    pub body: &'a str,
+    pub commit: &'a str,
+    pub release_mode: &'a str,
+}
+
+/// File-on-disk identity used by every asset-upload call.
+#[derive(Clone, Copy)]
+pub(crate) struct GitlabAssetSpec<'a> {
+    pub file_path: &'a Path,
+    pub file_name: &'a str,
+}
+
+/// Generic Package Registry coordinates — used only when the upload path
+/// is the Package Registry (PUT) rather than Project Markdown Uploads.
+#[derive(Clone, Copy)]
+pub(crate) struct GitlabPackageRegistrySpec<'a> {
+    pub project_name: &'a str,
+    pub version: &'a str,
+}
+
+// ---------------------------------------------------------------------------
 // URL-encoding aliases — consolidated onto `anodizer_core::url::percent_encode_path_segment`.
 // GitLab, Gitea and GitHub all use the same strict segment set so a tag like
 // `v1.0.0+build.1` produces identical URLs across backends.
@@ -135,18 +185,23 @@ pub(crate) fn build_gitlab_client(
 /// instead of failing fast.
 ///
 /// Returns the tag name (GitLab's release identifier).
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn gitlab_create_release(
-    client: &Client,
-    api_url: &str,
-    project_id: &str,
-    tag: &str,
-    name: &str,
-    body: &str,
-    commit: &str,
-    release_mode: &str,
-    policy: &RetryPolicy,
+    ctx: &GitlabCtx<'_>,
+    spec: &GitlabReleaseSpec<'_>,
 ) -> Result<String> {
+    let GitlabCtx {
+        client,
+        api_url,
+        project_id,
+        policy,
+    } = *ctx;
+    let GitlabReleaseSpec {
+        tag,
+        name,
+        body,
+        commit,
+        release_mode,
+    } = *spec;
     let api = api_url.trim_end_matches('/');
     let encoded = encode_project_id(project_id);
     let encoded_tag = encode_tag(tag);
@@ -255,39 +310,36 @@ pub(crate) async fn gitlab_create_release(
 /// (duplicate), the existing link with the same name is deleted and the POST
 /// is retried — matching GoReleaser's `replace_existing_artifacts` behavior.
 ///
-/// `policy` is the user-configured `Config.retry` block (or default 10 × 10s
-/// × 5m cap) — every HTTP call routes through [`retry_http_async`].
-#[allow(clippy::too_many_arguments)]
+/// `ctx.policy` is the user-configured `Config.retry` block (or default 10 ×
+/// 10s × 5m cap) — every HTTP call routes through [`retry_http_async`].
+///
+/// `pkg` selects the upload backend: `Some` routes through the Generic
+/// Package Registry (PUT), `None` falls back to Project Markdown Uploads
+/// (POST multipart) using `download_url` to construct the resulting link.
 pub(crate) async fn gitlab_upload_asset(
-    client: &Client,
-    api_url: &str,
-    project_id: &str,
+    ctx: &GitlabCtx<'_>,
     tag: &str,
-    file_path: &Path,
-    file_name: &str,
-    project_name: &str,
-    version: &str,
-    use_package_registry: bool,
+    asset: &GitlabAssetSpec<'_>,
+    pkg: Option<&GitlabPackageRegistrySpec<'_>>,
     download_url: &str,
     replace_existing: bool,
-    policy: &RetryPolicy,
 ) -> Result<()> {
+    let GitlabCtx {
+        client,
+        api_url,
+        project_id,
+        policy,
+    } = *ctx;
+    let GitlabAssetSpec {
+        file_path,
+        file_name,
+    } = *asset;
     let api = api_url.trim_end_matches('/');
     let encoded = encode_project_id(project_id);
     let encoded_tag = encode_tag(tag);
 
-    let link_url = if use_package_registry {
-        upload_via_package_registry(
-            client,
-            api,
-            &encoded,
-            project_name,
-            version,
-            file_name,
-            file_path,
-            policy,
-        )
-        .await?
+    let link_url = if let Some(pkg) = pkg {
+        upload_via_package_registry(ctx, &encoded, asset, pkg).await?
     } else {
         upload_via_project_uploads(
             client,
@@ -472,17 +524,31 @@ fn is_pre_v17(version_str: &str) -> bool {
 /// ```text
 /// PUT {api}/projects/{id}/packages/generic/{package}/{version}/{filename}
 /// ```
-#[allow(clippy::too_many_arguments)]
+///
+/// `encoded_project_id` is passed in pre-encoded so the caller can amortize
+/// the encoding across both upload paths in `gitlab_upload_asset`. `ctx`
+/// provides the client / base URL / retry policy.
 async fn upload_via_package_registry(
-    client: &Client,
-    api: &str,
+    ctx: &GitlabCtx<'_>,
     encoded_project_id: &str,
-    project_name: &str,
-    version: &str,
-    file_name: &str,
-    file_path: &Path,
-    policy: &RetryPolicy,
+    asset: &GitlabAssetSpec<'_>,
+    pkg: &GitlabPackageRegistrySpec<'_>,
 ) -> Result<String> {
+    let GitlabCtx {
+        client,
+        api_url,
+        policy,
+        ..
+    } = *ctx;
+    let GitlabAssetSpec {
+        file_path,
+        file_name,
+    } = *asset;
+    let GitlabPackageRegistrySpec {
+        project_name,
+        version,
+    } = *pkg;
+    let api = api_url.trim_end_matches('/');
     let data = tokio::fs::read(file_path)
         .await
         .with_context(|| format!("gitlab: read file {}", file_path.display()))?;
@@ -887,18 +953,20 @@ mod tests {
         };
         let api_url = format!("http://{addr}");
 
-        let result = gitlab_create_release(
-            &client,
-            &api_url,
-            "myorg/myproj",
-            "v1.0.0",
-            "Release v1.0.0",
-            "new body",
-            "abc123",
-            "replace",
-            &policy,
-        )
-        .await;
+        let ctx = GitlabCtx {
+            client: &client,
+            api_url: &api_url,
+            project_id: "myorg/myproj",
+            policy: &policy,
+        };
+        let spec = GitlabReleaseSpec {
+            tag: "v1.0.0",
+            name: "Release v1.0.0",
+            body: "new body",
+            commit: "abc123",
+            release_mode: "replace",
+        };
+        let result = gitlab_create_release(&ctx, &spec).await;
 
         assert!(
             result.is_ok(),

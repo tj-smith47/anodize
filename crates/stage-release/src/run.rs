@@ -626,17 +626,23 @@ impl Stage for super::ReleaseStage {
                         let client =
                             gitlab::build_gitlab_client(&token_str, skip_tls, use_job_token)?;
 
+                        let gitlab_ctx = gitlab::GitlabCtx {
+                            client: &client,
+                            api_url: &api_url,
+                            project_id: &project_id,
+                            policy: &policy,
+                        };
+
                         // Create or update the release.
                         gitlab::gitlab_create_release(
-                            &client,
-                            &api_url,
-                            &project_id,
-                            &tag,
-                            &release_name,
-                            &release_body,
-                            &commit_sha,
-                            &release_mode,
-                            &policy,
+                            &gitlab_ctx,
+                            &gitlab::GitlabReleaseSpec {
+                                tag: &tag,
+                                name: &release_name,
+                                body: &release_body,
+                                commit: &commit_sha,
+                                release_mode: &release_mode,
+                            },
                         )
                         .await?;
 
@@ -702,20 +708,29 @@ impl Stage for super::ReleaseStage {
                                         .map_err(|e| anyhow::anyhow!("semaphore closed: {}", e))?;
 
                                     let op_name = format!("gitlab: upload '{}'", file_name);
+                                    let ctx = gitlab::GitlabCtx {
+                                        client: &client,
+                                        api_url: &api_url,
+                                        project_id: &project_id,
+                                        policy: &policy_inner,
+                                    };
+                                    let asset = gitlab::GitlabAssetSpec {
+                                        file_path: &path,
+                                        file_name: &file_name,
+                                    };
+                                    let pkg_spec = gitlab::GitlabPackageRegistrySpec {
+                                        project_name: &project_name_for_pkg,
+                                        version: &version_for_pkg,
+                                    };
+                                    let pkg = use_pkg_registry.then_some(&pkg_spec);
                                     retry_upload(&op_name, || {
                                         gitlab::gitlab_upload_asset(
-                                            &client,
-                                            &api_url,
-                                            &project_id,
+                                            &ctx,
                                             &tag,
-                                            &path,
-                                            &file_name,
-                                            &project_name_for_pkg,
-                                            &version_for_pkg,
-                                            use_pkg_registry,
+                                            &asset,
+                                            pkg,
                                             &download_url,
                                             replace_existing_artifacts,
-                                            &policy_inner,
                                         )
                                     })
                                     .await
@@ -813,20 +828,26 @@ impl Stage for super::ReleaseStage {
                     let url = rt.block_on(async {
                         let client = gitea::build_gitea_client(&token_str, skip_tls)?;
 
+                        let gitea_ctx = gitea::GiteaCtx {
+                            client: &client,
+                            api_url: &api_url,
+                            owner: &repo_cfg.owner,
+                            repo: &repo_cfg.name,
+                            policy: &policy,
+                        };
+
                         // Create or update the release.
                         let release_id = gitea::gitea_create_release(
-                            &client,
-                            &api_url,
-                            &repo_cfg.owner,
-                            &repo_cfg.name,
-                            &tag,
-                            &commit_sha,
-                            &release_name,
-                            &release_body,
-                            draft,
-                            prerelease,
-                            &release_mode,
-                            &policy,
+                            &gitea_ctx,
+                            &gitea::GiteaReleaseSpec {
+                                tag: &tag,
+                                commit: &commit_sha,
+                                name: &release_name,
+                                body: &release_body,
+                                draft,
+                                prerelease,
+                                release_mode: &release_mode,
+                            },
                         )
                         .await?;
 
@@ -889,17 +910,21 @@ impl Stage for super::ReleaseStage {
                                         .await
                                         .map_err(|e| anyhow::anyhow!("semaphore closed: {}", e))?;
 
+                                    let ctx = gitea::GiteaCtx {
+                                        client: &client,
+                                        api_url: &api_url,
+                                        owner: &owner,
+                                        repo: &repo,
+                                        policy: &policy_inner,
+                                    };
+
                                     // Handle replace_existing_artifacts: if an asset with the
                                     // same name exists, delete it before uploading.
                                     if replace_existing_artifacts {
                                         gitea::gitea_delete_asset_by_name(
-                                            &client,
-                                            &api_url,
-                                            &owner,
-                                            &repo,
+                                            &ctx,
                                             release_id,
                                             &file_name,
-                                            &policy_inner,
                                         )
                                         .await
                                         .with_context(|| {
@@ -911,17 +936,12 @@ impl Stage for super::ReleaseStage {
                                     }
 
                                     let op_name = format!("gitea: upload '{}'", file_name);
+                                    let asset = gitea::GiteaAssetSpec {
+                                        file_path: &path,
+                                        file_name: &file_name,
+                                    };
                                     retry_upload(&op_name, || {
-                                        gitea::gitea_upload_asset(
-                                            &client,
-                                            &api_url,
-                                            &owner,
-                                            &repo,
-                                            release_id,
-                                            &path,
-                                            &file_name,
-                                            &policy_inner,
-                                        )
+                                        gitea::gitea_upload_asset(&ctx, release_id, &asset)
                                     })
                                     .await
                                     .with_context(|| {
