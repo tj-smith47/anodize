@@ -16,6 +16,7 @@ pub mod winget;
 
 use anodizer_core::config::PublishConfig;
 use anodizer_core::context::Context;
+use anodizer_core::log::StageLogger;
 use anodizer_core::stage::Stage;
 use anyhow::Result;
 
@@ -55,6 +56,41 @@ where
         .collect()
 }
 
+/// Route a single publisher's `Result` through the stage's collect-or-bail
+/// policy. Returns `Ok(())` for the caller to continue dispatching the
+/// remaining publishers; returns `Err(...)` only when `fail_fast` is on and
+/// the publisher failed — at which point the enclosing stage's `?` exits
+/// immediately, matching GoReleaser's `--fail-fast` semantics in
+/// `internal/pipe/publish/publish.go`.
+///
+/// On a publisher failure with `fail_fast == false` (the default), the error
+/// is logged and pushed to `errors` for end-of-stage aggregation. This is the
+/// "continue-on-error" path that mirrors GoReleaser's `Continuable`
+/// publishers (brew, krew, nix, scoop, winget, cask, aur, chocolatey, ...).
+fn record_publisher_result(
+    label: &str,
+    result: Result<()>,
+    fail_fast: bool,
+    errors: &mut Vec<String>,
+    log: &StageLogger,
+) -> Result<()> {
+    if let Err(e) = result {
+        // `{:#}` renders the full anyhow error chain on one line
+        // (e.g. "top: middle: root cause"). `{}` shows only the
+        // top context, which discards the actual root cause —
+        // hiding details like reqwest transport errors, HTTP
+        // status codes, or response bodies that operators need
+        // to diagnose a failing publisher.
+        let formatted = format!("{}: {:#}", label, e);
+        log.warn(&formatted);
+        if fail_fast {
+            anyhow::bail!("publisher failed (fail-fast): {}", formatted);
+        }
+        errors.push(formatted);
+    }
+    Ok(())
+}
+
 pub struct PublishStage;
 
 impl Stage for PublishStage {
@@ -68,6 +104,10 @@ impl Stage for PublishStage {
             return Ok(());
         }
         let selected = ctx.options.selected_crates.clone();
+        // Capture as a local so the macros below can read it without
+        // re-borrowing `ctx` mid-dispatch (every publisher call takes
+        // `&mut Context` indirectly via stage hand-off).
+        let fail_fast = ctx.options.fail_fast;
 
         // Individual publisher failures are collected and reported at the end
         // rather than aborting the entire publish stage. This prevents a single
@@ -75,28 +115,28 @@ impl Stage for PublishStage {
         // publishers (docker, cosign, announce). crates.io is the exception —
         // it's the authoritative registry and its failure is always fatal.
         //
+        // `--fail-fast` inverts this: the first publisher error aborts the
+        // stage immediately (see `record_publisher_result`). Default
+        // collect-and-aggregate matches GoReleaser's `Continuable` post-
+        // release publishers; fail-fast matches `internal/pipe/publish/
+        // publish.go:95` upstream when `ctx.FailFast` is on.
+        //
         // Strict mode semantics: we still COLLECT every publisher error so a
         // single run surfaces *all* remaining issues. The difference vs. the
         // default mode is that at the end of the stage we bail with the full
         // list instead of warning. Failing fast on the first error is
         // counter-productive for dogfooding — it hides every issue after the
-        // first, forcing N release cycles to shake out N bugs.
+        // first, forcing N release cycles to shake out N bugs — which is
+        // exactly why fail-fast is opt-in.
         let mut errors: Vec<String> = Vec::new();
 
-        // Helper: run a publisher, log + collect error on failure. The end-of-
-        // stage aggregation below decides whether to warn or bail.
+        // Helper: run a publisher, log + collect (default) or bail (fail-fast)
+        // on failure. Routes through `record_publisher_result` so the policy
+        // stays unit-testable; the `?` propagates a fail-fast bail out of the
+        // enclosing `run`.
         macro_rules! try_publish {
             ($label:expr, $expr:expr) => {
-                if let Err(e) = $expr {
-                    // `{:#}` renders the full anyhow error chain on one line
-                    // (e.g. "top: middle: root cause"). `{}` shows only the
-                    // top context, which discards the actual root cause —
-                    // hiding details like reqwest transport errors, HTTP
-                    // status codes, or response bodies that operators need
-                    // to diagnose a failing publisher.
-                    log.warn(&format!("{}: {:#}", $label, e));
-                    errors.push(format!("{}: {:#}", $label, e));
-                }
+                record_publisher_result($label, $expr, fail_fast, &mut errors, &log)?;
             };
         }
 
@@ -169,8 +209,10 @@ impl Stage for PublishStage {
         }
 
         // Cargo (crates.io) — top-level by virtue of doing its own crate
-        // walk + topo sort internally. Fatal: any error aborts the stage,
-        // matching the "authoritative registry must succeed first" rule.
+        // walk + topo sort internally. Fatal regardless of `--fail-fast`:
+        // any error aborts the stage because crates.io is the authoritative
+        // Rust registry and downstream publishers reference its URLs. The
+        // `?` below intentionally bypasses `record_publisher_result`.
         if ctx.should_skip("cargo") {
             log.status("cargo: skipped via --skip=cargo");
         } else {
@@ -515,6 +557,108 @@ mod tests {
     // -----------------------------------------------------------------------
     // Nix integration tests
     // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // record_publisher_result — fail_fast wiring
+    //
+    // These tests pin the collect-or-bail policy that the publish stage
+    // dispatch macros route every publisher through. The default is
+    // collect-and-aggregate (matches GoReleaser's `Continuable` publishers);
+    // `--fail-fast` inverts it so the very first publisher error aborts the
+    // stage immediately (matches `internal/pipe/publish/publish.go:95`
+    // upstream).
+    // -----------------------------------------------------------------------
+
+    use anodizer_core::log::{StageLogger, Verbosity};
+
+    fn test_logger() -> StageLogger {
+        StageLogger::new("publish-test", Verbosity::Quiet)
+    }
+
+    #[test]
+    fn test_record_publisher_result_ok_is_noop() {
+        let log = test_logger();
+        let mut errors: Vec<String> = Vec::new();
+        let res = record_publisher_result("homebrew", Ok(()), false, &mut errors, &log);
+        assert!(res.is_ok());
+        assert!(errors.is_empty(), "no failures => errors stays empty");
+
+        let res = record_publisher_result("homebrew", Ok(()), true, &mut errors, &log);
+        assert!(res.is_ok());
+        assert!(errors.is_empty(), "fail_fast on Ok still empty");
+    }
+
+    #[test]
+    fn test_record_publisher_result_default_collects() {
+        // Default mode (fail_fast=false): two consecutive publisher failures
+        // both end up in `errors` and the helper returns Ok(()) each time so
+        // the dispatch loop continues.
+        let log = test_logger();
+        let mut errors: Vec<String> = Vec::new();
+
+        let res = record_publisher_result(
+            "homebrew",
+            Err(anyhow::anyhow!("tap repo not found")),
+            false,
+            &mut errors,
+            &log,
+        );
+        assert!(res.is_ok(), "default mode never short-circuits");
+
+        let res = record_publisher_result(
+            "scoop",
+            Err(anyhow::anyhow!("bucket auth failed")),
+            false,
+            &mut errors,
+            &log,
+        );
+        assert!(res.is_ok(), "default mode never short-circuits");
+
+        assert_eq!(errors.len(), 2, "both failures collected");
+        assert!(errors[0].starts_with("homebrew: "));
+        assert!(errors[0].contains("tap repo not found"));
+        assert!(errors[1].starts_with("scoop: "));
+        assert!(errors[1].contains("bucket auth failed"));
+    }
+
+    #[test]
+    fn test_record_publisher_result_fail_fast_bails_on_first() {
+        // fail_fast mode: the first publisher failure returns Err so the
+        // enclosing stage's `?` exits the run immediately. The second
+        // publisher must not be invoked, and `errors` must NOT contain the
+        // first failure (it's surfaced via the bail!, not the aggregate).
+        let log = test_logger();
+        let mut errors: Vec<String> = Vec::new();
+
+        let res = record_publisher_result(
+            "homebrew",
+            Err(anyhow::anyhow!("tap repo not found")),
+            true,
+            &mut errors,
+            &log,
+        );
+        let err = match res {
+            Ok(()) => panic!("fail_fast must short-circuit on first error"),
+            Err(e) => e,
+        };
+        let msg = format!("{:#}", err);
+        assert!(
+            msg.contains("fail-fast"),
+            "error message should signal fail-fast trigger, got: {msg}"
+        );
+        assert!(
+            msg.contains("homebrew"),
+            "error message should name the failing publisher, got: {msg}"
+        );
+        assert!(
+            msg.contains("tap repo not found"),
+            "error message should preserve the underlying cause, got: {msg}"
+        );
+        assert!(
+            errors.is_empty(),
+            "fail_fast surfaces the error via Err, not via the aggregate vec; got {errors:?}"
+        );
+    }
 
     #[test]
     fn test_run_dry_run_nix() {
