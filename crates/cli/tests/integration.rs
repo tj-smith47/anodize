@@ -2272,13 +2272,20 @@ crates:
         targets:
           - {host}
     archives:
-      - name_template: "test-project-{{{{ .Os }}}}-{{{{ .Arch }}}}-targz"
+      # Q-arch2: each entry needs a unique id (matches GoReleaser's
+      # ids.New("archives").Validate() requirement). Default-id collision
+      # would otherwise be caught at config load.
+      - id: targz
+        name_template: "test-project-{{{{ .Os }}}}-{{{{ .Arch }}}}-targz"
         formats: [tar.gz]
-      - name_template: "test-project-{{{{ .Os }}}}-{{{{ .Arch }}}}-tarxz"
+      - id: tarxz
+        name_template: "test-project-{{{{ .Os }}}}-{{{{ .Arch }}}}-tarxz"
         formats: [tar.xz]
-      - name_template: "test-project-{{{{ .Os }}}}-{{{{ .Arch }}}}-zipped"
+      - id: zipped
+        name_template: "test-project-{{{{ .Os }}}}-{{{{ .Arch }}}}-zipped"
         formats: [zip]
-      - name_template: "test-project-{{{{ .Os }}}}-{{{{ .Arch }}}}-raw"
+      - id: raw
+        name_template: "test-project-{{{{ .Os }}}}-{{{{ .Arch }}}}-raw"
         formats: [binary]
     checksum:
       name_template: "checksums.txt"
