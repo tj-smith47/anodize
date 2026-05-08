@@ -232,12 +232,21 @@ pub(crate) struct ReleaseJsonSpec<'a> {
     pub make_latest: &'a Option<octocrab::repos::releases::MakeLatest>,
     pub target_commitish: &'a Option<String>,
     pub discussion_category: &'a Option<String>,
-    pub github_native: bool,
 }
 
 /// Build the JSON body for GitHub release create/update API calls.
 /// Extracts the common construction shared by PATCH (update existing draft)
 /// and POST (create new release) paths.
+///
+/// Note: `generate_release_notes` is intentionally never set on this
+/// payload. The github-native changelog flow calls
+/// `POST /repos/{o}/{r}/releases/generate-notes` upfront (see
+/// `stage-changelog/src/github_native.rs`) and embeds the returned body
+/// in `spec.body`, mirroring GoReleaser
+/// `internal/client/github.go::GenerateReleaseNotes`. The create-release
+/// `generate_release_notes: true` toggle silently uses GitHub's "most
+/// recent published release" as the previous tag — wrong for monorepos
+/// and tag-prefixed re-releases.
 pub(crate) fn build_release_json(spec: &ReleaseJsonSpec<'_>) -> serde_json::Value {
     let ReleaseJsonSpec {
         tag,
@@ -248,7 +257,6 @@ pub(crate) fn build_release_json(spec: &ReleaseJsonSpec<'_>) -> serde_json::Valu
         make_latest,
         target_commitish,
         discussion_category,
-        github_native,
     } = *spec;
     let mut json = serde_json::json!({
         "tag_name": tag,
@@ -280,9 +288,6 @@ pub(crate) fn build_release_json(spec: &ReleaseJsonSpec<'_>) -> serde_json::Valu
     }
     if let Some(dc) = discussion_category {
         json["discussion_category_name"] = serde_json::json!(dc);
-    }
-    if github_native {
-        json["generate_release_notes"] = serde_json::Value::Bool(true);
     }
     json
 }

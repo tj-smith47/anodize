@@ -221,6 +221,14 @@ fn render_commit_line(
     vars.set("AuthorName", &commit.author_name);
     vars.set("AuthorEmail", &commit.author_email);
     vars.set("Login", &commit.login);
+    // GR-aligned alias: the upstream default format string when
+    // `use ∈ {github,gitlab,gitea}` is
+    // `"{{ .SHA }}: {{ .Message }} ({{ with .AuthorUsername }}@{{ . }}{{ else }}{{ .AuthorName }} <{{ .AuthorEmail }}>{{ end }})"`
+    // (`internal/pipe/changelog/changelog.go:59,259-271`). GR populates the
+    // `AuthorUsername` template var from the SCM commit author's username;
+    // anodizer surfaces the same datum under `Login`. Bind both keys so
+    // GR-shape configs copy-paste cleanly without a "missing key" error.
+    vars.set("AuthorUsername", &commit.login);
     // Per-entry `Authors` and `Logins` template vars: each entry gets its
     // own commit-author + co-author list. The release-wide GitHub login
     // list lives under `AllLogins` so `Logins` can carry the per-commit

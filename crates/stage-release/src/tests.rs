@@ -2551,7 +2551,6 @@ fn test_build_release_json_body_within_limit() {
         make_latest: &None,
         target_commitish: &None,
         discussion_category: &None,
-        github_native: false,
     });
     assert_eq!(json["body"].as_str().unwrap(), &body);
 }
@@ -2568,7 +2567,6 @@ fn test_build_release_json_body_at_limit() {
         make_latest: &None,
         target_commitish: &None,
         discussion_category: &None,
-        github_native: false,
     });
     assert_eq!(json["body"].as_str().unwrap(), &body);
 }
@@ -2585,7 +2583,6 @@ fn test_build_release_json_body_exceeds_limit_is_truncated() {
         make_latest: &None,
         target_commitish: &None,
         discussion_category: &None,
-        github_native: false,
     });
     let result = json["body"].as_str().unwrap();
     let suffix = "\n\n...(truncated)";
@@ -2613,7 +2610,6 @@ fn test_build_release_json_empty_body_not_set() {
         make_latest: &None,
         target_commitish: &None,
         discussion_category: &None,
-        github_native: false,
     });
     assert!(json.get("body").is_none());
 }
@@ -2631,7 +2627,6 @@ fn test_build_release_json_draft_true() {
         make_latest: &None,
         target_commitish: &None,
         discussion_category: &None,
-        github_native: false,
     });
     assert!(json["draft"].as_bool().unwrap());
 }
@@ -2647,9 +2642,38 @@ fn test_build_release_json_draft_false() {
         make_latest: &None,
         target_commitish: &None,
         discussion_category: &None,
-        github_native: false,
     });
     assert!(!json["draft"].as_bool().unwrap());
+}
+
+#[test]
+fn test_build_release_json_never_sets_generate_release_notes() {
+    // GR-aligned regression guard for second-opinion finding C3
+    // (`changelog.use: github-native` → wrong API endpoint). The
+    // create-release POST must never carry `generate_release_notes:
+    // true`: the github-native flow now calls
+    // `POST /releases/generate-notes` upfront (see
+    // `stage-changelog/src/github_native.rs`) and embeds the returned
+    // body in `spec.body`, matching GR
+    // `internal/client/github.go::GenerateReleaseNotes`. Toggling
+    // `generate_release_notes: true` here would silently use GitHub's
+    // "most recent published release" as the previous tag — wrong for
+    // monorepos and tag-prefixed re-releases.
+    let json = build_release_json(&crate::release_body::ReleaseJsonSpec {
+        tag: "v1.0.0",
+        name: "Release v1.0.0",
+        body: "Auto-generated release notes from /releases/generate-notes",
+        draft: false,
+        prerelease_flag: false,
+        make_latest: &None,
+        target_commitish: &None,
+        discussion_category: &None,
+    });
+    assert!(
+        json.get("generate_release_notes").is_none(),
+        "create-release POST must never include `generate_release_notes` \
+         (would diverge from GR's explicit prev/current pinning); got: {json}"
+    );
 }
 
 #[test]

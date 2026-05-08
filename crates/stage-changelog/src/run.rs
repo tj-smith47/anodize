@@ -116,11 +116,18 @@ impl Stage for super::ChangelogStage {
             });
 
         if use_source == "github-native" {
-            // The release stage will eventually call GitHub's
-            // generate-release-notes endpoint, which needs the same token
-            // and repo identity that any other release would. Verify both
-            // are present here so the user gets a config-time error
-            // instead of a confusing failure deep in the release stage.
+            // GR-aligned flow: call `POST /releases/generate-notes` upfront
+            // with explicit `tag_name` + `previous_tag_name`, then embed
+            // the returned body as the per-crate changelog content.
+            // Mirrors GoReleaser
+            // `internal/pipe/changelog/changelog.go::githubNativeChangeloger.Log`
+            // → `internal/client/github.go::GenerateReleaseNotes`. The
+            // dedicated endpoint accepts an explicit previous tag, which
+            // lets monorepos and re-releases pin the commit range
+            // reproducibly. The previous flow toggled
+            // `generate_release_notes: true` on the create-release POST,
+            // which silently used GitHub's "most recent published release"
+            // — wrong for tag-prefixed workflows.
             if ctx.options.token.is_none() && !ctx.is_dry_run() && !ctx.is_snapshot() {
                 bail!(
                     "changelog: use=github-native requires a GitHub token (set \
@@ -141,8 +148,12 @@ impl Stage for super::ChangelogStage {
                      API knows which repository to read"
                 );
             }
-            log.status("using github-native changelog — skipping local generation");
-            ctx.stage_outputs.github_native_changelog = true;
+
+            let monorepo_prefix = ctx.config.monorepo_tag_prefix();
+            let current_tag = ctx.template_vars().get("Tag").cloned().unwrap_or_default();
+            let token = ctx.options.token.clone();
+            let dry_run_or_snapshot = ctx.is_dry_run() || ctx.is_snapshot();
+
             let selected = ctx.options.selected_crates.clone();
             let crates: Vec<_> = ctx
                 .config
@@ -151,11 +162,119 @@ impl Stage for super::ChangelogStage {
                 .filter(|c| selected.is_empty() || selected.contains(&c.name))
                 .cloned()
                 .collect();
+
+            let mut combined = String::new();
             for crate_cfg in &crates {
+                let github_cfg = crate_cfg.release.as_ref().and_then(|r| r.github.as_ref());
+                let Some(repo) = github_cfg else {
+                    log.status(&format!(
+                        "github-native: crate '{}' has no release.github config — skipping",
+                        crate_cfg.name
+                    ));
+                    ctx.stage_outputs
+                        .changelogs
+                        .insert(crate_cfg.name.clone(), String::new());
+                    continue;
+                };
+
+                let prev_tag = anodizer_core::git::find_latest_tag_matching_with_prefix(
+                    &crate_cfg.tag_template,
+                    ctx.config.git.as_ref(),
+                    Some(ctx.template_vars()),
+                    monorepo_prefix,
+                )
+                .unwrap_or(None)
+                .filter(|t| t.as_str() != current_tag.as_str());
+
+                let body = if dry_run_or_snapshot {
+                    log.status(&format!(
+                        "(dry-run/snapshot) would call POST /repos/{}/{}/releases/generate-notes \
+                         (tag_name={:?}, previous_tag_name={:?})",
+                        repo.owner, repo.name, current_tag, prev_tag
+                    ));
+                    String::new()
+                } else {
+                    log.status(&format!(
+                        "github-native: fetching release notes for {}/{} \
+                         (tag_name={:?}, previous_tag_name={:?})",
+                        repo.owner, repo.name, current_tag, prev_tag
+                    ));
+                    crate::github_native::generate_release_notes(
+                        &repo.owner,
+                        &repo.name,
+                        &current_tag,
+                        prev_tag.as_deref(),
+                        token.as_deref(),
+                    )
+                    .with_context(|| {
+                        format!(
+                            "changelog: github-native generate-notes for crate '{}'",
+                            crate_cfg.name
+                        )
+                    })?
+                };
+
                 ctx.stage_outputs
                     .changelogs
-                    .insert(crate_cfg.name.clone(), String::new());
+                    .insert(crate_cfg.name.clone(), body.clone());
+                combined.push_str(&body);
             }
+
+            // The `github_native_changelog` flag now represents only "the
+            // changelog body was sourced from GitHub's generate-notes API"
+            // — release_body.rs no longer toggles
+            // `generate_release_notes: true` on the create-release POST
+            // (which is what diverged from GR), but downstream consumers
+            // may still want to know the provenance.
+            ctx.stage_outputs.github_native_changelog = true;
+
+            // Wrap with header / footer to match GR's
+            // `changelog.go::Run`: header / generated-body / footer joined
+            // with blank lines, then write to dist/CHANGELOG.md.
+            let header_src: Option<anodizer_core::config::ContentSource> =
+                changelog_cfg.as_ref().and_then(|c| c.header.clone());
+            let footer_src: Option<anodizer_core::config::ContentSource> =
+                changelog_cfg.as_ref().and_then(|c| c.footer.clone());
+            let header: Option<String> = header_src
+                .as_ref()
+                .map(|src| anodizer_core::content_source::resolve(src, "changelog header", ctx))
+                .transpose()?;
+            let footer: Option<String> = footer_src
+                .as_ref()
+                .map(|src| anodizer_core::content_source::resolve(src, "changelog footer", ctx))
+                .transpose()?;
+
+            let mut final_markdown = String::new();
+            let mut rendered_header: Option<String> = None;
+            if let Some(ref h) = header {
+                let rendered = ctx.render_template_strict(h, "changelog header", &log)?;
+                if !rendered.trim().is_empty() {
+                    final_markdown.push_str(&rendered);
+                    final_markdown.push_str("\n\n");
+                    rendered_header = Some(rendered);
+                }
+            }
+            final_markdown.push_str(&combined);
+            let mut rendered_footer: Option<String> = None;
+            if let Some(ref f) = footer {
+                let rendered = ctx.render_template_strict(f, "changelog footer", &log)?;
+                if !rendered.trim().is_empty() {
+                    final_markdown.push('\n');
+                    final_markdown.push_str(&rendered);
+                    final_markdown.push('\n');
+                    rendered_footer = Some(rendered);
+                }
+            }
+            ctx.stage_outputs.changelog_header = rendered_header;
+            ctx.stage_outputs.changelog_footer = rendered_footer;
+
+            let dist = ctx.config.dist.clone();
+            std::fs::create_dir_all(&dist)
+                .with_context(|| format!("changelog: create dist dir {}", dist.display()))?;
+            let notes_path = dist.join("CHANGELOG.md");
+            std::fs::write(&notes_path, &final_markdown)
+                .with_context(|| format!("changelog: write {}", notes_path.display()))?;
+            log.status(&format!("wrote {}", notes_path.display()));
             return Ok(());
         }
 

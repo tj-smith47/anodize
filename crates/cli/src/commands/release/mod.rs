@@ -312,6 +312,16 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
     ctx.populate_runtime_vars();
     ctx.populate_metadata_var()?;
 
+    // Populate the GR-Pro `IsPrepare` template var so user templates can
+    // branch on prepare-mode (e.g. emit a different artifact_name for
+    // pre-release archives generated in PR CI). Mirrors `IsRelease` /
+    // `IsMerging` (`crates/core/src/context.rs:557-566`); kept on the CLI
+    // side because `--prepare` is a CLI-only switch (no equivalent
+    // `ctx_opts.prepare` field). Set explicitly to `"true"`/`"false"` so
+    // `{% if IsPrepare %}` evaluates correctly in either branch.
+    ctx.template_vars_mut()
+        .set("IsPrepare", if opts.prepare { "true" } else { "false" });
+
     // Populate user-defined env vars into template context
     helpers::setup_env(&mut ctx, &config, &log)?;
 

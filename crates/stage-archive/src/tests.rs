@@ -4252,3 +4252,217 @@ fn test_archive_single_crate_keeps_project_name_default() {
         "single-crate config must keep ProjectName-keyed default: {name}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 2026-05-08 second-opinion parity audit regressions (C1, C2, Q-arch1)
+// ---------------------------------------------------------------------------
+
+/// C1 — Build stage writes the canonical GR `DynamicallyLinked` extra key
+/// (mirrors `artifact.ExtranDynLink`). The archive stage previously read a
+/// snake-case `dynamically_linked`, so the propagation never fired and the
+/// resulting archive's `ndynlink` flag was always absent. Confirm the
+/// camel-case key is honored end-to-end.
+#[test]
+fn test_archive_dynlink_propagation_uses_canonical_key() {
+    use anodizer_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
+    use anodizer_core::test_helpers::TestContextBuilder;
+
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    let bin_path = tmp.path().join("myapp");
+    fs::write(&bin_path, b"binary").unwrap();
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("myapp")
+        .tag("v1.0.0")
+        .dist(dist)
+        .crates(vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                formats: Some(vec!["tar.gz".to_string()]),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }])
+        .build();
+
+    let mut meta = HashMap::new();
+    meta.insert("binary".to_string(), "myapp".to_string());
+    // GoReleaser-canonical key — see artifact.ExtranDynLink.
+    meta.insert("DynamicallyLinked".to_string(), "true".to_string());
+
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: String::new(),
+        path: bin_path,
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "myapp".to_string(),
+        metadata: meta,
+        size: None,
+    });
+
+    ArchiveStage.run(&mut ctx).unwrap();
+
+    let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+    assert_eq!(archives.len(), 1);
+    assert_eq!(
+        archives[0].metadata.get("ndynlink").map(String::as_str),
+        Some("true"),
+        "archive must mark `ndynlink` when source binary carries the canonical \
+         `DynamicallyLinked` GR extra"
+    );
+}
+
+/// C2 — Archive metadata previously dropped `amd64_variant` so publishers
+/// (winget/scoop/aur/krew) that filter on it would silently match v2/v3/v4
+/// binaries as v1. Mirrors GR archive.go:255 (`art.Goamd64 = binaries[0].Goamd64`).
+#[test]
+fn test_archive_amd64_variant_propagated_from_first_binary() {
+    use anodizer_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
+    use anodizer_core::test_helpers::TestContextBuilder;
+
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    let bin_path = tmp.path().join("myapp");
+    fs::write(&bin_path, b"binary").unwrap();
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("myapp")
+        .tag("v1.0.0")
+        .dist(dist)
+        .crates(vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                formats: Some(vec!["tar.gz".to_string()]),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }])
+        .build();
+
+    let mut meta = HashMap::new();
+    meta.insert("binary".to_string(), "myapp".to_string());
+    meta.insert("amd64_variant".to_string(), "v3".to_string());
+
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: String::new(),
+        path: bin_path,
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "myapp".to_string(),
+        metadata: meta,
+        size: None,
+    });
+
+    ArchiveStage.run(&mut ctx).unwrap();
+
+    let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+    assert_eq!(archives.len(), 1);
+    assert_eq!(
+        archives[0]
+            .metadata
+            .get("amd64_variant")
+            .map(String::as_str),
+        Some("v3"),
+        "archive metadata must copy `amd64_variant` from the first source binary \
+         so publisher filters resolve the correct microarch variant"
+    );
+}
+
+/// Q-arch1 — Multi-crate archives must render `{{ .ProjectName }}` to the
+/// per-crate name (with `{{ .CrateName }}` still available separately) so
+/// users migrating GR configs whose name templates reference `ProjectName`
+/// see GR-equivalent filenames. The `default_name_template_multi_crate()`
+/// also resolves to the canonical GR shape after the iteration override.
+#[test]
+fn test_multi_crate_archive_projectname_resolves_to_crate() {
+    use anodizer_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
+    use anodizer_core::test_helpers::TestContextBuilder;
+
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    let bin_a = tmp.path().join("crate-a");
+    let bin_b = tmp.path().join("crate-b");
+    fs::write(&bin_a, b"a").unwrap();
+    fs::write(&bin_b, b"b").unwrap();
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("workspace")
+        .tag("v1.0.0")
+        .dist(dist)
+        .crates(vec![
+            CrateConfig {
+                name: "crate-a".to_string(),
+                path: "crate-a".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                    name_template: Some(
+                        "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}".to_string(),
+                    ),
+                    formats: Some(vec!["tar.gz".to_string()]),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            },
+            CrateConfig {
+                name: "crate-b".to_string(),
+                path: "crate-b".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                    name_template: Some(
+                        "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}".to_string(),
+                    ),
+                    formats: Some(vec!["tar.gz".to_string()]),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            },
+        ])
+        .build();
+
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: String::new(),
+        path: bin_a,
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "crate-a".to_string(),
+        metadata: HashMap::from([("binary".to_string(), "crate-a".to_string())]),
+        size: None,
+    });
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: String::new(),
+        path: bin_b,
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "crate-b".to_string(),
+        metadata: HashMap::from([("binary".to_string(), "crate-b".to_string())]),
+        size: None,
+    });
+
+    ArchiveStage.run(&mut ctx).unwrap();
+
+    let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+    assert_eq!(archives.len(), 2);
+    let names: Vec<String> = archives
+        .iter()
+        .filter_map(|a| a.metadata.get("name").cloned())
+        .collect();
+    assert!(
+        names.iter().any(|n| n == "crate-a-1.0.0-linux-amd64"),
+        "expected crate-a archive stem in {names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n == "crate-b-1.0.0-linux-amd64"),
+        "expected crate-b archive stem in {names:?}"
+    );
+    // Global ProjectName template var must be restored after the multi-crate
+    // iteration so downstream stages still see the workspace project name.
+    assert_eq!(
+        ctx.template_vars().get("ProjectName").map(String::as_str),
+        Some("workspace"),
+    );
+}

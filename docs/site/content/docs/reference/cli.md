@@ -160,7 +160,7 @@ Auto-tag based on commit message directives
 
 ### `anodizer continue`
 
-Continue a split release by merging artifacts and running post-build stages
+Resume a release after a transient failure or after `--prepare`/`--split`
 
 
 | Flag | Short | Default | Description |

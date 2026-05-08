@@ -98,16 +98,16 @@ pub(crate) fn default_name_template() -> &'static str {
     "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{% if Arm %}v{{ Arm }}{% endif %}{% if Mips %}_{{ Mips }}{% endif %}{% if Amd64 and Amd64 != \"v1\" %}{{ Amd64 }}{% endif %}"
 }
 
-/// Multi-crate variant of [`default_name_template`]: substitutes
-/// `{{ .ProjectName }}` with `{{ .CrateName }}` so per-crate archives
-/// resolve to distinct filenames instead of all colliding on
-/// `<project>_<ver>_<os>_<arch>`. Used as the default in monorepo /
-/// multi-crate workspaces (more than one crate produces archives) when
-/// the user has not set an explicit `archive.name_template:`. Single-crate
-/// configs continue to default to the project-name-keyed template for
-/// GoReleaser parity.
+/// Multi-crate variant of [`default_name_template`]: identical to the
+/// canonical GR template, but relies on the archive stage to override the
+/// `ProjectName` template var to the per-crate name so each crate's archive
+/// stem is distinct without forcing every user to hand-author
+/// `archive.name_template:`. `{{ .CrateName }}` remains separately available
+/// for templates that need to disambiguate further. Single-crate configs use
+/// [`default_name_template`] (same shape) with the workspace `ProjectName`
+/// untouched.
 pub(crate) fn default_name_template_multi_crate() -> &'static str {
-    "{{ .CrateName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{% if Arm %}v{{ Arm }}{% endif %}{% if Mips %}_{{ Mips }}{% endif %}{% if Amd64 and Amd64 != \"v1\" %}{{ Amd64 }}{% endif %}"
+    "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{% if Arm %}v{{ Arm }}{% endif %}{% if Mips %}_{{ Mips }}{% endif %}{% if Amd64 and Amd64 != \"v1\" %}{{ Amd64 }}{% endif %}"
 }
 
 pub(crate) fn default_binary_name_template() -> &'static str {

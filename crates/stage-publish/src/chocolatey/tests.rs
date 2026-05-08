@@ -241,6 +241,67 @@ fn test_generate_install_script_dual_arch() {
     assert!(script.contains("-Checksum64 $checksum64 -ChecksumType64 'sha256'"));
 }
 
+/// C5 — chocolatey only ships amd64/386 (GoReleaser
+/// `internal/pipe/chocolatey/chocolatey.go:99-108`). When the only Windows
+/// artifact is arm64, anodizer must NOT silently package it as a 64-bit
+/// archive (the prior `is_32bit_target` heuristic let arm64 fall through
+/// to the amd64 slot, producing a broken install script).
+#[test]
+fn test_publish_to_chocolatey_rejects_arm64_only() {
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::config::{ChocolateyConfig, Config, CrateConfig, PublishConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::log::{StageLogger, Verbosity};
+    let mut config = Config::default();
+    config.crates = vec![CrateConfig {
+        name: "mytool".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        publish: Some(PublishConfig {
+            chocolatey: Some(ChocolateyConfig {
+                repository: Some(anodizer_core::config::RepositoryConfig {
+                    owner: Some("myorg".to_string()),
+                    name: Some("mytool".to_string()),
+                    ..Default::default()
+                }),
+                description: Some("A great tool".to_string()),
+                api_key: Some("dummy".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }];
+    let mut ctx = Context::new(config, ContextOptions::default());
+    // Only an arm64 Windows artifact — chocolatey must reject (matches
+    // GR's `errNoWindowsArchive` since the goarch filter excludes arm64).
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Archive,
+        path: std::path::PathBuf::from("/tmp/mytool-windows-arm64.zip"),
+        name: "mytool-windows-arm64.zip".to_string(),
+        target: Some("aarch64-pc-windows-msvc".to_string()),
+        crate_name: "mytool".to_string(),
+        metadata: {
+            let mut m = std::collections::HashMap::new();
+            m.insert("sha256".to_string(), "deadbeef".to_string());
+            m.insert("url".to_string(), "https://example.com/x.zip".to_string());
+            m
+        },
+        size: None,
+    });
+    let log = StageLogger::new("publish", Verbosity::Normal);
+    let res = publish_to_chocolatey(&ctx, "mytool", &log);
+    assert!(
+        res.is_err(),
+        "arm64-only must fail with errNoWindowsArchive equivalent"
+    );
+    let msg = format!("{:#}", res.unwrap_err());
+    assert!(
+        msg.contains("no windows artifact"),
+        "error must call out missing-windows-artifact, got: {msg}"
+    );
+}
+
 #[test]
 fn test_publish_to_chocolatey_dry_run() {
     use anodizer_core::config::{ChocolateyConfig, Config, CrateConfig, PublishConfig};

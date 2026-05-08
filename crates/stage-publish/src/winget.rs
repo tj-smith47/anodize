@@ -10,8 +10,23 @@ use serde::Serialize;
 
 use crate::util;
 
-static PACKAGE_IDENTIFIER_RE: LazyLock<Regex> =
-    LazyLock::new(|| static_regex(r#"^[^\.\s\\/:\*\?"<>\|]+(\.[^\.\s\\/:\*\?"<>\|]+){1,7}$"#));
+// GoReleaser parity (`internal/pipe/winget/winget.go:37`):
+// `^[^\.\s\\/:\*\?"<>\|\x01-\x1f]{1,32}(\.[^\.\s\\/:\*\?"<>\|\x01-\x1f]{1,32}){1,7}$`
+//
+// Two delta points vs. the loose anodizer regex this replaced:
+//   1. Each segment is bounded to 1..=32 chars (live winget validator
+//      enforces this; longer segments fail the upstream PR check).
+//   2. ASCII control chars `\x01..=\x1f` are excluded explicitly — winget
+//      rejects them, so anodizer must too.
+//
+// `\x00` (NUL) is also rejected by winget but `regex` interprets `\x00`
+// inside `[^...]` as the empty boundary; we strip NULs explicitly below
+// before applying the regex to keep the engine happy.
+static PACKAGE_IDENTIFIER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    static_regex(
+        r#"^[^\.\s\\/:\*\?"<>\|\x01-\x1f]{1,32}(\.[^\.\s\\/:\*\?"<>\|\x01-\x1f]{1,32}){1,7}$"#,
+    )
+});
 
 // ---------------------------------------------------------------------------
 // PackageIdentifier validation
@@ -19,18 +34,23 @@ static PACKAGE_IDENTIFIER_RE: LazyLock<Regex> =
 
 /// Validate a WinGet PackageIdentifier against the required pattern.
 ///
-/// The identifier must have at least 2 dot-separated segments, and each
-/// segment must not contain whitespace or the characters `\`, `/`, `:`, `*`,
-/// `?`, `"`, `<`, `>`, `|`.
+/// The identifier must have 2-8 dot-separated segments, each segment 1-32
+/// characters, with no whitespace, ASCII control chars (`\x01-\x1f`), or
+/// the characters `\`, `/`, `:`, `*`, `?`, `"`, `<`, `>`, `|`.
 ///
-/// Pattern: `^[^\.\s\\\/:\*\?"<>\|]+(\.[^\.\s\\\/:\*\?"<>\|]+){1,7}$`
+/// Pattern: `^[^\.\s\\/:\*\?"<>\|\x01-\x1f]{1,32}(\.[^\.\s\\/:\*\?"<>\|\x01-\x1f]{1,32}){1,7}$`
+/// (matches GoReleaser `internal/pipe/winget/winget.go:37`).
 pub fn validate_package_identifier(id: &str) -> Result<()> {
-    if PACKAGE_IDENTIFIER_RE.is_match(id) {
+    // NUL (`\x00`) is also forbidden by winget. The regex's character class
+    // already excludes `\x01-\x1f` but excluding `\x00` inside an
+    // already-negated class is awkward; reject NULs explicitly.
+    if !id.contains('\u{0}') && PACKAGE_IDENTIFIER_RE.is_match(id) {
         Ok(())
     } else {
         anyhow::bail!(
-            "winget: invalid PackageIdentifier '{}'. Must have 2-8 dot-separated segments \
-             with no whitespace or special characters (\\/:*?\"<>|).",
+            "winget: invalid PackageIdentifier '{}'. Must have 2-8 dot-separated segments, \
+             each 1-32 chars, with no whitespace, control chars, or special characters \
+             (\\/:*?\"<>|).",
             id
         )
     }
@@ -677,7 +697,7 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
             other => other,
         };
         let resolved_url = if let Some(tmpl) = url_template {
-            util::render_url_template(tmpl, name, &version, &raw_arch, "windows")
+            util::render_url_template_with_ctx(ctx, tmpl, name, &version, &raw_arch, "windows")
         } else {
             a.metadata
                 .get("url")
@@ -717,7 +737,7 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
             other => other,
         };
         let resolved_url = if let Some(tmpl) = url_template {
-            util::render_url_template(tmpl, name, &version, &raw_arch, "windows")
+            util::render_url_template_with_ctx(ctx, tmpl, name, &version, &raw_arch, "windows")
         } else {
             a.metadata
                 .get("url")
@@ -1466,6 +1486,29 @@ mod tests {
     fn test_validate_package_identifier_too_many_segments() {
         // 9 segments (more than 8) should fail
         assert!(validate_package_identifier("A.B.C.D.E.F.G.H.I").is_err());
+    }
+
+    #[test]
+    fn test_validate_package_identifier_segment_length_limit() {
+        // GoReleaser regex pins each segment to 1..=32 chars; anodizer must too.
+        let segment_32 = "A".repeat(32);
+        let segment_33 = "A".repeat(33);
+        // OK: a 32-char segment is the upper bound.
+        assert!(validate_package_identifier(&format!("{segment_32}.OK")).is_ok());
+        assert!(validate_package_identifier(&format!("Org.{segment_32}")).is_ok());
+        // FAIL: a 33-char segment trips the live winget validator.
+        assert!(validate_package_identifier(&format!("{segment_33}.OK")).is_err());
+        assert!(validate_package_identifier(&format!("Org.{segment_33}")).is_err());
+    }
+
+    #[test]
+    fn test_validate_package_identifier_rejects_control_chars() {
+        // Live winget rejects ASCII control chars (`\x01-\x1f`); anodizer
+        // must block them too so the upstream PR isn't auto-rejected.
+        assert!(validate_package_identifier("Org.\u{0001}Bad").is_err());
+        assert!(validate_package_identifier("Org.Bad\u{001f}").is_err());
+        // NUL is not in `\x01-\x1f` but is also forbidden upstream.
+        assert!(validate_package_identifier("Org.\u{0000}Bad").is_err());
     }
 
     #[test]

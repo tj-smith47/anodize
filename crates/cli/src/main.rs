@@ -304,28 +304,17 @@ fn main() {
             dry_run,
             skip,
             token,
-        } => {
-            if !merge {
-                eprintln!(
-                    "{} `anodizer continue` requires --merge flag \
-                     — this command merges split-build artifacts from \
-                     `anodizer release --split` and runs post-build stages \
-                     (publish, announce, etc.)",
-                    "Error:".red().bold()
-                );
-                std::process::exit(1);
-            }
-            commands::continue_cmd::run(commands::continue_cmd::ContinueOpts {
-                dist,
-                dry_run,
-                skip,
-                token,
-                config_override: cli.config.clone(),
-                verbose: cli.verbose,
-                debug: cli.debug,
-                quiet: cli.quiet,
-            })
-        }
+        } => commands::continue_cmd::run(commands::continue_cmd::ContinueOpts {
+            dist,
+            dry_run,
+            skip,
+            token,
+            config_override: cli.config.clone(),
+            verbose: cli.verbose,
+            debug: cli.debug,
+            quiet: cli.quiet,
+            merge,
+        }),
         Commands::Publish {
             dry_run,
             token,

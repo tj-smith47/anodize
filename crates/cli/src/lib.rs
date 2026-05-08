@@ -219,7 +219,16 @@ pub enum Commands {
         #[arg(long = "crate", help = "Tag a specific crate in a workspace")]
         crate_name: Option<String>,
     },
-    /// Continue a split release by merging artifacts and running post-build stages
+    /// Resume a release after a transient failure or after `--prepare`/`--split`
+    ///
+    /// With `--merge`: load every per-target `context.json` under `dist/` (one
+    /// per split-build worker) and run the full post-build pipeline
+    /// (sign / checksum / sbom / release / publish / announce).
+    ///
+    /// Without `--merge`: load existing `dist/` artifacts and run the
+    /// publish-only pipeline (release / publish / blob). Use this to resume
+    /// a single-host release that stalled during publish (e.g. expired
+    /// token, transient 5xx) without rebuilding.
     Continue {
         #[arg(
             long,

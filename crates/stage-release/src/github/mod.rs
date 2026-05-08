@@ -67,7 +67,6 @@ pub(crate) struct GithubReleaseSpec<'a> {
     pub make_latest: &'a Option<MakeLatest>,
     pub target_commitish: &'a Option<String>,
     pub discussion_category: &'a Option<String>,
-    pub github_native_changelog: bool,
 }
 
 /// Boolean cluster controlling upload semantics for [`run_github_backend`].
@@ -77,6 +76,54 @@ pub(crate) struct UploadOpts {
     pub replace_existing_draft: bool,
     pub replace_existing_artifacts: bool,
     pub use_existing_draft: bool,
+}
+
+/// Outcome for the upload-asset 422 `already_exists` decision branch.
+/// Extracted from the body of [`run_github_backend`] so the logic can be
+/// unit-tested without standing up a fake octocrab.
+///
+/// Mirrors GoReleaser `internal/client/github.go:734-744`:
+///
+/// ```text
+/// if resp.StatusCode == http.StatusUnprocessableEntity {
+///     if !ctx.Config.Release.ReplaceExistingArtifacts {
+///         return retryx.Unrecoverable(err)
+///     }
+///     // delete + retry
+/// }
+/// ```
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum AlreadyExistsAction {
+    /// Local + remote bytes match — treat as a no-op (idempotency); a
+    /// prior attempt in this same release already uploaded the file.
+    SkipIdempotent,
+    /// `replace_existing_artifacts: false` and bytes differ — bail with
+    /// the conflict instead of overwriting.
+    BailReplaceForbidden,
+    /// Different bytes and the user opted in via
+    /// `replace_existing_artifacts: true` — delete the stale asset and
+    /// retry the upload.
+    DeleteAndRetry,
+}
+
+/// Decide what to do when the GitHub upload-asset API returns
+/// `422 already_exists`. Pure function so the (re-)introduced
+/// `replace_existing_artifacts: false` guard can be tested without I/O.
+pub(crate) fn classify_already_exists(
+    replace_existing_artifacts: bool,
+    remote_size: Option<u64>,
+    local_size: u64,
+) -> AlreadyExistsAction {
+    // Idempotency check first — bytes that already match the local
+    // artifact aren't an "overwrite", so the user's
+    // `replace_existing_artifacts: false` does NOT block this path.
+    if remote_size == Some(local_size) {
+        return AlreadyExistsAction::SkipIdempotent;
+    }
+    if !replace_existing_artifacts {
+        return AlreadyExistsAction::BailReplaceForbidden;
+    }
+    AlreadyExistsAction::DeleteAndRetry
 }
 
 /// Run the GitHub release backend for one crate.
@@ -109,7 +156,6 @@ pub(crate) fn run_github_backend(
         make_latest,
         target_commitish,
         discussion_category: discussion_category_name,
-        github_native_changelog,
     } = *spec;
     let UploadOpts {
         skip_upload,
@@ -154,15 +200,18 @@ pub(crate) fn run_github_backend(
 
         // Helper: list all releases (with pagination) and find a draft
         // matching the release name. GoReleaser searches by name (not tag).
+        //
+        // Pagination terminates when the page returns fewer than `per_page=100`
+        // results (matching GoReleaser `internal/client/github.go::findDraftRelease`,
+        // which loops while `resp.NextPage != 0`). No artificial cap: repos
+        // with thousands of historical draft releases must still find the
+        // target so the create-release path doesn't 422 on a duplicate tag.
         async fn find_draft_by_name(
             octo: &octocrab::Octocrab,
             owner: &str,
             repo: &str,
             name: &str,
         ) -> Result<Option<octocrab::models::repos::Release>> {
-            // Cap at 10 pages (1000 releases) to avoid runaway pagination
-            // on repos with very long release histories.
-            const MAX_PAGES: u32 = 10;
             let mut page: u32 = 1;
             loop {
                 let route = format!(
@@ -184,14 +233,12 @@ pub(crate) fn run_github_backend(
                 {
                     return Ok(Some(found.clone()));
                 }
-                // If we got fewer than 100 results, there are no more pages.
+                // If we got fewer than 100 results, there are no more pages —
+                // matches GR's `resp.NextPage == 0` terminator.
                 if releases.len() < 100 {
                     break;
                 }
                 page += 1;
-                if page > MAX_PAGES {
-                    break;
-                }
             }
             Ok(None)
         }
@@ -298,7 +345,6 @@ pub(crate) fn run_github_backend(
             make_latest: &None, // make_latest deferred to publish PATCH
             target_commitish,
             discussion_category: &None, // discussion_category_name deferred to publish PATCH
-            github_native: github_native_changelog,
         });
 
         // Rate limit check before release create/update API call.
@@ -537,12 +583,14 @@ pub(crate) fn run_github_backend(
                                         break;
                                     }
 
-                                    // Outer-retry idempotency: if an asset with the
-                                    // same name already exists AND its size matches
-                                    // the local artifact, a prior attempt in this
-                                    // same release flow successfully uploaded it.
-                                    // Treat as a no-op — the bytes GitHub has are
-                                    // the bytes we intended to upload.
+                                    // Probe the remote asset's size so we can
+                                    // distinguish "same bytes uploaded earlier"
+                                    // (idempotent no-op) from "different bytes,
+                                    // user opted out of overwrites"
+                                    // (unrecoverable). The classifier
+                                    // [`classify_already_exists`] encodes the
+                                    // GR-aligned 422 decision rule
+                                    // (`internal/client/github.go:734-744`).
                                     let remote_size = find_release_asset_size(
                                         &octo,
                                         &gh_owner,
@@ -557,22 +605,51 @@ pub(crate) fn run_github_backend(
                                             file_name, tag_c
                                         )
                                     })?;
-                                    if remote_size == Some(local_size) {
-                                        last_err = None;
-                                        break;
+
+                                    match classify_already_exists(
+                                        replace_existing_artifacts,
+                                        remote_size,
+                                        local_size,
+                                    ) {
+                                        AlreadyExistsAction::SkipIdempotent => {
+                                            // A prior attempt in this same release
+                                            // already uploaded byte-identical
+                                            // content. Pure no-op, regardless of
+                                            // `replace_existing_artifacts`.
+                                            last_err = None;
+                                            break;
+                                        }
+                                        AlreadyExistsAction::BailReplaceForbidden => {
+                                            // User explicitly set
+                                            // `replace_existing_artifacts: false`
+                                            // and the bytes differ — surface the
+                                            // conflict rather than overwriting.
+                                            // Mirrors GR's `Unrecoverable(err)`
+                                            // return at `github.go:736`.
+                                            return Err(anyhow::anyhow!(err)).with_context(|| {
+                                                format!(
+                                                    "release: artifact '{}' already exists on release '{}' \
+                                                     with different bytes and `replace_existing_artifacts: false` \
+                                                     forbids overwriting (set \
+                                                     `release.replace_existing_artifacts: true` \
+                                                     to permit overwrites)",
+                                                    file_name, tag_c
+                                                )
+                                            });
+                                        }
+                                        AlreadyExistsAction::DeleteAndRetry => {
+                                            // Fall through to the delete-retry
+                                            // arm below (user opted in via
+                                            // `replace_existing_artifacts: true`).
+                                        }
                                     }
 
-                                    // Size mismatch — overwrite if possible, else
-                                    // skip gracefully. Always try to delete the stale
-                                    // asset and retry; `replace_existing_artifacts` is
-                                    // now the default behavior rather than an opt-in,
-                                    // because failing the whole release on an asset
-                                    // size mismatch is worse than replacing the stale
-                                    // bytes (and the pipeline already has upstream
-                                    // reproducibility gates for the cases where that
-                                    // matters). If the delete itself fails (perms,
-                                    // asset disappeared mid-flight, etc.), warn and
-                                    // treat the upload as skipped — a stale asset is
+                                    // Size mismatch + user opted in via
+                                    // `replace_existing_artifacts: true` — delete
+                                    // the stale asset and retry. If the delete
+                                    // itself fails (perms, asset disappeared
+                                    // mid-flight, etc.), warn and treat the
+                                    // upload as skipped — a stale asset is
                                     // better than aborting the release.
                                     match delete_release_asset_by_name(
                                         &octo,
@@ -785,4 +862,52 @@ pub(crate) fn run_github_backend(
         github.owner.clone(),
         github.name.clone(),
     )))
+}
+
+#[cfg(test)]
+mod already_exists_tests {
+    use super::*;
+
+    #[test]
+    fn idempotent_when_remote_matches_local_regardless_of_flag() {
+        // Even with `replace_existing_artifacts: false`, a byte-identical
+        // remote asset is a no-op — the user's guard rail is "don't
+        // overwrite different bytes", not "don't probe the API".
+        assert_eq!(
+            classify_already_exists(false, Some(100), 100),
+            AlreadyExistsAction::SkipIdempotent,
+        );
+        assert_eq!(
+            classify_already_exists(true, Some(100), 100),
+            AlreadyExistsAction::SkipIdempotent,
+        );
+    }
+
+    #[test]
+    fn bails_when_replace_forbidden_and_sizes_differ() {
+        // GR parity: `if !ReplaceExistingArtifacts { return Unrecoverable }`.
+        // Surfaces the conflict instead of silently overwriting.
+        assert_eq!(
+            classify_already_exists(false, Some(100), 200),
+            AlreadyExistsAction::BailReplaceForbidden,
+        );
+        // `remote_size: None` (asset present but size unknown) is treated
+        // as a size-mismatch — better to bail than silently overwrite.
+        assert_eq!(
+            classify_already_exists(false, None, 200),
+            AlreadyExistsAction::BailReplaceForbidden,
+        );
+    }
+
+    #[test]
+    fn deletes_and_retries_when_replace_allowed_and_sizes_differ() {
+        assert_eq!(
+            classify_already_exists(true, Some(100), 200),
+            AlreadyExistsAction::DeleteAndRetry,
+        );
+        assert_eq!(
+            classify_already_exists(true, None, 200),
+            AlreadyExistsAction::DeleteAndRetry,
+        );
+    }
 }

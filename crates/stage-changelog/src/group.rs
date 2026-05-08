@@ -360,7 +360,8 @@ fn group_commits_inner(
 ///
 /// When `abbrev < 0`, the default format becomes `{{ Message }}` (no hash prefix)
 /// regardless of the backend. Available template variables:
-/// `SHA`, `ShortSHA`, `Message`, `AuthorName`, `AuthorEmail`, `Login`, `Logins`.
+/// `SHA`, `ShortSHA`, `Message`, `AuthorName`, `AuthorEmail`, `Login`,
+/// `AuthorUsername` (GR-aligned alias for `Login`), `Logins`.
 #[cfg(test)]
 pub(crate) fn render_changelog(
     grouped: &[GroupedCommits],

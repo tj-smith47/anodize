@@ -590,42 +590,6 @@ pub(super) fn build_conflicts_directives(
     directives
 }
 
-/// Build uninstall directives from structured HomebrewCaskUninstall config.
-/// Converts structured fields into Homebrew Ruby DSL strings.
-pub(super) fn build_uninstall_directives(
-    uninstall: Option<&anodizer_core::config::HomebrewCaskUninstall>,
-) -> Vec<String> {
-    let u = match uninstall {
-        Some(u) => u,
-        None => return Vec::new(),
-    };
-    let mut directives = Vec::new();
-
-    if let Some(ref items) = u.launchctl {
-        for item in items {
-            directives.push(format!("launchctl: \"{}\"", item));
-        }
-    }
-    if let Some(ref items) = u.quit {
-        for item in items {
-            directives.push(format!("quit: \"{}\"", item));
-        }
-    }
-    if let Some(ref items) = u.login_item {
-        for item in items {
-            directives.push(format!("login_item: \"{}\"", item));
-        }
-    }
-    if let Some(ref items) = u.delete {
-        for item in items {
-            directives.push(format!("delete: \"{}\"", item));
-        }
-    }
-    if let Some(ref items) = u.trash {
-        for item in items {
-            directives.push(format!("trash: \"{}\"", item));
-        }
-    }
-
-    directives
-}
+// `build_uninstall_directives` was removed when the cask renderer switched
+// to multi-key Ruby array rendering — see
+// `cask::{render_zap_block, render_uninstall_block}`.

@@ -159,11 +159,21 @@ impl SourceStage {
         }
 
         log.status(&format!("creating {}.{} archive...", name, format));
-        let commit = ctx
-            .git_info
-            .as_ref()
-            .map(|info| info.commit.as_str())
-            .unwrap_or("HEAD");
+        // GoReleaser sourcearchive/source.go:44-58 always passes
+        // `ctx.Git.FullCommit` (the resolved SHA) to `git archive`, never the
+        // literal `HEAD` ref. When `git_info` was not pre-populated by the
+        // git pipe (e.g. local `anodizer release --snapshot`), resolve HEAD
+        // ourselves via the allow-listed `core::git::get_head_commit` helper
+        // so the source archive is deterministic across consecutive commits.
+        let resolved_commit: String;
+        let commit: &str = match ctx.git_info.as_ref() {
+            Some(info) if !info.commit.is_empty() => info.commit.as_str(),
+            _ => {
+                resolved_commit = anodizer_core::git::get_head_commit()
+                    .with_context(|| "source: failed to resolve HEAD via `git rev-parse HEAD`")?;
+                resolved_commit.as_str()
+            }
+        };
         let output_path = create_source_archive(&SourceArchiveInputs {
             dist,
             format: &format,

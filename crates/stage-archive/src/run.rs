@@ -174,12 +174,36 @@ impl Stage for ArchiveStage {
         // config the GoReleaser-canonical `{{ .ProjectName }}_..._{{ .Os }}_..`
         // template is unambiguous; in a monorepo every crate would resolve to
         // the same filename and emit `artifact '<...>' already registered`
-        // warnings. The multi-crate default substitutes `{{ .CrateName }}` so
-        // each crate's archive stem is distinct without forcing every user to
-        // hand-author `archive.name_template:`.
+        // warnings.
+        //
+        // In multi-crate mode the default template still references
+        // `{{ .ProjectName }}` (matching GR archive.go:30 verbatim) and the
+        // per-crate iteration below overrides the `ProjectName` template var
+        // to the crate name. This keeps user templates that reference
+        // `{{ .ProjectName }}` working under GR semantics — each crate is its
+        // own "project" in the workspace model. `{{ .CrateName }}` remains
+        // separately available.
         let multi_crate = work.len() > 1;
 
+        // Snapshot the workspace-level ProjectName so the per-crate override
+        // can be restored after the loop (downstream stages — checksum, sign,
+        // release, blob — must continue to see the workspace name).
+        let original_project_name = ctx
+            .template_vars()
+            .get("ProjectName")
+            .cloned()
+            .unwrap_or_else(|| ctx.config.project_name.clone());
+
         for (crate_name, crate_dir, archive_cfgs) in &work {
+            // GR-aligned ProjectName resolution for multi-crate workspaces:
+            // in a single-crate config ProjectName == workspace project name;
+            // in a multi-crate config each crate behaves like its own project,
+            // so user `name_template`s referencing `{{ .ProjectName }}` (the
+            // common GR migration shape) resolve to a per-crate-distinct
+            // value instead of the workspace name.
+            if multi_crate {
+                ctx.template_vars_mut().set("ProjectName", crate_name);
+            }
             // Archive all build artifact types, matching GoReleaser
             // (Binary, UniversalBinary, Header, CArchive, CShared).
             let archivable_kinds = [
@@ -881,11 +905,21 @@ impl Stage for ArchiveStage {
                         }
 
                         // propagate
-                        // Replaces + DynamicallyLinked from source binaries so
-                        // publishers (Homebrew, AUR, nfpm) can consume them.
+                        // Replaces + DynamicallyLinked + amd64_variant from
+                        // source binaries so publishers (Homebrew, AUR, nfpm,
+                        // winget, scoop, krew) can consume them.
                         //   - Replaces: first non-empty value wins.
                         //   - DynamicallyLinked (ndynlink): true if ANY source
-                        //     binary was dynamically linked.
+                        //     binary was dynamically linked. Mirrors GR
+                        //     archive.go:266-270 where `art.Extra[ExtranDynLink]`
+                        //     is set when any source binary carries it.
+                        //   - amd64_variant: copied from the first source
+                        //     binary (mirrors GR archive.go:255
+                        //     `art.Goamd64 = binaries[0].Goamd64`). Without
+                        //     this, publisher filters keyed on
+                        //     `metadata.get("amd64_variant")` fall back to the
+                        //     "missing == v1" default, so v2/v3/v4 archives
+                        //     would be matched as v1.
                         let mut replaces_val: Option<String> = None;
                         let mut any_dynlink = false;
                         for b in &selected_bins {
@@ -895,7 +929,10 @@ impl Stage for ArchiveStage {
                             {
                                 replaces_val = Some(r.clone());
                             }
-                            if let Some(d) = b.metadata.get("dynamically_linked")
+                            // Match the canonical GoReleaser key (`ExtranDynLink
+                            // = "DynamicallyLinked"`) that the build stage
+                            // writes via `is_dynamically_linked` detection.
+                            if let Some(d) = b.metadata.get("DynamicallyLinked")
                                 && d == "true"
                             {
                                 any_dynlink = true;
@@ -906,6 +943,12 @@ impl Stage for ArchiveStage {
                         }
                         if any_dynlink {
                             metadata.insert("ndynlink".to_string(), "true".to_string());
+                        }
+                        if let Some(variant) = selected_bins
+                            .first()
+                            .and_then(|b| b.metadata.get("amd64_variant"))
+                        {
+                            metadata.insert("amd64_variant".to_string(), variant.clone());
                         }
 
                         if format == "binary" {
@@ -960,6 +1003,13 @@ impl Stage for ArchiveStage {
                 }
             }
         }
+
+        // Restore the workspace-level ProjectName after multi-crate iteration
+        // overrode it per-crate (see Q-arch1 / 2026-05-08 second-opinion audit).
+        // Downstream stages (checksum, sign, release, blob) must see the
+        // workspace project name, not whichever crate happened to be last.
+        ctx.template_vars_mut()
+            .set("ProjectName", &original_project_name);
 
         // Clear per-target template vars so they don't leak to downstream stages.
         ctx.template_vars_mut().set("Os", "");

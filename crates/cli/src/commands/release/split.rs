@@ -306,6 +306,102 @@ fn build_matrix(targets: &[String], split_by: &str) -> SplitMatrix {
     }
 }
 
+/// Cross-check the loaded `dist/<target>/context.json` files against the
+/// `matrix.json` written by `release --split`. Errors when the set of
+/// `partial_target` strings claimed by the loaded contexts does not match
+/// the set of `MatrixEntry.target` strings the split job dispatched.
+///
+/// `matrix.json` is the source-of-truth for which workers were dispatched;
+/// each worker writes a single `dist/<target>/context.json` with its
+/// `partial_target` field set to the same string. The two sets must be
+/// equal — a missing context indicates a worker that silently failed (CI
+/// runner cancelled, transient build failure, dispatch race), and a
+/// surplus context indicates merging artifacts from a stale prior split
+/// run that wasn't cleaned. Either case would otherwise sign / checksum /
+/// publish an incomplete artifact set.
+///
+/// Returns `Ok(())` if matrix.json is absent (best-effort: users may merge
+/// externally-prepared `dist/` trees that did not originate from
+/// `--split`).
+fn check_split_worker_completeness(
+    dist: &Path,
+    context_files: &[PathBuf],
+    log: &anodizer_core::log::StageLogger,
+) -> Result<()> {
+    let matrix_path = dist.join("matrix.json");
+    if !matrix_path.exists() {
+        log.verbose(&format!(
+            "merge: no matrix.json at {} — skipping worker-completeness check",
+            matrix_path.display()
+        ));
+        return Ok(());
+    }
+
+    let matrix_content = std::fs::read_to_string(&matrix_path)
+        .with_context(|| format!("read matrix: {}", matrix_path.display()))?;
+    let matrix: SplitMatrix = serde_json::from_str(&matrix_content)
+        .with_context(|| format!("parse matrix: {}", matrix_path.display()))?;
+
+    let expected: std::collections::BTreeSet<String> =
+        matrix.include.iter().map(|e| e.target.clone()).collect();
+
+    let mut got: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for ctx_file in context_files {
+        let content = std::fs::read_to_string(ctx_file)
+            .with_context(|| format!("read split context: {}", ctx_file.display()))?;
+        let split_ctx: SplitContext = serde_json::from_str(&content)
+            .with_context(|| format!("parse split context: {}", ctx_file.display()))?;
+        got.insert(split_ctx.partial_target);
+    }
+
+    let missing: Vec<&String> = expected.difference(&got).collect();
+    let surplus: Vec<&String> = got.difference(&expected).collect();
+
+    if !missing.is_empty() || !surplus.is_empty() {
+        let mut msg = format!(
+            "merge: split-worker manifest mismatch (expected {} workers from {}, got {})",
+            expected.len(),
+            matrix_path.display(),
+            got.len()
+        );
+        if !missing.is_empty() {
+            msg.push_str(&format!(
+                ".\n  missing context.json from worker(s): {}",
+                missing
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            msg.push_str(
+                ".\n  Each missing worker corresponds to a split-build job that did \
+                 not write `dist/<target>/context.json` — typically a CI runner that \
+                 was cancelled, ran out of disk, or hit a transient build failure. \
+                 Re-run those workers, or pass `--skip <stage>` to merge a \
+                 deliberately-incomplete release.",
+            );
+        }
+        if !surplus.is_empty() {
+            msg.push_str(&format!(
+                ".\n  unexpected context.json from worker(s) not in matrix: {}",
+                surplus
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            msg.push_str(
+                ".\n  These contexts are likely left over from an earlier split \
+                 run; clean `dist/` (or pass --clean on the next `release --split`) \
+                 before retrying.",
+            );
+        }
+        anyhow::bail!("{}", msg);
+    }
+
+    Ok(())
+}
+
 /// Run in --merge mode: load split contexts, merge artifacts, run post-build stages.
 pub fn run_merge(
     ctx: &mut Context,
@@ -333,6 +429,21 @@ pub fn run_merge(
         }
         return run_merge_legacy(ctx, config, log, dry_run, &artifact_files);
     }
+
+    // Worker-completeness pre-flight: matrix.json (written by `release --split`)
+    // is the source-of-truth for which split workers were dispatched. If a
+    // worker silently dropped its `dist/<target>/context.json` (transient
+    // CI failure, runner cancellation, etc.), `--merge` would otherwise
+    // sign / checksum / publish a strict subset of the intended artifact
+    // set without warning. Surface the gap as a hard error so an
+    // incomplete release is never accepted.
+    //
+    // The check is best-effort: if matrix.json is absent (e.g. the user is
+    // merging an externally-prepared `dist/`), fall through to the
+    // context-based load. The artifact-path collision check at the bottom
+    // of this loop already detects double-claims; this adds the
+    // missing-half of the symmetry.
+    check_split_worker_completeness(dist, &context_files, log)?;
 
     // Load and merge all split contexts
     let mut total_loaded = 0;
@@ -907,5 +1018,135 @@ mod tests {
         use anodizer_core::artifact::ArtifactKind;
         assert!(ArtifactKind::parse("unknown_kind").is_none());
         assert!(ArtifactKind::parse("").is_none());
+    }
+
+    // -----------------------------------------------------------------
+    // check_split_worker_completeness — second-opinion finding Q-merge1
+    // -----------------------------------------------------------------
+
+    /// Write a minimal `dist/<subdir>/context.json` carrying just the
+    /// `partial_target` field (the only field the completeness check
+    /// reads from each context).
+    fn write_split_context(dist: &Path, subdir: &str, partial_target: &str) -> PathBuf {
+        let dir = dist.join(subdir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("context.json");
+        let ctx = SplitContext {
+            partial_target: partial_target.to_string(),
+            template_vars: HashMap::new(),
+            env_vars: HashMap::new(),
+            git_tag: None,
+            git_commit: None,
+            git_branch: None,
+            artifacts: Vec::new(),
+        };
+        std::fs::write(&path, serde_json::to_string(&ctx).unwrap()).unwrap();
+        path
+    }
+
+    fn write_matrix(dist: &Path, targets: &[&str]) {
+        let matrix = SplitMatrix {
+            split_by: "goos".to_string(),
+            include: targets
+                .iter()
+                .map(|t| MatrixEntry {
+                    target: (*t).to_string(),
+                    runner: "ubuntu-latest".to_string(),
+                })
+                .collect(),
+        };
+        std::fs::write(
+            dist.join("matrix.json"),
+            serde_json::to_string(&matrix).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn null_logger() -> anodizer_core::log::StageLogger {
+        anodizer_core::log::StageLogger::new("test", anodizer_core::log::Verbosity::Quiet)
+    }
+
+    #[test]
+    fn worker_completeness_passes_when_all_workers_contributed() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dist = tmp.path();
+        write_matrix(dist, &["linux", "darwin", "windows"]);
+        let ctx_files = vec![
+            write_split_context(dist, "linux", "linux"),
+            write_split_context(dist, "darwin", "darwin"),
+            write_split_context(dist, "windows", "windows"),
+        ];
+
+        check_split_worker_completeness(dist, &ctx_files, &null_logger())
+            .expect("all expected workers contributed → must succeed");
+    }
+
+    #[test]
+    fn worker_completeness_errors_when_workers_missing() {
+        // GR-aligned regression guard for second-opinion finding
+        // Q-merge1: a worker silently dropping its
+        // `dist/<target>/context.json` (CI cancellation, transient
+        // build failure) must be a hard error, not a silent partial
+        // release.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dist = tmp.path();
+        write_matrix(dist, &["linux", "darwin", "windows"]);
+        // Only 1 of 3 workers wrote its context.
+        let ctx_files = vec![write_split_context(dist, "linux", "linux")];
+
+        let err = check_split_worker_completeness(dist, &ctx_files, &null_logger())
+            .expect_err("incomplete worker set must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("missing context.json from worker(s)"),
+            "expected missing-worker diagnostic, got: {}",
+            msg
+        );
+        assert!(
+            msg.contains("darwin") && msg.contains("windows"),
+            "diagnostic must enumerate every missing worker, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn worker_completeness_errors_when_surplus_workers_present() {
+        // Stale `dist/` from a prior split run must surface as an
+        // error rather than silently merging a superset.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dist = tmp.path();
+        write_matrix(dist, &["linux"]);
+        let ctx_files = vec![
+            write_split_context(dist, "linux", "linux"),
+            write_split_context(dist, "darwin", "darwin"),
+        ];
+
+        let err = check_split_worker_completeness(dist, &ctx_files, &null_logger())
+            .expect_err("surplus worker set must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("unexpected context.json"),
+            "expected surplus-worker diagnostic, got: {}",
+            msg
+        );
+        assert!(
+            msg.contains("darwin"),
+            "diagnostic must name the surplus worker, got: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn worker_completeness_skips_check_when_matrix_absent() {
+        // Best-effort: external dist/ trees that were not produced by
+        // `release --split` won't carry matrix.json — the check must be
+        // a no-op rather than a hard error.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dist = tmp.path();
+        // No matrix.json written.
+        let ctx_files = vec![write_split_context(dist, "linux", "linux")];
+
+        check_split_worker_completeness(dist, &ctx_files, &null_logger())
+            .expect("absent matrix.json must skip the check, not error");
     }
 }

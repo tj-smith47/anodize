@@ -6,6 +6,7 @@
 //! alongside the version bump in a single commit.
 
 mod fetch;
+mod github_native;
 mod group;
 mod render;
 mod run;

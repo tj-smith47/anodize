@@ -214,10 +214,16 @@ pub(crate) fn ensure_targets_installed(
                 log.verbose(&format!("ensured target installed: {target}"));
             }
             Ok(o) => {
-                log.warn(&format!(
+                // GoReleaser parity: `rustup target add` failure is a hard
+                // error (rust/build.go:60-62 returns
+                // `fmt.Errorf("could not add target %s: %w: %s", ...)`).
+                // The previous warn-and-continue let the subsequent
+                // `cargo build --target=...` fail with a less-clear
+                // "no such target" error.
+                anyhow::bail!(
                     "rustup target add {target} failed: {}",
-                    String::from_utf8_lossy(&o.stderr)
-                ));
+                    String::from_utf8_lossy(&o.stderr).trim()
+                );
             }
             Err(_) => {
                 ctx.strict_guard(log, "rustup not found, skipping target installation")?;

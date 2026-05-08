@@ -225,12 +225,34 @@ fn test_generate_snapcraft_yaml_defaults() {
         ..Default::default()
     };
     let yaml = generate_snap_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
-    // Default base should be core22
-    assert!(yaml.contains("base: core22"), "default base not core22");
+    // GoReleaser parity: do NOT default `base:`. Classic-confinement snaps
+    // need no base at all, and modern snaps may want `core24`. Forcing
+    // `base: core22` breaks both. The line must be absent unless the
+    // user-supplied config provides one.
+    assert!(
+        !yaml.contains("base:"),
+        "no `base:` line should be emitted by default (GR snapcraft.go::Default parity)"
+    );
     // Default confinement should be strict
     assert!(
         yaml.contains("confinement: strict"),
         "default confinement not strict"
+    );
+}
+
+#[test]
+fn test_generate_snapcraft_yaml_emits_user_supplied_base() {
+    let cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        base: Some("core24".to_string()),
+        ..Default::default()
+    };
+    let yaml = generate_snap_yaml(&cfg, "1.0.0", &["myapp"], None, None).unwrap();
+    assert!(
+        yaml.contains("base: core24"),
+        "user-supplied base must be emitted as-is\n{yaml}"
     );
 }
 
@@ -256,7 +278,11 @@ fn test_generate_snapcraft_yaml_minimal_with_required_fields() {
     let yaml = generate_snap_yaml(&cfg, "0.1.0", &["mytool"], None, None).unwrap();
     assert!(yaml.contains("name: mytool"), "missing fallback name");
     assert!(yaml.contains("version: 0.1.0"), "missing version");
-    assert!(yaml.contains("base: core22"), "missing default base");
+    // GoReleaser parity: `base:` is only emitted when the user supplied one.
+    assert!(
+        !yaml.contains("base:"),
+        "no `base:` line should appear when user did not configure one\n{yaml}"
+    );
     assert!(
         yaml.contains("confinement: strict"),
         "missing default confinement"

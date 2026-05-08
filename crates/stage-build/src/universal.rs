@@ -13,6 +13,53 @@ use anodizer_core::util::find_binary;
 // build_universal_binary — run `lipo` to combine arm64 + x86_64 macOS binaries
 // ---------------------------------------------------------------------------
 
+/// Resolve the default `ids` filter for a `universal_binaries[]` entry, GR-aligned.
+///
+/// GR (universalbinary.go:42-44) defaults `unibin.ID` to `ctx.Config.ProjectName`,
+/// then `unibin.IDs` to `[unibin.ID]`. Anodizer's per-crate workspace model
+/// complicates this — `Binary` artifacts default their `id` metadata to the
+/// binary name (= crate name in the common case), not to `project_name`. To
+/// match GR's "ids: [<project>]" idiom while keeping multi-crate workspaces
+/// working, the resolved default is:
+///
+///   1. `ub.id` if explicitly set (verbatim);
+///   2. `project_name` if any candidate Binary actually carries that id
+///      (the GR-typical single-crate case where binary name == project name,
+///      or where the user set `build.id: <project_name>`);
+///   3. otherwise `crate_name` — anodizer's per-crate fallback for
+///      multi-crate workspaces where Binary `id` defaults to the binary name.
+///
+/// This way a user migrating a GR config that says `ids: [<project>]` sees
+/// the expected match in single-crate workspaces, and multi-crate workspaces
+/// continue to scope per-crate without forcing every user to set
+/// `universal_binaries[].id` explicitly.
+fn resolve_default_unibin_ids(
+    ub: &UniversalBinaryConfig,
+    crate_name: &str,
+    ctx: &Context,
+) -> Vec<String> {
+    if let Some(ref id) = ub.id {
+        return vec![id.clone()];
+    }
+    let project_name = ctx.config.project_name.as_str();
+    if !project_name.is_empty() {
+        let project_id_seen = ctx
+            .artifacts
+            .by_kind_and_crate(ArtifactKind::Binary, crate_name)
+            .iter()
+            .any(|a| {
+                a.metadata
+                    .get("id")
+                    .map(|v| v == project_name)
+                    .unwrap_or(false)
+            });
+        if project_id_seen {
+            return vec![project_name.to_string()];
+        }
+    }
+    vec![crate_name.to_string()]
+}
+
 /// Resolve the output path that `build_universal_binary` will write to without
 /// performing the build. Returns `None` when the source binaries needed for
 /// the lipo step are not present, so callers can skip the duplicate-output
@@ -26,7 +73,7 @@ pub(crate) fn project_universal_out_path(
     let binaries = ctx
         .artifacts
         .by_kind_and_crate(ArtifactKind::Binary, crate_name);
-    let default_ids: Vec<String> = vec![ub.id.clone().unwrap_or_else(|| crate_name.to_string())];
+    let default_ids = resolve_default_unibin_ids(ub, crate_name, ctx);
     let effective_ids = ub.ids.clone().unwrap_or(default_ids);
     let filtered: Vec<_> = if !effective_ids.is_empty() {
         binaries
@@ -82,13 +129,7 @@ pub(crate) fn build_universal_binary(
         .artifacts
         .by_kind_and_crate(ArtifactKind::Binary, crate_name);
 
-    // Default `ids` to `[ID]` when unset, with the per-crate fallback below.
-    // GoReleaser (universalbinary.go:42-44) falls back to `ProjectName`;
-    // anodizer falls back to `crate_name` because the workspace model scopes
-    // builds per-crate and there is no single project-wide "default id".
-    // For single-crate workspaces the two are equivalent; for multi-crate
-    // workspaces the per-crate scoping is anodizer-additive and intentional.
-    let default_ids: Vec<String> = vec![ub.id.clone().unwrap_or_else(|| crate_name.to_string())];
+    let default_ids = resolve_default_unibin_ids(ub, crate_name, ctx);
     let effective_ids = ub.ids.clone().unwrap_or(default_ids);
 
     let filtered: Vec<_> = if !effective_ids.is_empty() {

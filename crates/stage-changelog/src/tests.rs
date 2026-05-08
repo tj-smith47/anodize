@@ -615,12 +615,20 @@ abbrev: 10
 // -----------------------------------------------------------------------
 
 #[test]
-fn test_changelog_stage_github_native_produces_empty() {
+fn test_changelog_stage_github_native_dry_run_skips_api() {
     use anodizer_core::config::{ChangelogConfig, CrateConfig, ReleaseConfig, ScmRepoConfig};
 
+    // GR-aligned flow: github-native calls
+    // POST /repos/{o}/{r}/releases/generate-notes upfront. In dry-run /
+    // snapshot mode that API call is suppressed (no network in tests),
+    // and the per-crate changelog body falls back to the empty string.
+    // Outside dry-run/snapshot the body would be the API response.
+    let tmp = tempfile::tempdir().expect("tempdir");
     let mut ctx = TestContextBuilder::new()
         .project_name("test")
         .token(Some("test-token".to_string()))
+        .dry_run(true)
+        .dist(tmp.path().join("dist"))
         .crates(vec![CrateConfig {
             name: "mylib".to_string(),
             path: ".".to_string(),
@@ -643,10 +651,22 @@ fn test_changelog_stage_github_native_produces_empty() {
     let stage = ChangelogStage;
     stage.run(&mut ctx).unwrap();
 
-    // github-native should produce an empty changelog body per crate.
+    // Dry-run path: the per-crate body is empty (no API call) but the
+    // provenance flag is still set so downstream stages know the source.
     assert_eq!(
         ctx.stage_outputs.changelogs.get("mylib"),
         Some(&String::new())
+    );
+    assert!(ctx.stage_outputs.github_native_changelog);
+
+    // CHANGELOG.md must be written to dist so downstream artifacts and
+    // re-runs see a deterministic file (matches GR
+    // `internal/pipe/changelog/changelog.go::Run`).
+    let changelog_path = ctx.config.dist.join("CHANGELOG.md");
+    assert!(
+        changelog_path.exists(),
+        "expected dist/CHANGELOG.md at {}",
+        changelog_path.display()
     );
 }
 
@@ -2314,6 +2334,44 @@ fn test_render_per_commit_login_variable() {
     assert!(
         md.contains("abc1234 add feature (@octocat)"),
         "Login variable should render the per-commit GitHub username, got: {md}"
+    );
+}
+
+#[test]
+fn test_render_author_username_alias_for_login() {
+    // GR-aligned regression guard for second-opinion finding Q-cl1
+    // (`AuthorUsername` not bound). GR's default format string when
+    // `use ∈ {github,gitlab,gitea}` references `.AuthorUsername`; before
+    // the fix that key was unbound and copy-pasting GR's default into an
+    // anodizer config raised a Tera "missing key" error. The fix binds
+    // `AuthorUsername` to the same datum as `Login`, so the GR format
+    // template renders cleanly.
+    let grouped = vec![GroupedCommits::new(
+        "",
+        vec![CommitInfo {
+            raw_message: "feat: add feature".into(),
+            kind: "feat".into(),
+            description: "add feature".into(),
+            hash: "abc1234".into(),
+            full_hash: "abc1234567890".into(),
+            author_name: "Octocat".into(),
+            author_email: "octocat@github.com".into(),
+            login: "octocat".into(),
+            co_authors: Vec::new(),
+        }],
+    )];
+    let md = render_changelog(
+        &grouped,
+        7,
+        Some("{{ ShortSHA }} {{ Message }} (@{{ AuthorUsername }})"),
+        "",
+        "git",
+        None,
+        None,
+    );
+    assert!(
+        md.contains("abc1234 add feature (@octocat)"),
+        "AuthorUsername must alias Login so GR's default format string works, got: {md}"
     );
 }
 

@@ -1,5 +1,19 @@
-//! `anodizer continue --merge` command.
-//! Equivalent to GoReleaser Pro's `goreleaser continue --merge`.
+//! `anodizer continue` command.
+//!
+//! Two modes mirroring GoReleaser Pro's `goreleaser continue`:
+//!
+//! - **`--merge`** — merge artifacts from split-build workers (each worker
+//!   wrote `dist/<target>/context.json` via `anodizer release --split`) and
+//!   then run post-build stages (sign / checksum / sbom / release / publish
+//!   / announce). Equivalent to GR Pro's `goreleaser continue --merge`.
+//!
+//! - **no flag** — single-host stage-resume: load artifacts from a populated
+//!   `dist/` (typically left over from a `release --prepare` run or a
+//!   previous release that failed in publish/announce) and run the
+//!   publish-only pipeline (release + publish + blob), then run the announce
+//!   stage and after-hooks. Equivalent to GR Pro's `goreleaser continue` and
+//!   the long-standing flow for "transient publish failure, retry without
+//!   re-building".
 
 use super::helpers;
 use crate::pipeline;
@@ -17,6 +31,12 @@ pub struct ContinueOpts {
     pub verbose: bool,
     pub debug: bool,
     pub quiet: bool,
+    /// When true, run the merge-mode flow: load every per-target
+    /// `context.json` under `dist/`, recombine into a single artifact set,
+    /// then run sign / checksum / sbom / release / publish / announce.
+    /// When false, run the single-host stage-resume flow: load existing
+    /// `dist/` artifacts and re-run publish + announce only.
+    pub merge: bool,
 }
 
 pub fn run(opts: ContinueOpts) -> Result<()> {
@@ -37,12 +57,39 @@ pub fn run(opts: ContinueOpts) -> Result<()> {
         debug: opts.debug,
         skip_stages: opts.skip,
         token: opts.token,
-        merge: true, // `continue` command always implies --merge
+        merge: opts.merge,
         ..Default::default()
     };
     let mut ctx = Context::new(config.clone(), ctx_opts);
     helpers::setup_context(&mut ctx, &config, &log)?;
     ctx.populate_metadata_var()?;
 
-    super::release::run_merge(&mut ctx, &config, &log, opts.dry_run, opts.dist.as_deref())
+    if opts.merge {
+        // Merge-mode: load split worker contexts and run the full post-build
+        // pipeline.
+        return super::release::run_merge(
+            &mut ctx,
+            &config,
+            &log,
+            opts.dry_run,
+            opts.dist.as_deref(),
+        );
+    }
+
+    // Single-host stage-resume: load artifacts from dist/ and run the
+    // publish-only pipeline (release + publish + blob), matching the
+    // `publish` command's behaviour. This is the GR Pro `goreleaser
+    // continue` (no `--merge`) path: a prior release stalled mid-publish
+    // (e.g. expired token, transient 5xx) and the user wants to resume
+    // without rebuilding.
+    let dist = opts.dist.as_deref().unwrap_or(&config.dist);
+    helpers::load_artifacts_from_dist(&mut ctx, dist)?;
+    log.status(&format!(
+        "continue: loaded {} artifact(s) from {}",
+        ctx.artifacts.all().len(),
+        dist.display()
+    ));
+
+    let p = pipeline::build_publish_pipeline();
+    p.run(&mut ctx, &log)
 }

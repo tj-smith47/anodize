@@ -205,7 +205,7 @@ pub fn publish_to_homebrew(ctx: &Context, crate_name: &str, log: &StageLogger) -
             // otherwise use the artifact metadata URL (from the release stage).
             let url = if let Some(tmpl) = hb_cfg.url_template.as_deref() {
                 let (os, arch) = anodizer_core::target::map_target(target);
-                crate::util::render_url_template(tmpl, a.name(), &version, &arch, &os)
+                crate::util::render_url_template_with_ctx(ctx, tmpl, a.name(), &version, &arch, &os)
             } else {
                 a.metadata.get("url")?.to_string()
             };

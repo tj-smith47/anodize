@@ -533,7 +533,8 @@ pub fn publish_to_aur(ctx: &Context, crate_name: &str, log: &StageLogger) -> Res
                 };
                 if seen_arches.insert(pkgbuild_arch.clone()) {
                     let download_url = if let Some(tmpl) = url_template {
-                        util::render_url_template(
+                        util::render_url_template_with_ctx(
+                            ctx,
                             tmpl,
                             crate_name,
                             &version,

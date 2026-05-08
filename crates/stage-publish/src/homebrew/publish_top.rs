@@ -1,11 +1,12 @@
 //! `publish_top_level_homebrew_casks` — emits cask `.rb` files from the
 //! top-level `homebrew_casks:` config block (independent of any per-crate
 //! homebrew config).
-use super::cask::{CaskParams, find_top_level_cask_artifact, generate_cask};
-use super::commit_msg::render_commit_msg;
-use super::formula::{
-    build_conflicts_directives, build_depends_directives, build_uninstall_directives,
+use super::cask::{
+    CaskParams, find_top_level_cask_artifact, generate_cask, render_additional_url_params,
+    render_uninstall_block, render_zap_block,
 };
+use super::commit_msg::render_commit_msg;
+use super::formula::{build_conflicts_directives, build_depends_directives};
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result};
@@ -79,7 +80,14 @@ pub fn publish_top_level_homebrew_casks(ctx: &Context, log: &StageLogger) -> Res
             if let Some(ref tmpl) = url_cfg.template {
                 let target = macos_artifact.target.as_deref().unwrap_or("");
                 let (os, arch) = anodizer_core::target::map_target(target);
-                crate::util::render_url_template(tmpl, macos_artifact.name(), &version, &arch, &os)
+                crate::util::render_url_template_with_ctx(
+                    ctx,
+                    tmpl,
+                    macos_artifact.name(),
+                    &version,
+                    &arch,
+                    &os,
+                )
             } else {
                 macos_artifact
                     .metadata
@@ -110,9 +118,23 @@ pub fn publish_top_level_homebrew_casks(ctx: &Context, log: &StageLogger) -> Res
                 )
             })?;
 
-        // Build uninstall directives from structured config.
-        let uninstall_directives = build_uninstall_directives(cask_cfg.uninstall.as_ref());
-        let zap_directives = build_uninstall_directives(cask_cfg.zap.as_ref());
+        // Pre-render multi-key uninstall + zap blocks (GR parity, see
+        // `cask::render_zap_block` doc-comment).
+        let uninstall_block = render_uninstall_block(cask_cfg.uninstall.as_ref());
+        let zap_block = render_zap_block(cask_cfg.zap.as_ref());
+
+        // Pre-render Ruby kwargs continuation for the `url` line —
+        // mirrors GR `internal/pipe/cask/templates/additional_url_params.rb`.
+        let url_extras_top = cask_cfg
+            .url
+            .as_ref()
+            .map(|u| render_additional_url_params(u, "      "))
+            .unwrap_or_default();
+        let url_extras_arch = cask_cfg
+            .url
+            .as_ref()
+            .map(|u| render_additional_url_params(u, "        "))
+            .unwrap_or_default();
 
         let empty_vec: Vec<String> = Vec::new();
         let binaries = cask_cfg.binaries.as_deref().unwrap_or_else(|| {
@@ -173,13 +195,15 @@ pub fn publish_top_level_homebrew_casks(ctx: &Context, log: &StageLogger) -> Res
             version: &version,
             sha256: &sha256,
             url: &url,
+            url_extras: &url_extras_top,
+            url_extras_indented: &url_extras_arch,
             homepage: cask_cfg.homepage.as_deref(),
             description: cask_cfg.description.as_deref(),
             app: cask_cfg.app.as_deref(),
             binaries,
             caveats: cask_cfg.caveats.as_deref(),
-            zap: &zap_directives,
-            uninstall: &uninstall_directives,
+            zap_block: &zap_block,
+            uninstall_block: &uninstall_block,
             custom_block: cask_cfg.custom_block.as_deref(),
             service: cask_cfg.service.as_deref(),
             manpages,

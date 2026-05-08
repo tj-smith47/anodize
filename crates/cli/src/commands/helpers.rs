@@ -747,6 +747,13 @@ pub fn setup_context(ctx: &mut Context, config: &Config, log: &StageLogger) -> R
     resolve_scm_token_type(ctx, config);
     ctx.populate_time_vars();
     ctx.populate_runtime_vars();
+    // Default the GR-Pro `IsPrepare` template var to `"false"` for every
+    // command that flows through `setup_context`. The release command
+    // overrides this when `--prepare` is passed (see
+    // `commands/release/mod.rs`). Setting it unconditionally avoids a
+    // "missing key" footgun in user templates that branch on
+    // `{{ if IsPrepare }}`.
+    ctx.template_vars_mut().set("IsPrepare", "false");
     setup_env(ctx, config, log)?;
     resolve_git_context(ctx, config, log)?;
     Ok(())

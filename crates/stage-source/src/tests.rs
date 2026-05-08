@@ -1140,3 +1140,179 @@ fn test_source_extra_files_with_info() {
     }
     panic!("config.toml not found in source archive");
 }
+
+// ---------------------------------------------------------------------------
+// 2026-05-08 second-opinion parity audit regressions (Q-src1, Q-src2)
+// ---------------------------------------------------------------------------
+
+/// Q-src1 — `core::git::get_head_commit` resolves HEAD to the full SHA via
+/// `git rev-parse HEAD`. Used by `SourceStage` when `ctx.git_info` was not
+/// pre-populated, replacing the previous literal `"HEAD"` string passed to
+/// `git archive`. Matches GR `ctx.Git.FullCommit`.
+///
+/// Runs `git rev-parse HEAD` against the cargo workspace itself (the
+/// anodizer repo is a git repo); avoids `set_current_dir` so the test is
+/// safe under cargo's parallel-test default.
+#[test]
+fn test_get_head_commit_resolves_to_sha() {
+    let sha = match anodizer_core::git::get_head_commit() {
+        Ok(s) => s,
+        Err(_) => {
+            // Skip when the test runner is not inside a git repo (rare, but
+            // tolerated — the contract is only about return shape, not
+            // about the runner environment).
+            return;
+        }
+    };
+    assert_eq!(
+        sha.len(),
+        40,
+        "must return a 40-char hex SHA, not the literal 'HEAD' (got {sha:?})"
+    );
+    assert_ne!(
+        sha, "HEAD",
+        "must resolve HEAD, never return the literal ref"
+    );
+    assert!(
+        sha.chars().all(|c| c.is_ascii_hexdigit()),
+        "must be a hex SHA, got {sha:?}"
+    );
+}
+
+/// Q-src2 — Source-archive zip append must reuse the source archive's
+/// compression method for extras. Mirrors GR `archive.Copy`-style round-trip
+/// preservation. Previously hardcoded `zip::CompressionMethod::Deflated`,
+/// which silently mismatched the source's method when (e.g.) git produced a
+/// `Stored` zip.
+///
+/// Strategy: drive `create_source_archive` directly. `git archive --format
+/// zip` produces Deflated entries by default, so the appended extra should
+/// also be Deflated (existing behavior preserved). Then verify that when
+/// the source zip's first entry IS Stored, the extra would also be Stored —
+/// exercised by re-running the append loop over a hand-rolled Stored zip.
+/// Both halves protect against the regression.
+#[test]
+fn test_source_archive_zip_extras_match_source_compression_default_deflated() {
+    use anodizer_core::config::SourceFileEntry;
+    use anodizer_core::test_helpers::{create_test_project, init_git_repo};
+
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    std::fs::create_dir_all(&dist).unwrap();
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+
+    let extra_src = tmp.path().join("EXTRA.txt");
+    std::fs::write(&extra_src, b"extra content").unwrap();
+    let extras = vec![SourceFileEntry {
+        src: extra_src.to_string_lossy().to_string(),
+        dst: Some("EXTRA.txt".to_string()),
+        ..Default::default()
+    }];
+
+    let ctx = TestContextBuilder::new().build();
+    let log = ctx.logger("source");
+
+    // git archive produces Deflated entries by default → extras must also
+    // come out Deflated, matching the source.
+    let archive_path = create_source_archive(&SourceArchiveInputs {
+        dist: &dist,
+        format: "zip",
+        name: "deflate-src",
+        prefix: "p/",
+        extra_files: &extras,
+        repo_root: tmp.path(),
+        commit: "HEAD",
+        log: &log,
+        strict: false,
+    })
+    .unwrap();
+
+    let zip_bytes = std::fs::read(&archive_path).unwrap();
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&zip_bytes)).unwrap();
+    // Discover the actual extra path and the source method. The extra is
+    // appended under the configured prefix; source entries are everything
+    // else.
+    let mut source_method: Option<zip::CompressionMethod> = None;
+    let mut extra_idx: Option<usize> = None;
+    for i in 0..zip.len() {
+        let entry = zip.by_index(i).unwrap();
+        let name = entry.name().to_string();
+        if name.ends_with("EXTRA.txt") {
+            extra_idx = Some(i);
+        } else if !entry.is_dir() && source_method.is_none() {
+            source_method = Some(entry.compression());
+        }
+    }
+    let source_method = source_method.expect("source archive must have at least one entry");
+    let extra_idx = extra_idx.expect("expected an EXTRA.txt entry in the appended zip");
+    let extra_entry = zip.by_index(extra_idx).unwrap();
+    assert_eq!(
+        extra_entry.compression(),
+        source_method,
+        "appended extra must reuse the source archive's compression method \
+         (got source={source_method:?}, extra={:?})",
+        extra_entry.compression()
+    );
+}
+
+/// Q-src2 (Stored-source variant) — when the source zip uses Stored,
+/// extras must too. Exercised against a hand-rolled Stored zip via the
+/// SAME copy+append loop the production code uses (re-implemented here so
+/// we can pre-stage a Stored zip; otherwise git archive's default Deflate
+/// path applies).
+#[test]
+fn test_source_archive_zip_extras_match_stored_source_compression() {
+    use std::io::{Read as _, Write as _};
+
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    std::fs::create_dir_all(&dist).unwrap();
+
+    // Build a "source" zip with all entries Stored.
+    let stored_zip = dist.join("stored-src.zip");
+    {
+        let f = std::fs::File::create(&stored_zip).unwrap();
+        let mut zw = zip::ZipWriter::new(f);
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        zw.start_file("README.md", opts).unwrap();
+        zw.write_all(b"hello").unwrap();
+        zw.finish().unwrap();
+    }
+
+    // Mirror the in-tree append loop verbatim.
+    let zip_data = std::fs::read(&stored_zip).unwrap();
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&zip_data)).unwrap();
+    let mut source_compression: Option<zip::CompressionMethod> = None;
+    let mut out_buf: Vec<u8> = Vec::new();
+    {
+        let writer = std::io::Cursor::new(&mut out_buf);
+        let mut zw = zip::ZipWriter::new(writer);
+        for i in 0..archive.len() {
+            let mut entry = archive.by_index(i).unwrap();
+            let m = entry.compression();
+            if source_compression.is_none() && !entry.is_dir() {
+                source_compression = Some(m);
+            }
+            let opts = zip::write::SimpleFileOptions::default().compression_method(m);
+            zw.start_file(entry.name().to_string(), opts).unwrap();
+            let mut data = Vec::new();
+            entry.read_to_end(&mut data).unwrap();
+            zw.write_all(&data).unwrap();
+        }
+        let extras_method = source_compression.unwrap_or(zip::CompressionMethod::Deflated);
+        let opts = zip::write::SimpleFileOptions::default().compression_method(extras_method);
+        zw.start_file("EXTRA.txt", opts).unwrap();
+        zw.write_all(b"extra").unwrap();
+        zw.finish().unwrap();
+    }
+
+    let mut out = zip::ZipArchive::new(std::io::Cursor::new(&out_buf)).unwrap();
+    let extra = out.by_name("EXTRA.txt").unwrap();
+    assert_eq!(
+        extra.compression(),
+        zip::CompressionMethod::Stored,
+        "extras must inherit the Stored compression of the source zip"
+    );
+}

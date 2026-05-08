@@ -93,6 +93,18 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
         let reader = std::io::Cursor::new(&zip_data);
         let mut archive = zip::ZipArchive::new(reader).context("source: open zip archive")?;
 
+        // Track the compression method observed in the source archive's
+        // entries. GoReleaser's `archive.Copy` preserves the original
+        // archive's compression on round-trip; anodizer must do the same
+        // for appended extras so a Stored (uncompressed) source archive
+        // does not silently grow Deflated members.
+        //
+        // Heuristic: pick the method of the first non-directory entry in
+        // the source archive. `git archive` produces consistent
+        // compression across all entries within a single zip, so the
+        // first-entry method is representative.
+        let mut source_compression: Option<zip::CompressionMethod> = None;
+
         let mut out_buf = Vec::new();
         {
             let writer = std::io::Cursor::new(&mut out_buf);
@@ -101,8 +113,12 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
             // Copy existing entries
             for i in 0..archive.len() {
                 let mut entry = archive.by_index(i).context("source: read zip entry")?;
-                let options = zip::write::SimpleFileOptions::default()
-                    .compression_method(entry.compression());
+                let entry_method = entry.compression();
+                if source_compression.is_none() && !entry.is_dir() {
+                    source_compression = Some(entry_method);
+                }
+                let options =
+                    zip::write::SimpleFileOptions::default().compression_method(entry_method);
                 zip_writer
                     .start_file(entry.name().to_string(), options)
                     .context("source: start zip entry")?;
@@ -114,6 +130,11 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
                     .write_all(&data)
                     .context("source: write zip entry")?;
             }
+
+            // Pick the compression method for appended extras: prefer the
+            // source archive's method, fall back to Deflated when the
+            // source is empty (no entries observed).
+            let extras_method = source_compression.unwrap_or(zip::CompressionMethod::Deflated);
 
             // Append extra files under prefix
             for file_entry in extra_files {
@@ -152,8 +173,8 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
                 let file_data = std::fs::read(src)
                     .with_context(|| format!("source: read extra file '{}'", file_entry.src))?;
 
-                let options = zip::write::SimpleFileOptions::default()
-                    .compression_method(zip::CompressionMethod::Deflated);
+                let options =
+                    zip::write::SimpleFileOptions::default().compression_method(extras_method);
                 zip_writer
                     .start_file(&archive_path, options)
                     .context("source: start zip extra file entry")?;

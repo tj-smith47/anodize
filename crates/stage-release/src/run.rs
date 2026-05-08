@@ -29,7 +29,6 @@ impl Stage for super::ReleaseStage {
 
         let selected = ctx.options.selected_crates.clone();
         let dry_run = ctx.is_dry_run();
-        let github_native_changelog = ctx.stage_outputs.github_native_changelog;
 
         // Collect crates that have a `release` block.
         let crates: Vec<_> = ctx
@@ -364,26 +363,33 @@ impl Stage for super::ReleaseStage {
                 }
             }
 
-            // include_meta: upload metadata.json and artifacts.json from dist dir.
+            // include_meta: upload metadata.json from dist dir.
+            //
+            // Matches GoReleaser `internal/pipe/release/release.go:170-172`:
+            // `IncludeMeta` appends ONLY `artifact.Metadata` (the
+            // `metadata.json` file). `artifacts.json` is anodizer's local
+            // dist manifest and is not part of the GR uploadable surface;
+            // uploading it as a release asset diverges from GR and surprises
+            // downstream tooling that expects exactly one extra file under
+            // `include_meta: true`.
             if include_meta {
                 let dist_dir = &ctx.config.dist;
-                for meta_name in &["metadata.json", "artifacts.json"] {
-                    let meta_path = dist_dir.join(meta_name);
-                    if meta_path.exists() {
-                        artifact_entries.push((meta_path, None));
-                    } else if ctx.is_strict() {
-                        anyhow::bail!(
-                            "include_meta: {} not found at {} (strict mode)",
-                            meta_name,
-                            meta_path.display()
-                        );
-                    } else {
-                        log.warn(&format!(
-                            "include_meta: {} not found at {}",
-                            meta_name,
-                            meta_path.display()
-                        ));
-                    }
+                let meta_name = "metadata.json";
+                let meta_path = dist_dir.join(meta_name);
+                if meta_path.exists() {
+                    artifact_entries.push((meta_path, None));
+                } else if ctx.is_strict() {
+                    anyhow::bail!(
+                        "include_meta: {} not found at {} (strict mode)",
+                        meta_name,
+                        meta_path.display()
+                    );
+                } else {
+                    log.warn(&format!(
+                        "include_meta: {} not found at {}",
+                        meta_name,
+                        meta_path.display()
+                    ));
                 }
             }
 
@@ -1005,7 +1011,6 @@ impl Stage for super::ReleaseStage {
                         make_latest: &make_latest,
                         target_commitish: &target_commitish,
                         discussion_category: &discussion_category_name,
-                        github_native_changelog,
                     };
                     let upload_opts = github::UploadOpts {
                         skip_upload,

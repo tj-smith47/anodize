@@ -21,7 +21,8 @@ pub(super) struct SnapcraftYaml {
     pub version: String,
     pub summary: String,
     pub description: String,
-    pub base: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub grade: Option<String>,
     pub confinement: String,

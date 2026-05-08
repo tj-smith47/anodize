@@ -121,13 +121,11 @@ pub fn generate_manifest_with_opts(
                 serde_json::json!(pairs)
             }
             _ => {
-                // Single binary: plain string; multiple: array.
-                // This matches the original Scoop manifest format.
-                if raw_bins.len() == 1 {
-                    serde_json::json!(raw_bins[0])
-                } else {
-                    serde_json::json!(raw_bins)
-                }
+                // GoReleaser parity (`internal/pipe/scoop/scoop.go:378-388`):
+                // `bin` is always emitted as an array, even for a single
+                // binary. Manifest validators that pin the schema to
+                // `array of strings` reject the singleton-string form.
+                serde_json::json!(raw_bins)
             }
         }
     };
@@ -303,7 +301,14 @@ pub fn publish_to_scoop(ctx: &Context, crate_name: &str, log: &StageLogger) -> R
 
             // Resolve download URL: use url_template if set, otherwise artifact metadata.
             let url = if let Some(tmpl) = url_template {
-                util::render_url_template(tmpl, manifest_name, &version, &raw_arch, "windows")
+                util::render_url_template_with_ctx(
+                    ctx,
+                    tmpl,
+                    manifest_name,
+                    &version,
+                    &raw_arch,
+                    "windows",
+                )
             } else {
                 a.metadata
                     .get("url")
@@ -615,7 +620,12 @@ mod tests {
             "https://github.com/tj-smith47/anodizer/releases/download/v3.2.1/anodizer-3.2.1-windows-amd64.zip"
         );
         assert_eq!(arch_64["hash"], "aabbccdd1122334455667788");
-        assert_eq!(arch_64["bin"], "anodizer.exe");
+        // GoReleaser parity: `bin` is always an array, even for a single binary.
+        assert_eq!(
+            arch_64["bin"],
+            serde_json::json!(["anodizer.exe"]),
+            "single-binary `bin` must still be a JSON array (scoop.go:378-388)"
+        );
 
         // checkver and autoupdate are NOT emitted.
         assert!(
@@ -718,8 +728,9 @@ mod tests {
 
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         assert_eq!(
-            json["architecture"]["64bit"]["bin"], "my-special-cli.exe",
-            "bin should match the tool name"
+            json["architecture"]["64bit"]["bin"],
+            serde_json::json!(["my-special-cli.exe"]),
+            "bin should match the tool name (always an array per GR scoop.go:378-388)"
         );
     }
 
@@ -774,7 +785,11 @@ mod tests {
             "https://example.com/myapp-1.0.0-windows-amd64.zip"
         );
         assert_eq!(arch64["hash"], "deadbeef");
-        assert_eq!(arch64["bin"], "myapp.exe");
+        assert_eq!(
+            arch64["bin"],
+            serde_json::json!(["myapp.exe"]),
+            "single-binary `bin` must still be a JSON array (scoop.go:378-388)"
+        );
     }
 
     #[test]
@@ -1054,21 +1069,21 @@ mod tests {
             "https://example.com/app-1.0.0-windows-amd64.zip"
         );
         assert_eq!(arch["64bit"]["hash"], "hash_amd64");
-        assert_eq!(arch["64bit"]["bin"], "app.exe");
+        assert_eq!(arch["64bit"]["bin"], serde_json::json!(["app.exe"]));
 
         assert_eq!(
             arch["32bit"]["url"],
             "https://example.com/app-1.0.0-windows-386.zip"
         );
         assert_eq!(arch["32bit"]["hash"], "hash_386");
-        assert_eq!(arch["32bit"]["bin"], "app.exe");
+        assert_eq!(arch["32bit"]["bin"], serde_json::json!(["app.exe"]));
 
         assert_eq!(
             arch["arm64"]["url"],
             "https://example.com/app-1.0.0-windows-arm64.zip"
         );
         assert_eq!(arch["arm64"]["hash"], "hash_arm64");
-        assert_eq!(arch["arm64"]["bin"], "app.exe");
+        assert_eq!(arch["arm64"]["bin"], serde_json::json!(["app.exe"]));
 
         // checkver/autoupdate are never emitted.
         assert!(
@@ -1140,7 +1155,7 @@ mod tests {
     }
 
     #[test]
-    fn test_manifest_no_wrap_preserves_simple_bin() {
+    fn test_manifest_no_wrap_emits_bin_as_array() {
         let entries = vec![ArchEntry {
             scoop_arch: "64bit".to_string(),
             url: "https://example.com/app.zip".to_string(),
@@ -1157,8 +1172,13 @@ mod tests {
         )
         .unwrap();
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
-        // Without wrap_in_directory, single bin is a plain string.
-        assert_eq!(json["architecture"]["64bit"]["bin"], "app.exe");
+        // GoReleaser parity (`scoop.go:378-388`): without wrap_in_directory,
+        // single-binary `bin` is still a JSON array, not a bare string.
+        assert_eq!(
+            json["architecture"]["64bit"]["bin"],
+            serde_json::json!(["app.exe"]),
+            "single-binary `bin` must still be a JSON array"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1183,7 +1203,10 @@ mod tests {
         )
         .unwrap();
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
-        assert_eq!(json["architecture"]["64bit"]["bin"], "custom-name.exe");
+        assert_eq!(
+            json["architecture"]["64bit"]["bin"],
+            serde_json::json!(["custom-name.exe"])
+        );
     }
 
     // -----------------------------------------------------------------------

@@ -150,6 +150,16 @@ pub fn get_short_commit() -> Result<String> {
     git_output(&["rev-parse", "--short", "HEAD"])
 }
 
+/// Get the full commit hash of HEAD.
+///
+/// Mirrors `ctx.Git.FullCommit` in GoReleaser (resolved at git-pipe time and
+/// reused everywhere downstream). Used by the source-archive stage to
+/// produce deterministic archives across consecutive commits when
+/// `git_info` was not pre-populated by an earlier pipe.
+pub fn get_head_commit() -> Result<String> {
+    git_output(&["rev-parse", "HEAD"])
+}
+
 /// Check if there are changes in a path since a given tag.
 pub fn has_changes_since(tag: &str, path: &str) -> Result<bool> {
     let output = git_output(&["diff", "--name-only", &format!("{}..HEAD", tag), "--", path])?;

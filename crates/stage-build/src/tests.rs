@@ -2392,3 +2392,174 @@ fn test_detect_amd64_variant_no_rustflags() {
     let env = HashMap::new();
     assert_eq!(detect_amd64_variant("x86_64-unknown-linux-gnu", &env), None);
 }
+
+// ---------------------------------------------------------------------------
+// 2026-05-08 second-opinion parity audit regressions (Q-univ1, Q-rust1)
+// ---------------------------------------------------------------------------
+
+/// Q-univ1 — `universal_binaries[].id` default falls back to ProjectName-derived
+/// ids so a user migrating a GR config that says `ids: [<project>]` matches
+/// in single-crate workspaces. Exercises the "binary id == project_name" path.
+#[test]
+fn test_universal_binary_default_id_matches_project_name() {
+    use anodizer_core::artifact::Artifact;
+    use anodizer_core::config::{Config, CrateConfig, UniversalBinaryConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let mut config = Config::default();
+    // Single-crate workspace where the binary id matches project_name (the
+    // GR-typical case). Crate name differs from project_name on purpose so
+    // the legacy `crate_name` fallback would fail to match.
+    config.project_name = "myproject".to_string();
+    config.crates.push(CrateConfig {
+        name: "different-crate".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        universal_binaries: Some(vec![UniversalBinaryConfig::default()]),
+        ..Default::default()
+    });
+
+    let opts = ContextOptions {
+        dry_run: true,
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, opts);
+
+    // Binary id metadata == project_name (e.g. user set `build.id: myproject`).
+    let mk = |target: &str| {
+        let mut m = HashMap::new();
+        m.insert("binary".to_string(), "different-crate".to_string());
+        m.insert("id".to_string(), "myproject".to_string());
+        Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: std::path::PathBuf::from(format!("target/{target}/release/different-crate")),
+            target: Some(target.to_string()),
+            crate_name: "different-crate".to_string(),
+            metadata: m,
+            size: None,
+        }
+    };
+    ctx.artifacts.add(mk("aarch64-apple-darwin"));
+    ctx.artifacts.add(mk("x86_64-apple-darwin"));
+
+    build_universal_binary(
+        "different-crate",
+        &UniversalBinaryConfig::default(),
+        &mut ctx,
+        true,
+    )
+    .unwrap();
+
+    let universals: Vec<_> = ctx
+        .artifacts
+        .by_kind(ArtifactKind::UniversalBinary)
+        .into_iter()
+        .filter(|a| a.target.as_deref() == Some("darwin-universal"))
+        .collect();
+    assert_eq!(
+        universals.len(),
+        1,
+        "default id must resolve to project_name when the candidate binaries \
+         carry that id (GR `ids: [<project>]` migration path)"
+    );
+}
+
+/// Q-univ1 — multi-crate fallback to crate_name when binaries do NOT carry
+/// project_name as their id (the anodizer per-crate workspace default).
+#[test]
+fn test_universal_binary_default_id_falls_back_to_crate_name() {
+    use anodizer_core::artifact::Artifact;
+    use anodizer_core::config::{Config, CrateConfig, UniversalBinaryConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let mut config = Config::default();
+    config.project_name = "workspace".to_string();
+    config.crates.push(CrateConfig {
+        name: "crate-a".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        universal_binaries: Some(vec![UniversalBinaryConfig::default()]),
+        ..Default::default()
+    });
+
+    let opts = ContextOptions {
+        dry_run: true,
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, opts);
+
+    // Binary id metadata == crate_name (default) — does NOT match project_name.
+    let mk = |target: &str| {
+        let mut m = HashMap::new();
+        m.insert("binary".to_string(), "crate-a".to_string());
+        m.insert("id".to_string(), "crate-a".to_string());
+        Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: std::path::PathBuf::from(format!("target/{target}/release/crate-a")),
+            target: Some(target.to_string()),
+            crate_name: "crate-a".to_string(),
+            metadata: m,
+            size: None,
+        }
+    };
+    ctx.artifacts.add(mk("aarch64-apple-darwin"));
+    ctx.artifacts.add(mk("x86_64-apple-darwin"));
+
+    build_universal_binary("crate-a", &UniversalBinaryConfig::default(), &mut ctx, true).unwrap();
+
+    let universals: Vec<_> = ctx
+        .artifacts
+        .by_kind(ArtifactKind::UniversalBinary)
+        .into_iter()
+        .filter(|a| a.target.as_deref() == Some("darwin-universal"))
+        .collect();
+    assert_eq!(
+        universals.len(),
+        1,
+        "default id must fall back to crate_name when no candidate binary \
+         carries project_name as its id"
+    );
+}
+
+/// Q-rust1 — `rustup target add` failure is a hard error (mirrors GR
+/// `internal/builders/rust/build.go:60-62`). Previously a warn that allowed
+/// the subsequent `cargo build --target=...` to fail with a less-clear
+/// "no such target" error.
+#[test]
+fn test_rustup_target_add_failure_is_hard_error() {
+    use crate::workspace::ensure_targets_installed;
+    use anodizer_core::config::Config;
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let config = Config::default();
+    let opts = ContextOptions::default();
+    let ctx = Context::new(config, opts);
+    let log = ctx.logger("build");
+
+    // A target that rustup cannot possibly recognize. If rustup is not
+    // present on the test runner the helper will return Ok via the
+    // strict_guard "rustup not found" branch — that's fine, the
+    // hard-error contract still holds for the rustup-present case.
+    let bogus_target = "definitely-not-a-real-target-zzz".to_string();
+    let result = ensure_targets_installed(&ctx, std::slice::from_ref(&bogus_target), &log, false);
+
+    // Detect rustup presence by attempting the same probe the helper uses.
+    let rustup_present = std::process::Command::new("rustup")
+        .arg("--version")
+        .output()
+        .is_ok();
+    if rustup_present {
+        assert!(
+            result.is_err(),
+            "rustup target add for an invalid target must hard-error \
+             (GR rust/build.go:60-62)"
+        );
+        let err = result.err().unwrap().to_string();
+        assert!(
+            err.contains("rustup target add") || err.contains("could not add target"),
+            "error message should reference the failed rustup invocation: {err}"
+        );
+    }
+}

@@ -408,7 +408,9 @@ pub fn publish_to_krew(ctx: &Context, crate_name: &str, log: &StageLogger) -> Re
         let mut plats = artifacts_to_platforms(&all_artifacts, crate_name);
         if let Some(tmpl) = url_template {
             for p in &mut plats {
-                p.url = util::render_url_template(tmpl, crate_name, &version, &p.arch, &p.os);
+                p.url = util::render_url_template_with_ctx(
+                    ctx, tmpl, crate_name, &version, &p.arch, &p.os,
+                );
             }
         }
         plats

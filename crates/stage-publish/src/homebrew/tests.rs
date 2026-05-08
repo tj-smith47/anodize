@@ -901,13 +901,15 @@ fn empty_cask_params<'a>(name: &'a str, version: &'a str) -> CaskParams<'a> {
         version,
         sha256: "deadbeef",
         url: "https://example.com/x.tar.gz",
+        url_extras: "",
+        url_extras_indented: "",
         homepage: None,
         description: None,
         app: None,
         binaries: &[],
         caveats: None,
-        zap: &[],
-        uninstall: &[],
+        zap_block: "",
+        uninstall_block: "",
         custom_block: None,
         service: None,
         manpages: &[],
@@ -1071,5 +1073,194 @@ fn test_cask_generate_completions_renders_after_postflight() {
     assert!(
         comp_idx > post_idx,
         "generate_completions must render after postflight\n{cask}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// C6 — cask `zap` stanza emits per-key arrays (not hard-coded `trash:`).
+// ---------------------------------------------------------------------------
+
+use anodizer_core::config::HomebrewCaskUninstall;
+
+#[test]
+fn test_cask_zap_block_emits_each_directive_as_separate_key() {
+    let zap_cfg = HomebrewCaskUninstall {
+        launchctl: Some(vec!["com.example.daemon".to_string()]),
+        quit: Some(vec!["com.example.app".to_string()]),
+        login_item: Some(vec!["MyApp".to_string()]),
+        delete: Some(vec!["/tmp/foo".to_string()]),
+        trash: Some(vec!["~/Library/MyApp".to_string()]),
+    };
+    let block = super::cask::render_zap_block(Some(&zap_cfg));
+    // Each sub-key gets its own Ruby array — the prior code wedged every
+    // directive into `zap trash: [...]` as a quoted string, producing
+    // syntactically broken Ruby.
+    assert!(
+        block.contains("zap launchctl: ["),
+        "missing launchctl key\n{block}"
+    );
+    assert!(block.contains("\"com.example.daemon\""));
+    assert!(block.contains("quit: ["), "missing quit key\n{block}");
+    assert!(block.contains("\"com.example.app\""));
+    assert!(
+        block.contains("login_item: ["),
+        "missing login_item key\n{block}"
+    );
+    assert!(block.contains("delete: ["), "missing delete key\n{block}");
+    assert!(block.contains("trash: ["), "missing trash key\n{block}");
+    assert!(block.contains("\"~/Library/MyApp\""));
+    // The prior bug wrote `"launchctl: \"...\""` (a quoted string inside a
+    // `trash:` array). Make sure we never emit that shape again.
+    assert!(
+        !block.contains("\"launchctl:"),
+        "regression: launchctl directive must not be a quoted string inside trash:\n{block}"
+    );
+}
+
+#[test]
+fn test_cask_zap_block_only_trash() {
+    let zap_cfg = HomebrewCaskUninstall {
+        trash: Some(vec!["~/Library/Foo".to_string()]),
+        ..Default::default()
+    };
+    let block = super::cask::render_zap_block(Some(&zap_cfg));
+    assert!(
+        block.starts_with("zap trash: ["),
+        "block should start with `zap trash:` when only trash is set\n{block}"
+    );
+    assert!(block.contains("\"~/Library/Foo\""));
+}
+
+#[test]
+fn test_cask_zap_block_empty_returns_empty_string() {
+    assert_eq!(super::cask::render_zap_block(None), "");
+    assert_eq!(
+        super::cask::render_zap_block(Some(&HomebrewCaskUninstall::default())),
+        ""
+    );
+}
+
+#[test]
+fn test_cask_uninstall_block_uses_array_per_key() {
+    let u_cfg = HomebrewCaskUninstall {
+        launchctl: Some(vec!["com.example.daemon".to_string()]),
+        quit: Some(vec!["com.example.app".to_string()]),
+        ..Default::default()
+    };
+    let block = super::cask::render_uninstall_block(Some(&u_cfg));
+    // GR canonical shape: `uninstall launchctl: [...], quit: [...]` with
+    // arrays — not `uninstall launchctl: "name", quit: "name"`.
+    assert!(block.starts_with("uninstall launchctl: ["));
+    assert!(block.contains("quit: ["));
+    assert!(block.contains("\"com.example.daemon\""));
+    assert!(block.contains("\"com.example.app\""));
+}
+
+#[test]
+fn test_cask_template_renders_multi_key_zap() {
+    let mut params = empty_cask_params("test", "0.1.0");
+    let zap_block = super::cask::render_zap_block(Some(&HomebrewCaskUninstall {
+        launchctl: Some(vec!["com.example.daemon".to_string()]),
+        trash: Some(vec!["~/Library/MyApp".to_string()]),
+        ..Default::default()
+    }));
+    params.zap_block = &zap_block;
+    let cask = generate_cask(&params).unwrap();
+    // Both keys should appear (multi-key emission, not folded into trash).
+    assert!(
+        cask.contains("zap launchctl: ["),
+        "zap launchctl key missing\n{cask}"
+    );
+    assert!(cask.contains("trash: ["), "trash key missing\n{cask}");
+}
+
+// ---------------------------------------------------------------------------
+// M4 — cask `additional_url_params` (verified, using, cookies, referer,
+//      headers, user_agent, data) renders on the `url` line.
+// ---------------------------------------------------------------------------
+
+use anodizer_core::config::HomebrewCaskURL;
+use std::collections::HashMap;
+
+#[test]
+fn test_render_additional_url_params_full() {
+    let mut cookies = HashMap::new();
+    cookies.insert("session".to_string(), "deadbeef".to_string());
+    let mut data = HashMap::new();
+    data.insert("user".to_string(), "alice".to_string());
+    let url_cfg = HomebrewCaskURL {
+        template: Some("https://example.com/x.zip".to_string()),
+        verified: Some("example.com/".to_string()),
+        using: Some(":homebrew_curl".to_string()),
+        cookies: Some(cookies),
+        referer: Some("https://example.com/".to_string()),
+        headers: Some(vec!["X-Auth: Bearer xyz".to_string()]),
+        user_agent: Some("Mozilla/5.0".to_string()),
+        data: Some(data),
+    };
+    let extras = super::cask::render_additional_url_params(&url_cfg, "      ");
+    // Splices directly after the closing `"` of `url "..."`.
+    assert!(
+        extras.starts_with(",\n      verified: \"example.com/\""),
+        "extras must start with `,\\n      verified:` — got:\n{extras}"
+    );
+    assert!(extras.contains("using: :homebrew_curl"));
+    assert!(extras.contains("cookies: {"));
+    assert!(extras.contains("\"session\" => \"deadbeef\","));
+    assert!(extras.contains("referer: \"https://example.com/\""));
+    assert!(extras.contains("header: ["));
+    assert!(extras.contains("\"X-Auth: Bearer xyz\""));
+    assert!(extras.contains("user_agent: \"Mozilla/5.0\""));
+    assert!(extras.contains("data: {"));
+    assert!(extras.contains("\"user\" => \"alice\","));
+}
+
+#[test]
+fn test_render_additional_url_params_empty_returns_empty() {
+    let url_cfg = HomebrewCaskURL::default();
+    assert_eq!(
+        super::cask::render_additional_url_params(&url_cfg, "      "),
+        ""
+    );
+}
+
+#[test]
+fn test_render_additional_url_params_verified_only() {
+    let url_cfg = HomebrewCaskURL {
+        verified: Some("example.com/".to_string()),
+        ..Default::default()
+    };
+    let extras = super::cask::render_additional_url_params(&url_cfg, "      ");
+    assert_eq!(extras, ",\n      verified: \"example.com/\"");
+}
+
+#[test]
+fn test_cask_template_emits_url_extras() {
+    let url_cfg = HomebrewCaskURL {
+        verified: Some("github.com/org/repo/".to_string()),
+        using: Some(":homebrew_curl".to_string()),
+        ..Default::default()
+    };
+    let extras = super::cask::render_additional_url_params(&url_cfg, "      ");
+    let mut params = empty_cask_params("test", "0.1.0");
+    params.url_extras = &extras;
+    let cask = generate_cask(&params).unwrap();
+    assert!(
+        cask.contains("verified: \"github.com/org/repo/\""),
+        "verified kwarg missing\n{cask}"
+    );
+    assert!(
+        cask.contains("using: :homebrew_curl"),
+        "using kwarg missing\n{cask}"
+    );
+    // The `url` line must end with `,` (start of the kwargs continuation),
+    // not `"`. Validate the splice is correctly attached.
+    let url_line = cask
+        .lines()
+        .find(|l| l.trim_start().starts_with("url \""))
+        .expect("url line missing");
+    assert!(
+        url_line.trim_end().ends_with(",") || url_line.contains("\","),
+        "url line should end with `,` to splice into kwargs\nline: {url_line}\n{cask}"
     );
 }

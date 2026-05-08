@@ -125,24 +125,46 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
 
     let pkg_name = choco_cfg.name.as_deref().unwrap_or(crate_name);
 
-    let is_32bit_target = |target: &str| -> bool {
-        let lower = target.to_ascii_lowercase();
-        lower.contains("i686")
-            || lower.contains("i386")
-            || lower.contains("386")
-            || (lower.contains("x86") && !lower.contains("x86_64") && !lower.contains("x86-64"))
-    };
-
+    // GoReleaser parity (`internal/pipe/chocolatey/chocolatey.go:99-108`):
+    // chocolatey only ships amd64 + 386 install scripts; arm64 (and any
+    // other architecture) MUST be filtered out before the per-architecture
+    // dispatcher runs. Otherwise the `is_32bit` boolean below routes
+    // a non-amd64/non-386 binary into the 64-bit slot, producing an
+    // install script that downloads an arm64 archive on x64 systems
+    // (broken install — what trips moderator rejection).
+    //
+    // We classify by the canonical arch token (`amd64` / `386`) from
+    // `map_target`, not by string-substring on the triple, so future
+    // triple variations can't slip through.
     let mut artifact_32 = None;
     let mut artifact_64 = None;
     for a in &win_artifacts {
         let target = a.target.as_deref().unwrap_or("");
-        if is_32bit_target(target) {
-            if artifact_32.is_none() {
-                artifact_32 = Some(a);
+        let (_, raw_arch) = anodizer_core::target::map_target(target);
+        match raw_arch.as_str() {
+            "386" => {
+                if artifact_32.is_none() {
+                    artifact_32 = Some(a);
+                }
             }
-        } else if artifact_64.is_none() {
-            artifact_64 = Some(a);
+            "amd64" => {
+                if artifact_64.is_none() {
+                    artifact_64 = Some(a);
+                }
+            }
+            other => {
+                // arm64 / any other architecture: skip with a log line so
+                // the operator sees why their arm64 build wasn't packaged
+                // (rather than silently failing on the consumer's machine).
+                log.status(&format!(
+                    "chocolatey: skipping artifact '{}' for '{}' — arch '{}' is not \
+                     supported by chocolatey (only amd64/386); see \
+                     internal/pipe/chocolatey/chocolatey.go:99-108 for upstream parity",
+                    a.name(),
+                    crate_name,
+                    other
+                ));
+            }
         }
     }
 
@@ -150,7 +172,7 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
         let target = a.target.as_deref().unwrap_or("");
         let (_, raw_arch) = anodizer_core::target::map_target(target);
         let resolved_url = if let Some(tmpl) = url_template {
-            util::render_url_template(tmpl, pkg_name, &version, &raw_arch, "windows")
+            util::render_url_template_with_ctx(ctx, tmpl, pkg_name, &version, &raw_arch, "windows")
         } else {
             a.metadata
                 .get("url")

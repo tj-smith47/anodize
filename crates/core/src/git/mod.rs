@@ -15,7 +15,7 @@ mod tests;
 pub use commits::{
     Commit, add_path_in, commit_in, get_all_commits, get_all_commits_paths,
     get_commit_messages_between, get_commit_messages_between_path, get_commits_between,
-    get_commits_between_paths, get_current_branch, get_last_commit_messages,
+    get_commits_between_paths, get_current_branch, get_head_commit, get_last_commit_messages,
     get_last_commit_messages_path, get_short_commit, has_changes_since, has_commits_since_tag,
     log_subjects_for_range, paths_changed_since_tag, stage_and_commit,
 };

@@ -453,6 +453,52 @@ fn test_render_url_template_invalid_fallback() {
     assert_eq!(url, "https://example.com/{{ bad unclosed");
 }
 
+/// F1 — `render_url_template_with_ctx` exposes the full project template
+/// surface (`Tag`, `ProjectName`, `Version`, `Major/Minor/Patch`,
+/// `Commit`, `Branch`, `PreviousTag`, `Env.*`, `ArtifactName`, …) — not
+/// just the lower-case 4-var subset. Migrated GoReleaser configs that
+/// reference `{{ .Tag }}` or `{{ .Env.X }}` in `url_template:` would
+/// silently produce empty fields under the legacy renderer.
+#[test]
+fn test_render_url_template_with_ctx_full_surface() {
+    use crate::util::render_url_template_with_ctx;
+    use anodizer_core::config::Config;
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    let mut ctx = Context::new(config, ContextOptions::default());
+    // Populate the full project template surface, then overlay per-artifact.
+    ctx.template_vars_mut().set("Tag", "v1.2.3");
+    ctx.template_vars_mut().set("Version", "1.2.3");
+    ctx.template_vars_mut().set("Major", "1");
+
+    let url = render_url_template_with_ctx(
+        &ctx,
+        "https://github.com/{{ ProjectName }}/releases/download/{{ Tag }}/{{ name }}-{{ os }}-{{ arch }}.tar.gz",
+        "myapp",
+        "1.2.3",
+        "amd64",
+        "linux",
+    );
+    assert_eq!(
+        url,
+        "https://github.com/myapp/releases/download/v1.2.3/myapp-linux-amd64.tar.gz"
+    );
+
+    // Per-artifact `Os` / `Arch` overlays exposed alongside the lower-case
+    // shorthand (matches GR's `WithArtifact(art).Apply(...)` shape).
+    let url2 = render_url_template_with_ctx(
+        &ctx,
+        "https://example.com/{{ ProjectName }}-{{ Os }}-{{ Arch }}.zip",
+        "myapp",
+        "1.2.3",
+        "amd64",
+        "windows",
+    );
+    assert_eq!(url2, "https://example.com/myapp-windows-amd64.zip");
+}
+
 // -----------------------------------------------------------------------
 // filter_by_variant tests
 // -----------------------------------------------------------------------
