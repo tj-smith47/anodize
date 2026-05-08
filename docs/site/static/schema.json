@@ -807,7 +807,6 @@
       "properties": {
         "allow_different_binary_count": {
           "description": "Allow different binary counts across targets. Default false (warn on mismatch).",
-          "default": null,
           "type": [
             "boolean",
             "null"
@@ -815,7 +814,6 @@
         },
         "binaries": {
           "description": "Binary names to include (defaults to all binaries from matched builds).",
-          "default": null,
           "type": [
             "array",
             "null"
@@ -826,7 +824,6 @@
         },
         "builds_info": {
           "description": "File permissions applied to binaries in archives.",
-          "default": null,
           "anyOf": [
             {
               "$ref": "#/definitions/FileInfo"
@@ -838,7 +835,6 @@
         },
         "files": {
           "description": "Extra files to include in the archive (glob patterns or detailed src/dst specs).",
-          "default": null,
           "type": [
             "array",
             "null"
@@ -849,7 +845,6 @@
         },
         "format_overrides": {
           "description": "Per-OS format overrides for this archive config.",
-          "default": null,
           "type": [
             "array",
             "null"
@@ -860,7 +855,6 @@
         },
         "formats": {
           "description": "Archive formats: tar.gz, tar.xz, tar.zst, tar, zip, gz, xz, or binary. `gz` and `xz` are single-file compressors — supplying multiple input files errors. Plural list; one archive per format is produced for each target.",
-          "default": null,
           "type": [
             "array",
             "null"
@@ -871,7 +865,6 @@
         },
         "hooks": {
           "description": "Pre/post archive hooks (`before`/`after`).",
-          "default": null,
           "anyOf": [
             {
               "$ref": "#/definitions/ArchiveHooksConfig"
@@ -883,7 +876,6 @@
         },
         "id": {
           "description": "Unique identifier for cross-referencing this archive from other configs. Defaults to `\"default\"` so a parse->serialise->reparse round-trip is stable (GoReleaser stores this verbatim, not as an Option).",
-          "default": "default",
           "type": [
             "string",
             "null"
@@ -891,7 +883,6 @@
         },
         "ids": {
           "description": "Build IDs filter: only include artifacts from builds whose `id` is in this list.",
-          "default": null,
           "type": [
             "array",
             "null"
@@ -902,7 +893,6 @@
         },
         "meta": {
           "description": "When true, create archive with no binaries (metadata-only).",
-          "default": null,
           "type": [
             "boolean",
             "null"
@@ -910,7 +900,6 @@
         },
         "name_template": {
           "description": "Archive filename template (supports templates, e.g., \"{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}\").",
-          "default": null,
           "type": [
             "string",
             "null"
@@ -918,7 +907,6 @@
         },
         "strip_binary_directory": {
           "description": "Strip binary parent directory in archive (place binaries at archive root).",
-          "default": null,
           "type": [
             "boolean",
             "null"
@@ -926,7 +914,6 @@
         },
         "wrap_in_directory": {
           "description": "When set, wrap archive contents in a top-level directory. Accepts `true` (use archive stem as directory name), `false` (no wrapping), or a string template for a custom directory name.",
-          "default": null,
           "anyOf": [
             {
               "$ref": "#/definitions/WrapInDirectory"
@@ -2036,6 +2023,14 @@
           "items": {
             "type": "string"
           }
+        },
+        "gobinary": {
+          "description": "Deprecated: GoReleaser's `gobinary:` field selects the cargo-like build command (named after `go build`). Anodizer's tool is always `cargo`, so the field is captured for back-compat YAML import only and `apply_build_legacy_aliases` emits a deprecation warning at config-load time. GR ref: `internal/pipe/build/build.go:93-95`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "hooks": {
           "description": "Per-build hooks executed before and after compilation.",
@@ -10898,7 +10893,7 @@
       ],
       "properties": {
         "version_template": {
-          "description": "Version string template for snapshot builds (e.g., \"{{ .Commit }}-SNAPSHOT\").",
+          "description": "Version string template for snapshot builds (e.g., \"{{ .Commit }}-SNAPSHOT\"). F3: accepts the deprecated `name_template:` GR alias (renamed to `version_template` upstream). GR ref: `internal/pipe/snapshot/snapshot.go:25-28` — `if NameTemplate != \"\" { VersionTemplate = NameTemplate }`. A deprecation warning is emitted at config-load time when the alias is hit (see `apply_snapshot_legacy_aliases`).",
           "type": "string"
         }
       }

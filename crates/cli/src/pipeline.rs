@@ -83,11 +83,31 @@ pub fn load_config(path: &Path) -> Result<Config> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read config file: {}", path.display()))?;
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+
+    // F3: walk the raw YAML pre-parse to detect legacy `snapshot.name_template`
+    // (renamed to `version_template` in GR; serde alias accepts both spellings
+    // but collapses them on parse, losing the user-typed key). Best-effort —
+    // YAML parse failures are reported by the typed loader below.
+    if (ext == "yaml" || ext == "yml")
+        && let Ok(raw) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&content)
+    {
+        anodizer_core::config::warn_on_legacy_snapshot_name_template(&raw);
+    }
+
     let mut config = match ext {
         "yaml" | "yml" => load_yaml_config_with_includes(path, &content)?,
         "toml" => load_toml_config_with_includes(path, &content)?,
         _ => bail!("unsupported config format: {}", ext),
     };
+
+    // F3: fold deprecated archive `format` / `format_overrides[].format` /
+    // `builds` aliases into their canonical fields, emitting deprecation
+    // warnings. Done before validation so unique-id checks see the
+    // post-fold state.
+    anodizer_core::config::apply_archive_legacy_aliases(&mut config);
+    // F3: emit deprecation warning + ignore any `gobinary:` field on builds
+    // (Go-only — anodizer always uses cargo).
+    anodizer_core::config::apply_build_legacy_aliases(&mut config);
 
     // Validate config schema version
     anodizer_core::config::validate_version(&config).map_err(|e| anyhow::anyhow!("{}", e))?;

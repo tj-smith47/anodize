@@ -6124,6 +6124,116 @@ fn test_source_prefix_template_remains_none_when_name_template_unset() {
     assert!(src.prefix_template.is_none());
 }
 
+// ---- F3: legacy archive/snapshot/build aliases ----
+
+#[test]
+fn test_archives_format_singular_alias_folds_into_formats() {
+    // The fold happens inline in ArchiveConfig::deserialize — no separate
+    // apply pass is needed.
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    archives:
+      - id: legacy
+        format: tar.gz
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let arch = match &config.crates[0].archives {
+        super::ArchivesConfig::Configs(list) => &list[0],
+        _ => panic!("expected configs variant"),
+    };
+    assert_eq!(arch.formats.as_deref(), Some(&[String::from("tar.gz")][..]));
+}
+
+#[test]
+fn test_archives_builds_alias_deserializes_into_ids() {
+    // Serde alias does the work — `builds: [...]` populates the canonical
+    // `ids` field on parse.
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    archives:
+      - id: legacy
+        builds: [foo, bar]
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let arch = match &config.crates[0].archives {
+        super::ArchivesConfig::Configs(list) => &list[0],
+        _ => panic!("expected configs variant"),
+    };
+    assert_eq!(
+        arch.ids.as_deref(),
+        Some(&[String::from("foo"), String::from("bar")][..])
+    );
+}
+
+#[test]
+fn test_archives_format_overrides_singular_alias_folds() {
+    // FormatOverride::deserialize folds singular `format:` into `formats`.
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    archives:
+      - id: legacy
+        formats: [tar.gz]
+        format_overrides:
+          - os: windows
+            format: zip
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let arch = match &config.crates[0].archives {
+        super::ArchivesConfig::Configs(list) => &list[0],
+        _ => panic!("expected configs variant"),
+    };
+    let over = &arch.format_overrides.as_ref().unwrap()[0];
+    assert_eq!(over.formats.as_deref(), Some(&[String::from("zip")][..]));
+}
+
+#[test]
+fn test_snapshot_name_template_alias_deserializes_as_version_template() {
+    let yaml = r#"
+project_name: test
+snapshot:
+  name_template: "{{ .Version }}-snap"
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let snap = config.snapshot.as_ref().unwrap();
+    assert_eq!(snap.version_template, "{{ .Version }}-snap");
+}
+
+#[test]
+fn test_builds_gobinary_legacy_field_captured_then_drained() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    builds:
+      - id: legacy
+        gobinary: /usr/local/bin/go
+"#;
+    let mut config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let build = &config.crates[0].builds.as_ref().unwrap()[0];
+    assert_eq!(build.legacy_gobinary.as_deref(), Some("/usr/local/bin/go"));
+    super::apply_build_legacy_aliases(&mut config);
+    let build = &config.crates[0].builds.as_ref().unwrap()[0];
+    assert!(build.legacy_gobinary.is_none(), "should be drained");
+}
+
 #[test]
 fn test_archives_id_uniqueness_workspace_crate() {
     let yaml = r#"

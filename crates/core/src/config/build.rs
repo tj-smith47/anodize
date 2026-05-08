@@ -260,6 +260,13 @@ pub struct BuildConfig {
     /// instead of dist/{target}/. Overrides the crate-level setting.
     #[serde(default, deserialize_with = "deserialize_string_or_bool_opt")]
     pub no_unique_dist_dir: Option<StringOrBool>,
+    /// Deprecated: GoReleaser's `gobinary:` field selects the cargo-like build
+    /// command (named after `go build`). Anodizer's tool is always `cargo`,
+    /// so the field is captured for back-compat YAML import only and
+    /// `apply_build_legacy_aliases` emits a deprecation warning at config-load
+    /// time. GR ref: `internal/pipe/build/build.go:93-95`.
+    #[serde(default, rename = "gobinary")]
+    pub legacy_gobinary: Option<String>,
 }
 
 /// Pre/post hook configuration shared across multiple stages. Despite the

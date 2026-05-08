@@ -746,6 +746,85 @@ pub fn validate_id_uniqueness(config: &Config) -> Result<(), String> {
     Ok(())
 }
 
+/// No-op preserved for API stability; the legacy `format:` and `builds:`
+/// folds happen inline in `<ArchiveConfig as Deserialize>::deserialize` and
+/// `<FormatOverride as Deserialize>::deserialize`. Emits no warning of its
+/// own — every alias hit was already announced at deserialize time.
+///
+/// F3 from `.claude/audits/2026-05-08-second-opinion/build-archive.md`
+/// sections 1.9 + 1.10.
+pub fn apply_archive_legacy_aliases(_config: &mut Config) {
+    // Intentionally empty — see Deserialize impls.
+}
+
+/// Fold the deprecated `snapshot.name_template` alias into `version_template`.
+/// Serde already accepts both spellings via `#[serde(alias = "name_template")]`,
+/// so this function only needs to emit the deprecation warning when the
+/// raw YAML key was the legacy one.
+///
+/// GR ref: `internal/pipe/snapshot/snapshot.go:25-28`. Because serde collapses
+/// the two spellings to a single field on parse, we lose the information
+/// about which key the user wrote. This function therefore consults the
+/// raw YAML pre-parse value (when supplied) to decide.
+///
+/// F3 — section 1.8 of the build-archive.md audit report.
+pub fn warn_on_legacy_snapshot_name_template(raw_yaml: &serde_yaml_ng::Value) {
+    if let Some(snap) = raw_yaml.get("snapshot")
+        && snap.get("name_template").is_some()
+    {
+        tracing::warn!(
+            "DEPRECATION: snapshot.name_template is deprecated; use \
+             snapshot.version_template instead. Both spellings are accepted \
+             but the legacy key will be removed in a future release."
+        );
+    }
+}
+
+/// Emit a deprecation warning for any `builds[].gobinary` field. The field
+/// is captured by [`BuildConfig::legacy_gobinary`] purely for back-compat
+/// YAML import; anodizer's tool is always `cargo` so the value is unused.
+///
+/// GR ref: `internal/pipe/build/build.go:93-95`.
+pub fn apply_build_legacy_aliases(config: &mut Config) {
+    let warn_one = |location: &str, legacy: &mut Option<String>| {
+        if let Some(go_bin) = legacy.take() {
+            tracing::warn!(
+                "DEPRECATION: {location}: 'gobinary: {go_bin}' is a Go-only field; anodizer \
+                 builds with cargo unconditionally. The value has been ignored."
+            );
+        }
+    };
+    for krate in &mut config.crates {
+        if let Some(ref mut builds) = krate.builds {
+            for (i, b) in builds.iter_mut().enumerate() {
+                warn_one(
+                    &format!("crates[{}].builds[{i}]", krate.name),
+                    &mut b.legacy_gobinary,
+                );
+            }
+        }
+    }
+    if let Some(ref mut workspaces) = config.workspaces {
+        for ws in workspaces {
+            for krate in &mut ws.crates {
+                if let Some(ref mut builds) = krate.builds {
+                    for (i, b) in builds.iter_mut().enumerate() {
+                        warn_one(
+                            &format!("workspaces[{}].crates[{}].builds[{i}]", ws.name, krate.name),
+                            &mut b.legacy_gobinary,
+                        );
+                    }
+                }
+            }
+        }
+    }
+    if let Some(ref mut defaults) = config.defaults
+        && let Some(ref mut b) = defaults.builds
+    {
+        warn_one("defaults.builds", &mut b.legacy_gobinary);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // EnvFilesConfig — accepts list of .env paths OR structured token file paths
 // ---------------------------------------------------------------------------

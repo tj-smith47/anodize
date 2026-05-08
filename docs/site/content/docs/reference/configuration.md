@@ -528,7 +528,7 @@ All fields are optional in YAML; missing fields fall back to GoReleaser's defaul
 ## `snapshot`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `version_template` | string | — | Version string template for snapshot builds (e.g., "{{ .Commit }}-SNAPSHOT"). |
+| `version_template` | string | — | Version string template for snapshot builds (e.g., "{{ .Commit }}-SNAPSHOT"). F3: accepts the deprecated `name_template:` GR alias (renamed to `version_template` upstream). GR ref: `internal/pipe/snapshot/snapshot.go:25-28` — `if NameTemplate != "" { VersionTemplate = NameTemplate }`. A deprecation warning is emitted at config-load time when the alias is hit (see `apply_snapshot_legacy_aliases`). |
 
 ## `source`
 | Field | Type | Default | Description |

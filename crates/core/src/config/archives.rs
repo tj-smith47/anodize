@@ -213,17 +213,11 @@ impl WrapInDirectory {
 // ArchiveConfig
 // ---------------------------------------------------------------------------
 
-fn default_archive_id() -> Option<String> {
-    Some("default".to_string())
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
-#[serde(default)]
+#[derive(Debug, Clone, Serialize, Default, JsonSchema)]
 pub struct ArchiveConfig {
     /// Unique identifier for cross-referencing this archive from other configs.
     /// Defaults to `"default"` so a parse->serialise->reparse round-trip is
     /// stable (GoReleaser stores this verbatim, not as an Option).
-    #[serde(default = "default_archive_id")]
     pub id: Option<String>,
     /// Archive filename template (supports templates, e.g., "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}").
     pub name_template: Option<String>,
@@ -256,13 +250,123 @@ pub struct ArchiveConfig {
     pub hooks: Option<ArchiveHooksConfig>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+// F3: custom Deserialize that accepts deprecated GR aliases:
+// - `format: tar.gz` (singular String) folded into `formats: [tar.gz]`
+//   (`internal/pipe/archive/archive.go:62-64`)
+// - `builds: [foo]` folded into `ids: [foo]`
+//   (`internal/pipe/archive/archive.go:79-82`)
+// Each alias hit emits a `tracing::warn!` deprecation notice.
+impl<'de> Deserialize<'de> for ArchiveConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize, Default)]
+        #[serde(default)]
+        struct Raw {
+            id: Option<String>,
+            name_template: Option<String>,
+            formats: Option<Vec<String>>,
+            format: Option<String>,
+            format_overrides: Option<Vec<FormatOverride>>,
+            files: Option<Vec<ArchiveFileSpec>>,
+            binaries: Option<Vec<String>>,
+            wrap_in_directory: Option<WrapInDirectory>,
+            ids: Option<Vec<String>>,
+            builds: Option<Vec<String>>,
+            meta: Option<bool>,
+            builds_info: Option<ArchiveFileInfo>,
+            strip_binary_directory: Option<bool>,
+            allow_different_binary_count: Option<bool>,
+            hooks: Option<ArchiveHooksConfig>,
+        }
+
+        let raw = Raw::deserialize(deserializer)?;
+
+        let id_label = raw.id.clone().unwrap_or_else(|| "default".to_string());
+        let mut formats = raw.formats;
+        if let Some(legacy) = raw.format {
+            tracing::warn!(
+                "DEPRECATION: archives[id={}]: 'format: {}' is deprecated; \
+                 use 'formats: [{}]' instead.",
+                id_label,
+                legacy,
+                legacy
+            );
+            formats.get_or_insert_with(Vec::new).push(legacy);
+        }
+        let mut ids = raw.ids;
+        if let Some(legacy) = raw.builds {
+            tracing::warn!(
+                "DEPRECATION: archives[id={}]: 'builds: {:?}' is deprecated; \
+                 use 'ids: [...]' instead.",
+                id_label,
+                legacy
+            );
+            let target = ids.get_or_insert_with(Vec::new);
+            target.extend(legacy);
+        }
+
+        Ok(ArchiveConfig {
+            id: raw.id.or_else(|| Some("default".to_string())),
+            name_template: raw.name_template,
+            formats,
+            format_overrides: raw.format_overrides,
+            files: raw.files,
+            binaries: raw.binaries,
+            wrap_in_directory: raw.wrap_in_directory,
+            ids,
+            meta: raw.meta,
+            builds_info: raw.builds_info,
+            strip_binary_directory: raw.strip_binary_directory,
+            allow_different_binary_count: raw.allow_different_binary_count,
+            hooks: raw.hooks,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct FormatOverride {
     /// Operating system this override applies to (e.g., "windows", "darwin", "linux").
     pub os: String,
     /// Plural format overrides for this OS: tar.gz, tar.xz, tar.zst, tar, zip,
     /// gz, xz, or binary.
     pub formats: Option<Vec<String>>,
+}
+
+// F3: custom Deserialize that accepts both `formats: [tar.gz]` (canonical)
+// and the deprecated singular `format: tar.gz` (GR
+// `internal/pipe/archive/archive.go:71-74`). The legacy spelling is folded
+// into `formats` at parse time and a deprecation warning is emitted.
+impl<'de> Deserialize<'de> for FormatOverride {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize, Default)]
+        #[serde(default)]
+        struct Raw {
+            os: String,
+            formats: Option<Vec<String>>,
+            format: Option<String>,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        let mut formats = raw.formats;
+        if let Some(legacy) = raw.format {
+            tracing::warn!(
+                "DEPRECATION: archives.format_overrides[os={}]: 'format: {}' is deprecated; \
+                 use 'formats: [{}]' instead.",
+                raw.os,
+                legacy,
+                legacy
+            );
+            formats.get_or_insert_with(Vec::new).push(legacy);
+        }
+        Ok(FormatOverride {
+            os: raw.os,
+            formats,
+        })
+    }
 }
 
 /// Specifies a file to include in archives. Can be a simple glob string or a

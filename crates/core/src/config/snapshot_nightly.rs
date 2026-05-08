@@ -10,6 +10,13 @@ use super::{CommitAuthorConfig, ContentSource};
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SnapshotConfig {
     /// Version string template for snapshot builds (e.g., "{{ .Commit }}-SNAPSHOT").
+    /// F3: accepts the deprecated `name_template:` GR alias (renamed to
+    /// `version_template` upstream). GR ref:
+    /// `internal/pipe/snapshot/snapshot.go:25-28` —
+    /// `if NameTemplate != "" { VersionTemplate = NameTemplate }`.
+    /// A deprecation warning is emitted at config-load time when the alias
+    /// is hit (see `apply_snapshot_legacy_aliases`).
+    #[serde(alias = "name_template")]
     pub version_template: String,
 }
 
