@@ -748,6 +748,142 @@ fn test_e2e_snapshot_release_produces_artifacts() {
     );
 }
 
+/// E2E: `anodizer release --prepare` produces the same skip-stage behaviour
+/// as an explicit `--skip=release,publish,announce`.
+///
+/// Locks in the GoReleaser Pro `--prepare` contract end-to-end. The unit
+/// tests for `apply_prepare_mode_to_skip()` cover the helper's input/output;
+/// this asserts the helper is actually wired into `release::run()` and that
+/// the augmented skip list reaches the pipeline so `release`, `publish`, and
+/// `announce` are reported as skipped in the run output.
+#[test]
+fn test_release_prepare_matches_explicit_skip() {
+    let host = detect_host_target();
+
+    // We extract the set of "<stage> skipped" lines emitted by the pipeline.
+    // Stage names appear after the `[release]` prefix and before ` skipped`.
+    fn extract_skipped_stages(stderr: &str) -> std::collections::BTreeSet<String> {
+        stderr
+            .lines()
+            .filter_map(|line| {
+                // Strip ANSI codes and the `[release]` prefix that the
+                // StageLogger adds, then look for "<name> skipped".
+                let line = strip_ansi(line);
+                let after_prefix = line.trim_start().trim_start_matches("[release]").trim();
+                after_prefix
+                    .strip_suffix(" skipped")
+                    .map(|name| name.to_string())
+            })
+            .collect()
+    }
+
+    fn run_release(tmp: &Path, extra_args: &[&str]) -> std::process::Output {
+        let mut args: Vec<&str> = vec![
+            "release",
+            "--snapshot",
+            "--dry-run",
+            // Skip everything heavy so the test stays fast — these stages
+            // are skipped by both invocations identically, so they cancel
+            // out of the comparison and only the prepare-injected stages
+            // (release/publish/announce) differentiate.
+            "--skip=build,archive,checksum,docker,sign,nfpm,changelog,sbom",
+            "--timeout",
+            "2m",
+        ];
+        args.extend_from_slice(extra_args);
+
+        Command::new(env!("CARGO_BIN_EXE_anodizer"))
+            .args(&args)
+            .current_dir(tmp)
+            .output()
+            .unwrap()
+    }
+
+    fn setup_fixture(tmp: &Path, host: &str) {
+        create_test_project(tmp);
+        init_git_repo(tmp);
+        let config = create_single_crate_snapshot_config(host);
+        create_config(tmp, &config);
+    }
+
+    // Run 1: --prepare (relies on apply_prepare_mode_to_skip injecting
+    // release,publish,announce into the skip list).
+    let tmp_prepare = TempDir::new().unwrap();
+    setup_fixture(tmp_prepare.path(), &host);
+    let out_prepare = run_release(tmp_prepare.path(), &["--prepare"]);
+    assert!(
+        out_prepare.status.success(),
+        "release --prepare should succeed.\nstderr:\n{}",
+        String::from_utf8_lossy(&out_prepare.stderr)
+    );
+    let stderr_prepare = String::from_utf8_lossy(&out_prepare.stderr).into_owned();
+    let skipped_prepare = extract_skipped_stages(&stderr_prepare);
+
+    // Run 2: explicit --skip=release,publish,announce (additive).
+    let tmp_explicit = TempDir::new().unwrap();
+    setup_fixture(tmp_explicit.path(), &host);
+    let out_explicit = run_release(tmp_explicit.path(), &["--skip=release,publish,announce"]);
+    assert!(
+        out_explicit.status.success(),
+        "release --skip=release,publish,announce should succeed.\nstderr:\n{}",
+        String::from_utf8_lossy(&out_explicit.stderr)
+    );
+    let stderr_explicit = String::from_utf8_lossy(&out_explicit.stderr).into_owned();
+    let skipped_explicit = extract_skipped_stages(&stderr_explicit);
+
+    // Sanity: each invocation must report the three pro-prepare stages
+    // as skipped — otherwise the assertion below could pass vacuously
+    // (e.g. if the extractor matched nothing and both sets were empty).
+    for stage in ["release", "publish", "announce"] {
+        assert!(
+            skipped_prepare.contains(stage),
+            "--prepare run should report '{stage} skipped' in stderr, got skipped set {:?}\nfull stderr:\n{}",
+            skipped_prepare,
+            stderr_prepare
+        );
+        assert!(
+            skipped_explicit.contains(stage),
+            "explicit --skip run should report '{stage} skipped' in stderr, got skipped set {:?}\nfull stderr:\n{}",
+            skipped_explicit,
+            stderr_explicit
+        );
+    }
+
+    // Contract: the two invocations must produce the same set of skipped
+    // stages. If --prepare ever drifts from --skip=release,publish,announce
+    // — by adding extra stages, missing one, or reordering the helper —
+    // this assertion catches it.
+    assert_eq!(
+        skipped_prepare, skipped_explicit,
+        "release --prepare must yield the same skip-stage set as \
+         --skip=release,publish,announce\n\
+         --prepare skipped: {:?}\n--skip skipped: {:?}",
+        skipped_prepare, skipped_explicit
+    );
+}
+
+/// Strip ANSI escape sequences (CSI: ESC `[ ... <final-byte>`). Tiny
+/// inline implementation so this test file doesn't add a dependency.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' && chars.peek() == Some(&'[') {
+            chars.next(); // consume '['
+            // CSI parameter/intermediate bytes are 0x20..=0x3F; final
+            // byte is 0x40..=0x7E.
+            for c in chars.by_ref() {
+                if ('@'..='~').contains(&c) {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// E2E: `anodizer release --dry-run` runs full pipeline with no side effects.
 #[test]
 fn test_e2e_dry_run_no_side_effects() {
