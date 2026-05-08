@@ -66,6 +66,26 @@ impl SourceConfig {
     pub fn archive_format(&self) -> &str {
         self.format.as_deref().unwrap_or("tar.gz")
     }
+
+    /// Apply defaults to `prefix_template`: when unset and `name_template` is
+    /// set, default `prefix_template` to the same string as `name_template`.
+    ///
+    /// Q-src3: the doc has long claimed "Defaults to `name_template` value",
+    /// but downstream consumers were reading the raw `Option<String>` and
+    /// substituting empty string. Filling the field at defaults-resolution
+    /// time honors the documented contract — stage code that already
+    /// renders the (now-Some) field needs no behavioral change.
+    ///
+    /// GoReleaser `internal/pipe/sourcearchive/source.go:49-57` defaults to
+    /// empty; this is anodize-additive (more ergonomic default), aligning
+    /// behavior with the long-standing doc.
+    pub fn apply_prefix_template_default(&mut self) {
+        if self.prefix_template.is_none()
+            && let Some(ref name_tpl) = self.name_template
+        {
+            self.prefix_template = Some(name_tpl.clone());
+        }
+    }
 }
 
 /// Helper schema function for the source files field (accepts strings, objects, or mixed arrays).

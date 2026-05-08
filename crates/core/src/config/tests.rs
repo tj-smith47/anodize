@@ -6085,6 +6085,45 @@ crates:
     super::validate_id_uniqueness(&config).expect("distinct ids must pass");
 }
 
+// ---- Q-src3: source.prefix_template defaults to name_template ----
+
+#[test]
+fn test_source_prefix_template_defaults_to_name_template_when_unset() {
+    use super::SourceConfig;
+    let mut src = SourceConfig {
+        enabled: Some(true),
+        name_template: Some("{{ .ProjectName }}-{{ .Version }}".to_string()),
+        prefix_template: None,
+        ..Default::default()
+    };
+    src.apply_prefix_template_default();
+    assert_eq!(
+        src.prefix_template.as_deref(),
+        Some("{{ .ProjectName }}-{{ .Version }}")
+    );
+}
+
+#[test]
+fn test_source_prefix_template_preserved_when_user_set() {
+    use super::SourceConfig;
+    let mut src = SourceConfig {
+        enabled: Some(true),
+        name_template: Some("default-name".to_string()),
+        prefix_template: Some("custom-prefix".to_string()),
+        ..Default::default()
+    };
+    src.apply_prefix_template_default();
+    assert_eq!(src.prefix_template.as_deref(), Some("custom-prefix"));
+}
+
+#[test]
+fn test_source_prefix_template_remains_none_when_name_template_unset() {
+    use super::SourceConfig;
+    let mut src = SourceConfig::default();
+    src.apply_prefix_template_default();
+    assert!(src.prefix_template.is_none());
+}
+
 #[test]
 fn test_archives_id_uniqueness_workspace_crate() {
     let yaml = r#"

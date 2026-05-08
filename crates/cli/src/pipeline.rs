@@ -107,6 +107,14 @@ pub fn load_config(path: &Path) -> Result<Config> {
     // Validate archives[].id and universal_binaries[].id uniqueness (Q-arch2).
     anodizer_core::config::validate_id_uniqueness(&config).map_err(|e| anyhow::anyhow!("{}", e))?;
 
+    // Q-src3: source.prefix_template defaults to source.name_template when
+    // unset (matches the long-documented behavior — see SourceConfig docs).
+    // Applied at config-load so every downstream stage reading prefix_template
+    // sees the resolved value.
+    if let Some(ref mut src) = config.source {
+        src.apply_prefix_template_default();
+    }
+
     // Apply monorepo defaults: when monorepo.dir is set and a crate's path
     // is empty or ".", default it to monorepo.dir.
     apply_monorepo_defaults(&mut config);
