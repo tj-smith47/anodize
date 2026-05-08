@@ -40,6 +40,40 @@ pub fn resolve_backend(
 }
 
 // ---------------------------------------------------------------------------
+// resolve_manifester
+// ---------------------------------------------------------------------------
+
+/// Resolve the binary used for `docker manifest …` (or its podman cousin).
+///
+/// F7: GoReleaser's `validateManifester`
+/// (`internal/pipe/docker/manifest.go:169-174`) errors at default-time when
+/// the configured `manifest.use:` is not in the registered manifester set.
+/// Previously anodizer silently fell back to `"docker"` for any unknown
+/// value (including typos like `use: dockr`), masking bugs. We now enumerate
+/// the supported set explicitly and surface a clear error for anything else.
+///
+/// Anodizer accepts `"podman"` in addition to GR's `"docker"`-only set
+/// because podman ships a `podman manifest create/push` CLI that mirrors
+/// `docker manifest`; that surface is already wired through the rest of
+/// this module. `"buildx"` is NOT a valid manifester (buildx pushes manifest
+/// lists as a side-effect of `--push`, it does not have a `buildx manifest`
+/// subcommand) and rejecting it explicitly catches a common copy-paste bug
+/// where users wire `use: buildx` from their build config into a manifest
+/// stanza.
+pub fn resolve_manifester(use_backend: Option<&str>) -> Result<&'static str> {
+    match use_backend.unwrap_or("docker") {
+        "docker" => Ok("docker"),
+        "podman" => Ok("podman"),
+        other => {
+            anyhow::bail!(
+                "docker manifest: invalid use '{}', valid options are: [docker, podman]",
+                other,
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Shared command-construction helpers
 // ---------------------------------------------------------------------------
 //

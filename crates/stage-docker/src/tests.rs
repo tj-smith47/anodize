@@ -995,6 +995,51 @@ use: podman
     assert_eq!(cfg.use_backend.as_deref(), Some("podman"));
 }
 
+// F7: docker manifest `use:` validation -----------------------------------
+
+#[test]
+fn test_resolve_manifester_docker_default() {
+    use super::command::resolve_manifester;
+    assert_eq!(resolve_manifester(None).unwrap(), "docker");
+    assert_eq!(resolve_manifester(Some("docker")).unwrap(), "docker");
+}
+
+#[test]
+fn test_resolve_manifester_podman_explicit() {
+    use super::command::resolve_manifester;
+    assert_eq!(resolve_manifester(Some("podman")).unwrap(), "podman");
+}
+
+#[test]
+fn test_resolve_manifester_unknown_errors_with_value() {
+    // Typos like `use: dockr` used to fall back silently to "docker";
+    // they now produce a clear error naming the invalid value.
+    use super::command::resolve_manifester;
+    let err = resolve_manifester(Some("dockr")).unwrap_err().to_string();
+    assert!(
+        err.contains("invalid use 'dockr'"),
+        "error should name the offending value, got: {err}"
+    );
+    assert!(
+        err.contains("[docker, podman]"),
+        "error should list valid options, got: {err}"
+    );
+}
+
+#[test]
+fn test_resolve_manifester_buildx_rejected() {
+    // GR has no `buildx manifest` subcommand; reject explicitly so that
+    // pasting `use: buildx` from a build stanza into a manifest stanza
+    // surfaces a clear error instead of running `buildx manifest …` as if
+    // it were a real command.
+    use super::command::resolve_manifester;
+    let err = resolve_manifester(Some("buildx")).unwrap_err().to_string();
+    assert!(
+        err.contains("invalid use 'buildx'"),
+        "error should reject 'buildx' for manifests, got: {err}"
+    );
+}
+
 // ====================================================================
 // Docker V2 tests
 // ====================================================================

@@ -78,16 +78,30 @@ pub(crate) fn build_put_options(
         attrs.insert(Attribute::CacheControl, cc.join(", ").into());
     }
 
-    // Content-Disposition: only set when user provides a non-empty value.
-    // GoReleaser never force-defaults `attachment;filename=...` — letting the
-    // backend default preserves in-browser preview for images/PDFs/HTML.
-    // Sentinel `"-"` disables the header explicitly (kept for parity with users
-    // migrating from earlier anodizer configs).
-    if let Some(disp_template) = config.content_disposition.as_deref()
-        && !disp_template.is_empty()
-        && disp_template != "-"
-    {
-        // Render the template with the Filename variable added
+    // Content-Disposition: F6 — match GoReleaser's force-default.
+    //
+    // `internal/pipe/blob/blob.go:30-35` Default() sets
+    //     ContentDisposition = "attachment;filename={{.Filename}}"
+    // unconditionally when the user did not configure one, and treats `"-"`
+    // as the disable-sentinel. We mirror that exactly so a copy-pasted GR
+    // config with no `content_disposition:` key produces a downloadable blob
+    // (RFC 6266 attachment) instead of an in-browser preview that the GR
+    // user would have seen pinning a checksum file or ZIP archive.
+    //
+    // Migration note: anodizer historically left this header unset by
+    // default. Users relying on the old behaviour for in-browser preview
+    // can opt out via `content_disposition: "-"` (sentinel kept verbatim).
+    const GR_DEFAULT_CONTENT_DISPOSITION: &str = "attachment;filename={{ Filename }}";
+    let resolved_disposition: Option<&str> = match config.content_disposition.as_deref() {
+        // Explicit disable sentinel — emit no header.
+        Some("-") => None,
+        // User-supplied non-empty template — use as-is.
+        Some(s) if !s.is_empty() => Some(s),
+        // Unset or empty — force GR's default.
+        _ => Some(GR_DEFAULT_CONTENT_DISPOSITION),
+    };
+    if let Some(disp_template) = resolved_disposition {
+        // Render the template with the Filename variable added.
         let mut vars = ctx.template_vars().clone();
         vars.set("Filename", filename);
         let rendered = template::render(disp_template, &vars)

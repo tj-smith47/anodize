@@ -14,7 +14,7 @@ use super::build::{DockerBuildJob, DockerBuildResult, execute_docker_build};
 use super::command::{
     apply_docker_v2_defaults, build_docker_v2_command, generate_v2_image_tags,
     is_docker_v2_sbom_enabled, is_docker_v2_skipped, resolve_backend, resolve_digest_config,
-    resolve_skip_push,
+    resolve_manifester, resolve_skip_push,
 };
 use super::detect::{check_buildx_driver, is_docker_daemon_available};
 use super::platform::tag_suffix;
@@ -635,11 +635,9 @@ impl Stage for super::DockerStage {
                         rendered_images.push(img);
                     }
 
-                    // Determine the binary for manifest commands
-                    let manifest_bin = match manifest_cfg.use_backend.as_deref() {
-                        Some("podman") => "podman",
-                        _ => "docker",
-                    };
+                    // Determine the binary for manifest commands. F7 — see
+                    // `resolve_manifester` for the validation rationale.
+                    let manifest_bin = resolve_manifester(manifest_cfg.use_backend.as_deref())?;
 
                     // Render create_flags through template engine
                     let rendered_create_flags: Vec<String> = manifest_cfg

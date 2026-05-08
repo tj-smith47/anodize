@@ -137,18 +137,37 @@ fn test_put_options_cache_control_single() {
 }
 
 #[test]
-fn test_put_options_content_disposition_default_unset() {
-    // B3 fix: GoReleaser does NOT default content-disposition; anodizer
-    // must not either, so in-browser preview (images/PDFs/HTML) keeps
-    // working when users don't opt into attachment behavior.
+fn test_put_options_content_disposition_default_is_attachment() {
+    // F6 regression: GoReleaser's blob/blob.go:30-35 force-defaults
+    //     ContentDisposition = "attachment;filename={{.Filename}}"
+    // when the user did not configure one. Anodizer must mirror that (with
+    // `{{ Filename }}` rendered to the artifact filename) so a copy-pasted
+    // GR config produces downloadable artifacts instead of in-browser
+    // previews. `"-"` remains the disable-sentinel for users who deliberately
+    // want the bucket-default behaviour.
     let config = BlobConfig::default();
     let opts = build_put_options(&config, "myapp-v1.tar.gz", &make_ctx()).unwrap();
-    assert!(
-        opts.attributes
-            .get(&object_store::Attribute::ContentDisposition)
-            .is_none(),
-        "default content-disposition must be unset (matches GoReleaser)"
-    );
+    let cd = opts
+        .attributes
+        .get(&object_store::Attribute::ContentDisposition)
+        .unwrap_or_else(|| panic!("default content-disposition must be set"));
+    assert_eq!(cd.as_ref(), "attachment;filename=myapp-v1.tar.gz");
+}
+
+#[test]
+fn test_put_options_content_disposition_default_empty_string_treated_as_unset() {
+    // An explicit empty string gets the same GR force-default treatment as
+    // None — the only way to opt out is the `"-"` sentinel.
+    let config = BlobConfig {
+        content_disposition: Some(String::new()),
+        ..Default::default()
+    };
+    let opts = build_put_options(&config, "checksums.txt", &make_ctx()).unwrap();
+    let cd = opts
+        .attributes
+        .get(&object_store::Attribute::ContentDisposition)
+        .unwrap_or_else(|| panic!("empty string must trigger GR default"));
+    assert_eq!(cd.as_ref(), "attachment;filename=checksums.txt");
 }
 
 #[test]
