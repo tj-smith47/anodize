@@ -1291,4 +1291,107 @@ crates:
             "error should name `if` render failure, got: {msg}"
         );
     }
+
+    // -------------------------------------------------------------------
+    // M8 — `nsis.goamd64` filter (GR Pro `nsis.goamd64: string`)
+    // -------------------------------------------------------------------
+
+    /// Build a context with three windows/amd64 binaries (v1/v2/v3) +
+    /// one windows/arm64 binary. The `goamd64` field on the config drives
+    /// which subset of amd64 binaries reaches NSIS Installer artifact creation.
+    fn nsis_goamd64_test_ctx(goamd64: Option<&str>) -> anodizer_core::context::Context {
+        use anodizer_core::artifact::Artifact;
+        use anodizer_core::config::{CrateConfig, NsisConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let script_path = tmp.path().join("installer.nsi");
+        std::fs::write(&script_path, "OutFile \"out.exe\"\nSection\nSectionEnd\n").unwrap();
+
+        let nsis_cfg = NsisConfig {
+            script: Some(script_path.to_string_lossy().into_owned()),
+            goamd64: goamd64.map(str::to_string),
+            ..Default::default()
+        };
+
+        let mut config = anodizer_core::config::Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&config.dist).unwrap();
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nsis: Some(vec![nsis_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        for variant in ["v1", "v2", "v3"] {
+            ctx.artifacts.add(Artifact {
+                kind: ArtifactKind::Binary,
+                name: String::new(),
+                path: PathBuf::from(format!("dist/myapp_{variant}.exe")),
+                target: Some("x86_64-pc-windows-msvc".to_string()),
+                crate_name: "myapp".to_string(),
+                metadata: HashMap::from([("amd64_variant".to_string(), variant.to_string())]),
+                size: None,
+            });
+        }
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp_arm.exe"),
+            target: Some("aarch64-pc-windows-msvc".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+        ctx
+    }
+
+    #[test]
+    fn test_nsis_goamd64_unset_passes_all_amd64_variants() {
+        let mut ctx = nsis_goamd64_test_ctx(None);
+        NsisStage.run(&mut ctx).unwrap();
+        let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
+        // 3 amd64 variants + 1 arm64 -> 4 NSIS installers.
+        assert_eq!(installers.len(), 4);
+    }
+
+    #[test]
+    fn test_nsis_goamd64_v3_only_keeps_matching_variant() {
+        let mut ctx = nsis_goamd64_test_ctx(Some("v3"));
+        NsisStage.run(&mut ctx).unwrap();
+        let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
+        // Only v3 amd64 + arm64 -> 2 installers.
+        assert_eq!(installers.len(), 2);
+        let targets: Vec<&str> = installers
+            .iter()
+            .map(|a| a.target.as_deref().unwrap())
+            .collect();
+        assert!(targets.contains(&"x86_64-pc-windows-msvc"));
+        assert!(targets.contains(&"aarch64-pc-windows-msvc"));
+    }
+
+    #[test]
+    fn test_nsis_goamd64_filter_does_not_drop_arm64() {
+        // Pin: amd64 filter never affects arm64.
+        let mut ctx = nsis_goamd64_test_ctx(Some("v9000"));
+        NsisStage.run(&mut ctx).unwrap();
+        let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
+        assert_eq!(installers.len(), 1);
+        assert_eq!(
+            installers[0].target.as_deref(),
+            Some("aarch64-pc-windows-msvc")
+        );
+    }
 }

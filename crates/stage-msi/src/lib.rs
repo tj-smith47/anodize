@@ -2270,4 +2270,114 @@ crates:
         assert_eq!(post.len(), 1);
         assert_eq!(post[0], "echo post-msi-build");
     }
+
+    // -------------------------------------------------------------------
+    // M8 — `msi.goamd64` filter (GR Pro `msi.goamd64: string`)
+    // -------------------------------------------------------------------
+
+    /// Build a context with three windows/amd64 binaries (variants v1/v2/v3)
+    /// plus one windows/arm64 binary. The `goamd64` field on the config drives
+    /// which subset of amd64 binaries reaches `Installer` artifact creation.
+    fn msi_goamd64_test_ctx(goamd64: Option<&str>) -> anodizer_core::context::Context {
+        use anodizer_core::artifact::Artifact;
+        use anodizer_core::config::{Config, CrateConfig, MsiConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let wxs_path = tmp.path().join("app.wxs");
+        fs::write(&wxs_path, "<Wix/>").unwrap();
+
+        let msi_cfg = MsiConfig {
+            wxs: Some(wxs_path.to_string_lossy().into_owned()),
+            goamd64: goamd64.map(str::to_string),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            msis: Some(vec![msi_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        // 3 amd64 variants — same target triple, different `amd64_variant`
+        // metadata. Path differs so artifact-add doesn't dedup.
+        for variant in ["v1", "v2", "v3"] {
+            ctx.artifacts.add(Artifact {
+                kind: ArtifactKind::Binary,
+                name: String::new(),
+                path: PathBuf::from(format!("dist/myapp_{variant}.exe")),
+                target: Some("x86_64-pc-windows-msvc".to_string()),
+                crate_name: "myapp".to_string(),
+                metadata: HashMap::from([("amd64_variant".to_string(), variant.to_string())]),
+                size: None,
+            });
+        }
+        // arm64 binary — outside the amd64 filter's scope.
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp_arm.exe"),
+            target: Some("aarch64-pc-windows-msvc".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+        ctx
+    }
+
+    #[test]
+    fn test_msi_goamd64_unset_passes_all_amd64_variants() {
+        let mut ctx = msi_goamd64_test_ctx(None);
+        MsiStage.run(&mut ctx).unwrap();
+        let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
+        // 3 amd64 binaries + 1 arm64 binary -> 4 MSIs (one per binary path).
+        assert_eq!(
+            installers.len(),
+            4,
+            "unset goamd64 should pass every amd64 variant + non-amd64"
+        );
+    }
+
+    #[test]
+    fn test_msi_goamd64_v3_only_keeps_matching_variant() {
+        let mut ctx = msi_goamd64_test_ctx(Some("v3"));
+        MsiStage.run(&mut ctx).unwrap();
+        let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
+        // Only v3 amd64 + arm64 (always passes) -> 2 MSIs.
+        assert_eq!(installers.len(), 2);
+        let targets: Vec<&str> = installers
+            .iter()
+            .map(|a| a.target.as_deref().unwrap())
+            .collect();
+        assert!(targets.contains(&"x86_64-pc-windows-msvc"));
+        assert!(targets.contains(&"aarch64-pc-windows-msvc"));
+    }
+
+    #[test]
+    fn test_msi_goamd64_filter_does_not_drop_arm64() {
+        // Pin: filter only constrains amd64. arm64 must still pass even
+        // when no amd64 variant matches.
+        let mut ctx = msi_goamd64_test_ctx(Some("v9000"));
+        MsiStage.run(&mut ctx).unwrap();
+        let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
+        assert_eq!(installers.len(), 1);
+        assert_eq!(
+            installers[0].target.as_deref(),
+            Some("aarch64-pc-windows-msvc")
+        );
+    }
 }

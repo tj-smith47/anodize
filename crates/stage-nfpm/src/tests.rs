@@ -4875,3 +4875,133 @@ fn test_setup_lintian_overrides_dry_run_skips_write_but_injects_content() {
             .any(|c| c.dst == "/usr/share/lintian/overrides/myapp")
     );
 }
+
+// -----------------------------------------------------------------------
+// M8 — `nfpm.goamd64` filter
+// -----------------------------------------------------------------------
+//
+// GR `internal/pipe/nfpm/nfpm.go:147` calls
+// `artifact.ByGoamd64s(fpm.GoAmd64...)` — the field is `[]string`, so
+// multiple variants may be allowed simultaneously. Empty slice == no
+// filter.
+
+/// Build a context with three linux/amd64 binaries (variants v1/v2/v3) +
+/// one linux/arm64 binary, all under one crate. The `goamd64` field on
+/// the nfpm config drives which subset of amd64 binaries is packaged.
+fn nfpm_goamd64_test_ctx(goamd64: Option<Vec<&str>>) -> anodizer_core::context::Context {
+    use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let nfpm_cfg = NfpmConfig {
+        package_name: Some("myapp".to_string()),
+        formats: vec!["deb".to_string()],
+        goamd64: goamd64.map(|v| v.into_iter().map(str::to_string).collect()),
+        ..Default::default()
+    };
+
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![CrateConfig {
+        name: "myapp".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        nfpms: Some(vec![nfpm_cfg]),
+        ..Default::default()
+    }];
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+
+    use std::path::PathBuf;
+    for variant in ["v1", "v2", "v3"] {
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from(format!("dist/myapp_{variant}")),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("amd64_variant".to_string(), variant.to_string())]),
+            size: None,
+        });
+    }
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: String::new(),
+        path: PathBuf::from("dist/myapp_arm"),
+        target: Some("aarch64-unknown-linux-gnu".to_string()),
+        crate_name: "myapp".to_string(),
+        metadata: HashMap::new(),
+        size: None,
+    });
+    ctx
+}
+
+#[test]
+fn test_nfpm_goamd64_unset_passes_all_amd64_variants() {
+    // Unset goamd64 => all amd64 variants pass; one nfpm package per
+    // platform group (target). 3 amd64 binaries share one target =>
+    // grouped into ONE deb (with multiple binaries). 1 arm64 binary =>
+    // ONE deb. Total: 2 deb packages.
+    let mut ctx = nfpm_goamd64_test_ctx(None);
+    NfpmStage.run(&mut ctx).unwrap();
+    let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+    assert_eq!(
+        pkgs.len(),
+        2,
+        "unset goamd64 should pass every variant; one deb per target"
+    );
+}
+
+#[test]
+fn test_nfpm_goamd64_v3_only_keeps_matching_variant() {
+    let mut ctx = nfpm_goamd64_test_ctx(Some(vec!["v3"]));
+    NfpmStage.run(&mut ctx).unwrap();
+    let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+    // Only v3 amd64 (one package) + arm64 (one package) -> 2 debs.
+    assert_eq!(pkgs.len(), 2);
+}
+
+#[test]
+fn test_nfpm_goamd64_multiple_variants_pass_listed() {
+    // GR's `goamd64: [v2, v3]` form passes BOTH v2 and v3 amd64 binaries
+    // (autoOr semantics).
+    let mut ctx = nfpm_goamd64_test_ctx(Some(vec!["v2", "v3"]));
+    NfpmStage.run(&mut ctx).unwrap();
+    let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+    // v2 and v3 both share the amd64 target — they're grouped into ONE
+    // package (per-platform grouping). + arm64 = 2 debs.
+    assert_eq!(pkgs.len(), 2);
+}
+
+#[test]
+fn test_nfpm_goamd64_filter_does_not_drop_arm64() {
+    // Pin: filter only constrains amd64; arm64 must still pass even
+    // when the filter rejects every amd64 variant.
+    let mut ctx = nfpm_goamd64_test_ctx(Some(vec!["v9000"]));
+    NfpmStage.run(&mut ctx).unwrap();
+    let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+    assert_eq!(
+        pkgs.len(),
+        1,
+        "arm64 must still package even when no amd64 variant matches"
+    );
+}
+
+#[test]
+fn test_nfpm_goamd64_empty_vec_is_no_op() {
+    // GR `autoOr` with zero args is a passthrough (no filter applied) —
+    // mirror that semantics here so `goamd64: []` doesn't accidentally
+    // filter every amd64 out.
+    let mut ctx = nfpm_goamd64_test_ctx(Some(Vec::new()));
+    NfpmStage.run(&mut ctx).unwrap();
+    let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+    assert_eq!(pkgs.len(), 2, "empty goamd64 vec should be a no-op");
+}
