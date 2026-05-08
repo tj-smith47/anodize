@@ -21,16 +21,24 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("chocolatey: no chocolatey config for '{}'", crate_name))?;
 
-    let repository = choco_cfg
-        .repository
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("chocolatey: no repository config for '{}'", crate_name))?;
-    let (repo_owner, repo_name) = match (repository.owner.as_deref(), repository.name.as_deref()) {
-        (Some(o), Some(n)) => (o, n),
-        _ => anyhow::bail!(
-            "chocolatey: repository.owner and repository.name are both required for '{}'",
-            crate_name
+    // F4: GR's Chocolatey config has no Repository field
+    // (`pkg/config/config.go:1501-1526`); choco is a feed-push publisher,
+    // only `api_key` + `source_repo` are required to push. Anodizer's
+    // optional `repository.owner/name` is *only* used as a fallback source
+    // for `<projectUrl>` (the gallery link) when `project_url:` is unset.
+    // Previously this code hard-failed if either was missing, blocking
+    // valid GR-shape configs (especially internal feeds without a public
+    // GitHub release). Make the lookup optional and fall back to an empty
+    // string when both project_url and repository are unset.
+    //
+    // Q-brew1 from `.claude/audits/2026-05-08-second-opinion/publishers.md`
+    // section 1.2 — F4 fix.
+    let (repo_owner, repo_name) = match choco_cfg.repository.as_ref() {
+        Some(r) => (
+            r.owner.as_deref().unwrap_or(""),
+            r.name.as_deref().unwrap_or(""),
         ),
+        None => ("", ""),
     };
 
     // GoReleaser checks SkipPublish early in Publish(), before any work.
@@ -49,8 +57,13 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
 
     if ctx.is_dry_run() {
         log.status(&format!(
-            "(dry-run) would push Chocolatey package for '{}' to {}/{}",
-            crate_name, repo_owner, repo_name
+            "(dry-run) would push Chocolatey package for '{}'{}",
+            crate_name,
+            if repo_owner.is_empty() {
+                String::new()
+            } else {
+                format!(" to {}/{}", repo_owner, repo_name)
+            }
         ));
         return Ok(());
     }
@@ -75,10 +88,16 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
         .clone()
         .or_else(|| ctx.config.meta_first_maintainer().map(str::to_string))
         .unwrap_or_else(|| crate_name.to_string());
-    let project_url = choco_cfg
-        .project_url
-        .clone()
-        .unwrap_or_else(|| format!("https://github.com/{}/{}", repo_owner, repo_name));
+    let project_url = choco_cfg.project_url.clone().unwrap_or_else(|| {
+        if repo_owner.is_empty() || repo_name.is_empty() {
+            // F4: feed-push publishers commonly have no public GitHub repo
+            // and no `project_url:` set. Empty <projectUrl> is acceptable
+            // to the Chocolatey gallery (the field is optional in nuspec).
+            String::new()
+        } else {
+            format!("https://github.com/{}/{}", repo_owner, repo_name)
+        }
+    });
     let icon_url = choco_cfg.icon_url.clone().unwrap_or_default();
     let tags = choco_cfg.tags.clone().unwrap_or_default();
 
