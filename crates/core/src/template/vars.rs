@@ -140,8 +140,14 @@ pub fn clear_per_target_vars(tv: &mut TemplateVars) {
 
 /// The template-variable keys that per-target packaging loops populate
 /// and must clear on exit.
+///
+/// Mirrors GoReleaser's `internal/tmpl/tmpl.go` per-artifact key set
+/// (`KeyOS`, `KeyArch`, `KeyAmd64`, `Key386`, `KeyArm`, `KeyArm64`, `KeyMips`,
+/// `KeyPpc64`, `KeyRiscv64` plus `target`). Keeping the set in sync keeps
+/// templates that branch on `{{ .Ppc64 }}` / `{{ .Riscv64 }}` from raising
+/// a Tera "missing key" error in strict-mode rendering.
 pub const PER_TARGET_VARS: &[&str] = &[
-    "Os", "Arch", "Target", "Arm", "Arm64", "Amd64", "Mips", "I386",
+    "Os", "Arch", "Target", "Arm", "Arm64", "Amd64", "Mips", "I386", "Ppc64", "Riscv64",
 ];
 
 /// Per-artifact template variable keys (set inside per-artifact loops in

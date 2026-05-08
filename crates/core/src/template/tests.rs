@@ -2058,3 +2058,43 @@ fn test_map_and_index_missing_key_returns_empty() {
     .unwrap();
     assert_eq!(result, "");
 }
+
+// ---- per-target var coverage (Q-tpl1) ----
+//
+// Mirrors GoReleaser `internal/tmpl/tmpl.go` per-artifact key set: every key
+// must be a member of `PER_TARGET_VARS` so the clear-on-exit pass touches it
+// (and so `{{ .Ppc64 }}` / `{{ .Riscv64 }}` references render empty rather
+// than raising a Tera "missing key" error in strict mode).
+#[test]
+fn test_per_target_vars_includes_ppc64_and_riscv64() {
+    use super::vars::PER_TARGET_VARS;
+    assert!(
+        PER_TARGET_VARS.contains(&"Ppc64"),
+        "PER_TARGET_VARS missing Ppc64 key (GR parity tmpl.go:43,208)"
+    );
+    assert!(
+        PER_TARGET_VARS.contains(&"Riscv64"),
+        "PER_TARGET_VARS missing Riscv64 key (GR parity tmpl.go:44,209)"
+    );
+}
+
+#[test]
+fn test_clear_per_target_vars_clears_ppc64_and_riscv64() {
+    use super::vars::{TemplateVars, clear_per_target_vars};
+    let mut tv = TemplateVars::new();
+    tv.set("Ppc64", "power9");
+    tv.set("Riscv64", "rva20u64");
+    clear_per_target_vars(&mut tv);
+    assert_eq!(tv.get("Ppc64").map(String::as_str), Some(""));
+    assert_eq!(tv.get("Riscv64").map(String::as_str), Some(""));
+}
+
+#[test]
+fn test_render_ppc64_and_riscv64_empty_after_clear() {
+    use super::vars::clear_per_target_vars;
+    let mut vars = test_vars();
+    clear_per_target_vars(&mut vars);
+    // Empty string render must not raise a Tera "missing key" error.
+    let out = render("[{{ .Ppc64 }}|{{ .Riscv64 }}]", &vars).unwrap();
+    assert_eq!(out, "[|]");
+}
