@@ -135,6 +135,231 @@ fn redact_args(args: &[String]) -> Vec<String> {
 }
 
 // ---------------------------------------------------------------------------
+// M6: retry policy for the network-touching subprocess calls in notarize
+// ---------------------------------------------------------------------------
+//
+// The notarize stage shells out to Apple-hosted services (rcodesign
+// notary-submit and xcrun notarytool submit); a transient blip
+// (TLS handshake fail, 5xx, DNS hiccup, the well-known *AppleID*
+// authentication 503s) used to fail the whole release. A top-level
+// `retries:` config is being added in a separate wave; until then this
+// stage carries a self-contained 3-attempt exponential schedule (delays
+// 30s / 60s before the 2nd and 3rd attempts respectively).
+
+const NOTARIZE_RETRY_ATTEMPTS: u32 = 3;
+const NOTARIZE_INITIAL_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Substrings (lowercased) on stderr/stdout that signal a transient
+/// network-side failure rather than a real "this artifact is invalid"
+/// rejection by Apple. Anything outside this set is a non-retriable failure
+/// (`status: invalid`, `status: rejected`, malformed args, file not found,
+/// etc.) and bypasses the retry loop.
+const RETRIABLE_OUTPUT_MARKERS: &[&str] = &[
+    "connection",
+    "connect: ",
+    "timeout",
+    "timed out",
+    "tls",
+    "ssl",
+    "i/o",
+    "could not resolve",
+    "name resolution",
+    "temporary failure",
+    "503",
+    "504",
+    "502",
+    "429",
+    "service unavailable",
+    "gateway",
+    "dial tcp",
+    "broken pipe",
+    "reset by peer",
+    "eof",
+    "unable to connect",
+    "network is unreachable",
+];
+
+/// True when the combined stderr/stdout suggests the failure is transient
+/// (network blip, retriable HTTP status). Apple-side hard rejections must
+/// not retry; treat them as terminal so misconfigured artifacts fail fast
+/// instead of burning multi-minute App Store Connect API quota.
+fn is_retriable_notarize_output(output: &std::process::Output) -> bool {
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+    .to_lowercase();
+    if combined.contains("status: invalid")
+        || combined.contains("invalid submission")
+        || combined.contains("status: rejected")
+        || combined.contains("submission rejected")
+    {
+        return false;
+    }
+    RETRIABLE_OUTPUT_MARKERS
+        .iter()
+        .any(|marker| combined.contains(marker))
+}
+
+/// Build a Command from a `[bin, arg, arg, ...]` slice — used by the retry
+/// helper because `Command` is not `Clone`-able and we need to re-execute
+/// the same invocation on each attempt.
+fn build_command_from_args(args: &[String]) -> Command {
+    let mut cmd = Command::new(&args[0]);
+    cmd.args(&args[1..]);
+    cmd
+}
+
+/// Run a command up to `NOTARIZE_RETRY_ATTEMPTS` times, sleeping
+/// exponentially between attempts (30s, 60s). Retries on:
+///   1. spawn error (could not execute the binary — network filesystem, etc.),
+///   2. non-zero exit whose combined stdout+stderr matches a transient marker.
+///
+/// On the final attempt the result (success OR non-retriable failure) is
+/// returned to the caller without further sleeping. `label` is used for
+/// human-readable retry diagnostics; `delay_fn` lets tests pass a no-op
+/// sleeper so the suite cannot accidentally wait 30 seconds.
+fn run_with_retry(
+    args: &[String],
+    label: &str,
+    log: &anodizer_core::log::StageLogger,
+    delay_fn: &dyn Fn(std::time::Duration),
+) -> Result<std::process::Output> {
+    debug_assert!(!args.is_empty(), "run_with_retry: empty args");
+    let mut last_err: Option<anyhow::Error> = None;
+    for attempt in 0..NOTARIZE_RETRY_ATTEMPTS {
+        let try_n = attempt + 1;
+        match build_command_from_args(args).output() {
+            Ok(output) => {
+                if output.status.success() || !is_retriable_notarize_output(&output) {
+                    return Ok(output);
+                }
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                last_err = Some(anyhow::anyhow!(
+                    "notarize: {} attempt {}/{} failed transiently (exit {:?}): {}",
+                    label,
+                    try_n,
+                    NOTARIZE_RETRY_ATTEMPTS,
+                    output.status.code(),
+                    stderr.trim(),
+                ));
+                if try_n == NOTARIZE_RETRY_ATTEMPTS {
+                    // Final attempt — return the (failed) output so the
+                    // existing `check_notarize_output` reporting path
+                    // produces a coherent error message.
+                    return Ok(output);
+                }
+            }
+            Err(e) => {
+                last_err = Some(anyhow::Error::new(e).context(format!(
+                    "notarize: failed to execute {} (attempt {}/{})",
+                    label, try_n, NOTARIZE_RETRY_ATTEMPTS,
+                )));
+                if try_n == NOTARIZE_RETRY_ATTEMPTS {
+                    return Err(last_err.unwrap_or_else(|| {
+                        anyhow::anyhow!(
+                            "notarize: {} failed after {} attempts",
+                            label,
+                            NOTARIZE_RETRY_ATTEMPTS
+                        )
+                    }));
+                }
+            }
+        }
+        // Exponential backoff: 30s, 60s.
+        let delay = NOTARIZE_INITIAL_DELAY * 2u32.pow(attempt);
+        log.warn(&format!(
+            "notarize: {} attempt {}/{} hit a transient error; retrying in {}s",
+            label,
+            try_n,
+            NOTARIZE_RETRY_ATTEMPTS,
+            delay.as_secs(),
+        ));
+        delay_fn(delay);
+    }
+    Err(last_err.unwrap_or_else(|| {
+        anyhow::anyhow!(
+            "notarize: {} exhausted {} attempts without a result",
+            label,
+            NOTARIZE_RETRY_ATTEMPTS
+        )
+    }))
+}
+
+/// Default delay function for the retry helpers (real `thread::sleep`).
+fn real_sleep(d: std::time::Duration) {
+    std::thread::sleep(d);
+}
+
+/// Variant of `run_with_retry` for callers that only need the exit status
+/// (`.status()` style). Used by `rcodesign sign` which contacts Apple's
+/// RFC 3161 timestamp server (`timestamp.apple.com`) and so is itself a
+/// network-touching call. Without `.output()` we cannot inspect stderr to
+/// classify failure as transient vs. permanent, so this variant retries on
+/// **any** non-success exit (and on spawn errors). The exponential schedule
+/// matches `run_with_retry`. Callers that have output-classification fidelity
+/// should prefer `run_with_retry`.
+fn run_status_with_retry(
+    args: &[String],
+    label: &str,
+    log: &anodizer_core::log::StageLogger,
+    delay_fn: &dyn Fn(std::time::Duration),
+) -> Result<std::process::ExitStatus> {
+    debug_assert!(!args.is_empty(), "run_status_with_retry: empty args");
+    let mut last_err: Option<anyhow::Error> = None;
+    for attempt in 0..NOTARIZE_RETRY_ATTEMPTS {
+        let try_n = attempt + 1;
+        match build_command_from_args(args).status() {
+            Ok(status) if status.success() => return Ok(status),
+            Ok(status) => {
+                last_err = Some(anyhow::anyhow!(
+                    "notarize: {} attempt {}/{} exited {:?}",
+                    label,
+                    try_n,
+                    NOTARIZE_RETRY_ATTEMPTS,
+                    status.code(),
+                ));
+                if try_n == NOTARIZE_RETRY_ATTEMPTS {
+                    return Ok(status);
+                }
+            }
+            Err(e) => {
+                last_err = Some(anyhow::Error::new(e).context(format!(
+                    "notarize: failed to execute {} (attempt {}/{})",
+                    label, try_n, NOTARIZE_RETRY_ATTEMPTS,
+                )));
+                if try_n == NOTARIZE_RETRY_ATTEMPTS {
+                    return Err(last_err.unwrap_or_else(|| {
+                        anyhow::anyhow!(
+                            "notarize: {} failed after {} attempts",
+                            label,
+                            NOTARIZE_RETRY_ATTEMPTS
+                        )
+                    }));
+                }
+            }
+        }
+        let delay = NOTARIZE_INITIAL_DELAY * 2u32.pow(attempt);
+        log.warn(&format!(
+            "notarize: {} attempt {}/{} failed; retrying in {}s",
+            label,
+            try_n,
+            NOTARIZE_RETRY_ATTEMPTS,
+            delay.as_secs(),
+        ));
+        delay_fn(delay);
+    }
+    Err(last_err.unwrap_or_else(|| {
+        anyhow::anyhow!(
+            "notarize: {} exhausted {} attempts without a result",
+            label,
+            NOTARIZE_RETRY_ATTEMPTS
+        )
+    }))
+}
+
+// ---------------------------------------------------------------------------
 // Helper: parse notarize output for status differentiation
 // ---------------------------------------------------------------------------
 
@@ -425,15 +650,12 @@ fn run_cross_platform(
                 redact_args(&sign_args).join(" ")
             ));
         } else {
-            let status = Command::new(&sign_args[0])
-                .args(&sign_args[1..])
-                .status()
-                .with_context(|| {
-                    format!(
-                        "notarize: failed to execute rcodesign sign for {}",
-                        artifact.name()
-                    )
-                })?;
+            // M6: rcodesign sign contacts Apple's RFC 3161 timestamp server
+            // (`http://timestamp.apple.com/ts01`); transient blips there used
+            // to fail the whole release. Wrap in the 3-attempt 30s
+            // exponential retry.
+            let label = format!("rcodesign sign for {}", artifact.name());
+            let status = run_status_with_retry(&sign_args, &label, log, &real_sleep)?;
             if !status.success() {
                 bail!(
                     "notarize: rcodesign sign failed for {} (exit code: {:?})",
@@ -475,20 +697,13 @@ fn run_cross_platform(
                     redact_args(&notarize_args).join(" ")
                 ));
             } else {
-                let output = Command::new(&notarize_args[0])
-                    .args(&notarize_args[1..])
-                    .output()
-                    .with_context(|| {
-                        format!(
-                            "notarize: failed to execute rcodesign notary-submit for {}",
-                            artifact.name()
-                        )
-                    })?;
-                check_notarize_output(
-                    &output,
-                    &format!("rcodesign notary-submit for {}", artifact.name()),
-                    log,
-                )?;
+                // M6: wrap in a 3-attempt 30s exponential retry so a
+                // transient blip on the App Store Connect API does not fail
+                // the whole release (notary-submit talks directly to
+                // Apple-hosted services).
+                let label = format!("rcodesign notary-submit for {}", artifact.name());
+                let output = run_with_retry(&notarize_args, &label, log, &real_sleep)?;
+                check_notarize_output(&output, &label, log)?;
             }
         }
     }
@@ -756,20 +971,12 @@ fn run_native_dmg(
                 notarize_args.join(" ")
             ));
         } else {
-            let output = Command::new(&notarize_args[0])
-                .args(&notarize_args[1..])
-                .output()
-                .with_context(|| {
-                    format!(
-                        "notarize: failed to execute xcrun notarytool for {}",
-                        dmg.name()
-                    )
-                })?;
-            check_notarize_output(
-                &output,
-                &format!("xcrun notarytool submit for {}", dmg.name()),
-                log,
-            )?;
+            // M6: wrap notarytool submit in a 3-attempt 30s exponential
+            // retry; the call talks directly to Apple-hosted services and a
+            // transient blip should not fail the whole release.
+            let label = format!("xcrun notarytool submit for {}", dmg.name());
+            let output = run_with_retry(&notarize_args, &label, log, &real_sleep)?;
+            check_notarize_output(&output, &label, log)?;
 
             // Staple if wait was enabled
             if params.wait {
@@ -920,20 +1127,11 @@ fn run_native_pkg(
                 notarize_args.join(" ")
             ));
         } else {
-            let output = Command::new(&notarize_args[0])
-                .args(&notarize_args[1..])
-                .output()
-                .with_context(|| {
-                    format!(
-                        "notarize: failed to execute xcrun notarytool for {}",
-                        pkg.name()
-                    )
-                })?;
-            check_notarize_output(
-                &output,
-                &format!("xcrun notarytool submit for {}", pkg.name()),
-                log,
-            )?;
+            // M6: 3-attempt 30s exponential retry around the Apple-hosted
+            // notarytool submit call.
+            let label = format!("xcrun notarytool submit for {}", pkg.name());
+            let output = run_with_retry(&notarize_args, &label, log, &real_sleep)?;
+            check_notarize_output(&output, &label, log)?;
 
             // Staple if wait was enabled
             if params.wait {
@@ -2098,5 +2296,92 @@ crates: []
         let stage = NotarizeStage;
         // Should succeed because it defaults to DMG mode
         stage.run(&mut ctx).unwrap();
+    }
+
+    // -----------------------------------------------------------------------
+    // M6: notarize retry tests
+    // -----------------------------------------------------------------------
+
+    /// Build a synthetic `Output` with a non-zero exit and the given stderr,
+    /// useful for exercising `is_retriable_notarize_output` without actually
+    /// running a process. The exit status is constructed via the os-specific
+    /// `from_raw` helpers so we don't need to depend on a child process.
+    #[cfg(unix)]
+    fn fake_output(stderr: &str, code: i32) -> std::process::Output {
+        use std::os::unix::process::ExitStatusExt;
+        std::process::Output {
+            status: std::process::ExitStatus::from_raw(code << 8),
+            stdout: Vec::new(),
+            stderr: stderr.as_bytes().to_vec(),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_is_retriable_notarize_output_network_markers() {
+        // Network-side blips: must classify as retriable.
+        for marker in [
+            "tls: bad record",
+            "i/o timeout",
+            "could not resolve host",
+            "503 service unavailable",
+            "429 too many requests",
+            "dial tcp: connection refused",
+            "connection reset by peer",
+        ] {
+            let out = fake_output(marker, 1);
+            assert!(
+                is_retriable_notarize_output(&out),
+                "should retry on '{marker}'"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_is_retriable_notarize_output_apple_rejection_is_terminal() {
+        // Apple-side hard rejections: must NOT retry. Re-submitting an
+        // invalid bundle is wasted API quota and worse UX (multi-minute
+        // delays before the user sees the real error).
+        for marker in [
+            "status: Invalid",
+            "Invalid submission",
+            "status: Rejected",
+            "submission rejected by Apple",
+        ] {
+            let out = fake_output(marker, 1);
+            assert!(
+                !is_retriable_notarize_output(&out),
+                "must NOT retry on '{marker}'"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_is_retriable_notarize_output_unknown_failure_is_terminal() {
+        // An exit failure with no recognised network marker (e.g. malformed
+        // CLI args, certificate not found) is treated as terminal — retrying
+        // will not help.
+        let out = fake_output("error: --p12-file: no such file", 64);
+        assert!(!is_retriable_notarize_output(&out));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_run_with_retry_returns_immediately_on_terminal_error() {
+        // Drive `run_with_retry` through `false`, which exits 1 with no
+        // stderr — classifies as non-retriable and should return on the
+        // first attempt without invoking the delay function. A no-op delay
+        // closure ensures the test cannot accidentally sleep 30s if the
+        // classification logic ever drifts.
+        let log = anodizer_core::log::StageLogger::new(
+            "notarize-test",
+            anodizer_core::log::Verbosity::Quiet,
+        );
+        let no_delay = |_d: std::time::Duration| {};
+        let args = vec!["false".to_string()];
+        let result = run_with_retry(&args, "false-cmd", &log, &no_delay).unwrap();
+        assert!(!result.status.success());
     }
 }
