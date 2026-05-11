@@ -9,6 +9,19 @@ use serde_json::json;
 
 const API_BASE: &str = "https://api.linkedin.com";
 
+/// Build the user-facing error message for a LinkedIn HTTP failure on the
+/// given endpoint stage ("share", "GET /v2/userinfo", "GET /v2/me"). The
+/// response body is included verbatim, mirroring GoReleaser commit 0944b0e:
+/// LinkedIn's JSON error envelope (`{ "message": "...", "serviceErrorCode": ... }`)
+/// is the only actionable signal the user gets, so it must reach them.
+pub(crate) fn format_linkedin_http_error(
+    endpoint: &str,
+    status: reqwest::StatusCode,
+    body: &str,
+) -> String {
+    format!("linkedin: {endpoint} failed ({status}): {body}")
+}
+
 /// Typed sentinel signaling that `/v2/userinfo` returned 403 and the caller
 /// should fall back to the legacy `/v2/me` endpoint. Replaces the previous
 /// `__linkedin_fallback__` magic-string sentinel routed through error
@@ -114,7 +127,8 @@ pub fn send_linkedin(
                 } else {
                     // Q7.1 mirror: include the body in the error message so
                     // users can see LinkedIn's structured error response.
-                    let inner = anyhow::anyhow!("linkedin: share failed ({status}): {body}");
+                    let inner =
+                        anyhow::anyhow!("{}", format_linkedin_http_error("share", status, &body));
                     let wrapped = anyhow::Error::new(HttpError::new(
                         std::io::Error::other(inner.to_string()),
                         status.as_u16(),
@@ -179,8 +193,10 @@ fn get_profile_urn(
                 if status.is_success() {
                     Ok(body)
                 } else {
-                    let inner =
-                        anyhow::anyhow!("linkedin: GET /v2/userinfo failed ({status}): {body}");
+                    let inner = anyhow::anyhow!(
+                        "{}",
+                        format_linkedin_http_error("GET /v2/userinfo", status, &body)
+                    );
                     let wrapped = anyhow::Error::new(HttpError::new(
                         std::io::Error::other(inner.to_string()),
                         status.as_u16(),
@@ -243,7 +259,10 @@ fn get_profile_urn_legacy(
                 if status.is_success() {
                     Ok(body)
                 } else {
-                    let inner = anyhow::anyhow!("linkedin: GET /v2/me failed ({status}): {body}");
+                    let inner = anyhow::anyhow!(
+                        "{}",
+                        format_linkedin_http_error("GET /v2/me", status, &body)
+                    );
                     let wrapped = anyhow::Error::new(HttpError::new(
                         std::io::Error::other(inner.to_string()),
                         status.as_u16(),
@@ -268,8 +287,41 @@ fn get_profile_urn_legacy(
 
 #[cfg(test)]
 mod tests {
-    use super::validate_token_shape;
+    use super::{format_linkedin_http_error, validate_token_shape};
     use serde_json::json;
+
+    #[test]
+    fn http_error_includes_endpoint_status_and_body() {
+        // Q7.1 (upstream commit 0944b0e): the error surfaced to the user must
+        // name the endpoint, the HTTP status, AND the response body so
+        // LinkedIn's structured error (`message`, `serviceErrorCode`) reaches
+        // the user.
+        let msg = format_linkedin_http_error(
+            "share",
+            reqwest::StatusCode::FORBIDDEN,
+            r#"{"message":"insufficient scope"}"#,
+        );
+        assert!(msg.contains("share"), "{msg}");
+        assert!(msg.contains("403"), "{msg}");
+        assert!(msg.contains("insufficient scope"), "{msg}");
+    }
+
+    #[test]
+    fn http_error_includes_endpoint_for_userinfo_and_me() {
+        let userinfo = format_linkedin_http_error(
+            "GET /v2/userinfo",
+            reqwest::StatusCode::UNAUTHORIZED,
+            "not authorized",
+        );
+        assert!(userinfo.contains("GET /v2/userinfo"), "{userinfo}");
+
+        let me = format_linkedin_http_error(
+            "GET /v2/me",
+            reqwest::StatusCode::BAD_REQUEST,
+            "bad request",
+        );
+        assert!(me.contains("GET /v2/me"), "{me}");
+    }
 
     #[test]
     fn test_share_payload_structure() {

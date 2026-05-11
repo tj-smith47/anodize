@@ -20,6 +20,18 @@ pub(crate) fn is_expected_status(status: u16, expected: &[u16]) -> bool {
     expected.contains(&status)
 }
 
+/// Build the user-facing error message for a webhook response that failed
+/// the status-code gate. Mirrors GoReleaser commit bba909e: the response
+/// body is included verbatim so debugging does not require re-running with
+/// verbose logs.
+pub(crate) fn format_unexpected_status_message(
+    status: u16,
+    expected: &[u16],
+    body: &str,
+) -> String {
+    format!("webhook returned unexpected status {status} (expected one of {expected:?}): {body}")
+}
+
 // ---------------------------------------------------------------------------
 // Send
 // ---------------------------------------------------------------------------
@@ -93,8 +105,8 @@ pub fn send_webhook(
                     // Q7.1 mirror — wrap the status-derived error with the
                     // response body so users see it in the surfaced message.
                     let inner = anyhow::anyhow!(
-                        "webhook returned unexpected status {status} (expected one of \
-                         {expected_status_codes:?}): {body}"
+                        "{}",
+                        format_unexpected_status_message(status, expected_status_codes, &body)
                     );
                     let wrapped = anyhow::Error::new(HttpError::new(
                         std::io::Error::other(inner.to_string()),
@@ -135,6 +147,25 @@ mod tests {
     fn test_default_expected_status_codes() {
         let defaults = default_expected_status_codes();
         assert_eq!(defaults, vec![200, 201, 202, 204]);
+    }
+
+    #[test]
+    fn unexpected_status_message_includes_body_and_status() {
+        // Q7.1 (upstream commit bba909e): the error surfaced to the user must
+        // include the response body so failures from misconfigured webhooks
+        // (auth, validation, etc.) are debuggable without re-running.
+        let msg = format_unexpected_status_message(503, &[200, 204], "service down");
+        assert!(msg.contains("503"), "{msg}");
+        assert!(msg.contains("service down"), "{msg}");
+        assert!(msg.contains("[200, 204]"), "{msg}");
+    }
+
+    #[test]
+    fn unexpected_status_message_handles_empty_body() {
+        let msg = format_unexpected_status_message(401, &[200], "");
+        assert!(msg.contains("401"), "{msg}");
+        // Empty body is still included verbatim (trailing colon-space-empty).
+        assert!(msg.ends_with(": "), "{msg}");
     }
 
     #[test]

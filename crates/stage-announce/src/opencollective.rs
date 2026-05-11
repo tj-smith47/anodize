@@ -77,6 +77,54 @@ pub(crate) fn build_publish_body(update_id: &str) -> serde_json::Value {
     })
 }
 
+/// Decode the GraphQL `errors` array from a response body and produce a
+/// joined error message. Mirrors upstream `graphqlResponse.err()` (PR #6512):
+/// GraphQL APIs return HTTP 200 even on mutation failures, so the caller
+/// must inspect the `errors` array independently of the status code.
+///
+/// Returns `Ok(())` when the response carries no errors. Returns
+/// `Err(message)` joining all error messages with `; ` so the surfaced
+/// failure quotes every reason the server gave.
+pub(crate) fn decode_graphql_errors(body: &serde_json::Value) -> Result<(), String> {
+    let Some(errs) = body.get("errors").and_then(|v| v.as_array()) else {
+        return Ok(());
+    };
+    if errs.is_empty() {
+        return Ok(());
+    }
+    let msgs: Vec<String> = errs
+        .iter()
+        .filter_map(|e| e.get("message").and_then(|m| m.as_str()).map(String::from))
+        .collect();
+    if msgs.is_empty() {
+        Err(format!("opencollective graphql error: {body}"))
+    } else {
+        Err(format!("opencollective graphql error: {}", msgs.join("; ")))
+    }
+}
+
+/// Extract the `data.createUpdate.id` field from a createUpdate response,
+/// raising the appropriate parity error when it is missing or empty.
+///
+/// Mirrors the upstream PR #6512 sequence:
+///   1. If the body carries a non-empty `errors` array, surface it.
+///   2. If `data.createUpdate.id` is absent, fail with "missing update ID".
+///   3. If `data.createUpdate.id` is the empty string, fail with the upstream
+///      message "opencollective returned empty update id".
+pub(crate) fn extract_create_update_id(body: &serde_json::Value) -> Result<String, String> {
+    decode_graphql_errors(body)?;
+    let id = body
+        .get("data")
+        .and_then(|d| d.get("createUpdate"))
+        .and_then(|c| c.get("id"))
+        .and_then(|v| v.as_str());
+    match id {
+        None => Err("opencollective: missing update ID in createUpdate response".to_string()),
+        Some("") => Err("opencollective returned empty update id".to_string()),
+        Some(id) => Ok(id.to_string()),
+    }
+}
+
 /// Categorise an OpenCollective HTTP response into a structured error.
 ///
 /// Q7.1 mirror of upstream commit 206120a (#6512): callers see distinct
@@ -188,17 +236,7 @@ pub fn send_opencollective(
     let resp_json: serde_json::Value = serde_json::from_str(&resp_text).with_context(|| {
         format!("opencollective: createUpdate response was not valid JSON: {resp_text}")
     })?;
-    let update_id = resp_json["data"]["createUpdate"]["id"].as_str();
-    let create_errors = resp_json.get("errors");
-    let update_id = match (update_id, create_errors) {
-        (Some(id), _) => id.to_string(),
-        (None, Some(errs)) => {
-            anyhow::bail!("opencollective: createUpdate returned errors: {errs}")
-        }
-        (None, None) => {
-            anyhow::bail!("opencollective: missing update ID in createUpdate response")
-        }
-    };
+    let update_id = extract_create_update_id(&resp_json).map_err(|e| anyhow::anyhow!(e))?;
 
     let publish_text = do_mutation(
         &client,
@@ -211,9 +249,7 @@ pub fn send_opencollective(
         serde_json::from_str(&publish_text).with_context(|| {
             format!("opencollective: publishUpdate response was not valid JSON: {publish_text}")
         })?;
-    if let Some(errors) = publish_json.get("errors") {
-        anyhow::bail!("opencollective: publishUpdate returned errors: {errors}");
-    }
+    decode_graphql_errors(&publish_json).map_err(|e| anyhow::anyhow!(e))?;
 
     Ok(())
 }
@@ -278,5 +314,132 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("whitespace"), "{err}");
+    }
+
+    // -----------------------------------------------------------------------
+    // GraphQL error decoding regression tests
+    //
+    // Mirrors upstream PR #6512 test cases:
+    //   - TestGraphqlResponseErr (no errors / single / multiple)
+    //   - TestCreateUpdateGraphqlError
+    //   - TestCreateUpdateEmptyID
+    //   - TestPublishUpdateGraphqlError
+    //   - TestNonOKStatus (classify_opencollective_status covers this)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn graphql_response_no_errors_is_ok() {
+        let body = serde_json::json!({"data": {"createUpdate": {"id": "abc"}}});
+        assert!(decode_graphql_errors(&body).is_ok());
+    }
+
+    #[test]
+    fn graphql_response_empty_errors_array_is_ok() {
+        let body = serde_json::json!({"errors": []});
+        assert!(decode_graphql_errors(&body).is_ok());
+    }
+
+    #[test]
+    fn graphql_response_single_error_joins_message() {
+        let body = serde_json::json!({"errors": [{"message": "not authorized"}]});
+        let err = decode_graphql_errors(&body).unwrap_err();
+        assert_eq!(err, "opencollective graphql error: not authorized");
+    }
+
+    #[test]
+    fn graphql_response_multiple_errors_joined_with_semicolon() {
+        let body = serde_json::json!({"errors": [
+            {"message": "not authorized"},
+            {"message": "invalid slug"},
+        ]});
+        let err = decode_graphql_errors(&body).unwrap_err();
+        assert_eq!(
+            err,
+            "opencollective graphql error: not authorized; invalid slug"
+        );
+    }
+
+    #[test]
+    fn create_update_graphql_error_surfaces() {
+        // Upstream TestCreateUpdateGraphqlError: HTTP 200 + errors body.
+        let body = serde_json::json!({
+            "errors": [{"message": "You need to be logged in as an admin of this collective"}],
+            "data": {"createUpdate": null},
+        });
+        let err = extract_create_update_id(&body).unwrap_err();
+        assert_eq!(
+            err,
+            "opencollective graphql error: You need to be logged in as an admin of this collective"
+        );
+    }
+
+    #[test]
+    fn create_update_empty_id_surfaces() {
+        // Upstream TestCreateUpdateEmptyID: HTTP 200 + empty id + no errors.
+        let body = serde_json::json!({"data": {"createUpdate": {"id": ""}}});
+        let err = extract_create_update_id(&body).unwrap_err();
+        assert_eq!(err, "opencollective returned empty update id");
+    }
+
+    #[test]
+    fn create_update_valid_id_returned() {
+        let body = serde_json::json!({"data": {"createUpdate": {"id": "UPD-123"}}});
+        let id = extract_create_update_id(&body).unwrap();
+        assert_eq!(id, "UPD-123");
+    }
+
+    #[test]
+    fn create_update_missing_id_surfaces() {
+        let body = serde_json::json!({"data": {"createUpdate": {}}});
+        let err = extract_create_update_id(&body).unwrap_err();
+        assert!(
+            err.contains("missing update ID"),
+            "expected 'missing update ID' marker in: {err}"
+        );
+    }
+
+    #[test]
+    fn publish_update_graphql_error_surfaces() {
+        // Upstream TestPublishUpdateGraphqlError.
+        let body = serde_json::json!({"errors": [{"message": "Update not found"}]});
+        let err = decode_graphql_errors(&body).unwrap_err();
+        assert_eq!(err, "opencollective graphql error: Update not found");
+    }
+
+    #[test]
+    fn classify_status_401_mentions_token() {
+        let msg = classify_opencollective_status(
+            "createUpdate",
+            reqwest::StatusCode::UNAUTHORIZED,
+            "Unauthorized",
+        );
+        assert!(msg.contains("401"), "{msg}");
+        assert!(msg.contains("OPENCOLLECTIVE_TOKEN"), "{msg}");
+        assert!(msg.contains("Unauthorized"), "{msg}");
+    }
+
+    #[test]
+    fn classify_status_5xx_marks_retriable_context() {
+        let msg = classify_opencollective_status(
+            "createUpdate",
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            "boom",
+        );
+        assert!(
+            msg.contains("server error") || msg.contains("retrying"),
+            "expected 5xx framing in: {msg}"
+        );
+        assert!(msg.contains("boom"), "body must be included: {msg}");
+    }
+
+    #[test]
+    fn classify_status_other_4xx_includes_body() {
+        let msg = classify_opencollective_status(
+            "publishUpdate",
+            reqwest::StatusCode::BAD_REQUEST,
+            "bad request body",
+        );
+        assert!(msg.contains("400"), "{msg}");
+        assert!(msg.contains("bad request body"), "{msg}");
     }
 }
