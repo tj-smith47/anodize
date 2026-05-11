@@ -22,11 +22,13 @@ use crate::{release_log, resolve_release_repo};
 mod assets;
 mod client;
 mod rate_limit;
+mod retry_call;
 mod retry_classify;
 
 pub(crate) use assets::{delete_release_asset_by_name, find_release_asset_size};
 pub(crate) use client::build_octocrab_client;
 pub(crate) use rate_limit::check_github_rate_limit;
+pub(crate) use retry_call::retry_octocrab_call;
 pub(crate) use retry_classify::classify_octocrab_error;
 // NOTE: A `resolve_github_username` helper used to live alongside this mod
 // (search-users API fallback for resolving commit author emails). Upstream
@@ -192,10 +194,19 @@ pub(crate) fn run_github_backend(
         .and_then(|u| u.download.clone())
         .unwrap_or_else(|| "https://github.com".to_string());
 
+    // Resolve the user-configurable retry policy once. Every retriable
+    // octocrab call site below threads this through the shared
+    // `retry_octocrab_call` helper so a `retry:` block in the project config
+    // controls every transient-failure path uniformly.
+    let policy = ctx.config.retry.unwrap_or_default().to_policy();
+
     // Build the octocrab instance and perform async API calls inside a
     // dedicated tokio runtime (the Stage trait is synchronous).
     let url = rt.block_on(async {
-        let octo = build_octocrab_client(&token_str, &github_urls)?;
+        // Wrap octo in Arc up front so the retry-wrapped closures (and the
+        // parallel upload tasks downstream) can `Clone` a fresh handle per
+        // attempt without moving the original.
+        let octo = Arc::new(build_octocrab_client(&token_str, &github_urls)?);
         let rate_limit_client = reqwest::Client::new();
 
         // Helper: list all releases (with pagination) and find a draft
@@ -206,11 +217,18 @@ pub(crate) fn run_github_backend(
         // which loops while `resp.NextPage != 0`). No artificial cap: repos
         // with thousands of historical draft releases must still find the
         // target so the create-release path doesn't 422 on a duplicate tag.
+        //
+        // Each page fetch flows through `retry_octocrab_call` so a transient
+        // 5xx / 429 / network error retries per `ctx.config.retry`; a 4xx
+        // (auth, validation) fast-fails. The retry wraps the single page
+        // call only: once a page returns OK, we move to the next page; we
+        // never re-fetch a page we've already received.
         async fn find_draft_by_name(
-            octo: &octocrab::Octocrab,
+            octo: Arc<octocrab::Octocrab>,
             owner: &str,
             repo: &str,
             name: &str,
+            policy: &anodizer_core::retry::RetryPolicy,
         ) -> Result<Option<octocrab::models::repos::Release>> {
             let mut page: u32 = 1;
             loop {
@@ -218,9 +236,14 @@ pub(crate) fn run_github_backend(
                     "/repos/{}/{}/releases?per_page=100&page={}",
                     owner, repo, page
                 );
-                let releases: Vec<octocrab::models::repos::Release> = octo
-                    .get(route, None::<&()>)
+                let releases: Vec<octocrab::models::repos::Release> =
+                    retry_octocrab_call(policy, "list releases", || {
+                        let route = route.clone();
+                        let octo = octo.clone();
+                        async move { octo.get(route, None::<&()>).await }
+                    })
                     .await
+                    .map_err(anyhow::Error::from_boxed)
                     .with_context(|| {
                         format!(
                             "release: list releases on {}/{} (page {})",
@@ -251,28 +274,43 @@ pub(crate) fn run_github_backend(
         if replace_existing_draft
             && draft
             && let Some(existing) =
-                find_draft_by_name(&octo, &github.owner, &github.name, release_name).await?
+                find_draft_by_name(octo.clone(), &github.owner, &github.name, release_name, &policy)
+                    .await?
         {
             log.status(&format!(
                 "replacing existing draft release '{}' (id={})",
                 release_name, existing.id
             ));
-            octo.repos(&github.owner, &github.name)
-                .releases()
-                .delete(existing.id.into_inner())
-                .await
-                .with_context(|| {
-                    format!(
-                        "release: delete existing draft release '{}' on {}/{}",
-                        release_name, github.owner, github.name
-                    )
-                })?;
+            let existing_id = existing.id.into_inner();
+            let owner = github.owner.clone();
+            let repo = github.name.clone();
+            retry_octocrab_call(&policy, "delete release", || {
+                let octo = octo.clone();
+                let owner = owner.clone();
+                let repo = repo.clone();
+                async move {
+                    octo.repos(&owner, &repo)
+                        .releases()
+                        .delete(existing_id)
+                        .await
+                }
+            })
+            .await
+            .map_err(anyhow::Error::from_boxed)
+            .with_context(|| {
+                format!(
+                    "release: delete existing draft release '{}' on {}/{}",
+                    release_name, github.owner, github.name
+                )
+            })?;
         }
 
         // Handle use_existing_draft: look for an existing draft release
         // with the same NAME and update it instead of creating a new one.
         let existing_draft = if use_existing_draft {
-            match find_draft_by_name(&octo, &github.owner, &github.name, release_name).await? {
+            match find_draft_by_name(octo.clone(), &github.owner, &github.name, release_name, &policy)
+                .await?
+            {
                 Some(existing) => {
                     log.status(&format!(
                         "reusing existing draft release '{}' (id={})",
@@ -356,14 +394,23 @@ pub(crate) fn run_github_backend(
                 "/repos/{}/{}/releases/{}",
                 github.owner, github.name, existing.id
             );
-            octo.patch::<octocrab::models::repos::Release, _, _>(route, Some(&json_body))
-                .await
-                .with_context(|| {
-                    format!(
-                        "release: update existing draft release '{}' on {}/{}",
-                        tag, github.owner, github.name
-                    )
-                })?
+            retry_octocrab_call(&policy, "update draft release", || {
+                let route = route.clone();
+                let body = json_body.clone();
+                let octo = octo.clone();
+                async move {
+                    octo.patch::<octocrab::models::repos::Release, _, _>(route, Some(&body))
+                        .await
+                }
+            })
+            .await
+            .map_err(anyhow::Error::from_boxed)
+            .with_context(|| {
+                format!(
+                    "release: update existing draft release '{}' on {}/{}",
+                    tag, github.owner, github.name
+                )
+            })?
         } else if let Some(ref existing) = existing_by_tag {
             // An existing release was found by tag (append/prepend/keep-existing
             // mode). PATCH it instead of POSTing a new one, which would cause
@@ -387,25 +434,43 @@ pub(crate) fn run_github_backend(
                     serde_json::Value::Bool(existing.draft),
                 );
             }
-            octo.patch::<octocrab::models::repos::Release, _, _>(route, Some(&patch_body))
-                .await
-                .with_context(|| {
-                    format!(
-                        "release: update existing release '{}' on {}/{}",
-                        tag, github.owner, github.name
-                    )
-                })?
+            retry_octocrab_call(&policy, "update existing release", || {
+                let route = route.clone();
+                let body = patch_body.clone();
+                let octo = octo.clone();
+                async move {
+                    octo.patch::<octocrab::models::repos::Release, _, _>(route, Some(&body))
+                        .await
+                }
+            })
+            .await
+            .map_err(anyhow::Error::from_boxed)
+            .with_context(|| {
+                format!(
+                    "release: update existing release '{}' on {}/{}",
+                    tag, github.owner, github.name
+                )
+            })?
         } else {
             // Create a new release via POST.
             let route = format!("/repos/{}/{}/releases", github.owner, github.name);
-            octo.post::<_, octocrab::models::repos::Release>(route, Some(&json_body))
-                .await
-                .with_context(|| {
-                    format!(
-                        "release: create GitHub release '{}' on {}/{}",
-                        tag, github.owner, github.name
-                    )
-                })?
+            retry_octocrab_call(&policy, "create release", || {
+                let route = route.clone();
+                let body = json_body.clone();
+                let octo = octo.clone();
+                async move {
+                    octo.post::<_, octocrab::models::repos::Release>(route, Some(&body))
+                        .await
+                }
+            })
+            .await
+            .map_err(anyhow::Error::from_boxed)
+            .with_context(|| {
+                format!(
+                    "release: create GitHub release '{}' on {}/{}",
+                    tag, github.owner, github.name
+                )
+            })?
         };
 
         log.status(&format!(
@@ -428,10 +493,6 @@ pub(crate) fn run_github_backend(
             tag,
         );
         let release_id_raw = release.id.into_inner();
-
-        // Wrap octo in Arc for shared use across parallel upload tasks
-        // and the subsequent publish PATCH.
-        let octo = Arc::new(octo);
 
         // Upload artifacts (unless skip_upload is set), with bounded
         // parallelism using a semaphore (context's parallelism setting,
@@ -508,12 +569,16 @@ pub(crate) fn run_github_backend(
                         })?;
                     }
 
-                    // Retry loop: up to 10 attempts with exponential backoff.
-                    const MAX_UPLOAD_ATTEMPTS: u32 = 10;
-                    const INITIAL_RETRY_DELAY: std::time::Duration =
-                        std::time::Duration::from_millis(50);
-                    const MAX_RETRY_DELAY: std::time::Duration =
-                        std::time::Duration::from_secs(30);
+                    // Retry parameters come from `ctx.config.retry` (resolved
+                    // into `policy` above): `attempts` caps the loop,
+                    // `delay`/`max_delay` shape the exponential backoff. The
+                    // loop body remains bespoke (resume-stream + 422
+                    // already-exists handling); only the knobs are
+                    // user-configurable now. `attempts.max(1)` mirrors
+                    // `RetryPolicy::to_policy` (config attempts=0 → 1).
+                    let max_upload_attempts: u32 = policy.max_attempts.max(1);
+                    let initial_retry_delay: std::time::Duration = policy.base_delay;
+                    let max_retry_delay: std::time::Duration = policy.max_delay;
 
                     let mut last_err: Option<anyhow::Error> = None;
                     // One-shot overwrite guard: once we've successfully deleted a
@@ -525,7 +590,7 @@ pub(crate) fn run_github_backend(
                     // retries (and ultimately fail the whole release), accept the
                     // stale bytes and move on.
                     let mut overwrite_attempted = false;
-                    for attempt in 1..=MAX_UPLOAD_ATTEMPTS {
+                    for attempt in 1..=max_upload_attempts {
                         let data = std::fs::read(&path).with_context(|| {
                             format!("release: read artifact {}", path.display())
                         })?;
@@ -569,7 +634,7 @@ pub(crate) fn run_github_backend(
                                     // If we've already tried the delete+retry dance
                                     // once and upload *still* returns already_exists,
                                     // give up and keep the stale asset rather than
-                                    // looping until MAX_UPLOAD_ATTEMPTS exhausts. The
+                                    // looping until max_upload_attempts exhausts. The
                                     // re-appearing asset is typically a GitHub backend
                                     // eventual-consistency window after our prior
                                     // successful delete; retrying doesn't help.
@@ -663,10 +728,10 @@ pub(crate) fn run_github_backend(
                                         Ok(_) => {
                                             overwrite_attempted = true;
                                             last_err = Some(anyhow::anyhow!(err));
-                                            if attempt < MAX_UPLOAD_ATTEMPTS {
+                                            if attempt < max_upload_attempts {
                                                 let delay = std::cmp::min(
-                                                    INITIAL_RETRY_DELAY * 2u32.pow(attempt - 1),
-                                                    MAX_RETRY_DELAY,
+                                                    initial_retry_delay * 2u32.pow(attempt - 1),
+                                                    max_retry_delay,
                                                 );
                                                 tokio::time::sleep(delay).await;
                                             }
@@ -719,13 +784,13 @@ pub(crate) fn run_github_backend(
                                     // transient, safe to retry. Log the variant so
                                     // future diagnostics don't have to guess.
                                     release_log().warn(&format!(
-                                        "transient upload error on '{file_name}' attempt {attempt}/{MAX_UPLOAD_ATTEMPTS}: {err:?}"
+                                        "transient upload error on '{file_name}' attempt {attempt}/{max_upload_attempts}: {err:?}"
                                     ));
                                     last_err = Some(anyhow::anyhow!(err));
-                                    if attempt < MAX_UPLOAD_ATTEMPTS {
+                                    if attempt < max_upload_attempts {
                                         let delay = std::cmp::min(
-                                            INITIAL_RETRY_DELAY * 2u32.pow(attempt - 1),
-                                            MAX_RETRY_DELAY,
+                                            initial_retry_delay * 2u32.pow(attempt - 1),
+                                            max_retry_delay,
                                         );
                                         tokio::time::sleep(delay).await;
                                     }
@@ -746,7 +811,7 @@ pub(crate) fn run_github_backend(
                         return Err(err).with_context(|| {
                             format!(
                                 "release: upload artifact '{}' to release '{}' failed after {} attempts",
-                                file_name, tag_c, MAX_UPLOAD_ATTEMPTS
+                                file_name, tag_c, max_upload_attempts
                             )
                         });
                     }
@@ -801,8 +866,10 @@ pub(crate) fn run_github_backend(
             // GitHub occasionally 502s during un-draft if the release has many
             // assets attached, and the retry policy is the user-configurable
             // surface for this. Under-default (10 attempts × 10s base × 5m
-            // cap) matches GoReleaser's `pkg/config.Retry` defaults.
-            let policy = ctx.config.retry.unwrap_or_default().to_policy();
+            // cap) matches GoReleaser's `pkg/config.Retry` defaults. Re-uses
+            // the outer `policy` (resolved once at the top of the backend)
+            // so a single `retry:` block controls every retriable octocrab
+            // call site uniformly.
             anodizer_core::retry::retry_async(&policy, |attempt| {
                 let publish_route = publish_route.clone();
                 let publish_body = publish_body.clone();
