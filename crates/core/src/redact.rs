@@ -300,4 +300,51 @@ mod tests {
         let input = "no URLs here, just words";
         assert_eq!(redact_url_credentials(input), input);
     }
+
+    #[test]
+    fn test_redact_url_credentials_percent_encoded_userinfo() {
+        // A percent-encoded `@` in the userinfo (e.g. an account name like
+        // `user@name`) does not break the terminator scan: the function
+        // looks for the LAST `@` before the path / query / fragment /
+        // whitespace boundary, so both `@`s collapse into a single
+        // `<redacted>` replacement.
+        let input = "https://user%40name:pass@host.example.com/path";
+        let result = redact_url_credentials(input);
+        assert_eq!(result, "https://<redacted>@host.example.com/path");
+        assert!(!result.contains("user%40name"));
+        assert!(!result.contains("pass"));
+    }
+
+    #[test]
+    fn test_redact_url_credentials_trailing_query() {
+        // A `?` after the host begins the query string; userinfo must still
+        // be stripped, and the query is preserved verbatim.
+        let input = "https://user:pass@host.example.com?foo=bar";
+        let result = redact_url_credentials(input);
+        assert_eq!(result, "https://<redacted>@host.example.com?foo=bar");
+        assert!(!result.contains("user:pass"));
+        assert!(result.ends_with("?foo=bar"));
+    }
+
+    #[test]
+    fn test_redact_url_credentials_trailing_fragment() {
+        // A `#` after the host begins the fragment; userinfo must still
+        // be stripped, and the fragment is preserved verbatim.
+        let input = "https://user:pass@host.example.com#frag";
+        let result = redact_url_credentials(input);
+        assert_eq!(result, "https://<redacted>@host.example.com#frag");
+        assert!(!result.contains("user:pass"));
+        assert!(result.ends_with("#frag"));
+    }
+
+    #[test]
+    fn test_redact_url_credentials_whitespace_boundary() {
+        // Whitespace following the host terminates the authority. The
+        // userinfo is redacted and the trailing prose is preserved.
+        let input = "https://user:pass@host.example.com then more";
+        let result = redact_url_credentials(input);
+        assert_eq!(result, "https://<redacted>@host.example.com then more");
+        assert!(!result.contains("user:pass"));
+        assert!(result.ends_with(" then more"));
+    }
 }
