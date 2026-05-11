@@ -390,7 +390,11 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
     // would publish an install script that points at an archive whose sha
     // no longer matches (Chocolatey's verifier then rejects the package).
     // In that case we fail loudly and tell the user to bump the version.
-    match package_feed_hash(source, pkg_name, &version) {
+    // Single retry policy resolved from the top-level `retry:` block; reused
+    // for the feed-hash GET and the push PUT.
+    let policy = ctx.config.retry.unwrap_or_default().to_policy();
+
+    match package_feed_hash(source, pkg_name, &version, &policy) {
         FeedHashResult::Present {
             hash,
             algorithm,
@@ -465,7 +469,7 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
     }
 
     // Push via NuGet V2 API — same protocol as `choco push`.
-    push_nupkg(&nupkg_path, source, &api_key, log)?;
+    push_nupkg(&nupkg_path, source, &api_key, log, &policy)?;
 
     log.status(&format!("Chocolatey package pushed for '{}'", crate_name));
     Ok(())

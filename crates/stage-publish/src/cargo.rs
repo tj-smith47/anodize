@@ -182,31 +182,69 @@ fn sparse_index_url(crate_name: &str) -> String {
 /// or version isn't present, `Err` on transport errors. Used to make publishes
 /// idempotent across retries while surfacing same-version drift instead of
 /// silently skipping a re-release that would install stale content.
-fn is_already_published(crate_name: &str, version: &str) -> Result<Option<String>> {
+///
+/// The sparse-index GET routes through [`retry_http_blocking`] so transient
+/// 5xx / 429 / network failures retry per the user's top-level `retry:`
+/// policy; 404 is detected via the helper's `HttpError(404)` Break path and
+/// mapped to `Ok(None)` so a never-published crate doesn't trip retries.
+fn is_already_published(
+    crate_name: &str,
+    version: &str,
+    policy: &anodizer_core::retry::RetryPolicy,
+) -> Result<Option<String>> {
+    is_already_published_at(&sparse_index_url(crate_name), crate_name, version, policy)
+}
+
+/// Same as [`is_already_published`] but uses the supplied URL instead of
+/// computing one from `sparse_index_url`. Lets tests point at a local TCP
+/// responder so the retry plumbing can be exercised end-to-end.
+fn is_already_published_at(
+    url: &str,
+    crate_name: &str,
+    version: &str,
+    policy: &anodizer_core::retry::RetryPolicy,
+) -> Result<Option<String>> {
+    use anodizer_core::retry::{SuccessClass, retry_http_blocking};
     use std::time::Duration;
 
-    let url = sparse_index_url(crate_name);
     let client = anodizer_core::http::blocking_client(Duration::from_secs(10))
         .context("publish: build HTTP client for index check")?;
 
-    let resp = client
-        .get(&url)
-        .send()
-        .with_context(|| format!("publish: query index for '{}'", crate_name))?;
+    let label = format!("publish: query crates.io index for '{}'", crate_name);
+    let result = retry_http_blocking(
+        &label,
+        policy,
+        SuccessClass::Strict,
+        |_| client.get(url).send(),
+        |status, body| {
+            format!(
+                "publish: crates.io index returned {} for '{}': {}",
+                status, crate_name, body
+            )
+        },
+    );
 
-    // 404 = crate has never been published — not already published.
-    if resp.status().as_u16() == 404 {
-        return Ok(None);
-    }
-    if !resp.status().is_success() {
-        anyhow::bail!(
-            "publish: crates.io index returned {} for '{}'",
-            resp.status(),
-            crate_name
-        );
-    }
+    let (_status, body) = match result {
+        Ok(pair) => pair,
+        Err(err) => {
+            // 404 = crate has never been published — not already published.
+            // The retry helper Breaks 4xx with HttpError(status) in the chain;
+            // catch the 404 here and surface as Ok(None). Other 4xx and 5xx
+            // exhaustion propagate.
+            let status_code = err
+                .chain()
+                .find_map(|e| {
+                    e.downcast_ref::<anodizer_core::retry::HttpError>()
+                        .map(|h| h.status)
+                })
+                .unwrap_or(0);
+            if status_code == 404 {
+                return Ok(None);
+            }
+            return Err(err);
+        }
+    };
 
-    let body = anodizer_core::http::body_of_blocking(resp);
     Ok(parse_index_cksum_for_version(&body, version))
 }
 
@@ -482,6 +520,11 @@ pub fn publish_to_cargo(ctx: &mut Context, selected: &[String], log: &StageLogge
 
     let version = ctx.version();
 
+    // Single retry policy resolved from the top-level `retry:` block; reused
+    // for every crate's index-check GET. Mirrors the per-pipe-invocation
+    // pattern used by artifactory/cloudsmith.
+    let retry_policy = ctx.config.retry.unwrap_or_default().to_policy();
+
     // Build a lookup from crate name → path so we can read each crate's
     // actual Cargo.toml version for the already-published check. Transitive
     // deps may have a DIFFERENT version than the release tag (e.g. cfgd-core
@@ -513,7 +556,7 @@ pub fn publish_to_cargo(ctx: &mut Context, selected: &[String], log: &StageLogge
         let published_cksum = if crate_version.is_empty() {
             None
         } else {
-            match is_already_published(name, &crate_version) {
+            match is_already_published(name, &crate_version, &retry_policy) {
                 Ok(c) => c,
                 Err(e) => {
                     log.warn(&format!(
@@ -894,5 +937,98 @@ mod tests {
             parse_index_cksum_for_version(body, "1.2.3"),
             Some("abcd".to_string())
         );
+    }
+
+    // ---- retry plumbing through is_already_published_at ------------------
+    //
+    // Pin: the sparse-index GET must route through retry_http_blocking so
+    // transient 5xx / 429 / network failures retry per the user's policy.
+    // 404 (crate never published) must remain Ok(None) — preserved via the
+    // HttpError(404)-from-Break catch in is_already_published_at.
+
+    fn spawn_oneshot_http_responder(
+        responses: Vec<&'static str>,
+    ) -> (
+        std::net::SocketAddr,
+        std::sync::Arc<std::sync::atomic::AtomicU32>,
+    ) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::time::Duration;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("local_addr");
+        let counter = std::sync::Arc::new(AtomicU32::new(0));
+        let counter_inner = counter.clone();
+        std::thread::spawn(move || {
+            for (i, resp) in responses.iter().enumerate() {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(pair) => pair,
+                    Err(_) => return,
+                };
+                counter_inner.fetch_add(1, Ordering::SeqCst);
+                let mut buf = [0u8; 8192];
+                let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+                if i == responses.len() - 1 {
+                    break;
+                }
+            }
+        });
+        (addr, counter)
+    }
+
+    fn fast_retry_policy() -> anodizer_core::retry::RetryPolicy {
+        anodizer_core::retry::RetryPolicy {
+            max_attempts: 3,
+            base_delay: std::time::Duration::from_millis(1),
+            max_delay: std::time::Duration::from_millis(2),
+        }
+    }
+
+    #[test]
+    fn is_already_published_at_retries_5xx_then_succeeds() {
+        use std::sync::atomic::Ordering;
+
+        let body = r#"{"name":"foo","vers":"1.2.3","cksum":"abc123","yanked":false}"#.to_string();
+        let body_len = body.len();
+        let ok_resp: &'static str = Box::leak(
+            format!("HTTP/1.1 200 OK\r\nContent-Length: {body_len}\r\n\r\n{body}").into_boxed_str(),
+        );
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
+            ok_resp,
+        ]);
+
+        let url = format!("http://{addr}/3/f/foo");
+        let result = is_already_published_at(&url, "foo", "1.2.3", &fast_retry_policy())
+            .expect("retries 5xx then parses");
+        assert_eq!(result, Some("abc123".to_string()));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "one 503 retry then success"
+        );
+    }
+
+    #[test]
+    fn is_already_published_at_404_maps_to_ok_none() {
+        // A 404 must NOT retry and must surface as Ok(None) — preserving
+        // the "crate never published" signal that the publish pipeline
+        // relies on to skip the drift check.
+        use std::sync::atomic::Ordering;
+
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
+        ]);
+        let url = format!("http://{addr}/3/f/foo");
+        let result = is_already_published_at(&url, "foo", "1.2.3", &fast_retry_policy())
+            .expect("404 is Ok(None)");
+        assert_eq!(result, None);
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "404 must NOT retry");
     }
 }

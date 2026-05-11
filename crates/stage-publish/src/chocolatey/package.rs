@@ -6,6 +6,7 @@
 //! the Windows-only `choco pack` CLI.
 
 use anodizer_core::log::StageLogger;
+use anodizer_core::retry::{RetryPolicy, SuccessClass, retry_http_blocking};
 use anyhow::{Context as _, Result};
 
 /// Content types XML — required by the OPC (Open Packaging Conventions) spec.
@@ -153,7 +154,18 @@ pub(super) enum FeedHashResult {
 /// Chocolatey's community feed lives at `community.chocolatey.org`, but
 /// pushes go to `push.chocolatey.org`. Map push URLs to the query feed so
 /// the hash lookup works for either form.
-pub(super) fn package_feed_hash(push_source: &str, name: &str, version: &str) -> FeedHashResult {
+///
+/// The GET routes through [`retry_http_blocking`] so transient 5xx / 429 /
+/// network failures retry per the user's top-level `retry:` policy. Any
+/// non-recoverable failure (4xx, retry-exhaustion) maps to
+/// [`FeedHashResult::Absent`] — same conservative "couldn't reach the
+/// feed, fall through to push" behaviour as before.
+pub(super) fn package_feed_hash(
+    push_source: &str,
+    name: &str,
+    version: &str,
+    policy: &RetryPolicy,
+) -> FeedHashResult {
     let query_base = if push_source.contains("push.chocolatey.org") {
         "https://community.chocolatey.org"
     } else {
@@ -176,9 +188,20 @@ pub(super) fn package_feed_hash(push_source: &str, name: &str, version: &str) ->
         Err(_) => return FeedHashResult::Absent,
     };
 
-    let body = match client.get(&url).send() {
-        Ok(resp) if resp.status().is_success() => anodizer_core::http::body_of_blocking(resp),
-        _ => return FeedHashResult::Absent,
+    let body = match retry_http_blocking(
+        "chocolatey: feed hash lookup",
+        policy,
+        SuccessClass::Strict,
+        |_| client.get(&url).send(),
+        |status, body| {
+            format!(
+                "chocolatey: feed hash lookup returned HTTP {} for {}: {}",
+                status, url, body
+            )
+        },
+    ) {
+        Ok((_, body)) => body,
+        Err(_) => return FeedHashResult::Absent,
     };
 
     // Presence check: the OData feed returns a populated <entry> with
@@ -267,12 +290,26 @@ pub(super) fn compute_nupkg_hash(path: &std::path::Path, algorithm: &str) -> Res
 /// push` and `dotnet nuget push` use): PUT with multipart/form-data and a
 /// NuGet-compatible User-Agent. The Chocolatey community repository's IIS
 /// fronting rejects requests that don't match this shape with 403.
+///
+/// Retry policy comes from the user's top-level `retry:` block (defaults:
+/// 10 attempts × 10s base × 5m cap — strictly more permissive than the
+/// historical hardcoded 3-attempt loop). 5xx + 429 + transport errors retry
+/// via [`retry_sync`]; 4xx fast-fails *except* the
+/// Cloudflare/IIS "403/502/503/504 with HTML body" edge-challenge pattern,
+/// which is forcibly retried by wrapping the failure in
+/// [`anodizer_core::retry::Retriable`] so the classifier returns `true`
+/// regardless of class. If the user wants the historical 3-attempt
+/// behaviour they set `retry.attempts: 3` in their config.
 pub(super) fn push_nupkg(
     nupkg_path: &std::path::Path,
     source: &str,
     api_key: &str,
     log: &StageLogger,
+    policy: &RetryPolicy,
 ) -> Result<()> {
+    use anodizer_core::retry::{Retriable, retry_sync};
+    use std::ops::ControlFlow;
+
     let filename = nupkg_path
         .file_name()
         .and_then(|n| n.to_str())
@@ -301,27 +338,39 @@ pub(super) fn push_nupkg(
 
     // push.chocolatey.org is fronted by Cloudflare/IIS, which intermittently
     // returns 403 (and occasionally 503) with an HTML challenge body even for
-    // valid NuGet PUTs. Treat those as transient and retry once before
-    // surfacing the failure — otherwise CI flake masks real pushes.
-    const MAX_ATTEMPTS: u32 = 3;
-    let mut attempt: u32 = 0;
-    loop {
-        attempt += 1;
-
-        let form_file = reqwest::blocking::multipart::Part::bytes(nupkg_data.clone())
+    // valid NuGet PUTs. Standard 4xx fast-fail would mis-route those as
+    // hard-fail; wrap them in `Retriable` so the classifier overrides the
+    // default 4xx-Break behaviour. 5xx + 429 retry on their own via
+    // HttpError-classification.
+    retry_sync(policy, |attempt| {
+        let form_file = match reqwest::blocking::multipart::Part::bytes(nupkg_data.clone())
             .file_name(filename.clone())
             .mime_str("application/octet-stream")
-            .context("chocolatey: build multipart part")?;
+            .context("chocolatey: build multipart part")
+        {
+            Ok(p) => p,
+            Err(e) => return Err(ControlFlow::Break(e)),
+        };
         let form = reqwest::blocking::multipart::Form::new().part("package", form_file);
 
-        let response = client
+        let response = match client
             .put(&push_url)
             .header("X-NuGet-ApiKey", api_key)
             .header("X-NuGet-Client-Version", "6.10.0")
             .header("X-NuGet-Protocol-Version", "4.1.0")
             .multipart(form)
             .send()
-            .with_context(|| format!("chocolatey: push to {}", push_url))?;
+        {
+            Ok(r) => r,
+            Err(e) => {
+                // Transport-layer failure — always retry-classified (the
+                // is_network_error check inside is_retriable matches the
+                // usual EOF / connection-reset / timeout substrings).
+                let wrapped =
+                    anyhow::Error::new(e).context(format!("chocolatey: push to {}", push_url));
+                return Err(ControlFlow::Continue(wrapped));
+            }
+        };
 
         let status = response.status();
         if status.is_success() || status.as_u16() == 201 {
@@ -339,35 +388,217 @@ pub(super) fn push_nupkg(
             content_type.contains("text/html") || body.trim_start().starts_with('<');
         let edge_transient = matches!(status.as_u16(), 403 | 502 | 503 | 504) && body_looks_html;
 
-        if edge_transient && attempt < MAX_ATTEMPTS {
-            let backoff = std::time::Duration::from_secs(2u64.pow(attempt));
-            log.warn(&format!(
-                "chocolatey: edge returned HTTP {} with HTML body (attempt {}/{}); \
-                 retrying in {}s — likely a Cloudflare/IIS challenge, not a real \
-                 rejection",
-                status,
-                attempt,
-                MAX_ATTEMPTS,
-                backoff.as_secs()
-            ));
-            std::thread::sleep(backoff);
-            continue;
-        }
-
         let hint = if edge_transient {
-            "; this looked like a Cloudflare/IIS edge challenge that did not clear \
-             after retry — try again later or contact Chocolatey support if it \
-             persists"
+            "; this looks like a Cloudflare/IIS edge challenge — anodizer is \
+             retrying per the configured retry policy. If it persists, try \
+             again later or contact Chocolatey support"
         } else {
             ""
         };
-        anyhow::bail!(
-            "chocolatey: push failed with HTTP {} to {} after {} attempt(s){}: {}",
+        let base_err = anyhow::anyhow!(
+            "chocolatey: push failed with HTTP {} to {} (attempt {}){}: {}",
             status,
             push_url,
             attempt,
             hint,
             body
-        )
+        );
+
+        if edge_transient {
+            log.warn(&format!(
+                "chocolatey: edge returned HTTP {} with HTML body (attempt {}); \
+                 retrying — likely a Cloudflare/IIS challenge, not a real rejection",
+                status, attempt
+            ));
+            // Force-retry the edge-challenge case regardless of 4xx fast-fail
+            // default by wrapping in Retriable.
+            let err =
+                anyhow::Error::new(Retriable::new(std::io::Error::other(base_err.to_string())));
+            Err(ControlFlow::Continue(err))
+        } else if status.is_server_error() || status.as_u16() == 429 {
+            // 5xx / 429 retry naturally.
+            Err(ControlFlow::Continue(base_err))
+        } else {
+            // Real 4xx (auth failure, malformed package, etc.) — fast-fail.
+            Err(ControlFlow::Break(base_err))
+        }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anodizer_core::log::{StageLogger, Verbosity};
+
+    fn fast_policy() -> RetryPolicy {
+        RetryPolicy {
+            max_attempts: 4,
+            base_delay: std::time::Duration::from_millis(1),
+            max_delay: std::time::Duration::from_millis(2),
+        }
+    }
+
+    fn spawn_oneshot_http_responder(
+        responses: Vec<&'static str>,
+    ) -> (
+        std::net::SocketAddr,
+        std::sync::Arc<std::sync::atomic::AtomicU32>,
+    ) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::time::Duration;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("local_addr");
+        let counter = std::sync::Arc::new(AtomicU32::new(0));
+        let counter_inner = counter.clone();
+        std::thread::spawn(move || {
+            for (i, resp) in responses.iter().enumerate() {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(pair) => pair,
+                    Err(_) => return,
+                };
+                counter_inner.fetch_add(1, Ordering::SeqCst);
+                let mut buf = [0u8; 16384];
+                let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+                if i == responses.len() - 1 {
+                    break;
+                }
+            }
+        });
+        (addr, counter)
+    }
+
+    fn write_dummy_nupkg() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("foo.1.0.0.nupkg"), b"dummy nupkg bytes")
+            .expect("write nupkg");
+        dir
+    }
+
+    #[test]
+    fn push_nupkg_retries_503_then_succeeds() {
+        use std::sync::atomic::Ordering;
+
+        let dir = write_dummy_nupkg();
+        let path = dir.path().join("foo.1.0.0.nupkg");
+
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
+            "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n",
+        ]);
+        let source = format!("http://{addr}/api/v2/package");
+        let log = StageLogger::new("test", Verbosity::Normal);
+
+        push_nupkg(&path, &source, "apikey", &log, &fast_policy()).expect("retries 5xx then 201");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "one 503 retry then 201 success"
+        );
+    }
+
+    #[test]
+    fn push_nupkg_retries_403_with_html_body() {
+        // Cloudflare/IIS edge challenge: 403 + HTML body must retry per the
+        // user's policy (force-classified as Retriable). A plain 403 with
+        // JSON body would fast-fail — covered by push_nupkg_4xx_fast_fails.
+        use std::sync::atomic::Ordering;
+
+        let dir = write_dummy_nupkg();
+        let path = dir.path().join("foo.1.0.0.nupkg");
+
+        let html_body = "<html><head><title>403</title></head><body>edge challenge</body></html>";
+        let html_len = html_body.len();
+        let html_resp: &'static str = Box::leak(
+            format!(
+                "HTTP/1.1 403 Forbidden\r\nContent-Type: text/html\r\nContent-Length: {html_len}\r\n\r\n{html_body}"
+            )
+            .into_boxed_str(),
+        );
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            html_resp,
+            "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n",
+        ]);
+        let source = format!("http://{addr}/api/v2/package");
+        let log = StageLogger::new("test", Verbosity::Normal);
+
+        push_nupkg(&path, &source, "apikey", &log, &fast_policy())
+            .expect("edge-challenge 403+HTML retries to 201");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "one edge-challenge retry then 201 success"
+        );
+    }
+
+    #[test]
+    fn push_nupkg_4xx_with_json_body_fast_fails() {
+        // 401 Unauthorized with a JSON body is a real auth error — must not
+        // retry. Contrast push_nupkg_retries_403_with_html_body.
+        use std::sync::atomic::Ordering;
+
+        let dir = write_dummy_nupkg();
+        let path = dir.path().join("foo.1.0.0.nupkg");
+
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: 22\r\n\r\n{\"error\":\"bad apikey\"}",
+        ]);
+        let source = format!("http://{addr}/api/v2/package");
+        let log = StageLogger::new("test", Verbosity::Normal);
+
+        let err = push_nupkg(&path, &source, "apikey", &log, &fast_policy())
+            .expect_err("401 must fast-fail");
+        assert!(
+            err.to_string().contains("401"),
+            "error must mention 401: {err}"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "4xx must NOT retry");
+    }
+
+    #[test]
+    fn package_feed_hash_retries_5xx_then_returns_present() {
+        // Use the user-supplied source as the query base (the
+        // push.chocolatey.org → community.chocolatey.org remap only kicks
+        // in when push_source contains 'push.chocolatey.org').
+        use std::sync::atomic::Ordering;
+
+        let body = r#"<?xml version="1.0" encoding="utf-8"?>
+<entry>
+  <id>http://example.com/api/v2/Packages(Id='foo',Version='1.0.0')</id>
+  <m:properties>
+    <d:PackageHash>abc==</d:PackageHash>
+    <d:PackageHashAlgorithm>SHA512</d:PackageHashAlgorithm>
+  </m:properties>
+</entry>"#;
+        let body_len = body.len();
+        let ok_resp: &'static str = Box::leak(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/xml\r\nContent-Length: {body_len}\r\n\r\n{body}"
+            )
+            .into_boxed_str(),
+        );
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
+            ok_resp,
+        ]);
+        let source = format!("http://{addr}/api/v2/package");
+
+        let result = package_feed_hash(&source, "foo", "1.0.0", &fast_policy());
+        match result {
+            FeedHashResult::Present {
+                hash, algorithm, ..
+            } => {
+                assert_eq!(hash, "abc==");
+                assert_eq!(algorithm, "SHA512");
+            }
+            other => panic!("expected Present, got: {other:?}"),
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "one 503 retry then 200");
     }
 }
