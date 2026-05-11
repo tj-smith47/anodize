@@ -2768,7 +2768,10 @@ fn test_validation_rejects_unsupported_source() {
     assert!(msg.contains("unsupported use source"), "got: {msg}");
 }
 
+// `serial` because this test shells out to `git` from process cwd, which
+// races with sibling tests that swap cwd (fetch::gitlab::tests use CwdGuard).
 #[test]
+#[serial]
 fn test_changelog_stage_gitlab_falls_back_to_git_no_token() {
     // When use: gitlab but no token is available, should fall back to git
     // (which will also fail in a test environment, but the point is that
@@ -2805,7 +2808,10 @@ fn test_changelog_stage_gitlab_falls_back_to_git_no_token() {
     );
 }
 
+// `serial` because this test shells out to `git` from process cwd, which
+// races with sibling tests that swap cwd (fetch::gitea::tests use CwdGuard).
 #[test]
+#[serial]
 fn test_changelog_stage_gitea_falls_back_to_git_no_token() {
     use anodizer_core::config::{ChangelogConfig, CrateConfig};
 

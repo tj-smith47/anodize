@@ -5,6 +5,7 @@ use anyhow::Result;
 use anodizer_core::context::Context;
 use anodizer_core::git::detect_owner_repo;
 use anodizer_core::log::StageLogger;
+use anodizer_core::retry::{SuccessClass, retry_http_blocking};
 
 use crate::group::{CommitInfo, extract_co_authors, parse_commit_message};
 
@@ -85,22 +86,24 @@ pub(crate) fn fetch_gitlab_commits(
         .timeout(std::time::Duration::from_secs(30))
         .build()?;
 
-    let response = client
-        .get(&url)
-        .header(auth_header, token)
-        .send()
-        .map_err(|e| anyhow::anyhow!("gitlab changelog: API request failed: {}", e))?;
+    // Single retry policy resolved from the top-level `retry:` block so
+    // transient 5xx / 429 / network failures retry per the user's config
+    // (defaults: 10 attempts × 10s base × 5m cap).
+    let policy = ctx.config.retry.unwrap_or_default().to_policy();
+    let (_, body_text) = retry_http_blocking(
+        "gitlab changelog: compare API",
+        &policy,
+        SuccessClass::Strict,
+        |_| client.get(&url).header(auth_header, token).send(),
+        |status, body| {
+            format!(
+                "gitlab changelog: API returned status {} for {}: {}",
+                status, url, body
+            )
+        },
+    )?;
 
-    if !response.status().is_success() {
-        anyhow::bail!(
-            "gitlab changelog: API returned status {} for {}",
-            response.status(),
-            url
-        );
-    }
-
-    let body: serde_json::Value = response
-        .json()
+    let body: serde_json::Value = serde_json::from_str(&body_text)
         .map_err(|e| anyhow::anyhow!("gitlab changelog: failed to parse response: {}", e))?;
 
     // The compare endpoint returns { "commits": [...] }.
@@ -158,4 +161,141 @@ pub(crate) fn fetch_gitlab_commits(
     }
     let logins_str = logins.into_iter().collect::<Vec<_>>().join(",");
     Ok((all_commit_infos, logins_str))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anodizer_core::config::{Config, GitLabUrlsConfig};
+    use anodizer_core::context::ContextOptions;
+    use anodizer_core::test_helpers::CwdGuard;
+    use std::process::Command;
+
+    /// Spin up a one-shot HTTP responder on `127.0.0.1:0` returning each of
+    /// `responses` in order. Returns the bound address and a connection
+    /// counter so a test can assert how many attempts were made (mirrors
+    /// crates/core/src/retry.rs::tests::spawn_oneshot_http_responder).
+    fn spawn_oneshot_http_responder(
+        responses: Vec<&'static str>,
+    ) -> (
+        std::net::SocketAddr,
+        std::sync::Arc<std::sync::atomic::AtomicU32>,
+    ) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        use std::time::Duration;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("local_addr");
+        let counter = std::sync::Arc::new(AtomicU32::new(0));
+        let counter_inner = counter.clone();
+        std::thread::spawn(move || {
+            for (i, resp) in responses.iter().enumerate() {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(pair) => pair,
+                    Err(_) => return,
+                };
+                counter_inner.fetch_add(1, Ordering::SeqCst);
+                let mut buf = [0u8; 8192];
+                let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+                let _ = stream.read(&mut buf);
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.flush();
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+                if i == responses.len() - 1 {
+                    break;
+                }
+            }
+        });
+        (addr, counter)
+    }
+
+    /// Create a temp git repo with a remote pointing at the given URL so
+    /// `detect_owner_repo()` (which calls `git remote get-url origin`)
+    /// returns ("myorg", "myrepo"). Returns the tempdir handle so the
+    /// caller can keep it alive.
+    fn temp_git_repo_with_remote(remote_url: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path();
+        assert!(
+            Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(path)
+                .status()
+                .expect("git init")
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .args(["remote", "add", "origin", remote_url])
+                .current_dir(path)
+                .status()
+                .expect("git remote add")
+                .success()
+        );
+        dir
+    }
+
+    // `serial` because the test mutates process-wide cwd via CwdGuard, which
+    // races with other tests that shell out to `git log HEAD` from the
+    // workspace root (e.g. test_changelog_stage_*_falls_back_to_git_no_token).
+    #[test]
+    #[serial_test::serial]
+    fn fetch_gitlab_commits_retries_5xx_then_succeeds() {
+        use std::sync::atomic::Ordering;
+
+        // GitLab compare endpoint returns {"commits": [...]}; we return one
+        // commit so the parser has something to chew on.
+        let body = r#"{"commits":[{"id":"abcdef1234567890abcdef1234567890abcdef12","message":"feat: add x","author_name":"Ada","author_email":"ada@example.com"}]}"#;
+        let body_len = body.len();
+        let ok_resp: &'static str = Box::leak(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {body_len}\r\n\r\n{body}"
+            )
+            .into_boxed_str(),
+        );
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
+            ok_resp,
+        ]);
+
+        // Tight retry policy so the 503 retry waits a couple of ms total.
+        let retry_yaml = "attempts: 3\ndelay: 1ms\nmax_delay: 2ms\n";
+        let retry_cfg: anodizer_core::config::RetryConfig =
+            serde_yaml_ng::from_str(retry_yaml).expect("parse retry");
+
+        let config = Config {
+            retry: Some(retry_cfg),
+            gitlab_urls: Some(GitLabUrlsConfig {
+                api: Some(format!("http://{addr}/api/v4")),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        // Fake git repo so detect_owner_repo() returns ("myorg", "myrepo").
+        // CwdGuard restores cwd on drop so test parallelism isn't affected
+        // beyond the brief git-init window.
+        let repo_dir = temp_git_repo_with_remote("git@gitlab.example.com:myorg/myrepo.git");
+        let _cwd_guard = CwdGuard::new(repo_dir.path()).expect("cwd guard");
+
+        let ctx = Context::new(
+            config,
+            ContextOptions {
+                token: Some("test-token".to_string()),
+                ..Default::default()
+            },
+        );
+        let log = ctx.logger("changelog");
+
+        let (commits, _logins) = fetch_gitlab_commits(&ctx, &Some("v1.0.0".to_string()), &log)
+            .expect("retries 5xx then parses");
+        assert_eq!(commits.len(), 1);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "one 503 retry then success"
+        );
+    }
 }
