@@ -2803,7 +2803,7 @@ fn test_list_staging_dir_recursive_lists_files() {
 }
 
 // ---------------------------------------------------------------------------
-// P6.1 — `docker buildx version` availability probe
+// `docker buildx version` availability probe
 //
 // Adds a version-availability check alongside the existing `docker buildx
 // inspect` driver check. Mirrors GoReleaser commit e09e23a / #6526: any
@@ -2860,52 +2860,17 @@ fn test_buildx_version_probe_buildx_missing_warns_with_buildx_required() {
 }
 
 #[test]
-fn test_buildx_version_probe_fires_for_v2_config() {
-    // The probe is wired into the V2 docker stage path. Run a stage with a
-    // single docker_v2 config and an injected probe that records each call;
-    // the stage MUST invoke the probe exactly once before staging.
-    use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
-    use anodizer_core::context::{Context, ContextOptions};
+fn test_buildx_version_check_increments_counter_on_v2_probe_outcome() {
+    // Direct test of `run_buildx_version_check`: pass it an injected probe
+    // that records each call and assert the counter ticks. This pins the
+    // *probe-invocation contract* of `run_buildx_version_check`, not the
+    // stage-level wiring. The stage path (`DockerStage.run`) currently
+    // resolves the probe via the live `docker_buildx_version_probe()`
+    // function, so end-to-end probe-injection from a unit test would need
+    // a seam refactor on `run.rs::76-86` (tracked separately).
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    let tmp = TempDir::new().unwrap();
-    let dockerfile = tmp.path().join("Dockerfile");
-    fs::write(&dockerfile, "FROM scratch").unwrap();
-
-    let v2_cfg = DockerV2Config {
-        images: vec!["ghcr.io/owner/app".to_string()],
-        tags: vec!["latest".to_string()],
-        dockerfile: dockerfile.to_string_lossy().into_owned(),
-        platforms: Some(vec!["linux/amd64".to_string()]),
-        ..Default::default()
-    };
-
-    let mut config = Config::default();
-    config.project_name = "myapp".to_string();
-    config.dist = tmp.path().join("dist");
-    config.crates = vec![CrateConfig {
-        name: "myapp".to_string(),
-        path: ".".to_string(),
-        tag_template: "v{{ .Version }}".to_string(),
-        docker_v2: Some(vec![v2_cfg]),
-        ..Default::default()
-    }];
-
-    let mut ctx = Context::new(
-        config,
-        ContextOptions {
-            dry_run: false,
-            ..Default::default()
-        },
-    );
-    ctx.template_vars_mut().set("Version", "1.0.0");
-    ctx.template_vars_mut().set("Tag", "v1.0.0");
-
-    // Inject a counting probe so the test is independent of the host's docker
-    // install. The probe always reports Available so the stage proceeds past
-    // the gate (and may still fail later trying to build, which is fine — we
-    // only assert the probe fired).
     let calls = Arc::new(AtomicUsize::new(0));
     let calls_ref = Arc::clone(&calls);
     let probe = move || -> BuildxVersionProbe {
@@ -2919,9 +2884,6 @@ fn test_buildx_version_probe_fires_for_v2_config() {
     assert_eq!(
         calls.load(Ordering::SeqCst),
         1,
-        "buildx version probe must fire exactly once for v2 configs"
+        "run_buildx_version_check must invoke the probe exactly once"
     );
-
-    // Also exercise the real stage to confirm the wiring exists (no panic).
-    let _ = DockerStage.run(&mut ctx);
 }
