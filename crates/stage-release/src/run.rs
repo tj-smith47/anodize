@@ -85,44 +85,10 @@ impl Stage for super::ReleaseStage {
                 .cloned()
                 .unwrap_or_default();
 
-            // Populate the {{ Checksums }} template variable from checksum artifacts.
-            // GoReleaser's describeBody (release/body.go:24-44):
-            //   - 0 artifacts: leave unset
-            //   - 1 artifact:  string (file contents)
-            //   - ≥2 artifacts (e.g. split=true): map[ChecksumOf]contents so
-            //     templates can do `{{ range $name, $content := .Checksums }}`.
-            {
-                let checksum_artifacts = ctx.artifacts.by_kind(ArtifactKind::Checksum);
-                match checksum_artifacts.len() {
-                    0 => {
-                        ctx.template_vars_mut().set("Checksums", "");
-                    }
-                    1 => {
-                        let content = std::fs::read_to_string(&checksum_artifacts[0].path)
-                            .unwrap_or_default();
-                        ctx.template_vars_mut().set("Checksums", content.trim());
-                    }
-                    _ => {
-                        let mut map = serde_json::Map::new();
-                        for artifact in &checksum_artifacts {
-                            // Unmarked checksum artifacts collide on the
-                            // empty-string key rather than the absolute
-                            // filesystem path, which would otherwise leak
-                            // the build host's layout into release notes.
-                            let key = artifact
-                                .metadata
-                                .get("ChecksumOf")
-                                .cloned()
-                                .unwrap_or_default();
-                            let content =
-                                std::fs::read_to_string(&artifact.path).unwrap_or_default();
-                            map.insert(key, serde_json::Value::String(content));
-                        }
-                        ctx.template_vars_mut()
-                            .set_structured("Checksums", serde_json::Value::Object(map));
-                    }
-                }
-            }
+            // Populate the {{ Checksums }} template variable from checksum
+            // artifacts. See `populate_checksums_var` for the workspace
+            // aggregation rules (combined-mode union vs split-mode map).
+            crate::populate_checksums_var(ctx);
 
             // Resolve and validate release mode.
             let release_mode = release_cfg

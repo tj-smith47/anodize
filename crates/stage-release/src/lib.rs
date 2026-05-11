@@ -199,6 +199,92 @@ pub(crate) fn should_mark_prerelease(config: &Option<PrereleaseConfig>, tag: &st
 // `ReleaseConfig::resolved_mode` (Session C lazy-defaults policy).
 
 // ---------------------------------------------------------------------------
+// populate_checksums_var
+// ---------------------------------------------------------------------------
+
+/// Populate the `{{ .Checksums }}` template variable from the registered
+/// `ArtifactKind::Checksum` artifacts.
+///
+/// # Mode selection
+///
+/// GoReleaser's `describeBody` (`release/body.go:24-44`) emits two shapes:
+///
+/// - 0 artifacts → unset / empty string
+/// - 1 artifact  → string with the combined file's contents
+/// - ≥2 artifacts (split-mode sidecars) → `map[ChecksumOf]contents` so a
+///   Tera template can do `{% for k, v in Checksums %}…{% endfor %}`
+///
+/// Anodizer's workspace model adds a third case GoReleaser doesn't have:
+/// **multiple combined-mode sidecars**, one per crate. The checksum stage
+/// marks those with `metadata["combined"] = "true"` (and leaves
+/// `ChecksumOf` unset). Without aggregation, the ≥2-artifact branch above
+/// would collide every combined file on an empty `ChecksumOf` key, leaking
+/// the build host's filesystem layout into release notes and dropping
+/// every crate's content except the last. Instead, when every checksum
+/// artifact is a combined-mode sidecar, this helper UNIONS all per-crate
+/// content lines into a single SHA256SUMS-style block, deduplicated and
+/// sorted alphabetically by filename (matching the per-crate sort the
+/// checksum stage already applies, and matching the GR convention so a
+/// release body templated with `{{ .Checksums }}` renders the full
+/// workspace inventory).
+///
+/// Mixed mode (some combined + some split sidecars) falls back to the
+/// GR-style map keyed by `ChecksumOf` for every artifact, with the
+/// combined files keyed by their artifact `name` since they have no
+/// `ChecksumOf`. Mixed mode is unusual but the map shape stays consistent
+/// for templates that already iterate with `{% for k, v in Checksums %}`.
+pub(crate) fn populate_checksums_var(ctx: &mut Context) {
+    use anodizer_core::artifact::ArtifactKind;
+
+    let checksum_artifacts = ctx.artifacts.by_kind(ArtifactKind::Checksum);
+    if checksum_artifacts.is_empty() {
+        ctx.template_vars_mut().set("Checksums", "");
+        return;
+    }
+
+    let is_combined = |a: &&anodizer_core::artifact::Artifact| {
+        a.metadata.get("combined").map(|s| s.as_str()) == Some("true")
+    };
+    let all_combined = checksum_artifacts.iter().all(is_combined);
+    let any_split = checksum_artifacts
+        .iter()
+        .any(|a| a.metadata.contains_key("ChecksumOf"));
+
+    if all_combined && !any_split {
+        let mut lines: Vec<String> = Vec::new();
+        for artifact in &checksum_artifacts {
+            let content = std::fs::read_to_string(&artifact.path).unwrap_or_default();
+            for line in content.lines() {
+                if !line.is_empty() {
+                    lines.push(line.to_string());
+                }
+            }
+        }
+        lines.sort_by(|a, b| {
+            let name_a = a.split_once("  ").map(|(_, n)| n).unwrap_or(a);
+            let name_b = b.split_once("  ").map(|(_, n)| n).unwrap_or(b);
+            name_a.cmp(name_b)
+        });
+        lines.dedup();
+        ctx.template_vars_mut().set("Checksums", &lines.join("\n"));
+        return;
+    }
+
+    let mut map = serde_json::Map::new();
+    for artifact in &checksum_artifacts {
+        let key = artifact
+            .metadata
+            .get("ChecksumOf")
+            .cloned()
+            .unwrap_or_else(|| artifact.name.clone());
+        let content = std::fs::read_to_string(&artifact.path).unwrap_or_default();
+        map.insert(key, serde_json::Value::String(content));
+    }
+    ctx.template_vars_mut()
+        .set_structured("Checksums", serde_json::Value::Object(map));
+}
+
+// ---------------------------------------------------------------------------
 // ReleaseStage
 // ---------------------------------------------------------------------------
 

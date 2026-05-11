@@ -15,7 +15,9 @@ use super::release_body::{
     build_release_json, collect_extra_files, compose_body_for_mode, resolve_content_source,
     resolve_header_footer, resolve_make_latest, resolve_release_tag,
 };
-use super::{populate_artifact_download_urls, retry_upload, should_mark_prerelease};
+use super::{
+    populate_artifact_download_urls, populate_checksums_var, retry_upload, should_mark_prerelease,
+};
 
 #[test]
 fn test_is_prerelease_auto_with_rc() {
@@ -3286,4 +3288,175 @@ fn test_response_header_access_returns_option_no_panic() {
             .map(|v| v.to_str().ok()),
         Some(Some("ABCD:1234:5678:90:0")),
     );
+}
+
+// ---- populate_checksums_var: workspace aggregation ----
+//
+// In a multi-crate workspace, each crate's checksum stage writes a combined
+// SHA256SUMS-style sidecar. When the release body references
+// `{{ .Checksums }}`, users expect the UNION of every per-crate checksum
+// block — not a single crate's content (last-write-wins) and not a
+// `serde_json::Map` keyed by the artifact's path (which leaks the build
+// host's filesystem layout into release notes). The aggregation must be
+// sorted by filename so the rendered block is deterministic and matches
+// the GoReleaser SHA256SUMS convention.
+
+#[test]
+fn test_populate_checksums_var_aggregates_workspace_combined_files() {
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+
+    let dir = tempfile::tempdir().unwrap();
+    let crate_a_path = dir.path().join("crateA_1.0.0_checksums.txt");
+    let crate_b_path = dir.path().join("crateB_2.0.0_checksums.txt");
+    std::fs::write(
+        &crate_a_path,
+        "aaaa1111  zebra-1.0.0-linux.tar.gz\naaaa2222  alpha-1.0.0-linux.tar.gz\n",
+    )
+    .unwrap();
+    std::fs::write(&crate_b_path, "bbbb3333  middle-2.0.0-linux.tar.gz\n").unwrap();
+
+    let mut ctx = TestContextBuilder::new().build();
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Checksum,
+        path: crate_a_path,
+        name: "crateA_1.0.0_checksums.txt".to_string(),
+        target: None,
+        crate_name: "crateA".to_string(),
+        metadata: std::collections::HashMap::from([
+            ("algorithm".to_string(), "sha256".to_string()),
+            ("combined".to_string(), "true".to_string()),
+        ]),
+        size: None,
+    });
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Checksum,
+        path: crate_b_path,
+        name: "crateB_2.0.0_checksums.txt".to_string(),
+        target: None,
+        crate_name: "crateB".to_string(),
+        metadata: std::collections::HashMap::from([
+            ("algorithm".to_string(), "sha256".to_string()),
+            ("combined".to_string(), "true".to_string()),
+        ]),
+        size: None,
+    });
+
+    populate_checksums_var(&mut ctx);
+
+    let rendered = ctx.render_template("{{ Checksums }}").unwrap();
+    assert!(
+        rendered.contains("aaaa1111  zebra-1.0.0-linux.tar.gz"),
+        "missing crateA zebra line in {rendered:?}",
+    );
+    assert!(
+        rendered.contains("aaaa2222  alpha-1.0.0-linux.tar.gz"),
+        "missing crateA alpha line in {rendered:?}",
+    );
+    assert!(
+        rendered.contains("bbbb3333  middle-2.0.0-linux.tar.gz"),
+        "missing crateB middle line in {rendered:?}",
+    );
+    let pos_alpha = rendered
+        .find("alpha-1.0.0-linux.tar.gz")
+        .expect("alpha line absent");
+    let pos_middle = rendered
+        .find("middle-2.0.0-linux.tar.gz")
+        .expect("middle line absent");
+    let pos_zebra = rendered
+        .find("zebra-1.0.0-linux.tar.gz")
+        .expect("zebra line absent");
+    assert!(
+        pos_alpha < pos_middle && pos_middle < pos_zebra,
+        "checksum lines not sorted by filename: {rendered:?}",
+    );
+}
+
+#[test]
+fn test_populate_checksums_var_single_combined_file_preserves_content() {
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("myapp_1.0.0_checksums.txt");
+    std::fs::write(&path, "abc123  myapp-1.0.0-linux.tar.gz\n").unwrap();
+
+    let mut ctx = TestContextBuilder::new().build();
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Checksum,
+        path,
+        name: "myapp_1.0.0_checksums.txt".to_string(),
+        target: None,
+        crate_name: "myapp".to_string(),
+        metadata: std::collections::HashMap::from([
+            ("algorithm".to_string(), "sha256".to_string()),
+            ("combined".to_string(), "true".to_string()),
+        ]),
+        size: None,
+    });
+
+    populate_checksums_var(&mut ctx);
+
+    let rendered = ctx.render_template("{{ Checksums }}").unwrap();
+    assert!(rendered.contains("abc123  myapp-1.0.0-linux.tar.gz"));
+}
+
+#[test]
+fn test_populate_checksums_var_split_mode_preserves_map_keyed_by_checksumof() {
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+
+    // Split-mode sidecars (one per archive) carry a `ChecksumOf` marker
+    // pointing back at the artifact they checksum. The Checksums variable
+    // must be a map so a release-body template can iterate
+    // `{% for k, v in Checksums %}…{% endfor %}` and reference each sidecar
+    // by the artifact name. This pins the split-mode contract that workspace
+    // aggregation MUST NOT break.
+    let dir = tempfile::tempdir().unwrap();
+    let sidecar_a = dir.path().join("myapp-1.0.0-linux.tar.gz.sha256");
+    let sidecar_b = dir.path().join("myapp-1.0.0-darwin.tar.gz.sha256");
+    std::fs::write(&sidecar_a, "aaaa  myapp-1.0.0-linux.tar.gz\n").unwrap();
+    std::fs::write(&sidecar_b, "bbbb  myapp-1.0.0-darwin.tar.gz\n").unwrap();
+
+    let mut ctx = TestContextBuilder::new().build();
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Checksum,
+        path: sidecar_a,
+        name: "myapp-1.0.0-linux.tar.gz.sha256".to_string(),
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "myapp".to_string(),
+        metadata: std::collections::HashMap::from([
+            ("algorithm".to_string(), "sha256".to_string()),
+            (
+                "ChecksumOf".to_string(),
+                "myapp-1.0.0-linux.tar.gz".to_string(),
+            ),
+        ]),
+        size: None,
+    });
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Checksum,
+        path: sidecar_b,
+        name: "myapp-1.0.0-darwin.tar.gz.sha256".to_string(),
+        target: Some("x86_64-apple-darwin".to_string()),
+        crate_name: "myapp".to_string(),
+        metadata: std::collections::HashMap::from([
+            ("algorithm".to_string(), "sha256".to_string()),
+            (
+                "ChecksumOf".to_string(),
+                "myapp-1.0.0-darwin.tar.gz".to_string(),
+            ),
+        ]),
+        size: None,
+    });
+
+    populate_checksums_var(&mut ctx);
+
+    // The map shape lets Tera iterate with `{% for k, v in Checksums %}`.
+    // We verify the rendered output references both artifact names so the
+    // template path through this branch is exercised.
+    let rendered = ctx
+        .render_template("{% for k, v in Checksums %}{{ k }}:{{ v }}\n{% endfor %}")
+        .unwrap();
+    assert!(rendered.contains("myapp-1.0.0-linux.tar.gz"));
+    assert!(rendered.contains("myapp-1.0.0-darwin.tar.gz"));
+    assert!(rendered.contains("aaaa"));
+    assert!(rendered.contains("bbbb"));
 }
