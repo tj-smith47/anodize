@@ -22,8 +22,8 @@ pub fn gh_api_get(endpoint: &str, token: Option<&str>) -> Result<serde_json::Val
         .context("failed to spawn gh CLI")?;
     if !output.status.success() {
         let stderr_raw = String::from_utf8_lossy(&output.stderr);
-        let stderr = redact_gh_stderr(&stderr_raw, token);
-        bail!("gh api GET {} failed: {}", endpoint, stderr.trim());
+        let raw = format!("gh api GET {} failed: {}", endpoint, stderr_raw.trim());
+        bail!("{}", redact_gh_stderr(&raw, token));
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     serde_json::from_str(&stdout).context("failed to parse gh api response")
@@ -65,8 +65,8 @@ pub fn gh_api_get_paginated(endpoint: &str, token: Option<&str>) -> Result<Vec<s
 
     if !output.status.success() {
         let stderr_raw = String::from_utf8_lossy(&output.stderr);
-        let stderr = redact_gh_stderr(&stderr_raw, token);
-        bail!("gh api GET {} failed: {}", endpoint, stderr.trim());
+        let raw = format!("gh api GET {} failed: {}", endpoint, stderr_raw.trim());
+        bail!("{}", redact_gh_stderr(&raw, token));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -135,9 +135,10 @@ fn gh_api_post(endpoint: &str, body: &serde_json::Value) -> Result<serde_json::V
         // `gh_api_post` does not currently accept a token argument, but
         // routing through `redact_process_env` still covers any token
         // exported as `GITHUB_TOKEN` / `GH_TOKEN` in the parent env, plus
-        // inline URL credentials.
-        let stderr = crate::redact::redact_process_env(&stderr_raw);
-        bail!("gh api POST {} failed: {}", endpoint, stderr.trim());
+        // inline URL credentials. Redact the full bail string so an
+        // endpoint containing a secret-shaped path segment is also covered.
+        let raw = format!("gh api POST {} failed: {}", endpoint, stderr_raw.trim());
+        bail!("{}", crate::redact::redact_process_env(&raw));
     }
 
     let response: serde_json::Value = serde_json::from_slice(&output.stdout)

@@ -50,8 +50,8 @@ fn git_output(args: &[&str]) -> Result<String> {
     let output = Command::new("git").args(args).output()?;
     if !output.status.success() {
         let stderr_raw = String::from_utf8_lossy(&output.stderr);
-        let stderr = crate::redact::redact_process_env(&stderr_raw);
-        bail!("git {} failed: {}", args.join(" "), stderr.trim());
+        let raw = format!("git {} failed: {}", args.join(" "), stderr_raw.trim());
+        bail!("{}", crate::redact::redact_process_env(&raw));
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }

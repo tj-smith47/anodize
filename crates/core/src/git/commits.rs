@@ -254,8 +254,8 @@ pub fn add_path_in(workspace_root: &std::path::Path, rel: &std::path::Path) -> R
         .context("failed to invoke git add")?;
     if !out.status.success() {
         let stderr_raw = String::from_utf8_lossy(&out.stderr);
-        let stderr = crate::redact::redact_process_env(&stderr_raw);
-        bail!("git add {} failed: {}", rel.display(), stderr.trim());
+        let raw = format!("git add {} failed: {}", rel.display(), stderr_raw.trim());
+        bail!("{}", crate::redact::redact_process_env(&raw));
     }
     Ok(())
 }
@@ -272,8 +272,8 @@ pub fn commit_in(workspace_root: &std::path::Path, message: &str, sign: bool) ->
     let out = cmd.output().context("failed to invoke git commit")?;
     if !out.status.success() {
         let stderr_raw = String::from_utf8_lossy(&out.stderr);
-        let stderr = crate::redact::redact_process_env(&stderr_raw);
-        bail!("git commit failed: {}", stderr.trim());
+        let raw = format!("git commit failed: {}", stderr_raw.trim());
+        bail!("{}", crate::redact::redact_process_env(&raw));
     }
     Ok(())
 }
