@@ -33,7 +33,7 @@ This publishes anonymously (`auth.type: none`) to the default registry. For serv
 | `skip` | string or bool | `false` | Skip this publisher. Tera template that evaluates to a truthy value (e.g. `"{{ true }}"`) also skips. Accepts the legacy `disable:` spelling for back-compat with imported GoReleaser configs |
 | `repository` | object | inferred | Source repository metadata. See [Repository](#repository) |
 | `packages` | object[] | **required** | One or more distribution packages. See [Packages](#packages) |
-| `transports` | object[] | none | Top-level transport list. Parsed for GoReleaser config-portability; the current MCP server schema derives transports per-package via `packages[].transport`, so this list is not emitted to the registry |
+| `transports` | object[] | none | Top-level transport list. Parsed for GoReleaser config-portability (silently ignored — see [note below](#top-level-transports)); the current MCP server schema derives transports per-package via `packages[].transport`, so this list is not emitted to the registry |
 | `auth` | object | `{type: none}` | Registry authentication. See [Authentication](#authentication) |
 | `registry` | string | `https://registry.modelcontextprotocol.io` | Override the registry endpoint (for staging or a private mirror) |
 
