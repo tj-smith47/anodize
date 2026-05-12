@@ -297,7 +297,7 @@ crates:
       # file is absent (local snapshot / dry-run flows where no secret
       # was provisioned).
       extra_files:
-        - glob: "dist/anodizer-apk-signing-key.rsa.pub"
+        - glob: "dist/*-apk-signing-key.rsa.pub"
           allow_empty: true
     publish:
       # `cargo:` inherits from defaults.publish.cargo (= {} → presence-as-opt-in).
