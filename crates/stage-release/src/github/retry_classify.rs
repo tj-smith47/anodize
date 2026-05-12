@@ -78,75 +78,57 @@ fn classify_octocrab_error(
 mod tests {
     //! Drive real `octocrab::Error` values through the classifier. Because
     //! octocrab's `error` module is private and the `*Snafu` builder
-    //! structs aren't re-exported, we can't synthesize variants directly —
-    //! we have to coax the live client into producing them. Two cheap,
-    //! deterministic ways:
+    //! structs aren't re-exported, we can't synthesize variants directly:
+    //! we coax the live client into producing one.
     //!
-    //! 1. Bind an ephemeral TCP listener on `127.0.0.1:0`, capture the port,
-    //!    drop the listener (so the OS frees the port and any subsequent
-    //!    `connect()` returns ECONNREFUSED instantly), then point an
-    //!    `Octocrab` at `http://127.0.0.1:<port>/` and `await` a request.
-    //!    Yields a transport-class variant (`Hyper` on Linux/macOS) in
-    //!    milliseconds — no risk of hanging on connect-timeout the way
-    //!    pointing at TEST-NET-1 (`192.0.2.0/24`) does, because the
-    //!    kernel-level "no listener" rejection beats any application-layer
-    //!    timeout.
-    //! 2. (Future) Stand up a `wiremock` server returning a 5xx with a
-    //!    GitHub-error body to drive the `GitHub` arm. Skipped here — the
-    //!    `is_retriable` rule for status-bearing errors is already covered
-    //!    by `anodizer_core::retry`'s own test suite, and the helper's
-    //!    GitHub arm is just `HttpError::new(err, status)`.
+    //! Approach: point `Octocrab` at `http://nonexistent.invalid/` and
+    //! `await` a request. The `.invalid` TLD is reserved by RFC 2606 and is
+    //! guaranteed never to resolve, so the connector fails with a DNS error
+    //! on every platform within a few milliseconds. The resulting variant
+    //! (`Service` or `Hyper`, depending on hyper-util plumbing) is a
+    //! transport-class error which is exactly what the classifier wraps in
+    //! `Retriable`.
+    //!
+    //! Prior implementation used `bind 127.0.0.1:0 -> drop listener ->
+    //! connect to the freed port`, which yields ECONNREFUSED synchronously
+    //! on Linux + macOS but can hang past the test timeout on Windows
+    //! (kernel may retransmit SYN until the application-level connect
+    //! timeout fires).
+    //!
+    //! A future test could stand up a `wiremock` server returning a 5xx
+    //! with a GitHub-error body to drive the `GitHub` arm. Skipped here:
+    //! the `is_retriable` rule for status-bearing errors is already covered
+    //! by `anodizer_core::retry`'s own test suite, and the helper's GitHub
+    //! arm is just `HttpError::new(err, status)`.
     use super::*;
     use anodizer_core::retry::is_retriable;
 
     async fn make_transport_error() -> octocrab::Error {
-        // Reserve + immediately release a loopback port. The `connect()`
-        // racing against any listener on that port will see ECONNREFUSED
-        // because nothing's bound — the kernel rejects in <1ms.
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .map_err(|e| format!("bind probe listener: {e}"))
+        // RFC 2606 reserves `.invalid` as a guaranteed-unresolvable TLD.
+        // DNS resolution fails fast on every platform (Linux, macOS,
+        // Windows) so the call returns a transport-class octocrab error
+        // in milliseconds without any OS-level TCP semantics.
+        let builder = octocrab::OctocrabBuilder::new()
+            .base_uri("http://nonexistent.invalid/")
             .ok()
-            .unwrap_or_else(|| panic!("could not bind ephemeral loopback port"));
-        let port = listener
-            .local_addr()
-            .map_err(|e| format!("local_addr: {e}"))
-            .ok()
-            .unwrap_or_else(|| panic!("local_addr failed"))
-            .port();
-        drop(listener); // release the port so connect() refuses
-
-        let octo = octocrab::OctocrabBuilder::new()
-            .base_uri(format!("http://127.0.0.1:{port}/"))
-            .map_err(|e| format!("base_uri: {e}"))
-            .ok()
-            .unwrap_or_else(|| panic!("OctocrabBuilder::base_uri rejected loopback URL"));
-        let octo = octo
+            .unwrap_or_else(|| panic!("OctocrabBuilder::base_uri rejected RFC 2606 .invalid URL"));
+        let octo = builder
             .build()
-            .map_err(|e| format!("build: {e}"))
             .ok()
             .unwrap_or_else(|| panic!("OctocrabBuilder::build failed"));
-        // Bound the await with a timeout in case some platform delays
-        // ECONNREFUSED — fail loudly instead of hanging the test runner.
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            octo.get::<serde_json::Value, _, ()>("/", None::<&()>),
-        )
-        .await
-        {
-            Ok(Ok(_)) => panic!("unexpected success against unbound loopback port"),
-            Ok(Err(e)) => e,
-            Err(_) => panic!("connect to unbound loopback port did not refuse within 5s"),
+        match octo.get::<serde_json::Value, _, ()>("/", None::<&()>).await {
+            Ok(_) => panic!("unexpected success against RFC 2606 .invalid host"),
+            Err(e) => e,
         }
     }
 
     #[tokio::test]
     async fn transport_error_classifies_as_retriable_regardless_of_message() {
-        // Real octocrab transport-class error → Retriable wrapper →
+        // Real octocrab transport-class error -> Retriable wrapper ->
         // is_retriable true. Without the helper this would be
         // HttpError{status:0} and is_network_error would have to recognise
-        // the (often opaque) Display string — exactly the mis-classification
-        // the helper exists to prevent.
+        // the (often opaque) Display string, which is exactly the
+        // mis-classification the helper exists to prevent.
         let err = make_transport_error().await;
         let is_transport = matches!(
             &err,
@@ -157,7 +139,7 @@ mod tests {
         );
         assert!(
             is_transport,
-            "expected a transport-class octocrab error from TEST-NET-1, got: {err:?}"
+            "expected a transport-class octocrab error from RFC 2606 .invalid host, got: {err:?}"
         );
         let (wrapped, status) = classify_octocrab_error(err);
         assert_eq!(status, 0, "transport errors carry no HTTP status");

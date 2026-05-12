@@ -540,6 +540,18 @@ const NETWORK_ERROR_NEEDLES: &[&str] = &[
     "the network connection was aborted",
     // Windows ErrorKind::ConnectionReset phrasing.
     "an existing connection was forcibly closed",
+    // hyper-util / reqwest DNS-resolution failures wrapped through the
+    // connector. Surfaces as `client error (Connect): dns error: ...` with
+    // a platform-specific resolver tail ("Name or service not known" on
+    // Linux/glibc, "nodename nor servname provided, or not known" on macOS,
+    // "No such host is known" on Windows). The leading "dns error" prefix
+    // is the cross-platform constant.
+    "dns error",
+    // GAI (getaddrinfo) wording across resolvers; covers the Linux
+    // resolver tail above and BSD/macOS phrasing.
+    "failed to lookup address",
+    // Windows resolver tail when DNS-resolution fails.
+    "no such host is known",
 ];
 
 /// Classify an error as retriable (mirrors GoReleaser `retryx.IsRetriable`).
@@ -712,6 +724,13 @@ mod tests {
             "write: broken pipe",
             "net/http: timeout awaiting response headers",
             "context deadline exceeded",
+            // DNS-resolution failures across platforms (hyper-util connector
+            // surfaces these via reqwest as `client error (Connect): dns
+            // error: <platform tail>`). Pin every tail we know about so a
+            // cross-platform CI failure cannot reintroduce the gap.
+            "client error (Connect): dns error: failed to lookup address information: Name or service not known",
+            "dns error: nodename nor servname provided, or not known",
+            "dns error: No such host is known. (os error 11001)",
         ] {
             let e = OwnedErr(s.to_string());
             assert!(is_network_error(&e), "expected network error: {s:?}");
@@ -1279,13 +1298,14 @@ mod tests {
 
     // ----- transport-error behavioural tests -------------------------------
     //
-    // The transport-error arm (Err(reqwest::Error) — connection refused, EOF,
-    // TLS handshake failure, etc.) is the single most reviewer-load-bearing
-    // path: it's the one the helper claims to retry and that publishers rely
-    // on for resilience against transient network blips. The pattern below
-    // binds an ephemeral 127.0.0.1 port, captures the address, drops the
-    // listener, then points the client at the defunct address — every
-    // attempt yields a connection-refused at the OS level.
+    // The transport-error arm (Err(reqwest::Error): DNS failure, connection
+    // refused, EOF, TLS handshake failure, etc.) is the single most
+    // reviewer-load-bearing path: it is the one the helper claims to retry
+    // and that publishers rely on for resilience against transient network
+    // blips. The pattern below dials the RFC 2606-reserved `.invalid` TLD,
+    // which is guaranteed never to resolve, so every attempt fails at the
+    // DNS-resolution stage in a few milliseconds on Linux, macOS, and
+    // Windows alike.
     //
     // We verify:
     //   1. the helper retries (attempt counter > 1)
@@ -1293,22 +1313,16 @@ mod tests {
     // The outer attempt counter is incremented inside the closure, so it
     // sees one bump per attempt regardless of the underlying transport
     // outcome.
-
-    fn drop_listener_addr() -> std::net::SocketAddr {
-        use std::net::TcpListener;
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
-        let addr = listener.local_addr().expect("local_addr");
-        // Explicit drop so the port is freed before the test client dials it.
-        // On Linux + macOS, a connect() to an unbound localhost port returns
-        // ECONNREFUSED synchronously — exactly the transport-error class we
-        // want is_retriable to inspect.
-        drop(listener);
-        addr
-    }
+    //
+    // RFC 2606 (https://datatracker.ietf.org/doc/html/rfc2606) reserves the
+    // `.invalid` TLD precisely for this purpose; using it removes any
+    // dependence on OS-level TCP semantics (Windows' kernel can retransmit
+    // SYN against an unbound loopback port until the connect timeout fires
+    // rather than refusing synchronously like Linux + macOS do).
+    const TRANSPORT_FAIL_URL: &str = "http://nonexistent.invalid/";
 
     #[test]
     fn retry_http_blocking_transport_error_retries_then_fails() {
-        let addr = drop_listener_addr();
         let attempts = std::sync::Arc::new(AtomicU32::new(0));
         let attempts_inner = attempts.clone();
         let client = reqwest::blocking::Client::builder()
@@ -1326,7 +1340,7 @@ mod tests {
             SuccessClass::Strict,
             |_| {
                 attempts_inner.fetch_add(1, Ordering::SeqCst);
-                client.get(format!("http://{addr}/")).send()
+                client.get(TRANSPORT_FAIL_URL).send()
             },
             |_, _| String::from("non-success branch should not be reached"),
         );
@@ -1345,7 +1359,6 @@ mod tests {
 
     #[tokio::test]
     async fn retry_http_async_transport_error_retries_then_fails() {
-        let addr = drop_listener_addr();
         let attempts = std::sync::Arc::new(AtomicU32::new(0));
         let attempts_inner = attempts.clone();
         let client = reqwest::Client::builder()
@@ -1363,7 +1376,7 @@ mod tests {
             SuccessClass::Strict,
             |_| {
                 attempts_inner.fetch_add(1, Ordering::SeqCst);
-                client.get(format!("http://{addr}/")).send()
+                client.get(TRANSPORT_FAIL_URL).send()
             },
             |_, _| String::from("non-success branch should not be reached"),
         )
