@@ -66,3 +66,18 @@ others have full test coverage but no live secrets configured.
 | Key | Status | Notes |
 |---|---|---|
 | `publishers[]` | ✅ Verified | [`crates/cli/src/commands/publisher.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/cli/src/commands/publisher.rs) (custom command per artifact) |
+
+## MCP registry
+
+Final GoReleaser parity item. Publishes an MCP server manifest to
+`https://registry.modelcontextprotocol.io`.
+
+| Key | Status | Notes |
+|---|---|---|
+| `mcp.name` | 🤝 Help wanted | Wired in [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`mcp.name: io.github.tj-smith47/anodizer`); awaiting first live publish |
+| `mcp.packages[]` | 🤝 Help wanted | Wired in [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`packages[].registry_type: oci`); awaiting first live publish |
+| `mcp.auth.type: none` | ✅ Verified | [`crates/stage-publish/src/mcp/auth.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/mcp/auth.rs) (None branch) |
+| `mcp.auth.type: github` | ✅ Verified | [`crates/stage-publish/src/mcp/auth.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/mcp/auth.rs) (PAT exchange branch) |
+| `mcp.auth.type: github-oidc` | 🤝 Help wanted | [`crates/stage-publish/src/mcp/auth.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/mcp/auth.rs) (OIDC id-token branch); to be dogfooded via anodizer's release workflow |
+| `mcp.repository` | ✅ Verified | [`crates/stage-publish/src/mcp/manifest.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/mcp/manifest.rs) |
+| `mcp.skip` (tera, accepts `disable:` alias) | ✅ Verified | [`crates/stage-publish/src/mcp/mod.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/mcp/mod.rs) |
