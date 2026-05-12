@@ -115,6 +115,16 @@ pub(crate) fn publish_with_registry(
 
     let policy = ctx.retry_policy();
 
+    // Surface the env-var fallback path BEFORE constructing the provider.
+    // When `auth.type=github` and `auth.token` rendered empty (e.g. the user
+    // templated `{{ .Env.GITHUB_TOKEN }}` and GITHUB_TOKEN is unset),
+    // `GithubAtAuthProvider::get_token` silently falls back to
+    // `MCP_GITHUB_TOKEN`. Log the resolution path (NOT the token value) so a
+    // user debugging an auth failure can see what anodizer tried.
+    if mcp_rendered.auth.method == McpAuthMethod::Github && mcp_rendered.auth.token.is_empty() {
+        log.status("mcp: auth.token empty, falling back to MCP_GITHUB_TOKEN env var");
+    }
+
     // ---- Build + authenticate ----
     let provider = provider_for(
         mcp_rendered.auth.method,
