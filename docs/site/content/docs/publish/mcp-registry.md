@@ -88,7 +88,7 @@ Optional. The `transports:` list is accepted for GoReleaser config-portability (
 | `auth.type` | When to use | Token source |
 |-------------|-------------|--------------|
 | `none` | Server names without an ownership namespace; private mirrors | None, or `auth.token` for a static bearer |
-| `github` | Names under `io.github.<owner>/...` published from a workstation or non-GHA CI | GitHub PAT in `auth.token` (or `GITHUB_TOKEN` env). Anodizer exchanges it for a short-lived registry token |
+| `github` | Names under `io.github.<owner>/...` published from a workstation or non-GHA CI | GitHub PAT in `auth.token` (or `MCP_GITHUB_TOKEN` env). Anodizer exchanges it for a short-lived registry token |
 | `github-oidc` | Names under `io.github.<owner>/...` published from GitHub Actions | GHA-native OIDC id-token (`ACTIONS_ID_TOKEN_REQUEST_TOKEN` + `ACTIONS_ID_TOKEN_REQUEST_URL`). Anodizer exchanges it for a short-lived registry token. No PAT required |
 
 ### `auth.type: none`
