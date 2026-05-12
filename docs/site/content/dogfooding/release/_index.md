@@ -59,7 +59,7 @@ others have full test coverage but no live secrets configured.
 | `artifactories[]` | 🤝 Help wanted | Target, mode, TLS, headers wired; no live deployment |
 | `uploads[]` | 🤝 Help wanted | Generic HTTP upload wired; no live deployment |
 | `furies[]` | 🤝 Help wanted | Implemented; no live credentials |
-| `cloudsmiths[]` | 🤝 Help wanted | Implemented; no live credentials |
+| `cloudsmiths[]` | 🤝 Help wanted | Wired in [cfgd's config](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) with a live `CLOUDSMITH_TOKEN`; uploads currently fail at HTTP layer so no package has landed in the `jarvispro/cfgd` repo. Awaiting endpoint debug |
 
 ## Custom publishers
 

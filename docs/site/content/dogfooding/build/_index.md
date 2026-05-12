@@ -73,7 +73,7 @@ before these can ship live. Implementation is complete and unit-tested.
 
 | Key | Status | Notes |
 |---|---|---|
-| `notarize.macos` | 🤝 Help wanted | Cross-platform anchore/quill. Implemented; no release carries a notary ticket |
+| `notarize.macos` | 🤝 Help wanted | Cross-platform (rcodesign). Implementation requires `sign.certificate` (P12 file), `sign.password`, and `notarize.{issuer_id, key, key_id}`, i.e. an Apple Developer Program membership. Not dogfoodable on Linux runners without a paid Apple account |
 | `notarize.macos_native` | 🤝 Help wanted | Needs Apple Developer cert on a macOS runner |
 
 ## Container images
@@ -87,7 +87,7 @@ before these can ship live. Implementation is complete and unit-tested.
 | `docker_v2.sbom: true` | ✅ Verified | Three cfgd images carry inline SBOM |
 | `docker_digest.name_template` | ✅ Verified | cfgd writes a digest manifest |
 | `dockers[].use: buildx` | ✅ Verified | Default in CI |
-| `dockers[].use: docker` / `podman` | 🤝 Help wanted | Code paths covered; CI uses buildx |
+| `docker_manifests[].use: docker` / `podman` | 🤝 Help wanted | Backend selector for `docker manifest create / push`. cfgd configures `docker_manifests[]` but the entries are bypassed because `docker_v2` already pushes multi-arch indexes (`docker: skipping manifest ... already pushed as multi-arch by docker_v2`). No live release exercises the non-buildx backend |
 | `docker_hub.description` | 🤝 Help wanted | We use ghcr; needs a Docker Hub-anchored release |
 
 ## Signing
