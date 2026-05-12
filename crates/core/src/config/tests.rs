@@ -1136,6 +1136,7 @@ crates:
         ExtraFileSpec::Detailed {
             glob,
             name_template,
+            ..
         } => {
             assert_eq!(glob, "release/*.deb");
             assert_eq!(

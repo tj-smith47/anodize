@@ -114,6 +114,7 @@ jobs:
           artifact-workflow: ci.yml
           install: nfpm,makeself,snapcraft,rpmbuild,cosign
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          apk-private-key: ${{ secrets.APK_PRIVATE_KEY }}
           args: release --merge
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}

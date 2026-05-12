@@ -4854,6 +4854,14 @@
             "glob"
           ],
           "properties": {
+            "allow_empty": {
+              "description": "When true, treat a glob that matches zero files as a no-op rather than a hard error. Useful for assets produced only in CI (e.g. signing public keys derived from a secret) that must not break local snapshot/dry-run flows. Defaults to false, matching the prior fail-fast behavior.",
+              "default": null,
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
             "glob": {
               "type": "string"
             },

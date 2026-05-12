@@ -97,6 +97,7 @@ pub(crate) fn collect_extra_files(
             ExtraFileSpec::Detailed {
                 glob: pattern,
                 name_template,
+                allow_empty,
             } => {
                 let entries = glob::glob(pattern).with_context(|| {
                     format!("release: invalid extra_files glob pattern '{}'", pattern)
@@ -117,7 +118,7 @@ pub(crate) fn collect_extra_files(
                         results.push((entry, name));
                     }
                 }
-                if results.len() == before {
+                if results.len() == before && !allow_empty.unwrap_or(false) {
                     anyhow::bail!("release: extra_files glob '{}' matched no files", pattern);
                 }
             }

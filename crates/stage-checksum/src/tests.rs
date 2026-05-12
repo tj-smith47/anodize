@@ -1273,6 +1273,7 @@ fn test_extra_files_name_template_exposes_algorithm_var() {
                 extra_files: Some(vec![ExtraFileSpec::Detailed {
                     glob: extra.to_string_lossy().into_owned(),
                     name_template: Some("{{ .ArtifactName }}.{{ .Algorithm }}".to_string()),
+                    allow_empty: None,
                 }]),
                 ..Default::default()
             }),
@@ -1862,6 +1863,7 @@ extra_files:
         ExtraFileSpec::Detailed {
             glob,
             name_template,
+            ..
         } => {
             assert_eq!(glob, "release/*.deb");
             assert_eq!(
@@ -2161,6 +2163,7 @@ fn test_extra_file_detailed_name_template_combined_mode() {
                 extra_files: Some(vec![ExtraFileSpec::Detailed {
                     glob: glob_pattern,
                     name_template: Some("custom-{{ .ArtifactName }}".to_string()),
+                    allow_empty: None,
                 }]),
                 ..Default::default()
             }),

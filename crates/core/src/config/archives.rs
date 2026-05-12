@@ -458,6 +458,13 @@ pub enum ExtraFileSpec {
         /// Optional override for the upload filename.
         #[serde(default)]
         name_template: Option<String>,
+        /// When true, treat a glob that matches zero files as a no-op
+        /// rather than a hard error. Useful for assets produced only in
+        /// CI (e.g. signing public keys derived from a secret) that
+        /// must not break local snapshot/dry-run flows. Defaults to
+        /// false, matching the prior fail-fast behavior.
+        #[serde(default)]
+        allow_empty: Option<bool>,
     },
 }
 
@@ -475,6 +482,15 @@ impl ExtraFileSpec {
         match self {
             ExtraFileSpec::Glob(_) => None,
             ExtraFileSpec::Detailed { name_template, .. } => name_template.as_deref(),
+        }
+    }
+
+    /// Return whether this spec allows a zero-match glob without erroring
+    /// (Detailed variant only; the bare string form is always fail-fast).
+    pub fn allow_empty(&self) -> bool {
+        match self {
+            ExtraFileSpec::Glob(_) => false,
+            ExtraFileSpec::Detailed { allow_empty, .. } => allow_empty.unwrap_or(false),
         }
     }
 }

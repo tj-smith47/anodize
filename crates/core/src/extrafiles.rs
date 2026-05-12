@@ -125,6 +125,7 @@ mod tests {
         let specs = vec![ExtraFileSpec::Detailed {
             glob: glob_pattern,
             name_template: Some("collapsed.bin".to_string()),
+            allow_empty: None,
         }];
 
         let err = resolve(&specs, &log()).unwrap_err();
