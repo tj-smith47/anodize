@@ -216,7 +216,7 @@ pub(crate) fn run_github_backend(
     // octocrab call site below threads this through the shared
     // `retry_octocrab_call` helper so a `retry:` block in the project config
     // controls every transient-failure path uniformly.
-    let policy = ctx.config.retry.unwrap_or_default().to_policy();
+    let policy = ctx.retry_policy();
 
     // Build the octocrab instance and perform async API calls inside a
     // dedicated tokio runtime (the Stage trait is synchronous).

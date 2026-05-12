@@ -523,7 +523,7 @@ pub fn publish_to_cargo(ctx: &mut Context, selected: &[String], log: &StageLogge
     // Single retry policy resolved from the top-level `retry:` block; reused
     // for every crate's index-check GET. Mirrors the per-pipe-invocation
     // pattern used by artifactory/cloudsmith.
-    let retry_policy = ctx.config.retry.unwrap_or_default().to_policy();
+    let retry_policy = ctx.retry_policy();
 
     // Build a lookup from crate name → path so we can read each crate's
     // actual Cargo.toml version for the already-published check. Transitive

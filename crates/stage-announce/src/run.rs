@@ -62,7 +62,7 @@ impl Stage for AnnounceStage {
         // (10 attempts × 10s base × 5m cap); per-call retry classifies 5xx
         // / 429 / transport failures as retriable and 4xx as fast-fail via
         // `core::retry::is_retriable` + `HttpError`.
-        let retry_policy = ctx.config.retry.unwrap_or_default().to_policy();
+        let retry_policy = ctx.retry_policy();
 
         // ----------------------------------------------------------------
         // Discord

@@ -114,7 +114,7 @@ pub fn publish_to_cloudsmith(ctx: &Context, log: &StageLogger) -> Result<()> {
     // for every step of the 3-stage upload (files/create → S3 presigned →
     // packages/upload). Mirrors GoReleaser, where the retry policy is set
     // once per pipe invocation.
-    let policy = ctx.config.retry.unwrap_or_default().to_policy();
+    let policy = ctx.retry_policy();
 
     for entry in entries {
         // Check skip flag.

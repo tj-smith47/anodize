@@ -592,7 +592,7 @@ impl Stage for super::ReleaseStage {
                     // through `retry_http_async` inside every gitlab_*
                     // function. Default: 10 attempts × 10s base × 5m cap
                     // (matches GoReleaser `pkg/config.Retry` defaults).
-                    let policy = ctx.config.retry.unwrap_or_default().to_policy();
+                    let policy = ctx.retry_policy();
 
                     let url = rt.block_on(async {
                         let client =
@@ -795,7 +795,7 @@ impl Stage for super::ReleaseStage {
 
                     // Per-publisher retry policy (Wave-1 RetryConfig). Same
                     // shape and rationale as the GitLab branch above.
-                    let policy = ctx.config.retry.unwrap_or_default().to_policy();
+                    let policy = ctx.retry_policy();
 
                     let url = rt.block_on(async {
                         let client = gitea::build_gitea_client(&token_str, skip_tls)?;

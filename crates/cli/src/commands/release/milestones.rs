@@ -109,7 +109,7 @@ pub(super) fn close_milestones(
     // for every list + close HTTP call across providers so transient 5xx /
     // 429 / network failures retry per the user's config (defaults: 10
     // attempts × 10s base × 5m cap).
-    let policy = ctx.config.retry.unwrap_or_default().to_policy();
+    let policy = ctx.retry_policy();
 
     for milestone_cfg in milestones {
         let Some(target) = resolve_milestone_for_close(milestone_cfg, ctx, log)? else {

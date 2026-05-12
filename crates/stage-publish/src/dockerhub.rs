@@ -74,7 +74,7 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
     // Single retry policy resolved from the top-level `retry:` block; reused
     // for every entry's full_description fetch, login, and PATCH (mirrors
     // GoReleaser, where the retryx policy is captured once per pipe).
-    let policy = ctx.config.retry.unwrap_or_default().to_policy();
+    let policy = ctx.retry_policy();
 
     for entry in entries {
         // Check skip flag.

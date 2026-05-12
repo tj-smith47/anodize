@@ -472,7 +472,7 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
     // Single retry policy resolved from the top-level `retry:` block; reused
     // for every entry's per-artifact upload (mirrors GoReleaser, where the
     // `retryx` policy is captured once per pipe invocation).
-    let policy = ctx.config.retry.unwrap_or_default().to_policy();
+    let policy = ctx.retry_policy();
 
     for entry in entries {
         // Check skip flag.

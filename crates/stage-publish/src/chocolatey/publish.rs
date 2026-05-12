@@ -392,7 +392,7 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
     // In that case we fail loudly and tell the user to bump the version.
     // Single retry policy resolved from the top-level `retry:` block; reused
     // for the feed-hash GET and the push PUT.
-    let policy = ctx.config.retry.unwrap_or_default().to_policy();
+    let policy = ctx.retry_policy();
 
     match package_feed_hash(source, pkg_name, &version, &policy) {
         FeedHashResult::Present {

@@ -34,7 +34,7 @@ impl Stage for SnapcraftPublishStage {
         // Q8.1 — wrap snapcraft upload in retry. Mirrors GR upstream
         // commit eb944f9 (`isRetriableSnapPush`): 5xx Store responses
         // (500/502/503/504) are transient, every other failure is fatal.
-        let retry_policy = ctx.config.retry.unwrap_or_default().to_policy();
+        let retry_policy = ctx.retry_policy();
 
         // Collect crates that have snapcraft config with publish: true
         let crates: Vec<_> = ctx
