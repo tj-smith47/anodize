@@ -32,7 +32,7 @@ cargo + cargo-zigbuild + cross.
 |---|---|---|
 | `tar.gz` | ✅ Verified | [`anodizer-0.1.1-linux-amd64.tar.gz`](https://github.com/tj-smith47/anodizer/releases/download/v0.1.1/anodizer-0.1.1-linux-amd64.tar.gz) |
 | `zip` | ✅ Verified | [`anodizer-0.1.1-windows-amd64.zip`](https://github.com/tj-smith47/anodizer/releases/download/v0.1.1/anodizer-0.1.1-windows-amd64.zip) |
-| `tar.xz`, `tar.zst`, `tgz` | 🤝 Help wanted | Format dispatch covered; no live release uses them |
+| `tar.xz`, `tar.zst`, `tgz` | ✅ Verified | Second `archives[]` entry emits all three; live artifacts attach to releases >= v0.2.0 |
 | `source.format` | ✅ Verified | [`anodizer-0.1.1-source.tar.gz`](https://github.com/tj-smith47/anodizer/releases/download/v0.1.1/anodizer-0.1.1-source.tar.gz) |
 | `makeselfs[]` | ✅ Verified | [`anodizer-0.1.1-linux-amd64-installer.run`](https://github.com/tj-smith47/anodizer/releases/download/v0.1.1/anodizer-0.1.1-linux-amd64-installer.run) (4 platforms) |
 

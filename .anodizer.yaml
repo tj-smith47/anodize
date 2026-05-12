@@ -101,6 +101,7 @@ before:
     - cargo fmt --check
     - cargo clippy -- -D warnings
     - cargo test
+    - mkdir -p dist && cargo run --release --bin anodizer -- man > dist/anodizer.1
 
 after:
   post:
@@ -261,6 +262,18 @@ crates:
           - LICENSE
           - README.md
           - docs/configuration.md
+      # Second archive entry exercises tar.xz / tar.zst on unix and tgz on
+      # windows. Name suffix `-extra` keeps outputs from colliding with the
+      # primary entry above.
+      - id: extra
+        name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}-extra"
+        formats: [tar.xz, tar.zst]
+        format_overrides:
+          - os: windows
+            formats: [tgz]
+        files:
+          - LICENSE
+          - README.md
     checksum:
       name_template: "{{ ArtifactName }}.sha256"
       algorithm: sha256
@@ -298,6 +311,8 @@ crates:
       # was provisioned).
       extra_files:
         - glob: "dist/*-apk-signing-key.rsa.pub"
+          allow_empty: true
+        - glob: "dist/anodizer.1"
           allow_empty: true
     publish:
       # `cargo:` inherits from defaults.publish.cargo (= {} → presence-as-opt-in).
