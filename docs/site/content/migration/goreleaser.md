@@ -19,7 +19,7 @@ If you're coming from GoReleaser, anodizer will feel familiar. The config struct
 | `release` | `crates[].release` | Nested under crate |
 | `brews` | `crates[].publish.homebrew` | Renamed; nested under publish |
 | `scoop` | `crates[].publish.scoop` | Nested under publish |
-| `mcp_registries` | `mcp` | Renamed (singular). Top-level key, same `auth.type` enum (`none` / `github` / `github-oidc`) and identical templating, so migration is a direct rename. See [MCP registry](@/docs/publish/mcp-registry.md) |
+| `mcp` | `mcp` | Identical top-level key. The deprecated nested `mcp.github:` block from older GoReleaser configs collapses to top-level `mcp.*` fields in anodizer (matches upstream's current recommendation). See [MCP registry](@/docs/publish/mcp-registry.md) |
 | `dockers` | `crates[].docker` | Nested under crate |
 | `signs` | `signs` | Top-level, same structure |
 | `nfpms` | `crates[].nfpm` | Nested under crate |
@@ -48,7 +48,7 @@ name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
 
 3. **Template engine**: GoReleaser uses Go templates. Anodizer uses Tera (Jinja2-like). The GoReleaser `{{ .Field }}` syntax is supported for compatibility, but Tera's native syntax offers more features (pipes, filters, loops).
 
-4. **Package manager names**: `brews` → `publish.homebrew`, `scoop` → `publish.scoop`, `mcp_registries` → `mcp`.
+4. **Package manager names**: `brews` → `publish.homebrew`, `scoop` → `publish.scoop`. MCP keeps the same top-level `mcp:` key — see [MCP registry](@/docs/publish/mcp-registry.md) for the nested `mcp.github:` collapse.
 
 ## Migration steps
 

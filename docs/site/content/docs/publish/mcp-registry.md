@@ -206,18 +206,19 @@ Tera templates are evaluated on these fields before publish: `name`, `title`, `d
 
 ## GoReleaser parity
 
-This publisher mirrors GoReleaser's [`mcp_registries`](https://goreleaser.com/customization/mcp_registries/) pipe (upstream: `internal/pipe/mcp/mcp.go`). The schema is identical apart from the singular key name (`mcp` vs. `mcp_registries`). The fields map 1:1:
+This publisher mirrors GoReleaser's [`mcp`](https://goreleaser.com/customization/mcp/) pipe (upstream: `internal/pipe/mcp/mcp.go`). The top-level YAML key is identical (`mcp:` in both). The only schema difference is that GoReleaser's deprecated nested `mcp.github:` block (used in older configs) is collapsed to top-level `mcp.*` fields in anodizer, matching upstream's current recommendation:
 
 ```yaml
-# GoReleaser                  # anodizer
-mcp_registries:                mcp:
-  - name: io.github.x/y          name: io.github.x/y
-    description: "..."           description: "..."
-    packages:                    packages:
-      - registry_type: oci         - registry_type: oci
-        identifier: ghcr.io/x        identifier: ghcr.io/x
-    auth:                        auth:
-      type: github-oidc            type: github-oidc
+# GoReleaser (legacy nested)   # anodizer / current GoReleaser
+mcp:                            mcp:
+  github:                         name: io.github.x/y
+    name: io.github.x/y           description: "..."
+    description: "..."            packages:
+    packages:                       - registry_type: oci
+      - registry_type: oci            identifier: ghcr.io/x
+        identifier: ghcr.io/x     auth:
+    auth:                           type: github-oidc
+      type: github-oidc
 ```
 
-See the [GoReleaser migration guide](@/migration/goreleaser.md) for the rename.
+Anodizer never had the nested form — write top-level fields directly. See the [GoReleaser migration guide](@/migration/goreleaser.md) for the full mapping.
