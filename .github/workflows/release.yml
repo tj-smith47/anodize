@@ -112,7 +112,7 @@ jobs:
           from-artifact: anodizer-linux
           artifact-run-id: auto
           artifact-workflow: ci.yml
-          install: nfpm,makeself,snapcraft,rpmbuild,cosign
+          install: nfpm,makeself,snapcraft,rpmbuild,cosign,syft
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
           apk-private-key: ${{ secrets.APK_PRIVATE_KEY }}
           args: release --merge
