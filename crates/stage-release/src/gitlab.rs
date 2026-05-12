@@ -10,6 +10,7 @@
 
 use std::path::Path;
 
+use anodizer_core::redact::redact_bearer_tokens;
 use anodizer_core::retry::{RetryPolicy, SuccessClass, retry_http_async};
 use anodizer_core::url::percent_encode_path_segment;
 use anyhow::{Context as _, Result, bail};
@@ -222,7 +223,12 @@ pub(crate) async fn gitlab_create_release(
         policy,
         SuccessClass::Strict,
         |_| client.get(&get_url).send(),
-        |status, body| format!("gitlab: GET release by tag failed (HTTP {status}): {body}"),
+        |status, body| {
+            format!(
+                "gitlab: GET release by tag failed (HTTP {status}): {}",
+                redact_bearer_tokens(body)
+            )
+        },
     )
     .await;
 
@@ -247,7 +253,12 @@ pub(crate) async fn gitlab_create_release(
                 policy,
                 SuccessClass::Strict,
                 |_| client.put(&update_url).json(&payload).send(),
-                |status, body| format!("gitlab: update release failed (HTTP {status}): {body}"),
+                |status, body| {
+                    format!(
+                        "gitlab: update release failed (HTTP {status}): {}",
+                        redact_bearer_tokens(body)
+                    )
+                },
             )
             .await?;
             false
@@ -286,7 +297,12 @@ pub(crate) async fn gitlab_create_release(
             policy,
             SuccessClass::Strict,
             |_| client.post(&create_url).json(&payload).send(),
-            |status, body| format!("gitlab: create release failed (HTTP {status}): {body}"),
+            |status, body| {
+                format!(
+                    "gitlab: create release failed (HTTP {status}): {}",
+                    redact_bearer_tokens(body)
+                )
+            },
         )
         .await?;
     }
@@ -405,7 +421,10 @@ pub(crate) async fn gitlab_upload_asset(
             SuccessClass::Strict,
             |_| client.get(&links_api).send(),
             |status, body| {
-                format!("gitlab: list existing release links failed (HTTP {status}): {body}")
+                format!(
+                    "gitlab: list existing release links failed (HTTP {status}): {}",
+                    redact_bearer_tokens(body)
+                )
             },
         )
         .await;
@@ -429,8 +448,10 @@ pub(crate) async fn gitlab_upload_asset(
                             |_| client.delete(&delete_url).send(),
                             |status, body| {
                                 format!(
-                                    "gitlab: delete existing link '{}' (id={}) failed (HTTP {status}): {body}",
-                                    file_name, link_id
+                                    "gitlab: delete existing link '{}' (id={}) failed (HTTP {status}): {}",
+                                    file_name,
+                                    link_id,
+                                    redact_bearer_tokens(body)
                                 )
                             },
                         )
@@ -445,7 +466,7 @@ pub(crate) async fn gitlab_upload_asset(
                     "gitlab: create release link for '{}' failed (HTTP {}): {}",
                     file_name,
                     status_code,
-                    text
+                    redact_bearer_tokens(&text)
                 );
             }
         }
@@ -458,8 +479,9 @@ pub(crate) async fn gitlab_upload_asset(
             |_| client.post(&links_api).json(&payload).send(),
             |status, body| {
                 format!(
-                    "gitlab: create release link for '{}' failed on retry (HTTP {status}): {body}",
-                    file_name
+                    "gitlab: create release link for '{}' failed on retry (HTTP {status}): {}",
+                    file_name,
+                    redact_bearer_tokens(body)
                 )
             },
         )
@@ -470,7 +492,7 @@ pub(crate) async fn gitlab_upload_asset(
             "gitlab: create release link for '{}' failed (HTTP {}): {}",
             file_name,
             status_code,
-            text
+            redact_bearer_tokens(&text)
         );
     }
 
@@ -577,8 +599,9 @@ async fn upload_via_package_registry(
         },
         |status, body| {
             format!(
-                "gitlab: package registry upload '{}' failed (HTTP {status}): {body}",
-                file_name
+                "gitlab: package registry upload '{}' failed (HTTP {status}): {}",
+                file_name,
+                redact_bearer_tokens(body)
             )
         },
     )
@@ -633,8 +656,9 @@ async fn upload_via_project_uploads(
         },
         |status, body| {
             format!(
-                "gitlab: project upload '{}' failed (HTTP {status}): {body}",
-                file_name
+                "gitlab: project upload '{}' failed (HTTP {status}): {}",
+                file_name,
+                redact_bearer_tokens(body)
             )
         },
     )
@@ -979,6 +1003,64 @@ mod tests {
             calls.load(Ordering::SeqCst),
             3,
             "expected 3 connections (503-retry GET, 200 GET, 200 PUT)"
+        );
+    }
+
+    /// Defense-in-depth: a GitLab API 4xx response that echoes our
+    /// `Authorization: Bearer <PAT>` header back must not leak the token
+    /// into the user-visible error chain. Exercises the
+    /// `gitlab_create_release` GET-probe error-message closure on the
+    /// 401-fast-fail path. Other gitlab.rs body-interpolation sites share
+    /// the same redaction wrap.
+    #[tokio::test]
+    async fn gitlab_create_release_redacts_bearer_in_error_body() {
+        use std::time::Duration;
+
+        let leaky = r#"{"message":"401 Unauthorized: Authorization: Bearer ghp_FAKETOKEN1234567890abcdefg"}"#;
+        let body_len = leaky.len();
+        // 401 fast-fails (not 403/404 which are the "release missing" signal).
+        let resp: &'static str = Box::leak(
+            format!(
+                "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {body_len}\r\n\r\n{leaky}"
+            )
+            .into_boxed_str(),
+        );
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![resp]);
+
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .expect("client");
+        let policy = RetryPolicy {
+            max_attempts: 3,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(2),
+        };
+        let api_url = format!("http://{addr}");
+        let ctx = GitlabCtx {
+            client: &client,
+            api_url: &api_url,
+            project_id: "myorg/myproj",
+            policy: &policy,
+        };
+        let spec = GitlabReleaseSpec {
+            tag: "v1.0.0",
+            name: "Release v1.0.0",
+            body: "new body",
+            commit: "abc123",
+            release_mode: "replace",
+        };
+        let err = gitlab_create_release(&ctx, &spec)
+            .await
+            .expect_err("401 must fast-fail");
+        let chain = format!("{err:#}");
+        assert!(
+            !chain.contains("ghp_FAKETOKEN1234567890abcdefg"),
+            "bearer token leaked into error chain: {chain}"
+        );
+        assert!(
+            chain.contains("<redacted>"),
+            "expected `<redacted>` marker in error chain: {chain}"
         );
     }
 }

@@ -19,6 +19,7 @@
 
 use std::path::Path;
 
+use anodizer_core::redact::redact_bearer_tokens;
 use anodizer_core::retry::{RetryPolicy, SuccessClass, retry_http_async};
 use anodizer_core::url::percent_encode_path_segment as encode_segment;
 use anyhow::{Context as _, Result};
@@ -175,7 +176,12 @@ pub(crate) async fn gitea_create_release(
             policy,
             SuccessClass::Strict,
             |_| client.patch(&update_url).json(&payload).send(),
-            |status, body| format!("gitea: update release failed (HTTP {status}): {body}"),
+            |status, body| {
+                format!(
+                    "gitea: update release failed (HTTP {status}): {}",
+                    redact_bearer_tokens(body)
+                )
+            },
         )
         .await?;
 
@@ -197,7 +203,12 @@ pub(crate) async fn gitea_create_release(
             policy,
             SuccessClass::Strict,
             |_| client.post(&create_url).json(&payload).send(),
-            |status, body| format!("gitea: create release failed (HTTP {status}): {body}"),
+            |status, body| {
+                format!(
+                    "gitea: create release failed (HTTP {status}): {}",
+                    redact_bearer_tokens(body)
+                )
+            },
         )
         .await?;
 
@@ -244,7 +255,12 @@ async fn find_release_by_tag(
             policy,
             SuccessClass::Strict,
             |_| client.get(&url).send(),
-            |status, body| format!("gitea: list releases failed (HTTP {status}): {body}"),
+            |status, body| {
+                format!(
+                    "gitea: list releases failed (HTTP {status}): {}",
+                    redact_bearer_tokens(body)
+                )
+            },
         )
         .await?;
 
@@ -335,8 +351,10 @@ pub(crate) async fn gitea_upload_asset(
         },
         |status, body| {
             format!(
-                "gitea: upload asset '{}' to release {} failed (HTTP {status}): {body}",
-                file_name, release_id
+                "gitea: upload asset '{}' to release {} failed (HTTP {status}): {}",
+                file_name,
+                release_id,
+                redact_bearer_tokens(body)
             )
         },
     )
@@ -376,7 +394,12 @@ pub(crate) async fn gitea_delete_asset_by_name(
         policy,
         SuccessClass::Strict,
         |_| client.get(&list_url).send(),
-        |status, body| format!("gitea: list release assets failed (HTTP {status}): {body}"),
+        |status, body| {
+            format!(
+                "gitea: list release assets failed (HTTP {status}): {}",
+                redact_bearer_tokens(body)
+            )
+        },
     )
     .await?;
 
@@ -403,8 +426,11 @@ pub(crate) async fn gitea_delete_asset_by_name(
                 |_| client.delete(&delete_url).send(),
                 |status, body| {
                     format!(
-                        "gitea: delete asset '{}' (id={}) from release {} failed (HTTP {status}): {body}",
-                        file_name, asset_id, release_id
+                        "gitea: delete asset '{}' (id={}) from release {} failed (HTTP {status}): {}",
+                        file_name,
+                        asset_id,
+                        release_id,
+                        redact_bearer_tokens(body)
                     )
                 },
             )
@@ -622,6 +648,66 @@ mod tests {
             calls.load(Ordering::SeqCst),
             3,
             "expected 3 connections (503-retry GET, 200 GET, 201 POST)"
+        );
+    }
+
+    /// Defense-in-depth: a Gitea API 4xx response that echoes our
+    /// `Authorization: Bearer <PAT>` header back must not leak the token
+    /// into the user-visible error chain. Exercises the
+    /// `find_release_by_tag` GET error path on the 401-fast-fail path.
+    /// All gitea.rs body-interpolation sites share the same redaction wrap.
+    #[tokio::test]
+    async fn gitea_create_release_redacts_bearer_in_error_body() {
+        use std::time::Duration;
+
+        let leaky = r#"{"message":"401 Unauthorized: Authorization: Bearer ghp_FAKETOKEN1234567890abcdefg"}"#;
+        let body_len = leaky.len();
+        let resp: &'static str = Box::leak(
+            format!(
+                "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {body_len}\r\n\r\n{leaky}"
+            )
+            .into_boxed_str(),
+        );
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![resp]);
+
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .expect("client");
+        let policy = RetryPolicy {
+            max_attempts: 3,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(2),
+        };
+        let api_url = format!("http://{addr}");
+
+        let ctx = GiteaCtx {
+            client: &client,
+            api_url: &api_url,
+            owner: "myorg",
+            repo: "myrepo",
+            policy: &policy,
+        };
+        let spec = GiteaReleaseSpec {
+            tag: "v1.0.0",
+            commit: "abc123",
+            name: "Release v1.0.0",
+            body: "release body",
+            draft: false,
+            prerelease: false,
+            release_mode: "replace",
+        };
+        let err = gitea_create_release(&ctx, &spec)
+            .await
+            .expect_err("401 must fast-fail");
+        let chain = format!("{err:#}");
+        assert!(
+            !chain.contains("ghp_FAKETOKEN1234567890abcdefg"),
+            "bearer token leaked into error chain: {chain}"
+        );
+        assert!(
+            chain.contains("<redacted>"),
+            "expected `<redacted>` marker in error chain: {chain}"
         );
     }
 }
