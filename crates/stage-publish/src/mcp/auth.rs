@@ -353,8 +353,12 @@ pub(crate) fn build_client(timeout: Duration) -> Result<reqwest::blocking::Clien
         .context("mcp: build HTTP client")
 }
 
-/// Compute the OIDC audience from a registry URL: `scheme://lowercase-host`.
-/// Mirrors upstream `github-oidc.go::audienceFromRegistryURL`.
+/// Compute the OIDC audience from a registry URL: `scheme://lowercase-host[:port]`.
+///
+/// Mirrors upstream Go `net/url`'s `u.Host` (host:port). The audience claim is
+/// the upstream-identity used by the registry to verify the id-token; matching
+/// upstream avoids token-rejection on private mirrors that bind to a non-default
+/// port (e.g. `http://mcp.internal:8080`).
 fn audience_from_registry_url(url: &str) -> Result<String> {
     let trimmed = url.trim();
     if trimmed.is_empty() {
@@ -369,7 +373,11 @@ fn audience_from_registry_url(url: &str) -> Result<String> {
     if scheme.is_empty() {
         anyhow::bail!("mcp: registry URL must include a scheme: {}", trimmed);
     }
-    Ok(format!("{}://{}", scheme, host.to_ascii_lowercase()))
+    let lower_host = host.to_ascii_lowercase();
+    match parsed.port() {
+        Some(port) => Ok(format!("{}://{}:{}", scheme, lower_host, port)),
+        None => Ok(format!("{}://{}", scheme, lower_host)),
+    }
 }
 
 #[cfg(test)]
@@ -380,8 +388,27 @@ mod tests {
     fn audience_uses_scheme_and_lowercased_host() {
         let a = audience_from_registry_url("https://Registry.ModelContextProtocol.IO").unwrap();
         assert_eq!(a, "https://registry.modelcontextprotocol.io");
-        let a = audience_from_registry_url("http://localhost:8080").unwrap();
-        assert_eq!(a, "http://localhost");
+    }
+
+    #[test]
+    fn audience_includes_explicit_port() {
+        // Mirrors upstream Go net/url u.Host (host:port). A private mirror at
+        // a non-default port must produce an audience claim including the port;
+        // anodizer previously stripped it (reqwest::Url::host_str() omits port),
+        // diverging from upstream and risking token rejection.
+        let a = audience_from_registry_url("http://mcp.internal:8080").unwrap();
+        assert_eq!(a, "http://mcp.internal:8080");
+        let a = audience_from_registry_url("https://Mirror.Example.COM:9443/v0").unwrap();
+        assert_eq!(a, "https://mirror.example.com:9443");
+    }
+
+    #[test]
+    fn audience_omits_default_port() {
+        // reqwest::Url::port() returns None for default ports (80, 443) even
+        // when present in the input — matches Go's url.Host behavior of only
+        // emitting the port when it differs from the scheme default.
+        let a = audience_from_registry_url("https://registry.modelcontextprotocol.io").unwrap();
+        assert_eq!(a, "https://registry.modelcontextprotocol.io");
     }
 
     #[test]

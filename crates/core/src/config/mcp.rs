@@ -140,6 +140,15 @@ impl McpAuthMethod {
     /// Parse the auth method from its over-the-wire string form. Accepts the
     /// three valid methods plus empty (treated as `None`, matching
     /// GoReleaser's `mcp.go::Default` defaulting behaviour).
+    ///
+    /// Re-parsed from string AFTER template render so users can template
+    /// `auth.type: "{{ if eq .Env.MODE \"ci\" }}github-oidc{{ else }}none{{ end }}"`.
+    /// The render-emit-reparse round-trip is the cost of supporting templated
+    /// enum values; without it, the enum would be locked at config-load time
+    /// before tera context is available. Mirrors GoReleaser
+    /// `internal/pipe/mcp/mcp.go::Publish` lines 72-85 where every string field
+    /// (including `auth.type`, which Go represents as `string`) is passed
+    /// through `tmpl.New(ctx).ApplyAll(...)` before being consumed.
     pub fn parse(s: &str) -> anyhow::Result<Self> {
         match s.trim() {
             "" | "none" => Ok(Self::None),
