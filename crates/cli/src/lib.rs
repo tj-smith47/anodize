@@ -103,7 +103,7 @@ pub enum Commands {
         no_preflight: bool,
         #[arg(
             long,
-            help = "Treat Unknown publisher state as a blocker during pre-flight"
+            help = "Alias for --strict (also treats Unknown publisher state as a blocker during pre-flight)"
         )]
         strict_preflight: bool,
         #[arg(long, help = "Set the release as a draft")]

@@ -124,22 +124,29 @@ fn walkdir(dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>> {
 /// Outcome of checking the NuGet V2 feed for an existing package version.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum FeedHashResult {
-    /// Feed has this version. `listed` and `status` distinguish a published
-    /// (Listed=true) version from one stuck in the community moderation
-    /// queue (Listed=false, status=Submitted/Unknown/Rejected/Exempted).
+    /// Feed has this version. `status` and `is_approved` distinguish a
+    /// published version from one stuck in the community moderation queue.
+    ///
+    /// The OData feed used by the Chocolatey community gallery does NOT
+    /// emit `<d:Listed>` — moderation state is exposed only via
+    /// `<d:PackageStatus>` ("Submitted" / "Approved" / "Rejected" /
+    /// "Exempted" / "Unknown") and `<d:IsApproved>` (boolean). Live
+    /// responses (2026-05-13):
+    /// - in moderation: `PackageStatus=Submitted`, `IsApproved=false`
+    /// - approved:      `PackageStatus=Approved`,  `IsApproved=true`
     Present {
         hash: String,
         algorithm: String,
-        /// `<d:PackageStatus>`: "Submitted" / "Listed" / "Rejected" /
+        /// `<d:PackageStatus>`: "Submitted" / "Approved" / "Rejected" /
         /// "Exempted" / "Unknown". Absent on feeds that don't expose the
         /// field.
         status: Option<String>,
-        /// `<d:Listed>` boolean. `Some(false)` for moderation-queue
-        /// entries; `Some(true)` once a moderator approves; `None` when
-        /// the feed didn't expose the field.
-        listed: Option<bool>,
+        /// `<d:IsApproved>` boolean. `Some(true)` for approved packages,
+        /// `Some(false)` for any non-approved (typically moderation queue),
+        /// `None` when the feed didn't expose the field.
+        is_approved: Option<bool>,
         /// `<d:Published>` ISO-8601. The string "1900-01-01T00:00:00" is
-        /// Chocolatey's unlisted sentinel (matches Listed=false).
+        /// Chocolatey's unlisted sentinel.
         published: Option<String>,
     },
     /// Feed has this version but we could not parse a hash for it.
@@ -220,17 +227,52 @@ pub(crate) fn package_feed_hash(
     let hash = parse_xml_element(&body, "PackageHash");
     let algorithm = parse_xml_element(&body, "PackageHashAlgorithm");
     let status = parse_xml_element(&body, "PackageStatus");
-    let listed = parse_xml_element(&body, "Listed").and_then(|v| v.parse::<bool>().ok());
+    let is_approved = parse_xml_element(&body, "IsApproved").and_then(|v| v.parse::<bool>().ok());
     let published = parse_xml_element(&body, "Published");
     match (hash, algorithm) {
         (Some(h), Some(a)) if !h.is_empty() && !a.is_empty() => FeedHashResult::Present {
             hash: h,
             algorithm: a,
             status,
-            listed,
+            is_approved,
             published,
         },
         _ => FeedHashResult::PresentNoHash,
+    }
+}
+
+/// Classify a Present-feed-row's moderation state into a single triad:
+/// `(label, in_moderation)`.
+///
+/// `label` is the short human-readable reason (e.g. "package in moderation
+/// queue", "package rejected by moderator", "package approved"); the second
+/// element is `true` when the row is in/awaiting moderation (i.e. a blocker
+/// for both the preflight check and the publish step), `false` when it is
+/// effectively visible (Approved, or unknown-but-row-exists — conservative).
+///
+/// Single source of truth for the two callsites — `preflight::Chocolatey`
+/// and `chocolatey::publish` — that both need to decide whether a row in
+/// the feed is "live" or "still in moderation".
+pub(crate) fn classify_moderation(
+    status: Option<&str>,
+    is_approved: Option<bool>,
+) -> (&'static str, bool) {
+    // PackageStatus is the canonical discriminator; IsApproved is a fallback
+    // when status is missing. The OData feed always emits PackageStatus for
+    // rows that exist, but stay conservative.
+    match status.map(|s| s.to_ascii_lowercase()) {
+        Some(ref s) if s == "rejected" => ("package rejected by moderator", true),
+        Some(ref s) if s == "submitted" || s == "unknown" || s == "exempted" => {
+            ("package in moderation queue", true)
+        }
+        Some(ref s) if s == "approved" => ("package approved", false),
+        _ => match is_approved {
+            Some(false) => ("package in moderation queue", true),
+            Some(true) => ("package approved", false),
+            // Row exists but neither field present — conservatively treat
+            // as visible (matches "at minimum, the row is on the feed").
+            None => ("package on feed (status field absent)", false),
+        },
     }
 }
 

@@ -399,16 +399,24 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
             hash,
             algorithm,
             status,
-            listed,
+            is_approved,
             published,
         } => {
-            // A version stuck in the community moderation queue (Listed=false,
-            // status=Submitted/Unknown/Rejected/Exempted) MUST NOT be re-pushed
-            // — Chocolatey rejects re-pushes of submitted versions, and the
-            // hash-match check below would otherwise silently no-op every CI
-            // run while the gallery shows nothing. Surface the queue state
-            // explicitly so the operator knows to wait or contact moderators.
-            if listed == Some(false) {
+            // A version stuck in the community moderation queue MUST NOT be
+            // re-pushed — Chocolatey rejects re-pushes of submitted versions,
+            // and the hash-match check below would otherwise silently no-op
+            // every CI run while the gallery shows nothing. Surface the queue
+            // state explicitly so the operator knows to wait or contact
+            // moderators.
+            //
+            // Discriminator: `<d:PackageStatus>` (with `<d:IsApproved>` as
+            // fallback). The OData feed does NOT emit `<d:Listed>`, so any
+            // state machine keyed on it is dead code. The classifier is
+            // shared with the preflight checker so both call sites agree on
+            // what "in moderation" means.
+            let (reason, in_moderation) =
+                crate::chocolatey::package::classify_moderation(status.as_deref(), is_approved);
+            if in_moderation {
                 let status_label = status.as_deref().unwrap_or("Unknown");
                 let published_label = published.as_deref().unwrap_or("");
                 if status_label.eq_ignore_ascii_case("Rejected") {
@@ -422,11 +430,10 @@ pub fn publish_to_chocolatey(ctx: &Context, crate_name: &str, log: &StageLogger)
                     );
                 }
                 log.status(&format!(
-                    "chocolatey: '{}-{}' is in the community moderation queue \
-                     (PackageStatus={}, Published={}); not re-pushing — waiting on \
-                     moderator approval. The gallery will not list the package until \
-                     it transitions to Listed=true.",
-                    pkg_name, version, status_label, published_label
+                    "chocolatey: '{}-{}' {} (PackageStatus={}, Published={}); not \
+                     re-pushing — waiting on moderator approval. The gallery will \
+                     not list the package until it transitions to Approved.",
+                    pkg_name, version, reason, status_label, published_label
                 ));
                 return Ok(());
             }

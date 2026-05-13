@@ -625,12 +625,15 @@ fn test_create_nupkg_produces_valid_opc_zip() {
 /// `Packages(Id='X',Version='Y')` response. Only the fields we parse
 /// are populated; everything else is omitted to keep the fixture
 /// readable.
+///
+/// Note: the real feed does NOT emit `<d:Listed>` — moderation state is
+/// signalled via `<d:PackageStatus>` and `<d:IsApproved>` only.
 fn odata_response(
     version: &str,
     hash: Option<&str>,
     algorithm: Option<&str>,
     status: Option<&str>,
-    listed: Option<bool>,
+    is_approved: Option<bool>,
     published: Option<&str>,
 ) -> String {
     let mut props = String::new();
@@ -646,8 +649,8 @@ fn odata_response(
     if let Some(s) = status {
         props.push_str(&format!("<d:PackageStatus>{}</d:PackageStatus>", s));
     }
-    if let Some(l) = listed {
-        props.push_str(&format!("<d:Listed>{}</d:Listed>", l));
+    if let Some(a) = is_approved {
+        props.push_str(&format!("<d:IsApproved>{}</d:IsApproved>", a));
     }
     if let Some(p) = published {
         props.push_str(&format!("<d:Published>{}</d:Published>", p));
@@ -676,7 +679,7 @@ fn test_parse_xml_element_handles_namespaced_tags() {
 }
 
 #[test]
-fn test_parse_xml_element_handles_listed_and_published() {
+fn test_parse_xml_element_handles_status_and_published() {
     let body = odata_response(
         "0.3.5",
         Some("XYZ"),
@@ -689,7 +692,10 @@ fn test_parse_xml_element_handles_listed_and_published() {
         parse_xml_element(&body, "PackageStatus").as_deref(),
         Some("Submitted")
     );
-    assert_eq!(parse_xml_element(&body, "Listed").as_deref(), Some("false"));
+    assert_eq!(
+        parse_xml_element(&body, "IsApproved").as_deref(),
+        Some("false")
+    );
     assert_eq!(
         parse_xml_element(&body, "Published").as_deref(),
         Some("1900-01-01T00:00:00")
@@ -700,5 +706,5 @@ fn test_parse_xml_element_handles_listed_and_published() {
 fn test_parse_xml_element_returns_none_when_absent() {
     let body = r#"<m:properties><d:PackageHash>abc</d:PackageHash></m:properties>"#;
     assert!(parse_xml_element(body, "PackageStatus").is_none());
-    assert!(parse_xml_element(body, "Listed").is_none());
+    assert!(parse_xml_element(body, "IsApproved").is_none());
 }

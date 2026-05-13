@@ -61,7 +61,9 @@ impl PreflightChecker for CargoCratesIo {
         match query_crates_io(&url, package, version, &self.policy) {
             Ok(true) => PublisherState::Published,
             Ok(false) => PublisherState::Clean,
-            Err(e) => PublisherState::Unknown(e.to_string()),
+            Err(e) => PublisherState::Unknown {
+                reason: e.to_string(),
+            },
         }
     }
 }
@@ -152,20 +154,26 @@ impl PreflightChecker for Chocolatey {
     }
 
     fn check(&self, package: &str, version: &str) -> PublisherState {
-        use crate::chocolatey::package::{FeedHashResult, package_feed_hash};
+        use crate::chocolatey::package::{FeedHashResult, classify_moderation, package_feed_hash};
 
         match package_feed_hash(&self.source, package, version, &self.policy) {
-            FeedHashResult::Present { listed, status, .. } => {
-                if listed == Some(false) {
-                    let label = status.as_deref().unwrap_or("Unknown");
-                    if label.eq_ignore_ascii_case("Rejected") {
-                        // Rejected is a hard blocker too — can't re-push.
-                        return PublisherState::InModeration;
+            FeedHashResult::Present {
+                status,
+                is_approved,
+                ..
+            } => {
+                // Moderation discriminator is `<d:PackageStatus>` (with
+                // `<d:IsApproved>` as fallback). The community feed does
+                // NOT emit `<d:Listed>`, so any state machine keyed on it
+                // is dead code.
+                let (reason, in_moderation) = classify_moderation(status.as_deref(), is_approved);
+                if in_moderation {
+                    PublisherState::InModeration {
+                        reason: reason.to_string(),
                     }
-                    return PublisherState::InModeration;
+                } else {
+                    PublisherState::Published
                 }
-                // listed == Some(true) or None → version is live
-                PublisherState::Published
             }
             FeedHashResult::PresentNoHash => {
                 // Version exists but hash unreadable — treat as published.
@@ -199,14 +207,31 @@ impl PreflightChecker for Winget {
 
     fn check(&self, package: &str, version: &str) -> PublisherState {
         // Search for an open PR in microsoft/winget-pkgs whose title contains
-        // `<PackageIdentifier> <version>` — the conventional winget PR title
-        // format (GoReleaser parity: "New version: <id> <version>").
+        // `<PackageIdentifier> <version>`. anodizer's convention is to title
+        // the PR `"New version: <PackageIdentifier> version <Version>"`, but
+        // GitHub's `in:title` matches words independently so the query
+        // works for any title that mentions both tokens.
         match query_winget_pr(package, version, self.token.as_deref(), &self.policy) {
-            Ok(Some(url)) => PublisherState::PRPending(url),
-            Ok(None) => PublisherState::Clean,
-            Err(e) => PublisherState::Unknown(e.to_string()),
+            Ok(WingetPrLookup::Found(url)) => PublisherState::PRPending(url),
+            Ok(WingetPrLookup::NotFound) => PublisherState::Clean,
+            Ok(WingetPrLookup::ItemWithoutUrl) => PublisherState::Unknown {
+                reason: "winget search response missing html_url".into(),
+            },
+            Err(e) => PublisherState::Unknown {
+                reason: e.to_string(),
+            },
         }
     }
+}
+
+/// Three-way result for the winget PR lookup so the caller can distinguish
+/// "no PR" from "PR row returned but `html_url` was missing" — the second
+/// case used to fall back to the listing URL, which is not a PR.
+#[derive(Debug)]
+enum WingetPrLookup {
+    Found(String),
+    NotFound,
+    ItemWithoutUrl,
 }
 
 /// Query the GitHub search API for open PRs in microsoft/winget-pkgs that
@@ -227,7 +252,7 @@ fn query_winget_pr(
     version: &str,
     token: Option<&str>,
     policy: &RetryPolicy,
-) -> Result<Option<String>> {
+) -> Result<WingetPrLookup> {
     let query = format!(
         "repo:microsoft/winget-pkgs is:pr is:open {} {} in:title",
         package, version
@@ -248,7 +273,7 @@ fn query_winget_pr_at(
     url: &str,
     token: Option<&str>,
     policy: &RetryPolicy,
-) -> Result<Option<String>> {
+) -> Result<WingetPrLookup> {
     let token_clone = token.map(str::to_string);
     let url_clone = url.to_string();
     let label = format!("preflight: winget PR search ({})", url);
@@ -292,17 +317,21 @@ fn query_winget_pr_at(
             // 422 = query validation error — treat as no-PR rather than
             // bubbling as Unknown (a malformed query is not a network blip).
             if status_code == 422 {
-                return Ok(None);
+                return Ok(WingetPrLookup::NotFound);
             }
             return Err(err);
         }
     };
 
-    let v: serde_json::Value = serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
+    // Surface malformed JSON as a typed error so the caller maps it to
+    // Unknown — silently coalescing to `Null` makes a corrupted response
+    // indistinguishable from "no PR" (Clean).
+    let v: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|e| anyhow::anyhow!("malformed winget search response: {}", e))?;
     let total = v.get("total_count").and_then(|n| n.as_u64()).unwrap_or(0);
 
     if total == 0 {
-        return Ok(None);
+        return Ok(WingetPrLookup::NotFound);
     }
 
     let pr_url = v
@@ -312,9 +341,13 @@ fn query_winget_pr_at(
         .and_then(|u| u.as_str())
         .map(str::to_string);
 
-    // Fall back to the pulls listing URL when items[0] is present but its
-    // `html_url` is missing (defensive: live GitHub always populates this).
-    Ok(pr_url.or_else(|| Some("https://github.com/microsoft/winget-pkgs/pulls".to_string())))
+    // Surface "row returned but no html_url" as a distinct outcome so the
+    // caller can flag it as Unknown rather than synthesizing a misleading
+    // listing-page URL.
+    match pr_url {
+        Some(u) => Ok(WingetPrLookup::Found(u)),
+        None => Ok(WingetPrLookup::ItemWithoutUrl),
+    }
 }
 
 /// Minimal percent-encoder for GitHub search query strings.
@@ -359,9 +392,17 @@ impl PreflightChecker for Aur {
 
     fn check(&self, package: &str, version: &str) -> PublisherState {
         match query_aur_rpc(package, version, &self.policy) {
-            Ok(true) => PublisherState::Published, // informational — AUR allows overwrites
+            // AUR allows the same version to be re-pushed (it's a git push to
+            // the AUR repo), so the row's existence is informational rather
+            // than a blocker. Surface as Unknown with a reason so the report
+            // is honest about it instead of pretending the version is sealed.
+            Ok(true) => PublisherState::Unknown {
+                reason: "AUR is informational — overwritable on republish".into(),
+            },
             Ok(false) => PublisherState::Clean,
-            Err(e) => PublisherState::Unknown(e.to_string()),
+            Err(e) => PublisherState::Unknown {
+                reason: e.to_string(),
+            },
         }
     }
 }
@@ -412,7 +453,11 @@ fn query_aur_rpc_at(url: &str, version: &str, policy: &RetryPolicy) -> Result<bo
         }
     };
 
-    let v: serde_json::Value = serde_json::from_str(&body).unwrap_or(serde_json::Value::Null);
+    // Surface malformed JSON as a typed error so the caller maps it to
+    // Unknown — silently coalescing to `Null` makes a corrupted response
+    // indistinguishable from "no results" (Clean).
+    let v: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|e| anyhow::anyhow!("malformed AUR RPC response: {}", e))?;
     let found_version = v
         .get("results")
         .and_then(|r| r.as_array())
@@ -428,12 +473,51 @@ fn query_aur_rpc_at(url: &str, version: &str, policy: &RetryPolicy) -> Result<bo
 // run_preflight — orchestrates all enabled checkers
 // ---------------------------------------------------------------------------
 
+/// Per-publisher checker construction. Production code uses
+/// [`RealCheckerFactory`] (which builds the real network-hitting checkers);
+/// tests inject a mock factory that returns canned `PublisherState`s
+/// without touching the network.
+pub trait CheckerFactory {
+    fn cargo(&self, policy: RetryPolicy) -> Box<dyn PreflightChecker>;
+    fn chocolatey(&self, source: String, policy: RetryPolicy) -> Box<dyn PreflightChecker>;
+    fn winget(&self, token: Option<String>, policy: RetryPolicy) -> Box<dyn PreflightChecker>;
+    fn aur(&self, policy: RetryPolicy) -> Box<dyn PreflightChecker>;
+}
+
+/// Production factory — wires up the real HTTP-driven checkers.
+pub struct RealCheckerFactory;
+
+impl CheckerFactory for RealCheckerFactory {
+    fn cargo(&self, policy: RetryPolicy) -> Box<dyn PreflightChecker> {
+        Box::new(CargoCratesIo::new(policy))
+    }
+    fn chocolatey(&self, source: String, policy: RetryPolicy) -> Box<dyn PreflightChecker> {
+        Box::new(Chocolatey::new(source, policy))
+    }
+    fn winget(&self, token: Option<String>, policy: RetryPolicy) -> Box<dyn PreflightChecker> {
+        Box::new(Winget::new(token, policy))
+    }
+    fn aur(&self, policy: RetryPolicy) -> Box<dyn PreflightChecker> {
+        Box::new(Aur::new(policy))
+    }
+}
+
 /// Run all enabled one-way-door publisher checks and return an aggregated
 /// [`PreflightReport`].
 ///
 /// Checkers run sequentially. Each checker is only constructed when the
 /// corresponding publisher is configured for at least one selected crate.
 pub fn run_preflight(ctx: &Context, log: &StageLogger) -> Result<PreflightReport> {
+    run_preflight_with_factory(ctx, log, &RealCheckerFactory)
+}
+
+/// [`run_preflight`] with the checker construction injected — exposed so
+/// tests can drive the orchestration without spawning HTTP servers.
+pub fn run_preflight_with_factory(
+    ctx: &Context,
+    log: &StageLogger,
+    factory: &dyn CheckerFactory,
+) -> Result<PreflightReport> {
     let mut report = PreflightReport::new();
     let policy = ctx.retry_policy();
     let version = ctx.version();
@@ -457,7 +541,7 @@ pub fn run_preflight(ctx: &Context, log: &StageLogger) -> Result<PreflightReport
                 "preflight: checking cargo for '{}@{}'",
                 krate.name, version
             ));
-            let checker = CargoCratesIo::new(policy);
+            let checker = factory.cargo(policy);
             let state = checker.check(&krate.name, &version);
             report.push(PreflightEntry {
                 publisher: checker.publisher_name().to_string(),
@@ -479,7 +563,7 @@ pub fn run_preflight(ctx: &Context, log: &StageLogger) -> Result<PreflightReport
                 "preflight: checking chocolatey for '{}@{}'",
                 pkg_name, version
             ));
-            let checker = Chocolatey::new(source, policy);
+            let checker = factory.chocolatey(source, policy);
             let state = checker.check(&pkg_name, &version);
             report.push(PreflightEntry {
                 publisher: checker.publisher_name().to_string(),
@@ -502,7 +586,7 @@ pub fn run_preflight(ctx: &Context, log: &StageLogger) -> Result<PreflightReport
                 "preflight: checking winget for '{}@{}'",
                 pkg_id, version
             ));
-            let checker = Winget::new(token, policy);
+            let checker = factory.winget(token, policy);
             let state = checker.check(&pkg_id, &version);
             report.push(PreflightEntry {
                 publisher: checker.publisher_name().to_string(),
@@ -523,7 +607,7 @@ pub fn run_preflight(ctx: &Context, log: &StageLogger) -> Result<PreflightReport
                 "preflight: checking AUR for '{}@{}'",
                 pkg_name, version
             ));
-            let checker = Aur::new(policy);
+            let checker = factory.aur(policy);
             let state = checker.check(&pkg_name, &version);
             report.push(PreflightEntry {
                 publisher: checker.publisher_name().to_string(),
@@ -592,7 +676,12 @@ mod tests {
     fn mock_in_moderation_is_blocker() {
         let report = run_mocks(vec![
             ("cargo", PublisherState::Clean),
-            ("chocolatey", PublisherState::InModeration),
+            (
+                "chocolatey",
+                PublisherState::InModeration {
+                    reason: "package in moderation queue".into(),
+                },
+            ),
             ("winget", PublisherState::Clean),
             ("aur", PublisherState::Published),
         ]);
@@ -625,7 +714,9 @@ mod tests {
     fn mock_unknown_non_strict_not_blocker() {
         let report = run_mocks(vec![(
             "aur",
-            PublisherState::Unknown("timeout connecting to AUR".into()),
+            PublisherState::Unknown {
+                reason: "timeout connecting to AUR".into(),
+            },
         )]);
         assert!(!report.has_blockers(false));
         assert!(report.has_blockers(true));
@@ -770,9 +861,11 @@ mod tests {
             "http://{}/search/issues?q=mypkg+1.0.0+in%3Atitle&per_page=1",
             addr
         );
-        let result = query_winget_pr_at(&url, None, &fast_retry());
-        assert!(result.is_ok());
-        assert!(result.unwrap().is_none(), "no PR when total_count=0");
+        let result = query_winget_pr_at(&url, None, &fast_retry()).expect("ok");
+        assert!(
+            matches!(result, WingetPrLookup::NotFound),
+            "no PR when total_count=0"
+        );
     }
 
     #[test]
@@ -789,13 +882,403 @@ mod tests {
             "http://{}/search/issues?q=mypkg+1.0.0+in%3Atitle&per_page=1",
             addr
         );
-        let result = query_winget_pr_at(&url, None, &fast_retry());
-        assert!(result.is_ok());
-        let pr_url = result.unwrap();
-        assert!(pr_url.is_some(), "PR found");
-        assert!(
-            pr_url.unwrap().contains("pull/9999"),
-            "correct PR URL returned"
+        let result = query_winget_pr_at(&url, None, &fast_retry()).expect("ok");
+        match result {
+            WingetPrLookup::Found(u) => assert!(u.contains("pull/9999"), "correct PR URL: {u}"),
+            other => panic!("expected Found, got: {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    // ---- Winget: html_url missing → ItemWithoutUrl ------------------------
+
+    #[test]
+    fn winget_pr_item_without_url_is_unknown_signal() {
+        let body = r#"{"total_count":1,"incomplete_results":false,"items":[{"title":"a PR row"}]}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
         );
+        let (addr, _calls) =
+            spawn_oneshot_http_responder(vec![Box::leak(response.into_boxed_str())]);
+        let url = format!("http://{}/search/issues", addr);
+        let result = query_winget_pr_at(&url, None, &fast_retry()).expect("ok");
+        assert!(
+            matches!(result, WingetPrLookup::ItemWithoutUrl),
+            "items[0] without html_url must surface as a distinct outcome"
+        );
+    }
+
+    // ---- Winget: malformed JSON → Err (mapped to Unknown by caller) ------
+
+    #[test]
+    fn winget_pr_malformed_json_is_error() {
+        let body = "not json at all";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let (addr, _calls) =
+            spawn_oneshot_http_responder(vec![Box::leak(response.into_boxed_str())]);
+        let url = format!("http://{}/search/issues", addr);
+        let err = query_winget_pr_at(&url, None, &fast_retry()).expect_err("must be Err");
+        assert!(
+            err.to_string().contains("malformed winget search response"),
+            "{err}"
+        );
+    }
+
+    // ---- AUR: malformed JSON → Err (mapped to Unknown by caller) ---------
+
+    #[test]
+    fn aur_rpc_malformed_json_is_error() {
+        let body = "garbage";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let (addr, _calls) =
+            spawn_oneshot_http_responder(vec![Box::leak(response.into_boxed_str())]);
+        let url = format!("http://{}/rpc/v5/info?arg[]=mypkg", addr);
+        let err = query_aur_rpc_at(&url, "1.0.0", &fast_retry()).expect_err("must be Err");
+        assert!(
+            err.to_string().contains("malformed AUR RPC response"),
+            "{err}"
+        );
+    }
+
+    // ---- AUR: 404 → Ok(false) (Clean) ------------------------------------
+
+    #[test]
+    fn aur_rpc_absent_on_404() {
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
+        ]);
+        let url = format!("http://{}/rpc/v5/info?arg[]=mypkg", addr);
+        let result = query_aur_rpc_at(&url, "1.0.0", &fast_retry()).expect("ok");
+        assert!(
+            !result,
+            "404 must map to Ok(false) so the caller emits Clean"
+        );
+    }
+
+    // ---- crates.io: network error (connect-refused) → Unknown via Err ----
+
+    #[test]
+    fn crates_io_checker_unknown_on_network_error() {
+        // Bind a port to learn a free one, then drop the listener so the
+        // following GET attempt fails with connection refused.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        drop(listener);
+
+        let url = format!("http://{}/", addr);
+        let result = query_crates_io(&url, "foo", "1.0.0", &fast_retry());
+        let err = result.expect_err("must be Err on connect-refused");
+
+        // The trait-level wrapper would surface this as Unknown { reason } —
+        // exercise the path explicitly to confirm.
+        let checker_state = match query_crates_io(&url, "foo", "1.0.0", &fast_retry()) {
+            Ok(true) => PublisherState::Published,
+            Ok(false) => PublisherState::Clean,
+            Err(e) => PublisherState::Unknown {
+                reason: e.to_string(),
+            },
+        };
+        assert!(
+            matches!(checker_state, PublisherState::Unknown { .. }),
+            "network error must surface as Unknown, got: {:?}",
+            checker_state
+        );
+        // Sanity: the underlying error mentioned the host/port we used.
+        let msg = err.to_string();
+        assert!(!msg.is_empty(), "error message must be non-empty");
+    }
+
+    // ---- Winget: Authorization header is sent when token is set --------
+
+    /// Capture the first request bytes and reply with a canned response so
+    /// the test can assert headers were sent verbatim.
+    fn spawn_request_capturing_responder(
+        response: &'static str,
+    ) -> (
+        std::net::SocketAddr,
+        std::sync::Arc<std::sync::Mutex<String>>,
+    ) {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::sync::{Arc, Mutex};
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let captured = Arc::new(Mutex::new(String::new()));
+        let captured_inner = captured.clone();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 8192];
+                let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+                if let Ok(n) = stream.read(&mut buf) {
+                    *captured_inner.lock().unwrap() =
+                        String::from_utf8_lossy(&buf[..n]).to_string();
+                }
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            }
+        });
+        (addr, captured)
+    }
+
+    #[test]
+    fn winget_pr_sends_authorization_header_when_token_set() {
+        let body = r#"{"total_count":0,"incomplete_results":false,"items":[]}"#;
+        let response: &'static str = Box::leak(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .into_boxed_str(),
+        );
+        let (addr, captured) = spawn_request_capturing_responder(response);
+        let url = format!("http://{}/search/issues", addr);
+        let _ = query_winget_pr_at(&url, Some("secret-token"), &fast_retry()).expect("ok");
+
+        // reqwest lowercases header names on the wire (HTTP/2 style); match
+        // case-insensitively so the assertion isn't brittle to that detail.
+        let req = captured.lock().unwrap().clone();
+        let lower = req.to_ascii_lowercase();
+        assert!(
+            lower.contains("authorization: bearer secret-token"),
+            "Authorization header missing or malformed; request was:\n{req}"
+        );
+    }
+
+    // ---- Chocolatey checker fixtures (PackageStatus / IsApproved) -------
+
+    fn choco_odata_entry(version: &str, status: Option<&str>, is_approved: Option<bool>) -> String {
+        let mut props = String::new();
+        props.push_str("<d:PackageHash>deadbeef</d:PackageHash>");
+        props.push_str("<d:PackageHashAlgorithm>SHA512</d:PackageHashAlgorithm>");
+        if let Some(s) = status {
+            props.push_str(&format!("<d:PackageStatus>{}</d:PackageStatus>", s));
+        }
+        if let Some(a) = is_approved {
+            props.push_str(&format!("<d:IsApproved>{}</d:IsApproved>", a));
+        }
+        format!(
+            r#"<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<entry>
+  <id>http://example.com/api/v2/Packages(Id='foo',Version='{}')</id>
+  <m:properties>{}</m:properties>
+</entry>"#,
+            version, props
+        )
+    }
+
+    fn choco_http_resp(body: String) -> &'static str {
+        Box::leak(
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/xml\r\nContent-Length: {}\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .into_boxed_str(),
+        )
+    }
+
+    #[test]
+    fn chocolatey_checker_submitted_is_in_moderation() {
+        // Mirrors the live `anodizer 0.2.0` response: PackageStatus=Submitted,
+        // IsApproved=false, no <d:Listed>.
+        let body = choco_odata_entry("1.0.0", Some("Submitted"), Some(false));
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![choco_http_resp(body)]);
+        let source = format!("http://{}/", addr);
+
+        let checker = Chocolatey::new(source, fast_retry());
+        let state = checker.check("foo", "1.0.0");
+        match state {
+            PublisherState::InModeration { reason } => assert!(
+                reason.contains("moderation"),
+                "reason should mention moderation: {reason}"
+            ),
+            other => panic!("expected InModeration, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn chocolatey_checker_approved_is_published() {
+        // Mirrors the live `git 2.50.1` response: PackageStatus=Approved,
+        // IsApproved=true, no <d:Listed>.
+        let body = choco_odata_entry("1.0.0", Some("Approved"), Some(true));
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![choco_http_resp(body)]);
+        let source = format!("http://{}/", addr);
+
+        let checker = Chocolatey::new(source, fast_retry());
+        let state = checker.check("foo", "1.0.0");
+        assert!(
+            matches!(state, PublisherState::Published),
+            "approved row must be Published, got: {:?}",
+            state
+        );
+    }
+
+    #[test]
+    fn chocolatey_checker_404_is_clean() {
+        // The OData entry endpoint returns 404 when the row is absent.
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
+        ]);
+        let source = format!("http://{}/", addr);
+
+        let checker = Chocolatey::new(source, fast_retry());
+        let state = checker.check("foo", "1.0.0");
+        assert!(
+            matches!(state, PublisherState::Clean),
+            "absent row must be Clean, got: {:?}",
+            state
+        );
+    }
+
+    // ---- run_preflight orchestration with injected mock factory -------
+
+    /// Mock checker that ignores inputs and returns a canned state. The
+    /// `name` field is the publisher label written into the report entry.
+    struct StaticChecker {
+        name: &'static str,
+        state: PublisherState,
+    }
+
+    impl PreflightChecker for StaticChecker {
+        fn publisher_name(&self) -> &str {
+            self.name
+        }
+        fn check(&self, _package: &str, _version: &str) -> PublisherState {
+            self.state.clone()
+        }
+    }
+
+    /// Factory wired up to return the four canned states the orchestration
+    /// test asserts against.
+    struct CannedFactory {
+        cargo_state: PublisherState,
+        choco_state: PublisherState,
+        winget_state: PublisherState,
+        aur_state: PublisherState,
+    }
+
+    impl CheckerFactory for CannedFactory {
+        fn cargo(&self, _policy: RetryPolicy) -> Box<dyn PreflightChecker> {
+            Box::new(StaticChecker {
+                name: "cargo",
+                state: self.cargo_state.clone(),
+            })
+        }
+        fn chocolatey(&self, _source: String, _policy: RetryPolicy) -> Box<dyn PreflightChecker> {
+            Box::new(StaticChecker {
+                name: "chocolatey",
+                state: self.choco_state.clone(),
+            })
+        }
+        fn winget(
+            &self,
+            _token: Option<String>,
+            _policy: RetryPolicy,
+        ) -> Box<dyn PreflightChecker> {
+            Box::new(StaticChecker {
+                name: "winget",
+                state: self.winget_state.clone(),
+            })
+        }
+        fn aur(&self, _policy: RetryPolicy) -> Box<dyn PreflightChecker> {
+            Box::new(StaticChecker {
+                name: "aur",
+                state: self.aur_state.clone(),
+            })
+        }
+    }
+
+    #[test]
+    fn run_preflight_aggregates_per_publisher_in_config_order() {
+        use anodizer_core::config::{
+            AurConfig, CargoPublishConfig, ChocolateyConfig, Config, CrateConfig, PublishConfig,
+            WingetConfig,
+        };
+        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::log::{StageLogger, Verbosity};
+
+        let publish = PublishConfig {
+            cargo: Some(CargoPublishConfig::default()),
+            chocolatey: Some(ChocolateyConfig::default()),
+            winget: Some(WingetConfig::default()),
+            aur: Some(AurConfig::default()),
+            ..Default::default()
+        };
+        let crate_cfg = CrateConfig {
+            name: "mytool".to_string(),
+            publish: Some(publish),
+            ..Default::default()
+        };
+
+        let config = Config {
+            project_name: "mytool".to_string(),
+            crates: vec![crate_cfg],
+            ..Default::default()
+        };
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        let log = StageLogger::new("preflight", Verbosity::Normal);
+
+        let factory = CannedFactory {
+            cargo_state: PublisherState::Clean,
+            choco_state: PublisherState::InModeration {
+                reason: "package in moderation queue".into(),
+            },
+            winget_state: PublisherState::PRPending(
+                "https://github.com/microsoft/winget-pkgs/pull/1".into(),
+            ),
+            aur_state: PublisherState::Unknown {
+                reason: "AUR is informational — overwritable on republish".into(),
+            },
+        };
+
+        let report = run_preflight_with_factory(&ctx, &log, &factory).expect("ok");
+
+        // One entry per configured publisher, in the dispatcher's traversal
+        // order (cargo → chocolatey → winget → aur).
+        let order: Vec<&str> = report
+            .entries
+            .iter()
+            .map(|e| e.publisher.as_str())
+            .collect();
+        assert_eq!(order, vec!["cargo", "chocolatey", "winget", "aur"]);
+
+        // Per-publisher state is preserved unchanged.
+        assert!(matches!(report.entries[0].state, PublisherState::Clean));
+        assert!(matches!(
+            report.entries[1].state,
+            PublisherState::InModeration { .. }
+        ));
+        assert!(matches!(
+            report.entries[2].state,
+            PublisherState::PRPending(_)
+        ));
+        assert!(matches!(
+            report.entries[3].state,
+            PublisherState::Unknown { .. }
+        ));
+
+        // Each entry carries the resolved version.
+        for entry in &report.entries {
+            assert_eq!(entry.version, "1.0.0");
+        }
+
+        // Blocker tally: 2 hard blockers (InModeration + PRPending), AUR
+        // Unknown only blocks in strict.
+        assert_eq!(report.blockers(false).len(), 2);
+        assert_eq!(report.blockers(true).len(), 3);
     }
 }

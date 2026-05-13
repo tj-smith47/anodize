@@ -10,9 +10,9 @@
 //! ```text
 //! Clean      → safe to publish
 //! Published  → idempotent skip (not a blocker)
-//! InModeration → blocker (version submitted, moderation queue)
+//! InModeration { reason } → blocker (version submitted, moderation queue)
 //! PRPending  → blocker (PR already open for this version)
-//! Unknown    → warn-and-allow unless --strict-preflight
+//! Unknown { reason } → warn-and-allow unless --strict-preflight
 //! ```
 
 use std::fmt;
@@ -28,12 +28,14 @@ pub enum PublisherState {
     Clean,
     /// Version already published / approved. Idempotent skip (not a blocker).
     Published,
-    /// Submitted but pending review / moderation. Blocker.
-    InModeration,
+    /// Submitted but pending review / moderation. Blocker. `reason` is a
+    /// short human-readable explanation (e.g. "package in moderation queue").
+    InModeration { reason: String },
     /// PR already open against the upstream registry. Blocker.
     PRPending(String),
     /// Couldn't determine state. Warn-and-allow unless `--strict-preflight`.
-    Unknown(String),
+    /// `reason` carries a short error description for diagnostics.
+    Unknown { reason: String },
 }
 
 impl PublisherState {
@@ -43,8 +45,8 @@ impl PublisherState {
     /// `Unknown` only blocks when `strict` is `true`.
     pub fn is_blocker(&self, strict: bool) -> bool {
         match self {
-            PublisherState::InModeration | PublisherState::PRPending(_) => true,
-            PublisherState::Unknown(_) => strict,
+            PublisherState::InModeration { .. } | PublisherState::PRPending(_) => true,
+            PublisherState::Unknown { .. } => strict,
             _ => false,
         }
     }
@@ -54,9 +56,9 @@ impl PublisherState {
         match self {
             PublisherState::Clean => "clean",
             PublisherState::Published => "published",
-            PublisherState::InModeration => "in-moderation",
+            PublisherState::InModeration { .. } => "in-moderation",
             PublisherState::PRPending(_) => "pr-pending",
-            PublisherState::Unknown(_) => "unknown",
+            PublisherState::Unknown { .. } => "unknown",
         }
     }
 }
@@ -66,11 +68,11 @@ impl fmt::Display for PublisherState {
         match self {
             PublisherState::Clean => write!(f, "clean"),
             PublisherState::Published => write!(f, "already published (idempotent skip)"),
-            PublisherState::InModeration => {
-                write!(f, "in moderation queue — BLOCKER")
+            PublisherState::InModeration { reason } => {
+                write!(f, "in moderation queue: {} — BLOCKER", reason)
             }
             PublisherState::PRPending(url) => write!(f, "PR already open: {} — BLOCKER", url),
-            PublisherState::Unknown(reason) => write!(f, "unknown ({})", reason),
+            PublisherState::Unknown { reason } => write!(f, "unknown ({})", reason),
         }
     }
 }
@@ -150,7 +152,7 @@ impl fmt::Display for PreflightReport {
                 PublisherState::PRPending(url) => {
                     writeln!(f, "               PR: {}", url)?;
                 }
-                PublisherState::Unknown(reason) => {
+                PublisherState::Unknown { reason } | PublisherState::InModeration { reason } => {
                     writeln!(f, "               reason: {}", reason)?;
                 }
                 _ => {}
@@ -182,14 +184,21 @@ mod tests {
         // Mock 4 publishers, one in each non-trivial state, assert categorisation.
         let mut report = PreflightReport::new();
         report.push(entry("cargo", PublisherState::Clean));
-        report.push(entry("chocolatey", PublisherState::InModeration));
+        report.push(entry(
+            "chocolatey",
+            PublisherState::InModeration {
+                reason: "package in moderation queue".into(),
+            },
+        ));
         report.push(entry(
             "winget",
             PublisherState::PRPending("https://github.com/microsoft/winget-pkgs/pull/123".into()),
         ));
         report.push(entry(
             "aur",
-            PublisherState::Unknown("AUR RPC returned 503".into()),
+            PublisherState::Unknown {
+                reason: "AUR RPC returned 503".into(),
+            },
         ));
 
         // clean_count
@@ -231,7 +240,12 @@ mod tests {
     #[test]
     fn unknown_only_blocks_when_strict() {
         let mut report = PreflightReport::new();
-        report.push(entry("aur", PublisherState::Unknown("timeout".into())));
+        report.push(entry(
+            "aur",
+            PublisherState::Unknown {
+                reason: "timeout".into(),
+            },
+        ));
 
         assert!(!report.has_blockers(false));
         assert!(report.has_blockers(true));
@@ -240,7 +254,12 @@ mod tests {
     #[test]
     fn display_includes_blocker_label() {
         let mut report = PreflightReport::new();
-        report.push(entry("chocolatey", PublisherState::InModeration));
+        report.push(entry(
+            "chocolatey",
+            PublisherState::InModeration {
+                reason: "package in moderation queue".into(),
+            },
+        ));
 
         let s = report.to_string();
         assert!(s.contains("in-moderation"), "display: {s}");

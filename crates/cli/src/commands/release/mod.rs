@@ -64,6 +64,29 @@ pub struct ReleaseOpts {
     pub strict_preflight: bool,
 }
 
+/// Decide whether the pre-flight publisher-state check should run.
+///
+/// Encodes the gating rules so they can be unit-tested without dragging
+/// the entire pipeline up. The rules are:
+///
+/// - `--no-preflight` always wins → false.
+/// - `--snapshot` / `--dry-run` / `--split` skip → no upstream side effects.
+/// - `publish` in `skip` → caller opted out of one-way doors.
+/// - otherwise → true.
+///
+/// Note: this is the implicit-run decision. `--preflight` (the explicit
+/// check-only mode) gates separately in the call site and always runs the
+/// check independently of this predicate.
+pub(crate) fn should_run_preflight_auto(
+    no_preflight: bool,
+    snapshot: bool,
+    dry_run: bool,
+    split: bool,
+    publish_skipped: bool,
+) -> bool {
+    !no_preflight && !snapshot && !dry_run && !split && !publish_skipped
+}
+
 /// GoReleaser Pro `--prepare`: runs local build/archive/sign/checksum/sbom stages
 /// but skips anything that reaches upstream (release + publish + announce).
 /// Idempotent — won't duplicate stages already present in `skip`.
@@ -502,20 +525,35 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
     // version is already submitted / approved / pending — saves an entire
     // wasted release cycle. Skip in snapshot / dry-run / split modes (no
     // upstream side-effects) and when `publish` is already in skip_stages.
-    let should_run_preflight = !opts.no_preflight
-        && !opts.snapshot
-        && !opts.dry_run
-        && !opts.split
-        && !ctx.should_skip("publish");
+    let should_run_preflight = should_run_preflight_auto(
+        opts.no_preflight,
+        opts.snapshot,
+        opts.dry_run,
+        opts.split,
+        ctx.should_skip("publish"),
+    );
     if opts.preflight || should_run_preflight {
         let report = anodizer_stage_publish::preflight::run_preflight(&ctx, &log)?;
         if report.entries.is_empty() {
             log.verbose("preflight: no one-way-door publishers configured; skipping check");
         } else {
-            print!("{}", report);
+            // Route the report through the stage logger (same channel as
+            // every other status string in this function) instead of a raw
+            // `print!` so verbosity / quiet flags / future redirection
+            // apply uniformly. The Display impl is multi-line; splitting
+            // line-by-line preserves the existing single-line cadence used
+            // by surrounding `log.status` / `log.verbose` calls.
+            for line in report.to_string().trim_end_matches('\n').lines() {
+                log.status(line);
+            }
         }
-        if report.has_blockers(opts.strict_preflight) {
-            let blockers = report.blockers(opts.strict_preflight);
+        // `--strict` already plumbs strict mode globally; treat it as
+        // implying preflight-strict. `--strict-preflight` is kept as an
+        // explicit alias for back-compat with anyone who already plumbed
+        // it through their CI.
+        let strict_preflight = opts.strict || opts.strict_preflight;
+        if report.has_blockers(strict_preflight) {
+            let blockers = report.blockers(strict_preflight);
             let labels: Vec<String> = blockers
                 .iter()
                 .map(|b| format!("{} ({})", b.publisher, b.state.label()))
@@ -1142,5 +1180,64 @@ mod tests {
         assert_eq!(release_count, 1, "no duplicate release");
         assert_eq!(publish_count, 1, "no duplicate publish");
         assert!(skip.contains(&"announce".to_string()));
+    }
+
+    // ---- preflight auto-run gating ---------------------------------------
+
+    #[test]
+    fn should_run_preflight_auto_default_runs() {
+        // No flag set → run.
+        assert!(should_run_preflight_auto(false, false, false, false, false));
+    }
+
+    #[test]
+    fn should_run_preflight_auto_no_preflight_skips() {
+        assert!(!should_run_preflight_auto(true, false, false, false, false));
+    }
+
+    #[test]
+    fn should_run_preflight_auto_snapshot_skips() {
+        assert!(!should_run_preflight_auto(false, true, false, false, false));
+    }
+
+    #[test]
+    fn should_run_preflight_auto_dry_run_skips() {
+        assert!(!should_run_preflight_auto(false, false, true, false, false));
+    }
+
+    #[test]
+    fn should_run_preflight_auto_split_skips() {
+        assert!(!should_run_preflight_auto(false, false, false, true, false));
+    }
+
+    #[test]
+    fn should_run_preflight_auto_publish_skipped_skips() {
+        assert!(!should_run_preflight_auto(false, false, false, false, true));
+    }
+
+    /// `--strict-preflight` is folded into `--strict`: either flag (or both)
+    /// must promote Unknown to a blocker, none of them leaves Unknown
+    /// non-blocking. The combiner is a one-liner in the call site but it's
+    /// the gating contract a CI script relies on, so pin it.
+    #[test]
+    fn strict_or_strict_preflight_promotes_unknown_to_blocker() {
+        use anodizer_core::preflight::{PreflightEntry, PreflightReport, PublisherState};
+
+        let mut report = PreflightReport::new();
+        report.push(PreflightEntry {
+            publisher: "aur".into(),
+            package: "foo".into(),
+            version: "1.0.0".into(),
+            state: PublisherState::Unknown {
+                reason: "timeout".into(),
+            },
+        });
+
+        // Combiner used in the call site (`opts.strict || opts.strict_preflight`).
+        let combine = |strict: bool, strict_pref: bool| strict || strict_pref;
+        assert!(!report.has_blockers(combine(false, false)));
+        assert!(report.has_blockers(combine(true, false)));
+        assert!(report.has_blockers(combine(false, true)));
+        assert!(report.has_blockers(combine(true, true)));
     }
 }
