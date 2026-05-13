@@ -89,7 +89,7 @@ impl SignConfig {
     /// layout where stage-build already names binaries with the platform
     /// suffix (`myapp_linux_amd64`, `myapp_darwin_arm64`, etc.). Appending
     /// Os/Arch again would produce `myapp_linux_amd64_linux_amd64` with no
-    /// `.sig` extension — a double-suffix bug (B3b).
+    /// `.sig` extension — a double-suffix bug.
     ///
     /// The correct default for anodize's layout is `{{ .Artifact }}.sig` —
     /// identical to `DEFAULT_SIGNATURE_TEMPLATE`. Binary names are already
@@ -285,8 +285,8 @@ mod tests {
             cfg.resolved_signature_template(SignConfig::DEFAULT_SIGNATURE_TEMPLATE),
             "{{ .Artifact }}.sig"
         );
-        // Binary default now equals the simple .sig template (B3b fix: flat layout
-        // means binary names already carry the platform suffix).
+        // Binary default now equals the simple .sig template — flat layout means
+        // binary names already carry the platform suffix.
         assert_eq!(
             cfg.resolved_signature_template(SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE),
             "{{ .Artifact }}.sig"

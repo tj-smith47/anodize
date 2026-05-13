@@ -1894,7 +1894,7 @@ fn test_output_capture_with_real_command() {
 // Task 1: binary_signs architecture-aware signature template
 // -----------------------------------------------------------------------
 
-/// B3b regression: DEFAULT_BINARY_SIGNATURE_TEMPLATE must produce `<artifact>.sig`
+/// Regression: DEFAULT_BINARY_SIGNATURE_TEMPLATE must produce `<artifact>.sig`
 /// for anodize's flat layout where binaries are already named with the platform
 /// suffix (e.g. `myapp_linux_amd64`). The old GR-style template appended Os/Arch
 /// again, producing `myapp_linux_amd64_linux_amd64` with no `.sig` extension.
