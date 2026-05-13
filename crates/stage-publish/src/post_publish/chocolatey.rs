@@ -1,0 +1,302 @@
+//! Post-publish poller for Chocolatey community-repository moderation.
+//!
+//! Strategy: scrape the HTML page
+//! `https://community.chocolatey.org/packages/<name>/<version>` for the
+//! moderation-status callout. The OData API (`/api/v2/Packages(...)`)
+//! does NOT surface the in-moderation visual state — it only emits
+//! `<d:PackageStatus>` for approved/rejected rows, so the HTML page is
+//! the canonical signal for "still in queue".
+//!
+//! HTML signals verified against live pages (2026-05-13):
+//!
+//! - **Approved**: `<div class="callout-header">Package Approved</div>`
+//!   appearing inside a `callout-success` block.
+//!   Reference: `https://community.chocolatey.org/packages/git/2.50.1`.
+//!
+//! - **In moderation**:
+//!     - `<div class="callout callout-danger">` containing
+//!       `<div class="callout-header">IMPORTANT</div>` and the literal text
+//!       `This version is in <a ...>moderation</a> and has not yet been approved`.
+//!     - `<div class="callout callout-warning">` containing
+//!       `<div class="callout-header">WARNING</div>` and the literal text
+//!       `awaiting moderation`.
+//!
+//!   Reference: `https://community.chocolatey.org/packages/anodizer/0.2.0`.
+//!
+//! - **Not yet indexed**: server returns `404 Not Found` for a freshly
+//!   pushed version that hasn't been ingested. Treated as `Pending`
+//!   rather than `Error` for the first 5 minutes; promoted to `Error`
+//!   after that window so we don't sit on a wrong URL for 30 minutes.
+//!
+//! - **Rejected**: per docs, rejected pages are not publicly visible
+//!   ("the maintainer will see a message, but no one else will see or be
+//!   able to install the package"), so the public scraper only sees
+//!   `404`. The OData-side `PackageStatus=Rejected` signal is already
+//!   handled by [`crate::chocolatey::publish`] during the publish step
+//!   itself, so we don't need to re-detect rejection here.
+
+use std::time::{Duration, Instant};
+
+use anodizer_core::http::{blocking_client, body_of_blocking};
+use anodizer_core::log::StageLogger;
+
+use crate::post_publish::sleep_or_timeout;
+use crate::post_publish::status::PostPublishStatus;
+
+use anodizer_core::config::PostPublishPollConfig;
+
+/// Per-request HTTP timeout for a single HTML probe. The polling loop
+/// has its own wall-clock budget (`cfg.timeout`); the request timeout
+/// protects against a network blackhole stalling the whole poll for an
+/// `interval` period.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Maximum time we'll tolerate consecutive `404 Not Found` responses
+/// before promoting the status to `Error`. The community feed normally
+/// indexes a fresh push within a couple of minutes; 5 minutes is a
+/// generous upper bound that catches a misspelled package name without
+/// burning the full 30-minute budget on it.
+const NOT_FOUND_GRACE_WINDOW: Duration = Duration::from_secs(5 * 60);
+
+/// Verdict of a single HTML scrape — either we resolved to a terminal
+/// state, observed a pending state, or hit a transient/transport issue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PageVerdict {
+    Approved(String),
+    Pending(String),
+    NotFound,
+    NetworkError(String),
+}
+
+/// Poll the Chocolatey community page until a terminal state is
+/// reached or the polling budget is exhausted.
+///
+/// `page_base_url` is normally `https://community.chocolatey.org` —
+/// exposed as a parameter so tests can point at a local TCP listener.
+#[allow(unused_assignments)] // `last_pending_detail = None` initializer is
+// dead code once the loop's first iteration overwrites it; the compiler
+// can't prove the loop always executes ≥1 time so the warning fires.
+pub fn poll(
+    page_base_url: &str,
+    package: &str,
+    version: &str,
+    cfg: PostPublishPollConfig,
+    log: &StageLogger,
+) -> PostPublishStatus {
+    let url = format!(
+        "{}/packages/{}/{}",
+        page_base_url.trim_end_matches('/'),
+        package,
+        version
+    );
+    let interval = cfg.interval.duration();
+    let total_budget = cfg.timeout.duration();
+    let started = Instant::now();
+    let mut not_found_since: Option<Instant> = None;
+    let mut last_pending_detail: Option<String> = None;
+
+    log.verbose(&format!(
+        "polling chocolatey moderation: {} (interval={:?}, timeout={:?})",
+        url, interval, total_budget
+    ));
+
+    loop {
+        let elapsed = started.elapsed();
+        let verdict = scrape_once(&url);
+        match verdict {
+            PageVerdict::Approved(detail) => {
+                log.status(&format!(
+                    "chocolatey moderation: '{}-{}' approved ({})",
+                    package, detail, version
+                ));
+                return PostPublishStatus::Approved { detail };
+            }
+            PageVerdict::Pending(detail) => {
+                not_found_since = None;
+                last_pending_detail = Some(detail.clone());
+                log.verbose(&format!(
+                    "chocolatey moderation: '{}-{}' pending — {} (polled {:?})",
+                    package, version, detail, elapsed
+                ));
+            }
+            PageVerdict::NotFound => {
+                let nf_start = *not_found_since.get_or_insert_with(Instant::now);
+                let nf_elapsed = nf_start.elapsed();
+                if nf_elapsed >= NOT_FOUND_GRACE_WINDOW {
+                    let reason = format!(
+                        "community.chocolatey.org returned 404 for {} continuously for {:?} \
+                         — package may not exist, was rejected, or the page URL is wrong",
+                        url, nf_elapsed
+                    );
+                    log.warn(&format!("chocolatey moderation: {}", reason));
+                    return PostPublishStatus::Error { reason };
+                }
+                last_pending_detail = Some("page not yet indexed (HTTP 404)".to_string());
+                log.verbose(&format!(
+                    "chocolatey moderation: '{}-{}' not yet indexed (404 for {:?}, grace window {:?})",
+                    package, version, nf_elapsed, NOT_FOUND_GRACE_WINDOW
+                ));
+            }
+            PageVerdict::NetworkError(msg) => {
+                last_pending_detail = Some(format!("transient network error: {}", msg));
+                log.verbose(&format!(
+                    "chocolatey moderation: transient error scraping {}: {}",
+                    url, msg
+                ));
+            }
+        }
+
+        let elapsed_now = started.elapsed();
+        if !sleep_or_timeout(elapsed_now, interval, total_budget) {
+            let last_state = last_pending_detail
+                .clone()
+                .unwrap_or_else(|| "no terminal state observed".to_string());
+            log.warn(&format!(
+                "chocolatey moderation: '{}-{}' timed out after {:?} (last state: {})",
+                package, version, total_budget, last_state
+            ));
+            return PostPublishStatus::timeout(last_state, started.elapsed());
+        }
+    }
+}
+
+/// Single HTTP+parse round. Public-in-module so tests can drive the
+/// HTML classifier directly.
+fn scrape_once(url: &str) -> PageVerdict {
+    let client = match blocking_client(REQUEST_TIMEOUT) {
+        Ok(c) => c,
+        Err(e) => return PageVerdict::NetworkError(e.to_string()),
+    };
+    let resp = match client.get(url).send() {
+        Ok(r) => r,
+        Err(e) => return PageVerdict::NetworkError(e.to_string()),
+    };
+    if resp.status().as_u16() == 404 {
+        return PageVerdict::NotFound;
+    }
+    if !resp.status().is_success() {
+        return PageVerdict::NetworkError(format!("HTTP {}", resp.status()));
+    }
+    let body = body_of_blocking(resp);
+    classify_html(&body)
+}
+
+/// HTML classifier — pure, parameterizable, no IO. Tests pin the exact
+/// substring rules used against live pages.
+///
+/// Search order matters: a community page can carry both the "Package
+/// Approved" callout (left over from a prior approved version of the
+/// same package) AND a "WARNING / awaiting moderation" callout on the
+/// version page. The `callout-danger` "IMPORTANT" block is the strongest
+/// in-moderation signal so we check it first; "Package Approved" wins
+/// only when no in-moderation callout is present.
+fn classify_html(body: &str) -> PageVerdict {
+    // In-moderation, callout-danger (the version page's primary
+    // signal). Match on the literal English text so a future class-name
+    // refactor on the chocolatey site doesn't silently misclassify.
+    if body.contains("This version is in <a") && body.contains(">moderation</a>") {
+        return PageVerdict::Pending(
+            "in moderation queue (this version not yet approved)".to_string(),
+        );
+    }
+    // Secondary signal: callout-warning "awaiting moderation". Used on
+    // pages where the version isn't the only-or-latest awaiting review.
+    if body.contains("awaiting moderation") {
+        return PageVerdict::Pending("awaiting moderation".to_string());
+    }
+
+    // Terminal-success signal: only fire when no in-moderation callout
+    // already matched. The exact literal here matches the verified live
+    // page for `git/2.50.1`.
+    if body.contains(r#"<div class="callout-header">Package Approved</div>"#) {
+        return PageVerdict::Approved("Package Approved".to_string());
+    }
+
+    // No recognizable status block — treat as pending with a diagnostic
+    // detail rather than guessing. The poller will keep sampling; if
+    // the page eventually adds an Approved callout, the next round
+    // catches it.
+    PageVerdict::Pending("status callout not yet present on page".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classifies_approved_callout() {
+        let html = r#"<html><body>
+            <div id="status" class="callout callout-marker-none p-0 callout-success">
+              <div class="callout-header">Package Approved</div>
+              <p>This package was approved as a trusted package on 09 Jul 2025.</p>
+            </div>
+        </body></html>"#;
+        assert_eq!(
+            classify_html(html),
+            PageVerdict::Approved("Package Approved".to_string())
+        );
+    }
+
+    #[test]
+    fn classifies_in_moderation_callout_danger() {
+        // Pattern verified against live anodizer/0.2.0 page (2026-05-13).
+        let html = r#"<html><body>
+            <div class="callout callout-danger">
+              <div class="callout-header">IMPORTANT</div>
+              <p>This version is in <a href="https://docs.chocolatey.org/...">moderation</a> and has not yet been approved.</p>
+            </div>
+        </body></html>"#;
+        match classify_html(html) {
+            PageVerdict::Pending(reason) => assert!(
+                reason.contains("in moderation"),
+                "unexpected pending reason: {reason}"
+            ),
+            other => panic!("expected Pending, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classifies_awaiting_moderation_warning() {
+        let html = r#"<html><body>
+            <div class="callout callout-warning">
+              <div class="callout-header">WARNING</div>
+              <p>There are versions of this package awaiting moderation.</p>
+            </div>
+        </body></html>"#;
+        match classify_html(html) {
+            PageVerdict::Pending(reason) => assert!(
+                reason.contains("awaiting moderation"),
+                "unexpected reason: {reason}"
+            ),
+            other => panic!("expected Pending, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn in_moderation_callout_wins_over_approved_callout() {
+        // Defense-in-depth: if a page somehow carries both signals,
+        // the in-moderation callout must win — false-positive Approved
+        // would silently mark a still-pending package as live.
+        let html = r#"
+            <div class="callout callout-success">
+              <div class="callout-header">Package Approved</div>
+            </div>
+            <div class="callout callout-danger">
+              <div class="callout-header">IMPORTANT</div>
+              <p>This version is in <a>moderation</a> and has not yet been approved.</p>
+            </div>"#;
+        match classify_html(html) {
+            PageVerdict::Pending(_) => {}
+            other => panic!("expected Pending (in-moderation must win), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classifies_no_callout_as_pending() {
+        let html = "<html><body><p>nothing here</p></body></html>";
+        match classify_html(html) {
+            PageVerdict::Pending(_) => {}
+            other => panic!("expected Pending, got {other:?}"),
+        }
+    }
+}

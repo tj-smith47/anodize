@@ -1124,6 +1124,13 @@ mod retry;
 pub use retry::*;
 
 // ---------------------------------------------------------------------------
+// PostPublishPollConfig (per-publisher post-publish polling)
+// ---------------------------------------------------------------------------
+
+mod post_publish_poll;
+pub use post_publish_poll::*;
+
+// ---------------------------------------------------------------------------
 // StringOrBool — accepts bool or template string in YAML
 // ---------------------------------------------------------------------------
 

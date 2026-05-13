@@ -10,6 +10,7 @@ pub(crate) mod http_upload;
 pub mod krew;
 pub mod mcp;
 pub mod nix;
+pub mod post_publish;
 pub mod preflight;
 pub mod scoop;
 pub mod upload;
@@ -57,6 +58,153 @@ where
         .filter(|c| c.publish.as_ref().is_some_and(&has_config))
         .map(|c| c.name)
         .collect()
+}
+
+/// Build the post-publish polling job list from the active context and run
+/// every job in parallel. Writes typed `PostPublishResult` entries (as JSON
+/// values) into `ctx.stage_outputs.post_publish_results` for the deferred
+/// release-summary renderer to consume.
+///
+/// Eligibility rules:
+///
+/// - The publish stage must NOT be in dry-run / snapshot mode (gated at
+///   the call site — nothing was actually pushed in those modes).
+/// - Chocolatey jobs require `--skip=choco` to be absent AND a per-crate
+///   `chocolatey:` block with `post_publish_poll.enabled != false`.
+/// - WinGet jobs require `--skip=winget` to be absent AND a per-crate
+///   `winget:` block with `post_publish_poll.enabled != false`.
+/// - `--no-post-publish-poll` short-circuits everything to "no polling".
+///
+/// All polling is non-fatal; any worker error becomes a
+/// `PostPublishStatus::Error` in the results vec rather than failing the
+/// publish stage.
+fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], log: &StageLogger) {
+    if ctx.options.skip_post_publish_poll {
+        log.verbose("post-publish polling: skipped via --no-post-publish-poll");
+        return;
+    }
+    let version = ctx.version();
+    let mut jobs: Vec<post_publish::PollJob> = Vec::new();
+
+    // Chocolatey eligibility — collect a job per per-crate `chocolatey:`
+    // block when the `choco` skip isn't engaged.
+    if !ctx.should_skip("choco") {
+        for crate_name in
+            &crates_with_publisher(ctx, selected, |p: &PublishConfig| p.chocolatey.is_some())
+        {
+            let cfg_opt = util::all_crates(ctx)
+                .into_iter()
+                .find(|c| &c.name == crate_name)
+                .and_then(|c| c.publish)
+                .and_then(|p| p.chocolatey);
+            let Some(choco) = cfg_opt else {
+                continue;
+            };
+            let Some(poll_cfg) = post_publish::resolve_poll_config(ctx, choco.post_publish_poll)
+            else {
+                continue;
+            };
+            let pkg_name = choco.name.unwrap_or_else(|| crate_name.clone());
+            jobs.push(post_publish::PollJob::Chocolatey {
+                package: pkg_name,
+                version: version.clone(),
+                page_base_url: "https://community.chocolatey.org".to_string(),
+                cfg: poll_cfg,
+            });
+        }
+    }
+
+    // WinGet eligibility — same pattern. The PR is rediscovered via the
+    // GitHub search API (mirroring `preflight::Winget`), so we don't need
+    // to thread a PR URL through from the publish step.
+    if !ctx.should_skip("winget") {
+        for crate_name in
+            &crates_with_publisher(ctx, selected, |p: &PublishConfig| p.winget.is_some())
+        {
+            let cfg_opt = util::all_crates(ctx)
+                .into_iter()
+                .find(|c| &c.name == crate_name)
+                .and_then(|c| c.publish)
+                .and_then(|p| p.winget);
+            let Some(winget) = cfg_opt else {
+                continue;
+            };
+            let Some(poll_cfg) = post_publish::resolve_poll_config(ctx, winget.post_publish_poll)
+            else {
+                continue;
+            };
+            // PackageIdentifier resolution: prefer explicit
+            // `package_identifier`, fall back to `<publisher>.<name>`
+            // (the upstream convention enforced by winget validation),
+            // then to the crate name as a last resort.
+            let pkg_id = winget.package_identifier.clone().unwrap_or_else(|| {
+                let publisher = winget.publisher.as_deref().unwrap_or("");
+                let name = winget
+                    .name
+                    .as_deref()
+                    .or(winget.package_name.as_deref())
+                    .unwrap_or(crate_name);
+                if publisher.is_empty() {
+                    name.to_string()
+                } else {
+                    format!("{}.{}", publisher, name)
+                }
+            });
+            let token = winget
+                .repository
+                .as_ref()
+                .and_then(|r| r.token.clone())
+                .or_else(|| std::env::var("ANODIZER_GITHUB_TOKEN").ok())
+                .or_else(|| std::env::var("GITHUB_TOKEN").ok());
+            jobs.push(post_publish::PollJob::Winget {
+                package_identifier: pkg_id,
+                version: version.clone(),
+                api_base_url: "https://api.github.com".to_string(),
+                token,
+                cfg: poll_cfg,
+            });
+        }
+    }
+
+    if jobs.is_empty() {
+        log.verbose("post-publish polling: no eligible publishers");
+        return;
+    }
+    log.status(&format!(
+        "post-publish polling: starting {} parallel poller(s)",
+        jobs.len()
+    ));
+    let results = post_publish::run_post_publish_polls(jobs, log);
+    for r in &results {
+        match &r.status {
+            post_publish::PostPublishStatus::Approved { detail } => log.status(&format!(
+                "post-publish: {} {} {} approved: {}",
+                r.publisher, r.package, r.version, detail
+            )),
+            post_publish::PostPublishStatus::Rejected { detail } => log.warn(&format!(
+                "post-publish: {} {} {} rejected: {}",
+                r.publisher, r.package, r.version, detail
+            )),
+            post_publish::PostPublishStatus::Timeout { last_state, .. } => log.warn(&format!(
+                "post-publish: {} {} {} polling timed out (last state: {})",
+                r.publisher, r.package, r.version, last_state
+            )),
+            post_publish::PostPublishStatus::Error { reason } => log.warn(&format!(
+                "post-publish: {} {} {} polling error: {}",
+                r.publisher, r.package, r.version, reason
+            )),
+            post_publish::PostPublishStatus::Pending { .. }
+            | post_publish::PostPublishStatus::NotPolled => {
+                // Pending shouldn't reach this path (poller loops until
+                // terminal). NotPolled is built by callers that explicitly
+                // opt out — silent is fine.
+            }
+        }
+    }
+    ctx.stage_outputs.post_publish_results = results
+        .into_iter()
+        .map(|r| serde_json::to_value(&r).unwrap_or(serde_json::Value::Null))
+        .collect();
 }
 
 /// Route a single publisher's `Result` through the stage's collect-or-bail
@@ -302,6 +450,18 @@ impl Stage for PublishStage {
 
         // 17. AUR source packages — top-level array (GoReleaser `aur_sources`).
         top_level!("aur", "aur-sources", publish_top_level_aur_sources);
+
+        // ---- Post-publish polling fan-out (Chocolatey moderation + WinGet PR) ----
+        //
+        // Runs AFTER every publisher has completed so polling isn't gated
+        // on a failed unrelated publisher (e.g. krew). The fan-out is
+        // gated by `--no-post-publish-poll` and by each publisher's
+        // `post_publish_poll.enabled` block. Skipping `choco` /
+        // `winget` skips their poll automatically (no submission =
+        // nothing to poll for).
+        if !ctx.is_dry_run() && !ctx.is_snapshot() {
+            run_post_publish_pollers(ctx, &selected, &log);
+        }
 
         if errors.is_empty() {
             Ok(())

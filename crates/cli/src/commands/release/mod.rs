@@ -62,6 +62,11 @@ pub struct ReleaseOpts {
     /// `--strict-preflight`: treat `PublisherState::Unknown` results as
     /// blockers too. Useful in CI where any uncertainty should fail-fast.
     pub strict_preflight: bool,
+    /// `--no-post-publish-poll`: skip the post-publish polling that
+    /// otherwise waits on chocolatey moderation / winget PR validation
+    /// after the publish step's HTTP 2xx. Plumbed into
+    /// `ContextOptions::skip_post_publish_poll`.
+    pub no_post_publish_poll: bool,
 }
 
 /// Decide whether the pre-flight publisher-state check should run.
@@ -346,6 +351,7 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         strict: opts.strict,
         resume_release: opts.resume_release,
         replace_existing_artifacts: opts.replace_existing,
+        skip_post_publish_poll: opts.no_post_publish_poll,
     };
     let mut ctx = Context::new(config.clone(), ctx_opts);
     helpers::resolve_scm_token_type(&mut ctx, &config);

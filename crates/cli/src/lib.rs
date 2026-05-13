@@ -156,6 +156,11 @@ pub enum Commands {
             help = "Force release.replace_existing_artifacts: true regardless of config (overwrite conflicting assets on retry)."
         )]
         replace_existing: bool,
+        #[arg(
+            long = "no-post-publish-poll",
+            help = "Skip post-publish polling for chocolatey moderation / winget PR validation; report Pending immediately."
+        )]
+        no_post_publish_poll: bool,
     },
     /// Build binaries only (always runs in snapshot mode)
     Build {

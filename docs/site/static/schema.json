@@ -2902,6 +2902,18 @@
             "null"
           ]
         },
+        "post_publish_poll": {
+          "description": "Post-publish moderation-queue polling settings. When unset, polling runs with defaults (enabled, 30s interval, 30m timeout). Polling can be disabled globally via `--no-post-publish-poll`.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PostPublishPollConfig"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "project_source_url": {
           "description": "Source code project URL.",
           "default": null,
@@ -9224,6 +9236,36 @@
         }
       }
     },
+    "PostPublishPollConfig": {
+      "description": "Per-publisher post-publish polling config block.\n\nSee module-level docs for the polling lifecycle. Default values (`enabled: true`, `interval: 30s`, `timeout: 30m`) match the spec text in `.claude/known-bugs.md`.",
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "description": "Whether to poll at all. Default `true`. Setting `false` disables polling without removing the config block (parity with every `skip:` toggle elsewhere in the schema).",
+          "default": true,
+          "type": "boolean"
+        },
+        "interval": {
+          "description": "How long to wait between successive status checks. Default `30s`.",
+          "default": "30s",
+          "allOf": [
+            {
+              "$ref": "#/definitions/HumanDuration"
+            }
+          ]
+        },
+        "timeout": {
+          "description": "Total wall-clock budget for polling. When exhausted, the poller emits `PostPublishStatus::Timeout` with the last observed state. Default `30m`.",
+          "default": "30m",
+          "allOf": [
+            {
+              "$ref": "#/definitions/HumanDuration"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "PublishConfig": {
       "type": "object",
       "properties": {
@@ -12612,6 +12654,18 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "post_publish_poll": {
+          "description": "Post-publish PR-validation polling settings. When unset, polling runs with defaults (enabled, 30s interval, 30m timeout). Polling can be disabled globally via `--no-post-publish-poll`.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PostPublishPollConfig"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "privacy_url": {

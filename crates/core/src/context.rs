@@ -116,6 +116,14 @@ pub struct ContextOptions {
     /// `release.replace_existing_artifacts: true` regardless of config.
     /// The release stage ORs this with the config value.
     pub replace_existing_artifacts: bool,
+    /// `--no-post-publish-poll`: skip post-publish polling for the
+    /// chocolatey moderation queue and the winget PR validation pipeline.
+    /// When `true`, the polling runner emits `PostPublishStatus::NotPolled`
+    /// (pending immediately) for every publisher rather than waiting on a
+    /// terminal state. Lets CI users with no patience for long-running
+    /// waits opt out without scattering `post_publish_poll.enabled: false`
+    /// across every publisher block.
+    pub skip_post_publish_poll: bool,
 }
 
 impl Default for ContextOptions {
@@ -140,6 +148,7 @@ impl Default for ContextOptions {
             strict: false,
             resume_release: false,
             replace_existing_artifacts: false,
+            skip_post_publish_poll: false,
         }
     }
 }
@@ -165,6 +174,14 @@ pub struct StageOutputs {
     /// Rendered `changelog.footer` value, populated by the changelog stage.
     /// Same fallback semantics as `changelog_header`.
     pub changelog_footer: Option<String>,
+    /// Per-publisher post-publish polling results, written by the publish
+    /// stage's chocolatey / winget polling fan-out and consumed by the
+    /// release-summary renderer. Stored as opaque JSON to keep core free
+    /// of stage-publish types (the `PostPublishResult` type lives in
+    /// `anodizer-stage-publish::post_publish::status` and serializes
+    /// stably). Empty when polling was disabled or no eligible
+    /// publishers ran.
+    pub post_publish_results: Vec<serde_json::Value>,
 }
 
 pub struct Context {

@@ -176,6 +176,7 @@ fn main() {
             prepare,
             resume_release,
             replace_existing,
+            no_post_publish_poll,
         } => {
             let duration = parse_timeout_or_exit(&timeout);
 
@@ -234,6 +235,7 @@ fn main() {
                     preflight,
                     no_preflight,
                     strict_preflight,
+                    no_post_publish_poll,
                 })
             })
         }

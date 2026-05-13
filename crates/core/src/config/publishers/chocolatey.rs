@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::super::{StringOrBool, deserialize_string_or_bool_opt};
+use super::super::{PostPublishPollConfig, StringOrBool, deserialize_string_or_bool_opt};
 use super::RepositoryConfig;
 
 // ---------------------------------------------------------------------------
@@ -82,6 +82,10 @@ pub struct ChocolateyConfig {
     /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
     /// Only artifacts matching this variant are included. Default: "v1".
     pub amd64_variant: Option<String>,
+    /// Post-publish moderation-queue polling settings. When unset, polling
+    /// runs with defaults (enabled, 30s interval, 30m timeout). Polling can
+    /// be disabled globally via `--no-post-publish-poll`.
+    pub post_publish_poll: Option<PostPublishPollConfig>,
 }
 
 /// Chocolatey package dependency with optional version constraint.
