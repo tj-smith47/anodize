@@ -1,5 +1,8 @@
 #![allow(clippy::field_reassign_with_default)]
 
+use anodizer_core::artifact::{
+    Artifact, ArtifactKind, is_binary_sign_output, release_uploadable_kinds,
+};
 use anodizer_core::config::{
     ContentSource, CrateConfig, ExtraFileSpec, GitHubUrlsConfig, MakeLatestConfig,
     PrereleaseConfig, ReleaseConfig, StringOrBool,
@@ -3571,5 +3574,78 @@ fn test_retry_config_custom_values_flow_into_upload_constants() {
         max_retry_delay,
         std::time::Duration::from_secs(7),
         "upload loop honors custom max_delay"
+    );
+}
+
+#[test]
+fn test_release_upload_candidates_exclude_binary_sign_outputs() {
+    // Construct a context with three signature artifacts:
+    //   1. A binary-sign output (metadata["binary_sign"] = "true") — must be excluded.
+    //   2. A binary-sign certificate output — must be excluded.
+    //   3. A normal archive-sign Signature (no binary_sign metadata) — must be included.
+    let mut ctx = TestContextBuilder::new().build();
+
+    let mut binary_sign_meta = std::collections::HashMap::new();
+    binary_sign_meta.insert("type".to_string(), "Signature".to_string());
+    binary_sign_meta.insert("binary_sign".to_string(), "true".to_string());
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Signature,
+        path: "dist/anodizer_linux_amd64".into(),
+        name: "anodizer_linux_amd64".to_string(),
+        target: None,
+        crate_name: "myapp".to_string(),
+        metadata: binary_sign_meta,
+        size: None,
+    });
+
+    let mut binary_sign_cert_meta = std::collections::HashMap::new();
+    binary_sign_cert_meta.insert("type".to_string(), "Certificate".to_string());
+    binary_sign_cert_meta.insert("binary_sign".to_string(), "true".to_string());
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Certificate,
+        path: "dist/anodizer_linux_amd64.pem".into(),
+        name: "anodizer_linux_amd64.pem".to_string(),
+        target: None,
+        crate_name: "myapp".to_string(),
+        metadata: binary_sign_cert_meta,
+        size: None,
+    });
+
+    let mut archive_sign_meta = std::collections::HashMap::new();
+    archive_sign_meta.insert("type".to_string(), "Signature".to_string());
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Signature,
+        path: "dist/myapp_1.0.0_linux_amd64.tar.gz.sig".into(),
+        name: "myapp_1.0.0_linux_amd64.tar.gz.sig".to_string(),
+        target: None,
+        crate_name: "myapp".to_string(),
+        metadata: archive_sign_meta,
+        size: None,
+    });
+
+    // Replicate the candidate enumeration from stage-release/src/run.rs.
+    let upload_candidates: Vec<_> = release_uploadable_kinds()
+        .iter()
+        .flat_map(|&kind| {
+            ctx.artifacts
+                .by_kind_and_crate(kind, "myapp")
+                .into_iter()
+                .filter(|a| !is_binary_sign_output(a))
+                .map(|a| a.name.clone())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+
+    assert!(
+        !upload_candidates.contains(&"anodizer_linux_amd64".to_string()),
+        "binary-sign Signature must not appear in release upload candidates"
+    );
+    assert!(
+        !upload_candidates.contains(&"anodizer_linux_amd64.pem".to_string()),
+        "binary-sign Certificate must not appear in release upload candidates"
+    );
+    assert!(
+        upload_candidates.contains(&"myapp_1.0.0_linux_amd64.tar.gz.sig".to_string()),
+        "archive-sign Signature must appear in release upload candidates"
     );
 }

@@ -270,7 +270,8 @@ impl Stage for super::ReleaseStage {
                     let artifacts = ctx
                         .artifacts
                         .by_kind_and_crate(kind, &crate_cfg.name)
-                        .into_iter();
+                        .into_iter()
+                        .filter(|a| !anodizer_core::artifact::is_binary_sign_output(a));
                     if ids_filter.is_some() {
                         artifacts
                             .filter(|a| matches_id_filter(a, ids_filter.map(Vec::as_slice)))

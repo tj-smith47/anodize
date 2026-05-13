@@ -405,8 +405,12 @@ pub(crate) fn process_sign_configs(
                     resolved
                 }
             };
+            let is_binary_sign = matches!(filter_mode, ArtifactFilter::BinaryOnly);
             let mut sig_metadata = std::collections::HashMap::new();
             sig_metadata.insert("type".to_string(), "Signature".to_string());
+            if is_binary_sign {
+                sig_metadata.insert("binary_sign".to_string(), "true".to_string());
+            }
             let sig_name = sig_path
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
@@ -434,6 +438,9 @@ pub(crate) fn process_sign_configs(
                     .unwrap_or_else(|| cert_path.display().to_string());
                 let mut cert_metadata = std::collections::HashMap::new();
                 cert_metadata.insert("type".to_string(), "Certificate".to_string());
+                if is_binary_sign {
+                    cert_metadata.insert("binary_sign".to_string(), "true".to_string());
+                }
                 job_artifacts.push(anodizer_core::artifact::Artifact {
                     kind: ArtifactKind::Certificate,
                     name: cert_name,

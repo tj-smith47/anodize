@@ -130,7 +130,9 @@ pub fn collect_upload_artifacts<'a>(
     // GoReleaser includes Certificate alongside Signature (http.go:218)
     if include_signature {
         for a in ctx.artifacts.all() {
-            if a.kind == ArtifactKind::Signature || a.kind == ArtifactKind::Certificate {
+            if (a.kind == ArtifactKind::Signature || a.kind == ArtifactKind::Certificate)
+                && !anodizer_core::artifact::is_binary_sign_output(a)
+            {
                 artifacts.push(a);
             }
         }

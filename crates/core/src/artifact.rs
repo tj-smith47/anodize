@@ -464,6 +464,17 @@ fn is_uploadable(kind: ArtifactKind) -> bool {
     uploadable_kinds().contains(&kind)
 }
 
+/// Return `true` for signature/certificate artifacts produced by the
+/// `binary_signs:` stage.  These are intermediate per-binary outputs
+/// (e.g. `anodizer_linux_amd64` without a `.sig` extension) that must not
+/// appear as GitHub release assets.
+pub fn is_binary_sign_output(artifact: &Artifact) -> bool {
+    artifact
+        .metadata
+        .get("binary_sign")
+        .is_some_and(|v| v == "true")
+}
+
 /// Filter an artifact by the `id` metadata field.
 ///
 /// Matches GoReleaser's `artifact.ByID` semantic:
