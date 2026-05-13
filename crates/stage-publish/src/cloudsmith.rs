@@ -59,6 +59,102 @@ fn hex_lower(bytes: &[u8]) -> String {
     out
 }
 
+/// Outcome of checking whether a package already exists on Cloudsmith.
+/// Returned by [`check_cloudsmith_package_exists`].
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum CloudsmithPackageState {
+    /// No package found with the given filename: caller should upload.
+    NotFound,
+    /// Package found with matching md5: caller should skip (idempotent).
+    SkipIdempotent,
+    /// Package found with a different md5: caller should bail loudly.
+    /// `remote` is the md5 reported by Cloudsmith.
+    Md5Mismatch { remote: String },
+}
+
+/// Classify a Cloudsmith packages-list response body against the local md5.
+///
+/// Pure function so the decision rule can be unit-tested without I/O.
+/// Cloudsmith returns a JSON array of package objects; each entry has at
+/// least `filename` and `checksum_md5`. We look for the first entry whose
+/// `filename` matches `art_name` exactly.
+pub(crate) fn classify_cloudsmith_package_response(
+    body: &str,
+    art_name: &str,
+    local_md5: &str,
+) -> Result<CloudsmithPackageState> {
+    let parsed: serde_json::Value = serde_json::from_str(body)
+        .with_context(|| format!("cloudsmith: parse packages-list body: {}", body.trim()))?;
+    let array = match parsed.as_array() {
+        Some(a) => a,
+        None => return Ok(CloudsmithPackageState::NotFound),
+    };
+    for entry in array {
+        let filename = entry.get("filename").and_then(|v| v.as_str()).unwrap_or("");
+        if filename != art_name {
+            continue;
+        }
+        let remote_md5 = entry
+            .get("checksum_md5")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if remote_md5.is_empty() {
+            // Package exists but Cloudsmith didn't report a checksum we can
+            // verify. Treat as idempotent skip rather than upload-and-create
+            // a duplicate: presence-by-filename is the strongest signal we have.
+            return Ok(CloudsmithPackageState::SkipIdempotent);
+        }
+        if remote_md5 == local_md5.to_ascii_lowercase() {
+            return Ok(CloudsmithPackageState::SkipIdempotent);
+        }
+        return Ok(CloudsmithPackageState::Md5Mismatch { remote: remote_md5 });
+    }
+    Ok(CloudsmithPackageState::NotFound)
+}
+
+/// GET the Cloudsmith packages-list endpoint filtered by filename and
+/// classify the result. Retries 5xx/429/transport via the shared retry
+/// helper; 4xx fast-fails.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn check_cloudsmith_package_exists(
+    client: &reqwest::blocking::Client,
+    list_url: &str,
+    query: &str,
+    token: &str,
+    art_name: &str,
+    local_md5: &str,
+    policy: &RetryPolicy,
+    log: &StageLogger,
+) -> Result<CloudsmithPackageState> {
+    log.verbose(&format!(
+        "cloudsmith: checking existing package for '{}' (query={})",
+        art_name, query
+    ));
+    let result = retry_request("packages/list", art_name, policy, log, || {
+        client
+            .get(list_url)
+            .query(&[("query", query), ("page_size", "100")])
+            .header("Authorization", format!("token {}", token))
+            .header("Accept", "application/json")
+            .send()
+    });
+    let (_status, body) = match result {
+        Ok(pair) => pair,
+        Err(err) => {
+            // Treat any failure to query as "unknown" — fall through to
+            // upload rather than spuriously bail. The error has already been
+            // shaped (and any bearer tokens redacted) by retry_request.
+            log.warn(&format!(
+                "cloudsmith: could not query existing packages for '{}' ({}); attempting upload anyway",
+                art_name, err
+            ));
+            return Ok(CloudsmithPackageState::NotFound);
+        }
+    };
+    classify_cloudsmith_package_response(&body, art_name, local_md5)
+}
+
 /// Retry an HTTP request builder, threading classification through the
 /// shared [`retry_http_blocking`] helper. `build_send` is called per attempt
 /// so multipart bodies can be rebuilt. 5xx/429 + transport errors retry;
@@ -302,6 +398,44 @@ pub fn publish_to_cloudsmith(ctx: &Context, log: &StageLogger) -> Result<()> {
                 hasher.update(&file_bytes);
                 hex_lower(&hasher.finalize())
             };
+
+            // B11 pre-check: query Cloudsmith for an existing package with
+            // this filename. If found and md5 matches, skip (idempotent).
+            // If found but md5 differs, bail — we can't fix the mismatch
+            // (the package is immutable on Cloudsmith's side) and silently
+            // re-uploading produces duplicate packages with different hashes.
+            if !republish {
+                let check_url = format!(
+                    "{}/packages/{}/{}/",
+                    CLOUDSMITH_API_BASE, organization, repository
+                );
+                let query = format!("filename:{}", art_name);
+                match check_cloudsmith_package_exists(
+                    &client, &check_url, &query, &token, art_name, &md5_hex, &policy, log,
+                )? {
+                    CloudsmithPackageState::SkipIdempotent => {
+                        log.status(&format!(
+                            "cloudsmith: skipping '{}' — already uploaded with matching md5",
+                            art_name
+                        ));
+                        continue;
+                    }
+                    CloudsmithPackageState::Md5Mismatch { remote } => {
+                        bail!(
+                            "cloudsmith: '{}' already exists in org '{}' repo '{}' \
+                             with a different md5 (remote={}, local={}). \
+                             Re-uploading would create a conflicting duplicate. \
+                             Set republish: true to force overwrite.",
+                            art_name,
+                            organization,
+                            repository,
+                            remote,
+                            md5_hex
+                        );
+                    }
+                    CloudsmithPackageState::NotFound => {}
+                }
+            }
 
             log.status(&format!(
                 "uploading {} ({}, {} bytes, md5={}) -> org '{}' repo '{}'{}",
@@ -923,5 +1057,99 @@ mod tests {
             chain.contains("<redacted>"),
             "expected `<redacted>` marker in error chain: {chain}"
         );
+    }
+
+    // ---- B11: classify_cloudsmith_package_response ------------------------
+    //
+    // Pure-function tests for the packages-list response classifier. The
+    // network-bound `check_cloudsmith_package_exists` is exercised
+    // indirectly via the same retry helper as `retry_request` (already
+    // covered above); these tests pin the JSON decision rule.
+
+    #[test]
+    fn cloudsmith_classify_not_found_when_empty_array() {
+        let result =
+            classify_cloudsmith_package_response("[]", "app_1.0.0_amd64.deb", "deadbeef").unwrap();
+        assert_eq!(result, CloudsmithPackageState::NotFound);
+    }
+
+    #[test]
+    fn cloudsmith_classify_not_found_when_no_matching_filename() {
+        let body = r#"[{"filename":"other.deb","checksum_md5":"abcd"}]"#;
+        let result =
+            classify_cloudsmith_package_response(body, "app_1.0.0_amd64.deb", "deadbeef").unwrap();
+        assert_eq!(result, CloudsmithPackageState::NotFound);
+    }
+
+    #[test]
+    fn cloudsmith_classify_skip_when_md5_matches() {
+        let body = r#"[{"filename":"app_1.0.0_amd64.deb","checksum_md5":"deadbeef"}]"#;
+        let result =
+            classify_cloudsmith_package_response(body, "app_1.0.0_amd64.deb", "deadbeef").unwrap();
+        assert_eq!(result, CloudsmithPackageState::SkipIdempotent);
+    }
+
+    #[test]
+    fn cloudsmith_classify_skip_when_md5_matches_case_insensitive() {
+        // Cloudsmith may return uppercase hex; our local computation is
+        // lowercase. The comparator must normalize.
+        let body = r#"[{"filename":"app_1.0.0_amd64.deb","checksum_md5":"DEADBEEF"}]"#;
+        let result =
+            classify_cloudsmith_package_response(body, "app_1.0.0_amd64.deb", "deadbeef").unwrap();
+        assert_eq!(result, CloudsmithPackageState::SkipIdempotent);
+    }
+
+    #[test]
+    fn cloudsmith_classify_skip_when_md5_field_absent() {
+        // Filename match but no checksum_md5 in the response — presence is
+        // a strong-enough idempotency signal; uploading would create a
+        // duplicate package with a different md5.
+        let body = r#"[{"filename":"app_1.0.0_amd64.deb"}]"#;
+        let result =
+            classify_cloudsmith_package_response(body, "app_1.0.0_amd64.deb", "deadbeef").unwrap();
+        assert_eq!(result, CloudsmithPackageState::SkipIdempotent);
+    }
+
+    #[test]
+    fn cloudsmith_classify_bails_when_md5_differs() {
+        // The B11 scenario: a previous run uploaded with one md5, the retry's
+        // re-packaged artifact has a different md5. Bail loudly instead of
+        // creating a conflicting duplicate.
+        let body = r#"[{"filename":"app_1.0.0_amd64.deb","checksum_md5":"aaaa1111"}]"#;
+        let result =
+            classify_cloudsmith_package_response(body, "app_1.0.0_amd64.deb", "deadbeef").unwrap();
+        assert_eq!(
+            result,
+            CloudsmithPackageState::Md5Mismatch {
+                remote: "aaaa1111".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn cloudsmith_classify_handles_non_array_body() {
+        // An error envelope or unexpected shape: treat as NotFound rather
+        // than blow up, since we can't fix the mismatch anyway and a false
+        // upload-attempt is recoverable while a false bail is not.
+        let body = r#"{"detail":"not authorized"}"#;
+        let result =
+            classify_cloudsmith_package_response(body, "app_1.0.0_amd64.deb", "deadbeef").unwrap();
+        assert_eq!(result, CloudsmithPackageState::NotFound);
+    }
+
+    #[test]
+    fn cloudsmith_classify_picks_first_matching_filename() {
+        // Defensive: if Cloudsmith returns multiple entries (e.g. across
+        // distributions), the classifier picks the first match. Both
+        // entries have the same md5 here, mirroring real-world behavior
+        // where the same filename is shared across distros.
+        let body = r#"[
+            {"filename":"other.deb","checksum_md5":"abcd"},
+            {"filename":"app_1.0.0_amd64.deb","checksum_md5":"deadbeef"},
+            {"filename":"app_1.0.0_amd64.deb","checksum_md5":"deadbeef"}
+        ]"#;
+        let result =
+            classify_cloudsmith_package_response(body, "app_1.0.0_amd64.deb", "deadbeef").unwrap();
+        assert_eq!(result, CloudsmithPackageState::SkipIdempotent);
     }
 }
