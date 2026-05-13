@@ -129,6 +129,16 @@ pub enum Commands {
             help = "Run local build + archive + sign + checksum + sbom stages but skip release / publish / announce (GoReleaser Pro parity). Artifacts stay in dist/ for inspection."
         )]
         prepare: bool,
+        #[arg(
+            long,
+            help = "Resume into an existing release left over from a prior failed attempt; bypasses the safety check that bails on partial assets."
+        )]
+        resume_release: bool,
+        #[arg(
+            long,
+            help = "Force release.replace_existing_artifacts: true regardless of config (overwrite conflicting assets on retry)."
+        )]
+        replace_existing: bool,
     },
     /// Build binaries only (always runs in snapshot mode)
     Build {

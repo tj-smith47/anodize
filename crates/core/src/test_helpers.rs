@@ -371,6 +371,8 @@ impl TestContextBuilder {
             merge: false,
             project_root: self.project_root,
             strict: false,
+            resume_release: false,
+            replace_existing_artifacts: false,
         };
 
         let mut ctx = Context::new(config, options);

@@ -99,6 +99,9 @@ pub(crate) struct UploadOpts {
     pub replace_existing_draft: bool,
     pub replace_existing_artifacts: bool,
     pub use_existing_draft: bool,
+    /// `--resume-release`: bypass the B7 pre-check so the upload loop runs
+    /// against an existing release left by a prior failed attempt.
+    pub resume_release: bool,
 }
 
 /// Outcome for the upload-asset 422 `already_exists` decision branch.
@@ -134,12 +137,23 @@ pub(crate) enum AlreadyExistsAction {
 /// that would conflict, or `None` when uploads may proceed.
 ///
 /// Pure function so B7's pre-check logic can be unit-tested without I/O.
+/// Returns `None` (uploads proceed) when ANY of:
+///   - `skip_upload` is true (nothing will be uploaded),
+///   - `resume_release` is true (the user explicitly opted into continuing
+///     into a leftover release via `--resume-release`),
+///   - `replace_existing_artifacts` is true (overwrites are permitted), or
+///   - no assets exist on the release yet.
 pub(crate) fn check_existing_assets_block_upload(
     skip_upload: bool,
+    resume_release: bool,
     replace_existing_artifacts: bool,
     existing_asset_names: &[&str],
 ) -> Option<Vec<String>> {
-    if skip_upload || replace_existing_artifacts || existing_asset_names.is_empty() {
+    if skip_upload
+        || resume_release
+        || replace_existing_artifacts
+        || existing_asset_names.is_empty()
+    {
         return None;
     }
     Some(existing_asset_names.iter().map(|s| s.to_string()).collect())
@@ -201,6 +215,7 @@ pub(crate) fn run_github_backend(
         replace_existing_draft,
         replace_existing_artifacts,
         use_existing_draft,
+        resume_release,
     } = *upload_opts;
     let github = match resolve_release_repo(release_cfg, ctx.token_type, ctx)? {
         Some(r) => r,
@@ -432,21 +447,25 @@ pub(crate) fn run_github_backend(
 
         // B7 pre-check: if a prior failed attempt already created the release
         // and uploaded some assets, and the user hasn't opted into overwriting
-        // (replace_existing_artifacts: false), bail early with a clear message
-        // instead of letting the upload loop hit 422 already_exists per-asset.
+        // (replace_existing_artifacts: false) nor into resuming
+        // (--resume-release), bail early with a clear message instead of
+        // letting the upload loop hit 422 already_exists per-asset.
         if let Some(ref existing) = existing_by_tag {
             let asset_names: Vec<&str> =
                 existing.assets.iter().map(|a| a.name.as_str()).collect();
             if let Some(conflicting) = check_existing_assets_block_upload(
                 skip_upload,
+                resume_release,
                 replace_existing_artifacts,
                 &asset_names,
             ) {
                 anyhow::bail!(
                     "release: GitHub release for tag '{}' already exists with {} asset(s) ({}) \
-                     and replace_existing_artifacts is false. A previous failed attempt likely \
-                     uploaded partial assets. To recover, either:\n\
-                     \x20 • set replace_existing_artifacts: true to overwrite them, or\n\
+                     left by a prior failed attempt. To recover, pass one of:\n\
+                     \x20 • --resume-release  (continue into the existing release; assumes its \
+                     assets are correct), or\n\
+                     \x20 • --replace-existing  (overwrite the assets with the current build), or\n\
+                     \x20 • set release.replace_existing_artifacts: true in config, or\n\
                      \x20 • delete the existing release manually and retry.",
                     tag,
                     conflicting.len(),
@@ -1336,15 +1355,18 @@ mod get_by_tag_lookup_tests {
 mod existing_assets_precheck_tests {
     use super::*;
 
+    // Argument order across the helper:
+    //   (skip_upload, resume_release, replace_existing_artifacts, asset_names)
+
     #[test]
     fn no_conflict_when_release_has_no_assets() {
-        let result = check_existing_assets_block_upload(false, false, &[]);
+        let result = check_existing_assets_block_upload(false, false, false, &[]);
         assert!(result.is_none(), "empty asset list must not block");
     }
 
     #[test]
     fn no_conflict_when_replace_existing_is_true() {
-        let result = check_existing_assets_block_upload(false, true, &["foo.tar.gz"]);
+        let result = check_existing_assets_block_upload(false, false, true, &["foo.tar.gz"]);
         assert!(
             result.is_none(),
             "replace_existing_artifacts=true permits overwrite"
@@ -1353,8 +1375,36 @@ mod existing_assets_precheck_tests {
 
     #[test]
     fn no_conflict_when_skip_upload_is_true() {
-        let result = check_existing_assets_block_upload(true, false, &["foo.tar.gz"]);
+        let result = check_existing_assets_block_upload(true, false, false, &["foo.tar.gz"]);
         assert!(result.is_none(), "skip_upload=true means nothing to upload");
+    }
+
+    #[test]
+    fn no_conflict_when_resume_release_is_true() {
+        // `--resume-release` is the user's explicit opt-in to continue into
+        // an existing release: the pre-check must NOT bail even when assets
+        // are present and replace_existing_artifacts is false.
+        let result =
+            check_existing_assets_block_upload(false, true, false, &["foo.tar.gz", "bar.zip"]);
+        assert!(
+            result.is_none(),
+            "--resume-release must bypass the pre-check"
+        );
+    }
+
+    #[test]
+    fn no_conflict_when_replace_existing_cli_override_is_true() {
+        // The CLI override is plumbed via `replace_existing_artifacts: true`
+        // in the helper signature (the caller ORs the config value with
+        // ctx.options.replace_existing_artifacts before calling).
+        // This pins that the helper treats the CLI-derived value the same
+        // as the config-derived value.
+        let result =
+            check_existing_assets_block_upload(false, false, true, &["foo.tar.gz", "bar.zip"]);
+        assert!(
+            result.is_none(),
+            "--replace-existing must bypass the pre-check via replace_existing_artifacts=true"
+        );
     }
 
     #[test]
@@ -1363,7 +1413,7 @@ mod existing_assets_precheck_tests {
         // from a prior failed attempt exist, and replace_existing_artifacts
         // is false. The helper must surface them so the caller can bail.
         let assets = &["app_linux_amd64.tar.gz", "checksums.txt"];
-        let result = check_existing_assets_block_upload(false, false, assets);
+        let result = check_existing_assets_block_upload(false, false, false, assets);
         let names = result.expect("should detect conflict");
         assert_eq!(names.len(), 2);
         assert!(names.contains(&"app_linux_amd64.tar.gz".to_string()));

@@ -171,6 +171,8 @@ fn main() {
             split,
             merge,
             prepare,
+            resume_release,
+            replace_existing,
         } => {
             let duration = parse_timeout_or_exit(&timeout);
 
@@ -224,6 +226,8 @@ fn main() {
                     merge,
                     strict: cli.strict,
                     prepare,
+                    resume_release,
+                    replace_existing,
                 })
             })
         }

@@ -226,7 +226,12 @@ impl Stage for super::ReleaseStage {
                 None => false,
             };
             let replace_existing_draft = release_cfg.resolved_replace_existing_draft();
-            let replace_existing_artifacts = release_cfg.resolved_replace_existing_artifacts();
+            // OR config-resolved value with the `--replace-existing` CLI
+            // override. The CLI flag is a one-shot escalation for the current
+            // run; users who always want overwrite behavior should set
+            // `release.replace_existing_artifacts: true` in config.
+            let replace_existing_artifacts = release_cfg.resolved_replace_existing_artifacts()
+                || ctx.options.replace_existing_artifacts;
             let make_latest =
                 resolve_make_latest(&release_cfg.make_latest, |s| ctx.render_template(s))?;
             let ids_filter = release_cfg.ids.as_ref();
@@ -966,6 +971,7 @@ impl Stage for super::ReleaseStage {
                         replace_existing_draft,
                         replace_existing_artifacts,
                         use_existing_draft,
+                        resume_release: ctx.options.resume_release,
                     };
                     match github::run_github_backend(
                         &env,

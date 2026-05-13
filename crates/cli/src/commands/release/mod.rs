@@ -46,6 +46,12 @@ pub struct ReleaseOpts {
     /// stages but NOT release/publish/announce. Implemented by augmenting `skip` with
     /// those three stages at the top of `run()`; artifacts still land under `dist/`.
     pub prepare: bool,
+    /// `--resume-release`: continue into an existing release rather than
+    /// bailing on the B7 pre-check. Plumbed into `ContextOptions::resume_release`.
+    pub resume_release: bool,
+    /// `--replace-existing`: CLI override for `release.replace_existing_artifacts: true`.
+    /// Plumbed into `ContextOptions::replace_existing_artifacts`.
+    pub replace_existing: bool,
 }
 
 /// GoReleaser Pro `--prepare`: runs local build/archive/sign/checksum/sbom stages
@@ -305,6 +311,8 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         merge: opts.merge,
         project_root: None,
         strict: opts.strict,
+        resume_release: opts.resume_release,
+        replace_existing_artifacts: opts.replace_existing,
     };
     let mut ctx = Context::new(config.clone(), ctx_opts);
     helpers::resolve_scm_token_type(&mut ctx, &config);
