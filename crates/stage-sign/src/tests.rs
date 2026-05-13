@@ -1894,34 +1894,63 @@ fn test_output_capture_with_real_command() {
 // Task 1: binary_signs architecture-aware signature template
 // -----------------------------------------------------------------------
 
+/// B3b regression: DEFAULT_BINARY_SIGNATURE_TEMPLATE must produce `<artifact>.sig`
+/// for anodize's flat layout where binaries are already named with the platform
+/// suffix (e.g. `myapp_linux_amd64`). The old GR-style template appended Os/Arch
+/// again, producing `myapp_linux_amd64_linux_amd64` with no `.sig` extension.
 #[test]
-fn test_default_binary_signature_template_includes_arch() {
-    // Verify the constant contains Os/Arch/Arm/Mips/Amd64 references
-    let tmpl = SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE;
+fn test_binary_signature_no_duplicate_suffix_has_dot_sig() {
+    let mut ctx = TestContextBuilder::new().dry_run(true).build();
+    // Template vars that would be set during binary-sign processing.
+    ctx.template_vars_mut().set("Os", "linux");
+    ctx.template_vars_mut().set("Arch", "amd64");
+    ctx.template_vars_mut().set("Arm", "");
+    ctx.template_vars_mut().set("Amd64", "");
+    ctx.template_vars_mut().set("Mips", "");
+
+    let sign_cfg = SignConfig::default();
+    let log = ctx.logger("test");
+
+    // The artifact path already contains the platform suffix (anodize flat layout).
+    let result = resolve_signature_path(
+        &sign_cfg,
+        "/dist/myapp_linux_amd64",
+        &ctx,
+        &log,
+        SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE,
+    )
+    .unwrap();
+
+    // Must end with .sig
     assert!(
-        tmpl.contains("Os"),
-        "binary signature template must include Os"
+        result.ends_with(".sig"),
+        "binary signature must end with .sig; got '{result}'"
     );
+    // Must NOT contain duplicate platform suffix
     assert!(
-        tmpl.contains("Arch"),
-        "binary signature template must include Arch"
+        !result.contains("linux_amd64_linux_amd64"),
+        "binary signature must not contain duplicate platform suffix; got '{result}'"
     );
-    assert!(
-        tmpl.contains("Arm"),
-        "binary signature template must include Arm conditional"
-    );
-    assert!(
-        tmpl.contains("Amd64"),
-        "binary signature template must include Amd64 conditional"
-    );
-    assert!(
-        !tmpl.ends_with(".sig"),
-        "binary signature template must NOT end with .sig (GoReleaser sign_binary.go:16 parity)"
+    // Expected canonical form
+    assert_eq!(result, "/dist/myapp_linux_amd64.sig");
+}
+
+#[test]
+fn test_default_binary_signature_template_is_simple_dot_sig() {
+    // The default template for binary_signs must be identical to the plain
+    // DEFAULT_SIGNATURE_TEMPLATE because anodize's binary names already
+    // encode the platform suffix — no Os/Arch duplication needed.
+    assert_eq!(
+        SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE,
+        "{{ .Artifact }}.sig",
+        "DEFAULT_BINARY_SIGNATURE_TEMPLATE must equal '{{ .Artifact }}.sig'"
     );
 }
 
 #[test]
-fn test_binary_signs_signature_includes_os_arch() {
+fn test_binary_signs_signature_default_adds_dot_sig() {
+    // With anodize's flat layout the binary name already contains the platform
+    // suffix. The default template must append only ".sig".
     let mut ctx = TestContextBuilder::new().dry_run(true).build();
     ctx.template_vars_mut().set("Os", "linux");
     ctx.template_vars_mut().set("Arch", "amd64");
@@ -1944,21 +1973,22 @@ fn test_binary_signs_signature_includes_os_arch() {
         if_condition: None,
     };
     let log = ctx.logger("test");
+    // artifact_path already contains the platform suffix (anodize flat layout)
     let result = resolve_signature_path(
         &sign_cfg,
-        "/dist/myapp",
+        "/dist/myapp_linux_amd64",
         &ctx,
         &log,
         SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE,
     )
     .unwrap();
-    assert_eq!(result, "/dist/myapp_linux_amd64");
+    assert_eq!(result, "/dist/myapp_linux_amd64.sig");
 }
 
 #[test]
-fn test_binary_signs_signature_includes_arm_variant() {
+fn test_binary_signs_signature_arm_artifact_gets_dot_sig() {
+    // ARM binary already has platform suffix in its name; default template appends .sig only.
     let mut ctx = TestContextBuilder::new().dry_run(true).build();
-    // GoReleaser splits ARM: Arch="arm", Arm="6" → rendered as "arm" + "v6" = "armv6"
     ctx.template_vars_mut().set("Os", "linux");
     ctx.template_vars_mut().set("Arch", "arm");
     ctx.template_vars_mut().set("Arm", "6");
@@ -1980,19 +2010,21 @@ fn test_binary_signs_signature_includes_arm_variant() {
         if_condition: None,
     };
     let log = ctx.logger("test");
+    // artifact_path already contains the platform suffix (anodize flat layout)
     let result = resolve_signature_path(
         &sign_cfg,
-        "/dist/myapp",
+        "/dist/myapp_linux_armv6",
         &ctx,
         &log,
         SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE,
     )
     .unwrap();
-    assert_eq!(result, "/dist/myapp_linux_armv6");
+    assert_eq!(result, "/dist/myapp_linux_armv6.sig");
 }
 
 #[test]
-fn test_binary_signs_signature_includes_amd64_level() {
+fn test_binary_signs_signature_amd64v2_artifact_gets_dot_sig() {
+    // amd64v2 binary already has platform+level suffix; default template appends .sig only.
     let mut ctx = TestContextBuilder::new().dry_run(true).build();
     ctx.template_vars_mut().set("Os", "linux");
     ctx.template_vars_mut().set("Arch", "amd64");
@@ -2015,15 +2047,16 @@ fn test_binary_signs_signature_includes_amd64_level() {
         if_condition: None,
     };
     let log = ctx.logger("test");
+    // artifact_path already contains the platform+level suffix (anodize flat layout)
     let result = resolve_signature_path(
         &sign_cfg,
-        "/dist/myapp",
+        "/dist/myapp_linux_amd64v2",
         &ctx,
         &log,
         SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE,
     )
     .unwrap();
-    assert_eq!(result, "/dist/myapp_linux_amd64v2");
+    assert_eq!(result, "/dist/myapp_linux_amd64v2.sig");
 }
 
 #[test]
@@ -2146,12 +2179,18 @@ fn test_binary_signs_sets_os_arch_from_target_triple() {
     );
     assert!(result.is_ok());
 
-    // Verify a signature artifact was registered with arch-aware naming
+    // Verify a signature artifact was registered; the name is derived directly
+    // from the artifact path (flat layout — no platform suffix appended again).
     let sigs: Vec<_> = ctx.artifacts.by_kind(ArtifactKind::Signature);
     assert_eq!(sigs.len(), 1);
     assert!(
-        sigs[0].name.contains("linux_amd64"),
-        "signature name should contain os_arch: got '{}'",
+        sigs[0].name.ends_with(".sig"),
+        "signature name must end with .sig: got '{}'",
+        sigs[0].name
+    );
+    assert!(
+        !sigs[0].name.contains("linux_amd64_linux_amd64"),
+        "signature name must not contain duplicate platform suffix: got '{}'",
         sigs[0].name
     );
 
@@ -2209,10 +2248,10 @@ fn test_binary_signs_arm_target_splits_arch_correctly() {
 
     let sigs: Vec<_> = ctx.artifacts.by_kind(ArtifactKind::Signature);
     assert_eq!(sigs.len(), 1);
-    // Should be arm + v7, not armv7 + v7
+    // With flat layout: no platform suffix appended — just .sig
     assert!(
-        sigs[0].name.contains("linux_armv7"),
-        "signature name should contain linux_armv7: got '{}'",
+        sigs[0].name.ends_with(".sig"),
+        "signature name must end with .sig: got '{}'",
         sigs[0].name
     );
     assert!(

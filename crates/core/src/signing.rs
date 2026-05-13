@@ -80,11 +80,22 @@ impl SignConfig {
     /// arg-resolver rewrites to the same path at execution time.
     pub const DEFAULT_SIGNATURE_TEMPLATE: &'static str = "{{ .Artifact }}.sig";
 
-    /// Default `signature` template for `binary_signs:[]`. Mirrors
-    /// GoReleaser `internal/pipe/sign/sign_binary.go` `defaultSignatureName`
-    /// — emits a per-target filename including Os/Arch/Arm/Mips/Amd64
-    /// suffixes so signatures don't collide across architectures.
-    pub const DEFAULT_BINARY_SIGNATURE_TEMPLATE: &'static str = "{{ .Artifact }}_{{ Os }}_{{ Arch }}{% if Arm %}v{{ Arm }}{% endif %}{% if Mips %}_{{ Mips }}{% endif %}{% if Amd64 and Amd64 != \"v1\" %}{{ Amd64 }}{% endif %}";
+    /// Default `signature` template for `binary_signs:[]`.
+    ///
+    /// Intentionally **diverges from GoReleaser** `sign_binary.go:16`: GR
+    /// stores binaries under per-target subdirectories
+    /// (`dist/linux_amd64/binname`), so its template appends `_{{ .Os }}_{{ .Arch }}`
+    /// to the bare binary name without collision. Anodize uses a flat `dist/`
+    /// layout where stage-build already names binaries with the platform
+    /// suffix (`myapp_linux_amd64`, `myapp_darwin_arm64`, etc.). Appending
+    /// Os/Arch again would produce `myapp_linux_amd64_linux_amd64` with no
+    /// `.sig` extension — a double-suffix bug (B3b).
+    ///
+    /// The correct default for anodize's layout is `{{ .Artifact }}.sig` —
+    /// identical to `DEFAULT_SIGNATURE_TEMPLATE`. Binary names are already
+    /// unique per target, so no collision risk exists. Users who want an
+    /// explicit per-target suffix can set `signature:` in `binary_signs:`.
+    pub const DEFAULT_BINARY_SIGNATURE_TEMPLATE: &'static str = "{{ .Artifact }}.sig";
 
     /// Default `args` for top-level `signs:[]`. Mirrors GoReleaser
     /// `sign.go` (`["--output", "$signature", "--detach-sig", "$artifact"]`).
@@ -274,9 +285,11 @@ mod tests {
             cfg.resolved_signature_template(SignConfig::DEFAULT_SIGNATURE_TEMPLATE),
             "{{ .Artifact }}.sig"
         );
+        // Binary default now equals the simple .sig template (B3b fix: flat layout
+        // means binary names already carry the platform suffix).
         assert_eq!(
             cfg.resolved_signature_template(SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE),
-            SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE
+            "{{ .Artifact }}.sig"
         );
     }
 

@@ -76,7 +76,8 @@ fn is_release_uploadable(kind: ArtifactKind) -> bool {
 ///
 /// Caller passes `SignConfig::DEFAULT_SIGNATURE_TEMPLATE` for normal signs
 /// (`{{ .Artifact }}.sig`) or `SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE`
-/// for binary_signs (per-target Os/Arch/Arm/Mips/Amd64 suffix).
+/// for binary_signs (also `{{ .Artifact }}.sig` — anodize's flat dist layout
+/// means binary names already carry the platform suffix; no duplication needed).
 pub(crate) fn resolve_signature_path(
     sign_cfg: &SignConfig,
     artifact_path: &str,
