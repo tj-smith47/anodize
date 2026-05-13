@@ -129,6 +129,22 @@ pub(crate) enum AlreadyExistsAction {
     DeleteAndRetry,
 }
 
+/// Check whether an existing release's assets block a retry when
+/// `replace_existing_artifacts` is false. Returns the list of asset names
+/// that would conflict, or `None` when uploads may proceed.
+///
+/// Pure function so B7's pre-check logic can be unit-tested without I/O.
+pub(crate) fn check_existing_assets_block_upload(
+    skip_upload: bool,
+    replace_existing_artifacts: bool,
+    existing_asset_names: &[&str],
+) -> Option<Vec<String>> {
+    if skip_upload || replace_existing_artifacts || existing_asset_names.is_empty() {
+        return None;
+    }
+    Some(existing_asset_names.iter().map(|s| s.to_string()).collect())
+}
+
 /// Decide what to do when the GitHub upload-asset API returns
 /// `422 already_exists`. Pure function so the (re-)introduced
 /// `replace_existing_artifacts: false` guard can be tested without I/O.
@@ -413,6 +429,31 @@ pub(crate) fn run_github_backend(
                 (release_body.to_string(), None)
             }
         };
+
+        // B7 pre-check: if a prior failed attempt already created the release
+        // and uploaded some assets, and the user hasn't opted into overwriting
+        // (replace_existing_artifacts: false), bail early with a clear message
+        // instead of letting the upload loop hit 422 already_exists per-asset.
+        if let Some(ref existing) = existing_by_tag {
+            let asset_names: Vec<&str> =
+                existing.assets.iter().map(|a| a.name.as_str()).collect();
+            if let Some(conflicting) = check_existing_assets_block_upload(
+                skip_upload,
+                replace_existing_artifacts,
+                &asset_names,
+            ) {
+                anyhow::bail!(
+                    "release: GitHub release for tag '{}' already exists with {} asset(s) ({}) \
+                     and replace_existing_artifacts is false. A previous failed attempt likely \
+                     uploaded partial assets. To recover, either:\n\
+                     \x20 • set replace_existing_artifacts: true to overwrite them, or\n\
+                     \x20 • delete the existing release manually and retry.",
+                    tag,
+                    conflicting.len(),
+                    conflicting.join(", ")
+                );
+            }
+        }
 
         // Create or update the release. We use raw API calls for all paths
         // to support target_commitish and discussion_category_name, which
@@ -1288,5 +1329,44 @@ mod get_by_tag_lookup_tests {
         builder
             .build()
             .expect("OctocrabBuilder::build succeeds on loopback URL")
+    }
+}
+
+#[cfg(test)]
+mod existing_assets_precheck_tests {
+    use super::*;
+
+    #[test]
+    fn no_conflict_when_release_has_no_assets() {
+        let result = check_existing_assets_block_upload(false, false, &[]);
+        assert!(result.is_none(), "empty asset list must not block");
+    }
+
+    #[test]
+    fn no_conflict_when_replace_existing_is_true() {
+        let result = check_existing_assets_block_upload(false, true, &["foo.tar.gz"]);
+        assert!(
+            result.is_none(),
+            "replace_existing_artifacts=true permits overwrite"
+        );
+    }
+
+    #[test]
+    fn no_conflict_when_skip_upload_is_true() {
+        let result = check_existing_assets_block_upload(true, false, &["foo.tar.gz"]);
+        assert!(result.is_none(), "skip_upload=true means nothing to upload");
+    }
+
+    #[test]
+    fn conflicts_when_assets_present_and_replace_forbidden() {
+        // B7: this is the scenario that was unrecoverable — partial assets
+        // from a prior failed attempt exist, and replace_existing_artifacts
+        // is false. The helper must surface them so the caller can bail.
+        let assets = &["app_linux_amd64.tar.gz", "checksums.txt"];
+        let result = check_existing_assets_block_upload(false, false, assets);
+        let names = result.expect("should detect conflict");
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"app_linux_amd64.tar.gz".to_string()));
+        assert!(names.contains(&"checksums.txt".to_string()));
     }
 }
