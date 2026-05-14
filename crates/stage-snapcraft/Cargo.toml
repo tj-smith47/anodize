@@ -14,3 +14,6 @@ serde.workspace = true
 serde_json.workspace = true
 serde_yaml_ng.workspace = true
 tempfile.workspace = true
+
+[dev-dependencies]
+anodizer-core = { workspace = true, features = ["test-helpers"] }

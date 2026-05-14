@@ -407,6 +407,31 @@ impl TestContextBuilder {
 }
 
 // ---------------------------------------------------------------------------
+// Context::test_fixture — stable entry point for downstream unit tests
+// ---------------------------------------------------------------------------
+
+impl Context {
+    /// Return a minimally-populated [`Context`] suitable for unit tests in
+    /// downstream crates.
+    ///
+    /// This is a thin wrapper over [`TestContextBuilder`] with a fixed tag
+    /// (`v0.0.0-test`) so the value is stable and obviously synthetic across
+    /// every crate that builds a [`Context`] in `#[cfg(test)]` code. Use the
+    /// builder directly when a test needs to vary fields.
+    ///
+    /// Gated by the `test-helpers` feature; enable it in your crate's
+    /// `[dev-dependencies]` to access this constructor:
+    ///
+    /// ```toml
+    /// [dev-dependencies]
+    /// anodizer-core = { workspace = true, features = ["test-helpers"] }
+    /// ```
+    pub fn test_fixture() -> Context {
+        TestContextBuilder::new().tag("v0.0.0-test").build()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Filesystem helpers
 // ---------------------------------------------------------------------------
 
@@ -709,5 +734,25 @@ mod tests {
         let ctx = TestContextBuilder::new().crates(vec![crate_cfg]).build();
         assert_eq!(ctx.config.crates.len(), 1);
         assert_eq!(ctx.config.crates[0].name, "my-crate");
+    }
+
+    #[test]
+    fn context_test_fixture_builds_without_panic() {
+        let ctx = Context::test_fixture();
+        // Tag is the documented stable value so downstream crates can
+        // assert against it.
+        assert_eq!(
+            ctx.template_vars().get("Tag"),
+            Some(&"v0.0.0-test".to_string())
+        );
+        let info = ctx
+            .git_info
+            .as_ref()
+            .expect("test_fixture must populate git_info");
+        assert_eq!(info.tag, "v0.0.0-test");
+        assert_eq!(info.semver.major, 0);
+        assert_eq!(info.semver.minor, 0);
+        assert_eq!(info.semver.patch, 0);
+        assert_eq!(info.semver.prerelease.as_deref(), Some("test"));
     }
 }
