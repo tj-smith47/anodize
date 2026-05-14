@@ -4561,21 +4561,22 @@ crates:
     // poisoned destination `<dist>/run-../../etc/passwd/` resolves
     // (via Path::join) up out of the tempdir, so we cannot positively
     // assert "no file written" without scanning the real FS — but we
-    // CAN assert the local <dist>/ stays empty of any run-<id> dir
-    // because the parser bailed before any stage ran.
+    // CAN assert the local <dist>/ stays free of any run-<id> dir
+    // because the parser bailed before any stage ran. No `if exists()`
+    // guard: dist/ not existing AND dist/ existing-with-no-run-* are
+    // both passing states, and a future regression that lets parsing
+    // succeed and `dist/run-../../etc/passwd` get mkdir'd before the
+    // stage fails must trip this assertion loudly.
     let dist = tmp.path().join("dist");
-    if dist.exists() {
-        let entries: Vec<_> = std::fs::read_dir(&dist)
+    let has_traversal_leak = dist.exists()
+        && std::fs::read_dir(&dist)
             .unwrap()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_name().to_string_lossy().starts_with("run-"))
-            .collect();
-        assert!(
-            entries.is_empty(),
-            "no run-* dirs should be created when parsing fails, found: {:?}",
-            entries.iter().map(|e| e.path()).collect::<Vec<_>>()
-        );
-    }
+            .filter_map(Result::ok)
+            .any(|e| e.file_name().to_string_lossy().starts_with("run-"));
+    assert!(
+        !has_traversal_leak,
+        "no run-* directory should leak into dist/ when parsing fails"
+    );
 }
 
 /// Invalid `--rollback` values are caught at the translation site before any

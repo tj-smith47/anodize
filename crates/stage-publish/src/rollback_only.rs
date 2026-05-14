@@ -46,16 +46,22 @@ use std::path::PathBuf;
 /// [`run_with_publishers`] so a future programmatic caller bypassing the
 /// CLI parser still gets the same rule.
 pub fn validate_run_id(run_id: &str) -> Result<()> {
+    // Single recovery-hint string reused across every error branch so the
+    // operator sees a uniform "here's what a valid id looks like"
+    // suggestion regardless of which rule they tripped.
+    const HINT: &str = "(e.g. 'run-2026-05-14' or 'abc123')";
+
     if run_id.is_empty() {
-        return Err(anyhow!("--from-run cannot be empty"));
+        return Err(anyhow!("--from-run cannot be empty {}", HINT));
     }
     if !run_id
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
     {
         return Err(anyhow!(
-            "--from-run='{}' contains invalid characters; allowed: [A-Za-z0-9._-]",
-            run_id
+            "--from-run='{}' contains invalid characters; allowed: [A-Za-z0-9._-] {}",
+            run_id,
+            HINT
         ));
     }
     // Belt-and-suspenders against path-traversal segments. The char-set
@@ -63,14 +69,16 @@ pub fn validate_run_id(run_id: &str) -> Result<()> {
     // so a reviewer scanning this function sees the intent.
     if run_id.contains('/') || run_id.contains('\\') {
         return Err(anyhow!(
-            "--from-run='{}' must not contain path separators",
-            run_id
+            "--from-run='{}' must not contain path separators {}",
+            run_id,
+            HINT
         ));
     }
     if run_id == "." || run_id == ".." {
         return Err(anyhow!(
-            "--from-run='{}' is not a valid run id (path-traversal segment)",
-            run_id
+            "--from-run='{}' is not a valid run id (path-traversal segment) {}",
+            run_id,
+            HINT
         ));
     }
     Ok(())
