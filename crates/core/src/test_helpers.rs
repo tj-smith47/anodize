@@ -375,6 +375,7 @@ impl TestContextBuilder {
             resume_release: false,
             replace_existing_artifacts: false,
             skip_post_publish_poll: false,
+            gate_submitter: None,
         };
 
         let mut ctx = Context::new(config, options);

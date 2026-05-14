@@ -35,22 +35,8 @@ use anodizer_core::config::PublishConfig;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anodizer_core::stage::Stage;
+use anodizer_core::{PublisherOutcome, SkipReason};
 use anyhow::Result;
-
-use artifactory::publish_to_artifactory;
-use aur::publish_to_aur;
-use aur_source::{publish_to_aur_source, publish_top_level_aur_sources};
-use cargo::publish_to_cargo;
-use chocolatey::publish_to_chocolatey;
-use cloudsmith::publish_to_cloudsmith;
-use dockerhub::publish_to_dockerhub;
-use homebrew::{publish_to_homebrew, publish_top_level_homebrew_casks};
-use krew::publish_to_krew;
-use mcp::publish_to_mcp;
-use nix::publish_to_nix;
-use scoop::publish_to_scoop;
-use upload::publish_to_upload;
-use winget::publish_to_winget;
 
 /// Collect crate names that match the selection filter and have a specific
 /// publisher configured (as determined by the predicate `has_config`).
@@ -297,42 +283,68 @@ fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], log: &StageL
         .collect();
 }
 
-/// Route a single publisher's `Result` through the stage's collect-or-bail
-/// policy. Returns `Ok(())` for the caller to continue dispatching the
-/// remaining publishers; returns `Err(...)` only when `fail_fast` is on and
-/// the publisher failed — at which point the enclosing stage's `?` exits
-/// immediately, matching GoReleaser's `--fail-fast` semantics in
-/// `internal/pipe/publish/publish.go`.
-///
-/// On a publisher failure with `fail_fast == false` (the default), the error
-/// is logged and pushed to `errors` for end-of-stage aggregation. This is the
-/// "continue-on-error" path that mirrors GoReleaser's `Continuable`
-/// publishers (brew, krew, nix, scoop, winget, cask, aur, chocolatey, ...).
-fn record_publisher_result(
-    label: &str,
-    result: Result<()>,
-    fail_fast: bool,
-    errors: &mut Vec<String>,
-    log: &StageLogger,
-) -> Result<()> {
-    if let Err(e) = result {
-        // `{:#}` renders the full anyhow error chain on one line
-        // (e.g. "top: middle: root cause"). `{}` shows only the
-        // top context, which discards the actual root cause —
-        // hiding details like reqwest transport errors, HTTP
-        // status codes, or response bodies that operators need
-        // to diagnose a failing publisher.
-        let formatted = format!("{}: {:#}", label, e);
-        log.warn(&formatted);
-        if fail_fast {
-            anyhow::bail!("publisher failed (fail-fast): {}", formatted);
-        }
-        errors.push(formatted);
-    }
-    Ok(())
-}
-
 pub struct PublishStage;
+
+impl PublishStage {
+    /// Core of `Stage::run`, factored out so tests can substitute an
+    /// arbitrary `&[Box<dyn Publisher>]` registry. `Stage::run` calls
+    /// this with `registry::configured_publishers(ctx)`.
+    ///
+    /// The body invokes the group-aware dispatcher (Assets -> Manager
+    /// -> Submitter, with Submitter gating), writes the resulting
+    /// `PublishReport` to `ctx.publish_report`, and returns `Ok(())`
+    /// even on per-publisher failure — those failures are recorded in
+    /// the report. `Err` is reserved for catastrophic non-publisher
+    /// errors (impossible IO, malformed config); for now `dispatch`
+    /// itself never returns `Err`.
+    pub fn run_with_publishers(
+        ctx: &mut Context,
+        log: &StageLogger,
+        publishers: &[Box<dyn anodizer_core::Publisher>],
+    ) -> Result<()> {
+        let opts = dispatch::DispatchOptions {
+            fail_fast: ctx.options.fail_fast,
+            gate_submitter: ctx.options.gate_submitter.unwrap_or(true),
+        };
+        let report = dispatch::dispatch(publishers, ctx, &opts)?;
+
+        // Summary line — operators see succeeded/failed/skipped counts
+        // and whether the submitter gate fired without grepping the
+        // per-publisher log noise.
+        let succeeded = report
+            .results
+            .iter()
+            .filter(|r| matches!(r.outcome, PublisherOutcome::Succeeded))
+            .count();
+        let failed = report
+            .results
+            .iter()
+            .filter(|r| matches!(r.outcome, PublisherOutcome::Failed(_)))
+            .count();
+        let skipped = report
+            .results
+            .iter()
+            .filter(|r| matches!(r.outcome, PublisherOutcome::Skipped(_)))
+            .count();
+        log.status(&format!(
+            "publish: {} succeeded, {} failed, {} skipped, submitter_gated={}",
+            succeeded, failed, skipped, report.submitter_gated,
+        ));
+        // Per-publisher failure detail — surface error strings so
+        // operators see which publisher failed without re-reading the
+        // dispatcher's interleaved log output.
+        for r in &report.results {
+            if let PublisherOutcome::Failed(msg) = &r.outcome {
+                log.warn(&format!("{}: {}", r.name, msg));
+            } else if let PublisherOutcome::Skipped(SkipReason::SubmitterGated) = &r.outcome {
+                log.status(&format!("{}: skipped via submitter-gate", r.name));
+            }
+        }
+
+        ctx.set_publish_report(report);
+        Ok(())
+    }
+}
 
 impl Stage for PublishStage {
     fn name(&self) -> &str {
@@ -344,202 +356,13 @@ impl Stage for PublishStage {
         if ctx.skip_in_snapshot(&log, "publish") {
             return Ok(());
         }
-        let selected = ctx.options.selected_crates.clone();
-        // Capture as a local so the macros below can read it without
-        // re-borrowing `ctx` mid-dispatch (every publisher call takes
-        // `&mut Context` indirectly via stage hand-off).
-        let fail_fast = ctx.options.fail_fast;
 
-        // Individual publisher failures are collected and reported at the end
-        // rather than aborting the entire publish stage. This prevents a single
-        // publisher (e.g. homebrew auth) from killing independent downstream
-        // publishers (docker, cosign, announce). crates.io is the exception —
-        // it's the authoritative registry and its failure is always fatal.
-        //
-        // `--fail-fast` inverts this: the first publisher error aborts the
-        // stage immediately (see `record_publisher_result`). Default
-        // collect-and-aggregate matches GoReleaser's `Continuable` post-
-        // release publishers; fail-fast matches `internal/pipe/publish/
-        // publish.go:95` upstream when `ctx.FailFast` is on.
-        //
-        // Strict mode semantics: we still COLLECT every publisher error so a
-        // single run surfaces *all* remaining issues. The difference vs. the
-        // default mode is that at the end of the stage we bail with the full
-        // list instead of warning. Failing fast on the first error is
-        // counter-productive for dogfooding — it hides every issue after the
-        // first, forcing N release cycles to shake out N bugs — which is
-        // exactly why fail-fast is opt-in.
-        let mut errors: Vec<String> = Vec::new();
-
-        // Helper: run a publisher, log + collect (default) or bail (fail-fast)
-        // on failure. Routes through `record_publisher_result` so the policy
-        // stays unit-testable; the `?` propagates a fail-fast bail out of the
-        // enclosing `run`.
-        macro_rules! try_publish {
-            ($label:expr, $expr:expr) => {
-                record_publisher_result($label, $expr, fail_fast, &mut errors, &log)?;
-            };
-        }
-
-        // infra-level publishers (blob,
-        // upload, artifactory, docker-signs, snapcraft/dockerhub) run BEFORE
-        // package managers (homebrew/cask/scoop/chocolatey/winget/aur/krew/nix).
-        // Package managers often reference release artifacts by URL+digest, so
-        // those URLs must be live before the manifests are published.
-        //
-        // crates.io is dispatched first (after the macro definitions below)
-        // and is fatal — it's the authoritative Rust registry and must
-        // succeed before anything downstream runs. `aur_source`/`aur_sources`
-        // run last to match GoReleaser.
-
-        // ---- Infrastructure publishers (run before package managers) ----
-
-        // 2. DockerHub — top-level publisher (not per-crate).
-        try_publish!("dockerhub", publish_to_dockerhub(ctx, &log));
-
-        // 3. Artifactory — top-level publisher (not per-crate).
-        try_publish!("artifactory", publish_to_artifactory(ctx, &log));
-
-        // 4. CloudSmith — top-level publisher (not per-crate).
-        try_publish!("cloudsmith", publish_to_cloudsmith(ctx, &log));
-
-        // 5. Generic HTTP upload — top-level publisher.
-        try_publish!("upload", publish_to_upload(ctx, &log));
-
-        // ---- Package-manager publishers (consume URLs from releases above) ----
-        //
-        // Every entry below is dispatched through one of two macros so the
-        // skip gate, log line, and label are produced uniformly:
-        //
-        //   per_crate!  — fan out per `selected` crate that has the publisher
-        //                  configured. Predicate filters `PublishConfig`.
-        //   top_level!  — single top-level call (no per-crate fan-out).
-        //
-        // Skip names match GoReleaser convention: `brew`, `scoop`, `choco`,
-        // `winget`, `aur`, `krew`, `nix`, `cargo`. The skip gate fires from
-        // here for every publisher (cargo included) so the user sees a single
-        // uniform "X: skipped via --skip=X" line regardless of which publisher
-        // owns the actual subprocess. `--skip=brew` and `--skip=aur` each gate
-        // two related sub-publishers (formula+casks, binary+source).
-
-        // Dispatcher helpers — collapse per-publisher boilerplate.
-        // Each macro:
-        //   1. checks `ctx.should_skip($skip_name)`,
-        //   2. emits "{label}: skipped via --skip={skip_name}" if skipped,
-        //   3. otherwise runs the publisher and routes errors through
-        //      `try_publish!` (collected for end-of-stage aggregation).
-        macro_rules! per_crate {
-            ($skip:expr, $label:expr, $pred:expr, $run:expr) => {{
-                if ctx.should_skip($skip) {
-                    log.status(&format!("{}: skipped via --skip={}", $label, $skip));
-                } else {
-                    for crate_name in &crates_with_publisher(ctx, &selected, $pred) {
-                        try_publish!($label, $run(ctx, crate_name, &log));
-                    }
-                }
-            }};
-        }
-        macro_rules! top_level {
-            ($skip:expr, $label:expr, $run:expr) => {{
-                if ctx.should_skip($skip) {
-                    log.status(&format!("{}: skipped via --skip={}", $label, $skip));
-                } else {
-                    try_publish!($label, $run(ctx, &log));
-                }
-            }};
-        }
-
-        // Cargo (crates.io) — top-level by virtue of doing its own crate
-        // walk + topo sort internally. Fatal regardless of `--fail-fast`:
-        // any error aborts the stage because crates.io is the authoritative
-        // Rust registry and downstream publishers reference its URLs. The
-        // `?` below intentionally bypasses `record_publisher_result`.
-        if ctx.should_skip("cargo") {
-            log.status("cargo: skipped via --skip=cargo");
-        } else {
-            publish_to_cargo(ctx, &selected, &log)?;
-        }
-
-        // 7b. MCP server registry — top-level publisher. Posts an
-        // apiv0.ServerJSON document to the configured MCP registry. Skipped
-        // when `mcp.name` is empty (same gate GoReleaser uses in its `mcp`
-        // pipe).
-        top_level!("mcp", "mcp", publish_to_mcp);
-
-        // 8. Homebrew formulae — per-crate.
-        per_crate!(
-            "brew",
-            "homebrew",
-            |p: &PublishConfig| p.homebrew.is_some(),
-            publish_to_homebrew
-        );
-
-        // 9. Scoop — per-crate.
-        per_crate!(
-            "scoop",
-            "scoop",
-            |p: &PublishConfig| p.scoop.is_some(),
-            publish_to_scoop
-        );
-
-        // 10. Chocolatey — per-crate.
-        per_crate!(
-            "choco",
-            "chocolatey",
-            |p: &PublishConfig| p.chocolatey.is_some(),
-            publish_to_chocolatey
-        );
-
-        // 11. WinGet — per-crate.
-        per_crate!(
-            "winget",
-            "winget",
-            |p: &PublishConfig| p.winget.is_some(),
-            publish_to_winget
-        );
-
-        // 12. AUR (binary) — per-crate. Shares `--skip=aur` with aur-source.
-        per_crate!(
-            "aur",
-            "aur",
-            |p: &PublishConfig| p.aur.is_some(),
-            publish_to_aur
-        );
-
-        // 13. Krew — per-crate.
-        per_crate!(
-            "krew",
-            "krew",
-            |p: &PublishConfig| p.krew.is_some(),
-            publish_to_krew
-        );
-
-        // 14. Nix — per-crate.
-        per_crate!(
-            "nix",
-            "nix",
-            |p: &PublishConfig| p.nix.is_some(),
-            publish_to_nix
-        );
-
-        // 15. Homebrew Casks — top-level publisher (GoReleaser parity).
-        // Shares `--skip=brew` with the per-crate formula publisher above; the
-        // skip emits twice (once for "homebrew", once for "homebrew-casks") so
-        // operators see exactly which surface was suppressed.
-        top_level!("brew", "homebrew-casks", publish_top_level_homebrew_casks);
-
-        // ---- AUR source last (GoReleaser parity) ----
-
-        // 16. AUR source packages — per-crate publisher.
-        per_crate!(
-            "aur",
-            "aur-source",
-            |p: &PublishConfig| p.aur_source.is_some(),
-            publish_to_aur_source
-        );
-
-        // 17. AUR source packages — top-level array (GoReleaser `aur_sources`).
-        top_level!("aur", "aur-sources", publish_top_level_aur_sources);
+        // Build the publisher list from the active context and hand off
+        // to the group-aware dispatcher via `run_with_publishers`.
+        // `configured_publishers` is the single source of truth for
+        // which publishers run.
+        let publishers = registry::configured_publishers(ctx);
+        Self::run_with_publishers(ctx, &log, &publishers)?;
 
         // ---- Post-publish polling fan-out (Chocolatey moderation + WinGet PR) ----
         //
@@ -550,24 +373,11 @@ impl Stage for PublishStage {
         // `winget` skips their poll automatically (no submission =
         // nothing to poll for).
         if !ctx.is_dry_run() && !ctx.is_snapshot() {
+            let selected = ctx.options.selected_crates.clone();
             run_post_publish_pollers(ctx, &selected, &log);
         }
 
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            let suffix = if ctx.is_strict() {
-                " (strict mode)"
-            } else {
-                ""
-            };
-            anyhow::bail!(
-                "{} publisher(s) failed{}:\n  {}",
-                errors.len(),
-                suffix,
-                errors.join("\n  ")
-            )
-        }
+        Ok(())
     }
 }
 
@@ -605,6 +415,146 @@ mod tests {
         let config = Config::default();
         let mut ctx = dry_run_ctx(config);
         assert!(PublishStage.run(&mut ctx).is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // PublishStage::run swap — trait-based dispatch sets ctx.publish_report,
+    // returns Ok(()) on per-publisher failure, applies the Submitter gate.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn publish_stage_returns_ok_and_sets_context_publish_report() {
+        use crate::testing::*;
+        use anodizer_core::PublisherGroup;
+
+        let mut ctx = Context::test_fixture();
+        let publishers = vec![fake(
+            "manager-only",
+            PublisherGroup::Manager,
+            false,
+            FakeOutcome::Succeed,
+        )];
+        let log = ctx.logger("publish-test");
+        PublishStage::run_with_publishers(&mut ctx, &log, &publishers)
+            .expect("run_with_publishers returns Ok on per-publisher success");
+
+        let report = ctx.publish_report().expect("publish_report set on Context");
+        assert_eq!(report.results.len(), 1);
+        assert!(matches!(
+            report.results[0].outcome,
+            anodizer_core::PublisherOutcome::Succeeded
+        ));
+        assert!(!report.submitter_gated);
+    }
+
+    #[test]
+    fn publish_stage_records_publisher_failures_without_returning_err() {
+        use crate::testing::*;
+        use anodizer_core::PublisherGroup;
+
+        let mut ctx = Context::test_fixture();
+        // Three publishers in the Manager group; the middle one fails.
+        // Dispatch must record every outcome and still return Ok so the
+        // pipeline continues past PublishStage.
+        let publishers = vec![
+            fake("m1", PublisherGroup::Manager, false, FakeOutcome::Succeed),
+            fake(
+                "m2",
+                PublisherGroup::Manager,
+                false,
+                FakeOutcome::Fail("boom".into()),
+            ),
+            fake("m3", PublisherGroup::Manager, false, FakeOutcome::Succeed),
+        ];
+        let log = ctx.logger("publish-test");
+        PublishStage::run_with_publishers(&mut ctx, &log, &publishers)
+            .expect("per-publisher failure must not bail the stage");
+
+        let report = ctx.publish_report().expect("publish_report set on Context");
+        let names: Vec<&str> = report.results.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, vec!["m1", "m2", "m3"]);
+        assert!(matches!(
+            report.results[0].outcome,
+            anodizer_core::PublisherOutcome::Succeeded
+        ));
+        match &report.results[1].outcome {
+            anodizer_core::PublisherOutcome::Failed(msg) => assert!(msg.contains("boom")),
+            other => panic!("expected Failed for m2, got {:?}", other),
+        }
+        assert!(matches!(
+            report.results[2].outcome,
+            anodizer_core::PublisherOutcome::Succeeded
+        ));
+    }
+
+    #[test]
+    fn submitter_gate_records_skipped_when_required_manager_fails() {
+        use crate::testing::*;
+        use anodizer_core::{PublisherGroup, PublisherOutcome, SkipReason};
+
+        let mut ctx = Context::test_fixture();
+        // Required Manager publisher fails -> Submitter must be gated to
+        // Skipped(SubmitterGated) (irreversible publish protected).
+        let publishers = vec![
+            fake(
+                "manager",
+                PublisherGroup::Manager,
+                true,
+                FakeOutcome::Fail("manager boom".into()),
+            ),
+            fake(
+                "submitter",
+                PublisherGroup::Submitter,
+                false,
+                FakeOutcome::Succeed,
+            ),
+        ];
+        let log = ctx.logger("publish-test");
+        PublishStage::run_with_publishers(&mut ctx, &log, &publishers)
+            .expect("Submitter gating must record skipped, not Err");
+
+        let report = ctx.publish_report().expect("publish_report set on Context");
+        assert!(report.submitter_gated);
+        let submitter = report
+            .results
+            .iter()
+            .find(|r| r.name == "submitter")
+            .expect("submitter entry present");
+        assert!(matches!(
+            submitter.outcome,
+            PublisherOutcome::Skipped(SkipReason::SubmitterGated)
+        ));
+    }
+
+    #[test]
+    fn publish_stage_skips_under_snapshot() {
+        // Snapshot mode short-circuits `Stage::run` before dispatch fires,
+        // leaving `ctx.publish_report` as `None`. This pins the gate in
+        // `ctx.skip_in_snapshot` so a future refactor can't silently
+        // start running publishers under `--snapshot`.
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: "mylib".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                cargo: Some(CargoPublishConfig::default()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                snapshot: true,
+                ..Default::default()
+            },
+        );
+        assert!(PublishStage.run(&mut ctx).is_ok());
+        assert!(
+            ctx.publish_report().is_none(),
+            "snapshot mode must short-circuit before dispatch fires"
+        );
     }
 
     /// WAVE 3: a workspace-only crate that carries a non-cargo publisher block
@@ -881,106 +831,11 @@ mod tests {
     // -----------------------------------------------------------------------
 
     // -----------------------------------------------------------------------
-    // record_publisher_result — fail_fast wiring
-    //
-    // These tests pin the collect-or-bail policy that the publish stage
-    // dispatch macros route every publisher through. The default is
-    // collect-and-aggregate (matches GoReleaser's `Continuable` publishers);
-    // `--fail-fast` inverts it so the very first publisher error aborts the
-    // stage immediately (matches `internal/pipe/publish/publish.go:95`
-    // upstream).
+    // record_publisher_result tests removed when PublishStage swapped to
+    // trait-based dispatch (see `crates/stage-publish/src/dispatch.rs`).
+    // The collect-or-bail policy now lives in `DispatchOptions::fail_fast`
+    // and is covered by tests in `crates/stage-publish/src/dispatch.rs`.
     // -----------------------------------------------------------------------
-
-    use anodizer_core::log::{StageLogger, Verbosity};
-
-    fn test_logger() -> StageLogger {
-        StageLogger::new("publish-test", Verbosity::Quiet)
-    }
-
-    #[test]
-    fn test_record_publisher_result_ok_is_noop() {
-        let log = test_logger();
-        let mut errors: Vec<String> = Vec::new();
-        let res = record_publisher_result("homebrew", Ok(()), false, &mut errors, &log);
-        assert!(res.is_ok());
-        assert!(errors.is_empty(), "no failures => errors stays empty");
-
-        let res = record_publisher_result("homebrew", Ok(()), true, &mut errors, &log);
-        assert!(res.is_ok());
-        assert!(errors.is_empty(), "fail_fast on Ok still empty");
-    }
-
-    #[test]
-    fn test_record_publisher_result_default_collects() {
-        // Default mode (fail_fast=false): two consecutive publisher failures
-        // both end up in `errors` and the helper returns Ok(()) each time so
-        // the dispatch loop continues.
-        let log = test_logger();
-        let mut errors: Vec<String> = Vec::new();
-
-        let res = record_publisher_result(
-            "homebrew",
-            Err(anyhow::anyhow!("tap repo not found")),
-            false,
-            &mut errors,
-            &log,
-        );
-        assert!(res.is_ok(), "default mode never short-circuits");
-
-        let res = record_publisher_result(
-            "scoop",
-            Err(anyhow::anyhow!("bucket auth failed")),
-            false,
-            &mut errors,
-            &log,
-        );
-        assert!(res.is_ok(), "default mode never short-circuits");
-
-        assert_eq!(errors.len(), 2, "both failures collected");
-        assert!(errors[0].starts_with("homebrew: "));
-        assert!(errors[0].contains("tap repo not found"));
-        assert!(errors[1].starts_with("scoop: "));
-        assert!(errors[1].contains("bucket auth failed"));
-    }
-
-    #[test]
-    fn test_record_publisher_result_fail_fast_bails_on_first() {
-        // fail_fast mode: the first publisher failure returns Err so the
-        // enclosing stage's `?` exits the run immediately. The second
-        // publisher must not be invoked, and `errors` must NOT contain the
-        // first failure (it's surfaced via the bail!, not the aggregate).
-        let log = test_logger();
-        let mut errors: Vec<String> = Vec::new();
-
-        let res = record_publisher_result(
-            "homebrew",
-            Err(anyhow::anyhow!("tap repo not found")),
-            true,
-            &mut errors,
-            &log,
-        );
-        let err = match res {
-            Ok(()) => panic!("fail_fast must short-circuit on first error"),
-            Err(e) => e,
-        };
-        let msg = format!("{:#}", err);
-        assert!(
-            msg.contains("fail-fast"),
-            "error message should signal fail-fast trigger, got: {msg}"
-        );
-        assert!(
-            msg.contains("homebrew"),
-            "error message should name the failing publisher, got: {msg}"
-        );
-        assert!(
-            msg.contains("tap repo not found"),
-            "error message should preserve the underlying cause, got: {msg}"
-        );
-        assert!(
-            errors.is_empty(),
-            "fail_fast surfaces the error via Err, not via the aggregate vec; got {errors:?}"
-        );
-    }
 
     #[test]
     fn test_run_dry_run_nix() {

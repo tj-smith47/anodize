@@ -3,6 +3,7 @@ use std::process::Command;
 
 use anyhow::{Context as _, Result};
 
+use anodizer_core::PublisherGroup;
 use anodizer_core::artifact::ArtifactKind;
 use anodizer_core::context::Context;
 use anodizer_core::retry::retry_sync;
@@ -26,6 +27,22 @@ impl Stage for SnapcraftPublishStage {
     fn run(&self, ctx: &mut Context) -> Result<()> {
         let log = ctx.logger("snapcraft-publish");
         if ctx.skip_in_snapshot(&log, "snapcraft-publish") {
+            return Ok(());
+        }
+
+        // Submitter-gate check: SnapcraftPublishStage is a Submitter-group
+        // surface (irreversible snap-store upload — once a revision is
+        // pushed there is no programmatic rollback). When the trait-based
+        // dispatch in PublishStage flagged a required Assets/Manager
+        // publisher failure, skip the snapcraft upload to avoid the
+        // "released to one half-broken surface" failure mode.
+        let gate_submitter = ctx.options.gate_submitter.unwrap_or(true);
+        if gate_submitter
+            && let Some(report) = ctx.publish_report()
+            && (report.any_failed(PublisherGroup::Assets, true)
+                || report.any_failed(PublisherGroup::Manager, true))
+        {
+            log.status("snapcraft-publish skipped via submitter-gate");
             return Ok(());
         }
 

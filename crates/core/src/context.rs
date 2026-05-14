@@ -3,6 +3,7 @@ use crate::config::Config;
 use crate::git::GitInfo;
 use crate::log::{StageLogger, Verbosity};
 use crate::partial::PartialTarget;
+use crate::publish_report::PublishReport;
 use crate::scm::ScmTokenType;
 use crate::template::TemplateVars;
 use anyhow::Context as _;
@@ -124,6 +125,14 @@ pub struct ContextOptions {
     /// waits opt out without scattering `post_publish_poll.enabled: false`
     /// across every publisher block.
     pub skip_post_publish_poll: bool,
+    /// Whether the publisher dispatcher gates irreversible Submitter
+    /// publishers (chocolatey, winget, AUR-source, krew, snapcraft) on
+    /// the success of every required Assets/Manager publisher that ran
+    /// before them. `None` defaults to `Some(true)` (gate on). The CLI
+    /// flag `--no-gate-submitter` flips this to `Some(false)`. See
+    /// `stage-publish::dispatch::DispatchOptions::gate_submitter` for
+    /// the gating mechanics.
+    pub gate_submitter: Option<bool>,
 }
 
 impl Default for ContextOptions {
@@ -149,6 +158,7 @@ impl Default for ContextOptions {
             resume_release: false,
             replace_existing_artifacts: false,
             skip_post_publish_poll: false,
+            gate_submitter: None,
         }
     }
 }
@@ -200,6 +210,14 @@ pub struct Context {
     /// GoReleaser's `pipe.SkipMemento` pattern. The inner `Arc<Mutex<…>>`
     /// lets parallel stage workers contribute without extra plumbing.
     pub skip_memento: crate::pipe_skip::SkipMemento,
+    /// Trait-based publisher dispatch report, set by `PublishStage::run`
+    /// when the per-publisher dispatcher finishes. `None` until the
+    /// publish stage executes (or when publishing is skipped entirely
+    /// via snapshot mode / `--skip=publish`). Downstream stages
+    /// (SnapcraftPublishStage, AnnounceStage, future Submitter-group
+    /// stages) consult this to apply the submitter-gate / announce-gate
+    /// rules — see `PublishReport::any_failed`.
+    pub publish_report: Option<PublishReport>,
 }
 
 impl Context {
@@ -215,7 +233,20 @@ impl Context {
             git_info: None,
             token_type: ScmTokenType::GitHub,
             skip_memento: crate::pipe_skip::SkipMemento::new(),
+            publish_report: None,
         }
+    }
+
+    /// Borrow the publisher dispatch report set by `PublishStage::run`,
+    /// or `None` if the publish stage hasn't run yet (or was skipped).
+    pub fn publish_report(&self) -> Option<&PublishReport> {
+        self.publish_report.as_ref()
+    }
+
+    /// Store the publisher dispatch report. Overwrites any prior report;
+    /// the publish stage is the single writer.
+    pub fn set_publish_report(&mut self, r: PublishReport) {
+        self.publish_report = Some(r);
     }
 
     /// Record an intentional skip from a per-sub-config loop

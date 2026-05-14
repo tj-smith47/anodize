@@ -352,6 +352,11 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         resume_release: opts.resume_release,
         replace_existing_artifacts: opts.replace_existing,
         skip_post_publish_poll: opts.no_post_publish_poll,
+        // CLI flag wiring lands in a follow-up task; default to the
+        // gating-on behaviour resolved via `unwrap_or(true)` at the
+        // dispatch site so a `None` here flips into a gate-on
+        // dispatch.
+        gate_submitter: None,
     };
     let mut ctx = Context::new(config.clone(), ctx_opts);
     helpers::resolve_scm_token_type(&mut ctx, &config);
