@@ -33,7 +33,16 @@ simple_publisher!(
     "mcp",
     anodizer_core::PublisherGroup::Manager,
     false,
-    Some("GITHUB_TOKEN pull_request:write"),
+    // MCP posts to a registry API (POST `{registry}/v0/publish`); there
+    // is no PR to close, so `GITHUB_TOKEN pull_request:write` is wrong.
+    // The credential operators actually need for a manual re-publish /
+    // rollback retry is whatever feeds the `Github` (PAT) auth path —
+    // the `MCP_GITHUB_TOKEN` env-var fallback documented in
+    // `super::auth::GithubAtAuthProvider::get_token`. The OIDC and None
+    // variants don't read a named env var (OIDC pulls from the Actions
+    // runtime; None can fall through to an anonymous `/v0/auth/none`
+    // exchange), so naming the PAT env var is the actionable hint.
+    Some("MCP_GITHUB_TOKEN publish"),
 );
 
 /// Serialized shape of a recorded MCP publish. Single-entry per run —
@@ -195,10 +204,7 @@ mod publisher_tests {
         assert_eq!(p.name(), "mcp");
         assert_eq!(p.group(), PublisherGroup::Manager);
         assert!(!p.required());
-        assert_eq!(
-            p.rollback_scope_needed(),
-            Some("GITHUB_TOKEN pull_request:write")
-        );
+        assert_eq!(p.rollback_scope_needed(), Some("MCP_GITHUB_TOKEN publish"));
     }
 
     #[test]

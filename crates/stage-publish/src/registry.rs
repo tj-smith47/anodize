@@ -401,9 +401,17 @@ mod tests {
                 expected
             );
             assert!(!p.required(), "{} should not be required", expected);
+            // krew opens a PR (rollback closes it via pull_request:write).
+            // mcp posts to a registry API (no PR; rollback re-publish path
+            // reads MCP_GITHUB_TOKEN — see McpPublisher rustdoc).
+            let expected_scope = match expected {
+                "krew" => Some("GITHUB_TOKEN pull_request:write"),
+                "mcp" => Some("MCP_GITHUB_TOKEN publish"),
+                other => panic!("unexpected publisher in fixture: {}", other),
+            };
             assert_eq!(
                 p.rollback_scope_needed(),
-                Some("GITHUB_TOKEN pull_request:write"),
+                expected_scope,
                 "{} rollback scope",
                 expected
             );

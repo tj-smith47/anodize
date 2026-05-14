@@ -65,7 +65,11 @@ pub(crate) use disambiguate::{
 };
 pub(crate) use formats::{default_package_formats, format_matches};
 pub(crate) use git_revert::RevertTarget;
-pub(crate) use github_pr::{close_pr_via_api, find_open_pr_numbers_for_head};
+// `FindPrError` is reached through its `Display` impl only — krew's
+// rollback formats `{e}` directly without naming variants. Keeping it
+// out of the re-export surface honours the "only living surface" rule
+// in the module rustdoc above.
+pub(crate) use github_pr::{CloseOutcome, close_pr_via_api, find_open_pr_numbers_for_head};
 pub(crate) use parallelism::{ROLLBACK_PARALLELISM, run_revert_targets_parallel};
 pub(crate) use pr::{PrOrigin, maybe_submit_pr, submit_pr_via_gh};
 pub(crate) use template::{render_or_warn, render_url_template, render_url_template_with_ctx};

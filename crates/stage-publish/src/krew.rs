@@ -1178,13 +1178,29 @@ impl anodizer_core::Publisher for KrewPublisher {
                 ));
                 continue;
             };
-            let pr_numbers = crate::util::find_open_pr_numbers_for_head(
+            let env_hint_for_target = t.token_env_var.as_deref().unwrap_or("KREW_INDEX_TOKEN");
+            let pr_numbers = match crate::util::find_open_pr_numbers_for_head(
                 &t.upstream_owner,
                 &t.upstream_repo,
                 &t.fork_owner,
                 &t.branch,
                 Some(&token),
-            );
+                env_hint_for_target,
+            ) {
+                Ok(v) => v,
+                Err(e) => {
+                    // Auth-failure / repo-not-found / transport problems
+                    // surface as actionable warns naming the actual
+                    // failure mode — not the misleading "no PR found,
+                    // verify manually" that previously fired here.
+                    log.warn(&format!(
+                        "krew: failed to query upstream {}/{} for open PRs ({}); \
+                         {} — manual cleanup required",
+                        t.upstream_owner, t.upstream_repo, t.target, e
+                    ));
+                    continue;
+                }
+            };
             if pr_numbers.is_empty() {
                 log.warn(&format!(
                     "krew: no open PRs found for head={}:{} against {}/{}; \
@@ -1212,7 +1228,13 @@ impl anodizer_core::Publisher for KrewPublisher {
             .and_then(|t| t.token_env_var.as_deref())
             .unwrap_or("KREW_INDEX_TOKEN");
 
-        let counts = std::sync::Mutex::new((0usize, 0usize));
+        // Three-bucket count: (closed, already_closed, failed).
+        // `already_closed` is a success bucket — 404 / 410 / 422 from
+        // the PATCH means the desired end-state ("PR not open") is
+        // already true (maintainer closed it, repo renamed, PR
+        // deleted). Re-running --rollback-only after a partial
+        // success must NOT surface those as failures.
+        let counts = std::sync::Mutex::new((0usize, 0usize, 0usize));
         for chunk in jobs.chunks(crate::util::ROLLBACK_PARALLELISM) {
             std::thread::scope(|s| {
                 let mut handles = Vec::with_capacity(chunk.len());
@@ -1228,19 +1250,29 @@ impl anodizer_core::Publisher for KrewPublisher {
                             "krew: closing PR {} ({})",
                             job.target_label, pr_url
                         ));
-                        match crate::util::close_pr_via_api(
+                        let outcome = crate::util::close_pr_via_api(
                             &job.upstream_owner,
                             &job.upstream_repo,
                             job.pr_number,
                             &job.token,
-                        ) {
-                            Ok(()) => {
+                        );
+                        match outcome {
+                            crate::util::CloseOutcome::Closed => {
                                 let mut c = counts.lock().expect("counts lock");
                                 c.0 += 1;
                             }
-                            Err(err) => {
+                            crate::util::CloseOutcome::AlreadyClosed => {
                                 let mut c = counts.lock().expect("counts lock");
                                 c.1 += 1;
+                                log.status(&format!(
+                                    "krew: PR {} ({}) already closed/deleted upstream — \
+                                     rollback noticed the existing state",
+                                    job.target_label, pr_url
+                                ));
+                            }
+                            crate::util::CloseOutcome::Failed(err) => {
+                                let mut c = counts.lock().expect("counts lock");
+                                c.2 += 1;
                                 log.warn(&crate::publisher_helpers::rollback_failure_warning_msg(
                                     "krew",
                                     &job.target_label,
@@ -1257,10 +1289,10 @@ impl anodizer_core::Publisher for KrewPublisher {
                 }
             });
         }
-        let (closed, failed) = counts.into_inner().expect("counts lock");
+        let (closed, already_closed, failed) = counts.into_inner().expect("counts lock");
         log.status(&format!(
-            "krew: closed {} PR(s), {} failure(s)",
-            closed, failed
+            "krew: closed {}, already-closed {}, failed {}",
+            closed, already_closed, failed
         ));
         Ok(())
     }
