@@ -66,6 +66,34 @@ pub(crate) fn build_release_body(
     }
 }
 
+/// Render the "Non-deterministic exemptions:" block injected above the
+/// SHA256SUMS section of the release body when the operator passes one
+/// or more `--allow-nondeterministic <name>=<reason>` flags.
+///
+/// Empty input yields an empty string so callers can unconditionally
+/// concatenate without a guard. The block ends with a single trailing
+/// newline so it composes cleanly with whatever follows (typically the
+/// SHA256SUMS code-fence). Output uses ASCII separators (no emdash) so
+/// it renders predictably regardless of the consumer's encoding.
+///
+/// Shape (rendered):
+///
+/// ```text
+/// Non-deterministic exemptions:
+///   foo.rpm - tool-bug-1234
+///   bar.msi - signing-cert-rotation
+/// ```
+pub(crate) fn render_nondeterministic_exemptions_block(entries: &[(String, String)]) -> String {
+    if entries.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("Non-deterministic exemptions:\n");
+    for (name, reason) in entries {
+        out.push_str(&format!("  {} - {}\n", name, reason));
+    }
+    out
+}
+
 /// Resolve `extra_files` glob patterns into concrete file paths.
 /// Returns `(path, optional_rendered_name)` pairs. When a `Detailed` spec has
 /// a `name_template`, the template is rendered using the provided `Context` and

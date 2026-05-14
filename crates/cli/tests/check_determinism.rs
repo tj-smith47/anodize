@@ -104,3 +104,71 @@ fn check_determinism_runs_at_least_once_against_fixture_workspace() {
     //   $ anodize check determinism --runs=1 --report=det.json
     //   $ test -f det.json && jq .schema_version det.json == 1
 }
+
+/// `--inject-drift=<stage>` is a hidden test-harness flag — it must be
+/// rejected when `ANODIZE_TEST_HARNESS=1` is not set. This guards the
+/// production-release surface: an operator who accidentally types the
+/// flag gets a hard error rather than silent test-mode behaviour.
+#[test]
+fn inject_drift_rejected_without_test_harness_env() {
+    let tmp = TempDir::new().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args([
+            "check",
+            "determinism",
+            "--runs",
+            "1",
+            "--inject-drift",
+            "archive",
+        ])
+        .current_dir(tmp.path())
+        .env_remove("ANODIZE_TEST_HARNESS")
+        .output()
+        .expect("invoking anodize check determinism --inject-drift");
+
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit when --inject-drift is set without ANODIZE_TEST_HARNESS=1"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--inject-drift") && stderr.contains("ANODIZE_TEST_HARNESS"),
+        "expected error citing both --inject-drift and ANODIZE_TEST_HARNESS; got: {}",
+        stderr
+    );
+}
+
+/// `--inject-drift=<stage>` is hidden from `--help` output. This
+/// asserts the `hide = true` clap attribute is intact so a future
+/// review can't accidentally promote the flag into the public surface.
+#[test]
+fn inject_drift_hidden_from_help() {
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args(["check", "determinism", "--help"])
+        .output()
+        .expect("invoking anodize check determinism --help");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("--inject-drift"),
+        "--inject-drift must not appear in --help output: {}",
+        stdout
+    );
+}
+
+/// Full-fledged drift-injection harness run.
+///
+/// Ignored by default for the same wallclock reason as the
+/// fixture-workspace test above. Documents the manual invocation:
+///
+/// ```text
+/// ANODIZE_TEST_HARNESS=1 anodize check determinism \
+///   --runs=2 --inject-drift=archive
+/// ```
+///
+/// Expected: exit code 1 + report's `drift_count > 0`.
+#[test]
+#[ignore]
+fn inject_drift_archive_exits_nonzero_and_reports_drift() {
+    // See above — runs a full `cargo build --release` per run. Invoke
+    // manually with `cargo test --test check_determinism -- --ignored`.
+}

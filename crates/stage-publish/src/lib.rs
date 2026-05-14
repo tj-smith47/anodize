@@ -334,6 +334,55 @@ fn run_rollback_if_needed(ctx: &mut Context, publishers: &[Box<dyn Publisher>], 
     ctx.set_publish_report(report);
 }
 
+/// Verify every `--allow-nondeterministic <name>=<reason>` entry
+/// matches at least one artifact emitted by the build-side pipeline.
+/// Glob entries (`*.ext`) match by suffix; bare names match exactly.
+///
+/// Called at the top of [`PublishStage::run`] so the run errors out
+/// BEFORE any publisher fires. An unmatched name almost always
+/// signifies an operator typo — silently letting it through would
+/// produce a release with an exemption notice that doesn't apply to
+/// anything, undermining the audit trail.
+fn validate_runtime_allowlist(ctx: &Context) -> Result<()> {
+    let entries = &ctx.options.runtime_nondeterministic_allowlist;
+    if entries.is_empty() {
+        return Ok(());
+    }
+    let artifact_names: Vec<&str> = ctx
+        .artifacts
+        .all()
+        .iter()
+        .map(|a| a.name.as_str())
+        .collect();
+    let mut unmatched: Vec<&str> = Vec::new();
+    for (name, _reason) in entries {
+        let matched = artifact_names
+            .iter()
+            .any(|n| matches_artifact_pattern(name, n));
+        if !matched {
+            unmatched.push(name.as_str());
+        }
+    }
+    if !unmatched.is_empty() {
+        anyhow::bail!(
+            "--allow-nondeterministic name(s) did not match any emitted artifact: {} \
+             (check spelling; use `*.ext` glob for suffix match)",
+            unmatched.join(", ")
+        );
+    }
+    Ok(())
+}
+
+/// Glob match: `*.ext` is suffix-match; anything else is exact-match.
+/// Same semantics as `DeterminismState::resolve_reason` (kept local
+/// here to avoid exposing the core helper publicly).
+fn matches_artifact_pattern(pattern: &str, artifact: &str) -> bool {
+    if let Some(suffix) = pattern.strip_prefix('*') {
+        return artifact.ends_with(suffix);
+    }
+    pattern == artifact
+}
+
 pub struct PublishStage;
 
 impl PublishStage {
@@ -418,6 +467,12 @@ impl Stage for PublishStage {
         if ctx.skip_in_snapshot(&log, "publish") {
             return Ok(());
         }
+
+        // Preflight: every `--allow-nondeterministic <name>=<reason>`
+        // entry must match at least one artifact emitted by the
+        // build-side pipeline. Fail hard BEFORE the first publisher
+        // fires so an operator typo can't ship as a silent exemption.
+        validate_runtime_allowlist(ctx)?;
 
         // Build the publisher list from the active context and hand off
         // to the group-aware dispatcher via `run_with_publishers`.
@@ -520,6 +575,71 @@ mod tests {
             anodizer_core::PublisherOutcome::Succeeded
         ));
         assert!(!report.submitter_gated);
+    }
+
+    // -----------------------------------------------------------------------
+    // validate_runtime_allowlist — operator-typo guard before publishers fire
+    // -----------------------------------------------------------------------
+
+    fn add_artifact(ctx: &mut Context, name: &str) {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from(format!("dist/{name}")),
+            name: name.to_string(),
+            target: None,
+            crate_name: "test".to_string(),
+            metadata: std::collections::HashMap::new(),
+            size: None,
+        });
+    }
+
+    #[test]
+    fn allow_nondeterministic_validates_matching_name() {
+        let mut ctx = Context::test_fixture();
+        add_artifact(&mut ctx, "anodizer-0.1.0.tar.gz");
+        ctx.options.runtime_nondeterministic_allowlist = vec![(
+            "anodizer-0.1.0.tar.gz".to_string(),
+            "embedded build date".to_string(),
+        )];
+        validate_runtime_allowlist(&ctx).expect("matching name must pass validation");
+    }
+
+    #[test]
+    fn allow_nondeterministic_validates_matching_glob() {
+        let mut ctx = Context::test_fixture();
+        add_artifact(&mut ctx, "anodizer-0.1.0.rpm");
+        ctx.options.runtime_nondeterministic_allowlist =
+            vec![("*.rpm".to_string(), "rpm metadata".to_string())];
+        validate_runtime_allowlist(&ctx).expect("matching glob must pass validation");
+    }
+
+    #[test]
+    fn allow_nondeterministic_unmatched_name_errors_before_publish() {
+        let mut ctx = Context::test_fixture();
+        add_artifact(&mut ctx, "anodizer-0.1.0.tar.gz");
+        ctx.options.runtime_nondeterministic_allowlist = vec![(
+            "anodizer-0.1.0.deb".to_string(),
+            "typo - meant tar.gz".to_string(),
+        )];
+        let err =
+            validate_runtime_allowlist(&ctx).expect_err("unmatched name must error before publish");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("anodizer-0.1.0.deb"),
+            "error must name the unmatched entry: {msg}",
+        );
+        assert!(
+            msg.contains("--allow-nondeterministic"),
+            "error must cite the flag for operator orientation: {msg}",
+        );
+    }
+
+    #[test]
+    fn allow_nondeterministic_empty_list_is_noop() {
+        let ctx = Context::test_fixture();
+        // No allowlist entries, no artifacts — must not error.
+        validate_runtime_allowlist(&ctx).expect("empty allowlist must be a no-op");
     }
 
     // -----------------------------------------------------------------------

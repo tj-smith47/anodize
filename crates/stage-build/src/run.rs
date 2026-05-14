@@ -243,6 +243,19 @@ impl Stage for super::BuildStage {
             }
         }
 
+        // Append the operator-supplied runtime allow-list (from
+        // `--allow-nondeterministic <name>=<reason>` at the CLI) onto
+        // the freshly-seeded DeterminismState. Done here (not in the
+        // CLI) so the determinism state remains the single source of
+        // truth: every downstream consumer (run summary, release body,
+        // harness allow-list) reads `ctx.determinism.runtime_allowlist`
+        // instead of poking back into `ctx.options`.
+        if let Some(state) = ctx.determinism.as_mut() {
+            for (name, reason) in &ctx.options.runtime_nondeterministic_allowlist {
+                state.append_runtime(name.clone(), reason.clone());
+            }
+        }
+
         for crate_cfg in &crates {
             // Determine builds for this crate
             let builds: Vec<BuildConfig> = match &crate_cfg.builds {

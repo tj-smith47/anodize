@@ -24,6 +24,19 @@ use anyhow::{Context, Result};
 pub fn run(args: CheckDeterminismArgs) -> Result<()> {
     let repo_root = std::env::current_dir().context("resolving repo root")?;
 
+    // `--inject-drift` is a test-only flag gated by
+    // `ANODIZE_TEST_HARNESS=1`. The flag is hidden from `--help`, so the
+    // only way for an operator to trip the rejection branch is to type
+    // it deliberately; the hard error keeps the surface from being
+    // exercised accidentally on production releases.
+    let inject_drift = if std::env::var("ANODIZE_TEST_HARNESS").as_deref() == Ok("1") {
+        args.inject_drift.clone()
+    } else if args.inject_drift.is_some() {
+        anyhow::bail!("--inject-drift requires ANODIZE_TEST_HARNESS=1 (test-harness gated flag)");
+    } else {
+        None
+    };
+
     // SDE source — snapshot resolver under --snapshot (handles dirty
     // tree); HEAD commit timestamp otherwise. Both routes converge on
     // an i64 "seconds since UNIX epoch" value.
@@ -68,6 +81,7 @@ pub fn run(args: CheckDeterminismArgs) -> Result<()> {
         sde,
         allowlist,
         report_path: report_path.clone(),
+        inject_drift,
     };
 
     let report = harness.run()?;
@@ -201,6 +215,7 @@ mod tests {
             stages: None,
             report: None,
             snapshot: false,
+            inject_drift: None,
         };
     }
 }

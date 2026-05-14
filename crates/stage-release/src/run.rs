@@ -7,8 +7,8 @@ use anodizer_core::stage::Stage;
 use anyhow::{Context as _, Result, bail};
 
 use crate::release_body::{
-    build_release_body, collect_extra_files, resolve_content_source, resolve_header_footer,
-    resolve_make_latest, resolve_release_tag,
+    build_release_body, collect_extra_files, render_nondeterministic_exemptions_block,
+    resolve_content_source, resolve_header_footer, resolve_make_latest, resolve_release_tag,
 };
 use crate::{
     compose_release_url, gitea, github, gitlab, populate_artifact_download_urls,
@@ -153,8 +153,33 @@ impl Stage for super::ReleaseStage {
             )
             .map(str::to_owned);
 
+            // Inject the operator-supplied non-determinism exemption
+            // block above the SHA256SUMS section of the release body.
+            // The exemptions list lives on
+            // `ctx.determinism.runtime_allowlist` (seeded by
+            // `--allow-nondeterministic <name>=<reason>` at the CLI).
+            // Empty allowlist => empty block => no-op.
+            //
+            // The block is prepended to the changelog body (which is
+            // where `{{ .Checksums }}` lives by convention) so the
+            // exemption notice unambiguously precedes any checksums the
+            // user templated into the body. Render with a blank-line
+            // separator so markdown consumers treat it as a distinct
+            // paragraph.
+            let exemptions = ctx
+                .determinism
+                .as_ref()
+                .map(|s| render_nondeterministic_exemptions_block(&s.runtime_allowlist))
+                .unwrap_or_default();
+            let changelog_with_exemptions = if exemptions.is_empty() {
+                changelog_body.clone()
+            } else if changelog_body.is_empty() {
+                exemptions
+            } else {
+                format!("{}\n{}", exemptions, changelog_body)
+            };
             let release_body = build_release_body(
-                &changelog_body,
+                &changelog_with_exemptions,
                 rendered_header.as_deref(),
                 rendered_footer.as_deref(),
             );

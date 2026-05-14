@@ -113,6 +113,14 @@ pub struct Harness {
     /// changes (e.g. mid-run streaming) have somewhere natural to land.
     #[allow(dead_code)]
     pub report_path: PathBuf,
+    /// `--inject-drift=<stage>` (test-harness gated): after each run
+    /// completes, append one random byte to the first artifact whose
+    /// inferred stage equals this value. Forces the harness to detect
+    /// drift across runs so integration tests can verify the report
+    /// shape on the failure path. `None` outside the
+    /// `ANODIZE_TEST_HARNESS=1` env (rejected upstream by the CLI
+    /// dispatcher).
+    pub inject_drift: Option<String>,
 }
 
 impl Harness {
@@ -141,6 +149,21 @@ impl Harness {
             self.run_build_pipeline(worktree.path(), &env)
                 .with_context(|| format!("building pipeline for determinism run {}", run_idx))?;
             let artifacts = discover_artifacts(worktree.path())?;
+            // `--inject-drift=<stage>` (test-harness gated): mutate the
+            // first artifact of the named stage before hashing so the
+            // report records drift. This is the failure-path canary the
+            // integration tests exercise.
+            if let Some(stage) = self.inject_drift.as_deref()
+                && let Some(victim) = pick_first_artifact_for_stage(&artifacts, stage)
+            {
+                inject_drift_byte(victim).with_context(|| {
+                    format!(
+                        "injecting drift byte into {} on run {}",
+                        victim.display(),
+                        run_idx
+                    )
+                })?;
+            }
             per_run_hashes.push(hash_artifacts(worktree.path(), &artifacts)?);
             // Worktree dropped at end of scope → cleanup automatic.
         }
@@ -457,6 +480,49 @@ fn matches_artifact_pattern(pattern: &str, artifact: &str) -> bool {
     pattern == artifact
 }
 
+/// Pick the first artifact whose inferred stage matches `stage_name`,
+/// in the sorted order returned by [`discover_artifacts`]. Returns
+/// `None` when no artifact maps to the named stage (caller silently
+/// no-ops — the integration test should observe drift_count == 0 in
+/// that case, surfacing a typo in the stage value).
+fn pick_first_artifact_for_stage<'a>(
+    artifacts: &'a [PathBuf],
+    stage_name: &str,
+) -> Option<&'a PathBuf> {
+    artifacts.iter().find(|p| {
+        let rel = p.to_string_lossy();
+        infer_stage_from_path(&rel) == stage_name
+    })
+}
+
+/// Append one byte to `path` to force the artifact to differ across
+/// runs. Used by the `--inject-drift=<stage>` test-harness flag.
+///
+/// Source byte: `/dev/urandom` on platforms that expose it; constant
+/// `0xAB` fallback otherwise. The fallback is acceptable because the
+/// test harness only needs the appended byte to differ from the
+/// original file's last byte (or to extend the file at all) — the goal
+/// is to break the hash, not to inject true entropy. Reading a single
+/// byte from `/dev/urandom` on Unix is the path actually used in CI.
+fn inject_drift_byte(path: &Path) -> Result<()> {
+    use std::io::{Read, Write};
+    let byte: u8 = match std::fs::OpenOptions::new().read(true).open("/dev/urandom") {
+        Ok(mut f) => {
+            let mut buf = [0u8; 1];
+            f.read_exact(&mut buf).ok();
+            buf[0]
+        }
+        Err(_) => 0xAB,
+    };
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(path)
+        .with_context(|| format!("opening {} for append", path.display()))?;
+    f.write_all(&[byte])
+        .with_context(|| format!("appending drift byte to {}", path.display()))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -471,6 +537,7 @@ mod tests {
             sde: 1_715_000_000,
             allowlist: AllowList::default(),
             report_path: PathBuf::from("/tmp/unused/report.json"),
+            inject_drift: None,
         }
     }
 
@@ -661,5 +728,51 @@ mod tests {
         let report = h.build_report(runs);
         assert_eq!(report.drift.len() as u32, report.drift_count);
         assert_eq!(report.drift_count, 2);
+    }
+
+    #[test]
+    fn pick_first_artifact_for_stage_picks_first_by_inferred_stage() {
+        let artifacts = vec![
+            PathBuf::from("dist/checksums.txt"),
+            PathBuf::from("dist/foo.tar.gz"),
+            PathBuf::from("dist/bar.tar.gz"),
+        ];
+        let pick = pick_first_artifact_for_stage(&artifacts, "archive").unwrap();
+        assert_eq!(pick, &PathBuf::from("dist/foo.tar.gz"));
+        let pick = pick_first_artifact_for_stage(&artifacts, "checksum").unwrap();
+        assert_eq!(pick, &PathBuf::from("dist/checksums.txt"));
+    }
+
+    #[test]
+    fn pick_first_artifact_for_stage_returns_none_for_missing_stage() {
+        let artifacts = vec![PathBuf::from("dist/foo.tar.gz")];
+        assert!(pick_first_artifact_for_stage(&artifacts, "sbom").is_none());
+        assert!(pick_first_artifact_for_stage(&artifacts, "bogus-stage").is_none());
+    }
+
+    #[test]
+    fn inject_drift_byte_mutates_file_so_hash_differs() {
+        use sha2::{Digest, Sha256};
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("victim.bin");
+        std::fs::write(&p, b"hello world").unwrap();
+        let before = {
+            let mut h = Sha256::new();
+            h.update(std::fs::read(&p).unwrap());
+            format!("{:x}", h.finalize())
+        };
+        inject_drift_byte(&p).expect("inject");
+        let after_bytes = std::fs::read(&p).unwrap();
+        let after = {
+            let mut h = Sha256::new();
+            h.update(&after_bytes);
+            format!("{:x}", h.finalize())
+        };
+        assert_ne!(before, after, "hash must change after drift injection");
+        assert_eq!(
+            after_bytes.len(),
+            b"hello world".len() + 1,
+            "exactly one byte must be appended"
+        );
     }
 }

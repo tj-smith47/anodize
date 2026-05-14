@@ -59,10 +59,21 @@ impl RunSummary {
     pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 
     /// Build a `RunSummary` from `Context`. Pulls per-publisher results
-    /// from `ctx.publish_report`, the runtime allowlist from
-    /// `ctx.options.runtime_nondeterministic_allowlist`, and the tag
-    /// from the `Tag` template var (which the pipeline sets in
-    /// `Context::apply_git_info` so it's stable across stages).
+    /// from `ctx.publish_report`, the compile-time and runtime
+    /// allowlists from `ctx.determinism` (which the BuildStage seeds
+    /// from the operator's `--allow-nondeterministic` flags + the spec
+    /// contract), and the tag from the `Tag` template var (which the
+    /// pipeline sets in `Context::apply_git_info` so it's stable across
+    /// stages).
+    ///
+    /// Reading from `ctx.determinism` (not `ctx.options`) keeps the
+    /// audit trail unified: every downstream consumer (release body,
+    /// determinism harness, run summary) reads the same allow-list,
+    /// rather than each consumer re-deriving it from `ctx.options`.
+    /// When `ctx.determinism` is `None` (e.g. snapshot mode without a
+    /// resolvable SDE), the runtime list falls back to
+    /// `ctx.options.runtime_nondeterministic_allowlist` so the operator
+    /// still gets an audit row in the summary.
     pub fn from_context(ctx: &Context) -> Self {
         let report = ctx.publish_report.as_ref();
         let results = report
@@ -82,6 +93,38 @@ impl RunSummary {
 
         let tag = ctx.template_vars().get("Tag").cloned().unwrap_or_default();
 
+        let (compile_time, runtime) = match ctx.determinism.as_ref() {
+            Some(state) => (
+                state
+                    .compile_time_allowlist
+                    .iter()
+                    .map(|(name, reason)| DeterminismAllowlistEntry {
+                        artifact: name.clone(),
+                        reason: reason.clone(),
+                    })
+                    .collect(),
+                state
+                    .runtime_allowlist
+                    .iter()
+                    .map(|(name, reason)| DeterminismAllowlistEntry {
+                        artifact: name.clone(),
+                        reason: reason.clone(),
+                    })
+                    .collect(),
+            ),
+            None => (
+                Vec::new(),
+                ctx.options
+                    .runtime_nondeterministic_allowlist
+                    .iter()
+                    .map(|(name, reason)| DeterminismAllowlistEntry {
+                        artifact: name.clone(),
+                        reason: reason.clone(),
+                    })
+                    .collect(),
+            ),
+        };
+
         Self {
             schema_version: Self::CURRENT_SCHEMA_VERSION,
             anodize_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -90,18 +133,8 @@ impl RunSummary {
             announce_gated: report.is_some_and(|r| r.announce_gated),
             results,
             determinism_allowlist: DeterminismAllowlist {
-                // compile_time is populated by the determinism foundation
-                // task; runtime flows in via ContextOptions today.
-                compile_time: Vec::new(),
-                runtime: ctx
-                    .options
-                    .runtime_nondeterministic_allowlist
-                    .iter()
-                    .map(|(name, reason)| DeterminismAllowlistEntry {
-                        artifact: name.clone(),
-                        reason: reason.clone(),
-                    })
-                    .collect(),
+                compile_time,
+                runtime,
             },
         }
     }
@@ -316,6 +349,9 @@ mod tests {
 
     #[test]
     fn from_context_captures_runtime_allowlist() {
+        // Fallback path: when `ctx.determinism` is None, the runtime
+        // allowlist falls back to `ctx.options` so the audit row still
+        // appears in the summary.
         let mut ctx = anodizer_core::context::Context::test_fixture();
         ctx.options.runtime_nondeterministic_allowlist = vec![
             (
@@ -336,6 +372,70 @@ mod tests {
         );
         assert_eq!(s.determinism_allowlist.runtime[1].artifact, "anodizer.deb");
         assert!(s.determinism_allowlist.compile_time.is_empty());
+    }
+
+    #[test]
+    fn allow_nondeterministic_appears_in_run_summary() {
+        // Primary path: when `ctx.determinism` is populated, the
+        // run-summary reads both compile-time and runtime entries from
+        // there (the single source of truth).
+        let mut ctx = anodizer_core::context::Context::test_fixture();
+        let mut state = anodizer_core::DeterminismState::seed_from_commit(1_715_000_000);
+        state.append_runtime(
+            "anodizer.tar.gz".to_string(),
+            "embedded build date".to_string(),
+        );
+        ctx.determinism = Some(state);
+        let s = RunSummary::from_context(&ctx);
+        assert!(
+            s.determinism_allowlist
+                .runtime
+                .iter()
+                .any(|e| e.artifact == "anodizer.tar.gz" && e.reason == "embedded build date"),
+            "runtime entry must round-trip into the summary: {:?}",
+            s.determinism_allowlist.runtime,
+        );
+        assert!(
+            !s.determinism_allowlist.compile_time.is_empty(),
+            "compile_time entries must be mirrored from DeterminismState (seed_from_commit \
+             populates the spec contract list)",
+        );
+    }
+
+    #[test]
+    fn compile_time_wins_on_collision_in_report() {
+        // Operator passes `--allow-nondeterministic foo.crate=local-override`,
+        // but the compile-time list also covers `*.crate`. Both entries
+        // must appear in the run-summary allow-list arrays so the audit
+        // trail is complete; the per-artifact precedence is verified
+        // separately via `DeterminismState::resolve_reason`.
+        let mut ctx = anodizer_core::context::Context::test_fixture();
+        let mut state = anodizer_core::DeterminismState::seed_from_commit(1_715_000_000);
+        state.append_runtime("foo.crate".to_string(), "local-override".to_string());
+        ctx.determinism = Some(state.clone());
+        let s = RunSummary::from_context(&ctx);
+        // Compile-time list has the `*.crate` glob.
+        assert!(
+            s.determinism_allowlist
+                .compile_time
+                .iter()
+                .any(|e| e.artifact == "*.crate"),
+            "compile-time `*.crate` entry must appear in the summary",
+        );
+        // Runtime list has the operator's overlapping entry.
+        assert!(
+            s.determinism_allowlist
+                .runtime
+                .iter()
+                .any(|e| e.artifact == "foo.crate" && e.reason == "local-override"),
+            "runtime override must appear in the summary alongside the compile-time entry",
+        );
+        // Per-artifact precedence: compile-time wins.
+        let reason = state.resolve_reason("foo.crate").unwrap();
+        assert!(
+            reason.contains("cargo package non-determinism"),
+            "compile-time reason must win on collision, got: {reason}",
+        );
     }
 
     #[test]

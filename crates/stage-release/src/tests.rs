@@ -13,8 +13,9 @@ use super::ReleaseStage;
 use super::github::build_octocrab_client;
 use super::release_body::{
     GITHUB_RELEASE_BODY_MAX_CHARS, build_publish_patch_body, build_release_body,
-    build_release_json, collect_extra_files, compose_body_for_mode, resolve_content_source,
-    resolve_header_footer, resolve_make_latest, resolve_release_tag,
+    build_release_json, collect_extra_files, compose_body_for_mode,
+    render_nondeterministic_exemptions_block, resolve_content_source, resolve_header_footer,
+    resolve_make_latest, resolve_release_tag,
 };
 use super::{
     populate_artifact_download_urls, populate_checksums_var, retry_upload, should_mark_prerelease,
@@ -426,6 +427,51 @@ fn test_build_release_body_empty_changelog() {
 fn test_build_release_body_all_empty() {
     let body = build_release_body("", None, None);
     assert_eq!(body, "");
+}
+
+#[test]
+fn allow_nondeterministic_appears_in_release_body() {
+    let entries = vec![
+        ("foo.rpm".to_string(), "tool-bug-1234".to_string()),
+        ("bar.msi".to_string(), "signing-cert-rotation".to_string()),
+    ];
+    let block = render_nondeterministic_exemptions_block(&entries);
+    assert!(
+        block.contains("Non-deterministic exemptions:"),
+        "header missing: {}",
+        block
+    );
+    assert!(
+        block.contains("foo.rpm - tool-bug-1234"),
+        "first entry missing: {}",
+        block
+    );
+    assert!(
+        block.contains("bar.msi - signing-cert-rotation"),
+        "second entry missing: {}",
+        block
+    );
+    // Must be ASCII-only (no emdash). Cheap sanity check.
+    assert!(
+        block.is_ascii(),
+        "exemption block must be ASCII for predictable rendering: {}",
+        block
+    );
+}
+
+#[test]
+fn render_nondeterministic_exemptions_block_empty_is_noop() {
+    assert_eq!(render_nondeterministic_exemptions_block(&[]), "");
+}
+
+#[test]
+fn render_nondeterministic_exemptions_block_single_entry_shape() {
+    let entries = vec![("only.deb".to_string(), "dpkg timestamp".to_string())];
+    let block = render_nondeterministic_exemptions_block(&entries);
+    assert_eq!(
+        block, "Non-deterministic exemptions:\n  only.deb - dpkg timestamp\n",
+        "single-entry block shape regressed"
+    );
 }
 
 #[test]

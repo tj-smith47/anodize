@@ -458,6 +458,13 @@ pub struct CheckDeterminismArgs {
     pub report: Option<PathBuf>,
     #[arg(long, help = "Seed SDE from snapshot rules instead of HEAD commit")]
     pub snapshot: bool,
+    #[arg(
+        long = "inject-drift",
+        value_name = "stage",
+        hide = true,
+        help = "(TEST HARNESS) Append 1 random byte to the first artifact emitted by <stage>. Gated by ANODIZE_TEST_HARNESS=1."
+    )]
+    pub inject_drift: Option<String>,
 }
 
 /// Detect the host target triple by parsing `rustc -vV` output.

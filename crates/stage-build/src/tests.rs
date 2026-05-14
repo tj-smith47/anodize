@@ -215,6 +215,79 @@ fn test_build_command_empty_binary_name() {
 }
 
 #[test]
+fn build_stage_appends_runtime_allowlist_to_determinism_state() {
+    // BuildStage must mirror `ctx.options.runtime_nondeterministic_allowlist`
+    // into `ctx.determinism.runtime_allowlist` so downstream consumers
+    // (run summary, release body, harness allow-list) read from a single
+    // source of truth instead of poking at `ctx.options`.
+    use anodizer_core::config::{BuildConfig, Config, CrateConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let mut config = Config::default();
+    config.project_name = "test".to_string();
+    config.crates.push(CrateConfig {
+        name: "myapp".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        builds: Some(vec![BuildConfig {
+            binary: Some("myapp".to_string()),
+            targets: Some(vec![]),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    });
+
+    let opts = ContextOptions {
+        dry_run: true,
+        runtime_nondeterministic_allowlist: vec![
+            ("foo.rpm".to_string(), "tool-bug-1234".to_string()),
+            ("bar.msi".to_string(), "signing-cert-rotation".to_string()),
+        ],
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, opts);
+    // Seed CommitTimestamp so the BuildStage's SDE resolution path
+    // populates ctx.determinism (otherwise the runtime-append branch
+    // sees None and silently no-ops, which is the intentional fallback
+    // but not what this test wants to exercise).
+    ctx.template_vars_mut().set("CommitTimestamp", "1700000000");
+
+    let stage = BuildStage;
+    stage.run(&mut ctx).expect("BuildStage::run");
+
+    let state = ctx
+        .determinism
+        .as_ref()
+        .expect("DeterminismState must be seeded after BuildStage::run");
+    assert_eq!(
+        state.runtime_allowlist.len(),
+        2,
+        "both runtime entries must be appended to DeterminismState",
+    );
+    assert!(
+        state
+            .runtime_allowlist
+            .iter()
+            .any(|(n, r)| n == "foo.rpm" && r == "tool-bug-1234"),
+        "first runtime entry must round-trip: {:?}",
+        state.runtime_allowlist,
+    );
+    assert!(
+        state
+            .runtime_allowlist
+            .iter()
+            .any(|(n, r)| n == "bar.msi" && r == "signing-cert-rotation"),
+        "second runtime entry must round-trip: {:?}",
+        state.runtime_allowlist,
+    );
+    // Compile-time list still populated from the spec contract.
+    assert!(
+        !state.compile_time_allowlist.is_empty(),
+        "compile-time list must remain populated alongside the appended runtime list",
+    );
+}
+
+#[test]
 fn test_build_stage_no_targets_skips_gracefully() {
     use anodizer_core::config::{BuildConfig, Config, CrateConfig};
     use anodizer_core::context::{Context, ContextOptions};
