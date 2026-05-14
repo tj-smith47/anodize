@@ -589,6 +589,15 @@
             }
           ]
         },
+        "gate_on": {
+          "description": "Selects when AnnounceStage runs vs. skips based on the `PublishReport` written by PublishStage/BlobStage. Default is `required_publishers` (announce only if every required publisher succeeded). See [`AnnounceGate`] for the other variants.",
+          "default": "required_publishers",
+          "allOf": [
+            {
+              "$ref": "#/definitions/AnnounceGate"
+            }
+          ]
+        },
         "linkedin": {
           "description": "LinkedIn announcement configuration.",
           "default": null,
@@ -722,6 +731,15 @@
           ]
         }
       }
+    },
+    "AnnounceGate": {
+      "description": "Announce-stage gate semantics.\n\nDecides whether [`AnnounceStage`] runs based on the `PublishReport` produced by `PublishStage` (and contributed to by `BlobStage`):\n\n- `required_publishers` (default): announce runs only if every `required: true` publisher across the run succeeded. - `all_publishers`: announce runs only if every configured publisher succeeded (Submitter gate failures count here too). - `none`: announce always runs.\n\n[`AnnounceStage`]: ../../stage-announce/struct.AnnounceStage.html",
+      "type": "string",
+      "enum": [
+        "required_publishers",
+        "all_publishers",
+        "none"
+      ]
     },
     "AppBundleConfig": {
       "type": "object",
