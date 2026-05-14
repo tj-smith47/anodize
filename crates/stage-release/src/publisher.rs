@@ -47,6 +47,7 @@
 //! `dist/run-<id>/report.json` and the announce-time release-body
 //! summary carry zero secret material.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use anodizer_core::config::ScmRepoConfig;
@@ -112,12 +113,30 @@ pub(crate) enum ReleaseDeleteOutcome {
     Failed(String),
 }
 
-/// Classify an `anyhow::Error` from a [`GitHubClient`] delete call:
-/// errors whose message mentions a 404 / "not found" bucket as
-/// `AlreadyAbsent`, everything else bubbles up as `Failed`.
+/// Classify an `anyhow::Error` from a [`GitHubClient`] delete call into
+/// the three rollback outcome buckets. Substring-matches the lowercased
+/// error message against the shapes GitHub returns when the target is
+/// already gone:
+///
+/// - `404` / `not found` — the canonical "release or tag-ref does not
+///   exist" response.
+/// - `410` / `gone` — GitHub occasionally returns 410 for tag refs that
+///   were deleted recently (the ref was "tombstoned").
+/// - `422` / `unprocessable` — `DELETE /git/refs/tags/<tag>` returns 422
+///   on some "reference does not exist" edge cases (e.g., tag ref was
+///   never created because the release was a draft).
+///
+/// Every other error message buckets as `Failed` so genuine transport /
+/// auth / 5xx failures still surface a manual-cleanup warn.
 fn classify_delete_err(err: &anyhow::Error) -> ReleaseDeleteOutcome {
     let s = err.to_string().to_ascii_lowercase();
-    if s.contains("404") || s.contains("not found") {
+    let already_absent = s.contains("404")
+        || s.contains("not found")
+        || s.contains("410")
+        || s.contains("gone")
+        || s.contains("422")
+        || s.contains("unprocessable");
+    if already_absent {
         ReleaseDeleteOutcome::AlreadyAbsent
     } else {
         ReleaseDeleteOutcome::Failed(err.to_string())
@@ -213,6 +232,53 @@ fn collect_release_targets(ctx: &Context) -> anyhow::Result<Vec<GithubReleaseTar
     Ok(out)
 }
 
+/// Resolve each target's numeric release ID via
+/// [`GitHubClient::get_release_by_tag`], memoized by `(owner, repo, tag)`.
+///
+/// Workspaces where multiple crates share a single tag (the common
+/// monorepo shape — one workspace-wide tag pointing at one GitHub
+/// release) would otherwise N-query the GitHub API for the same release.
+/// The memo collapses every duplicate tuple to one round-trip and reuses
+/// the cached `Option<u64>` for the rest.
+///
+/// Transport / auth failures are swallowed: the publish itself already
+/// succeeded; failing the run because a post-publish enrichment 5xx'd
+/// would lose the (owner, repo, tag) evidence rollback still needs.
+fn capture_release_ids(
+    client: &(dyn GitHubClient + Send + Sync),
+    targets: &mut [GithubReleaseTarget],
+) {
+    let mut memo: HashMap<(String, String, String), Option<u64>> = HashMap::new();
+    for target in targets.iter_mut() {
+        let key = (
+            target.owner.clone(),
+            target.repo.clone(),
+            target.tag.clone(),
+        );
+        if let Some(cached) = memo.get(&key) {
+            target.release_id = *cached;
+            continue;
+        }
+        let params = GetReleaseByTagParams {
+            owner: target.owner.clone(),
+            repo: target.repo.clone(),
+            tag: target.tag.clone(),
+        };
+        let resolved = match client.get_release_by_tag(&params) {
+            Ok(Some(info)) => Some(info.id),
+            // Tag has no release — leave id as None; rollback will skip
+            // the release-delete step for this row.
+            Ok(None) => None,
+            // Transport / auth failure looking up the ID. Don't fail
+            // the publish over a post-publish enrichment; leave id as
+            // None so rollback degrades to best-effort tag-delete only.
+            Err(_e) => None,
+        };
+        target.release_id = resolved;
+        memo.insert(key, resolved);
+    }
+}
+
 impl anodizer_core::Publisher for GithubReleasePublisher {
     fn name(&self) -> &str {
         Self::PUBLISHER_NAME
@@ -243,26 +309,7 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
         // transport errors). Evidence still captures the (owner, repo,
         // tag) tuples so a rollback can at least try the tag-delete.
         if !ctx.is_dry_run() && !ctx.is_snapshot() {
-            for target in targets.iter_mut() {
-                let params = GetReleaseByTagParams {
-                    owner: target.owner.clone(),
-                    repo: target.repo.clone(),
-                    tag: target.tag.clone(),
-                };
-                match self.client.get_release_by_tag(&params) {
-                    Ok(Some(info)) => target.release_id = Some(info.id),
-                    Ok(None) => {
-                        // Tag has no release — leave id as None; rollback
-                        // will skip the release-delete step for this row.
-                    }
-                    Err(_e) => {
-                        // Transport / auth failure looking up the ID. Don't
-                        // fail the publish over a post-publish enrichment;
-                        // leave id as None so rollback degrades to
-                        // best-effort tag-delete only.
-                    }
-                }
-            }
+            capture_release_ids(self.client.as_ref(), &mut targets);
         }
 
         let mut evidence = anodizer_core::PublishEvidence::new(Self::PUBLISHER_NAME);
@@ -713,7 +760,56 @@ mod publisher_tests {
             classify_delete_err(&err),
             ReleaseDeleteOutcome::AlreadyAbsent
         );
+    }
+
+    /// GitHub sometimes returns 410 Gone for tag refs that were recently
+    /// deleted (the ref was tombstoned but still surfaces in the error
+    /// shape). Bucket as `AlreadyAbsent` so re-running `--rollback-only`
+    /// does not surface a spurious manual-cleanup warn.
+    #[test]
+    fn classify_delete_error_treats_410_gone_as_already_absent() {
+        let err = anyhow::anyhow!("HTTP 410 Gone");
+        assert_eq!(
+            classify_delete_err(&err),
+            ReleaseDeleteOutcome::AlreadyAbsent
+        );
+        // Case-insensitive match — GitHub mixes casing in error payloads.
+        let err = anyhow::anyhow!("Resource has been gone");
+        assert_eq!(
+            classify_delete_err(&err),
+            ReleaseDeleteOutcome::AlreadyAbsent
+        );
+    }
+
+    /// `DELETE /git/refs/tags/<tag>` returns 422 Unprocessable Entity on
+    /// some "reference does not exist" edge cases (e.g., tag ref was
+    /// never created because the release was a draft). Bucket as
+    /// `AlreadyAbsent` for the same reason as 410.
+    #[test]
+    fn classify_delete_error_treats_422_unprocessable_as_already_absent() {
+        let err = anyhow::anyhow!("HTTP 422 Unprocessable Entity");
+        assert_eq!(
+            classify_delete_err(&err),
+            ReleaseDeleteOutcome::AlreadyAbsent
+        );
+        let err = anyhow::anyhow!("422: Reference does not exist");
+        assert_eq!(
+            classify_delete_err(&err),
+            ReleaseDeleteOutcome::AlreadyAbsent
+        );
+    }
+
+    /// 5xx is the canonical Failed bucket — genuine transport / auth
+    /// errors must still surface the manual-cleanup warn so operators
+    /// know to revisit.
+    #[test]
+    fn classify_delete_error_treats_500_as_failed() {
         let err = anyhow::anyhow!("HTTP 500 internal error");
+        assert!(matches!(
+            classify_delete_err(&err),
+            ReleaseDeleteOutcome::Failed(_)
+        ));
+        let err = anyhow::anyhow!("HTTP 503 Service Unavailable");
         assert!(matches!(
             classify_delete_err(&err),
             ReleaseDeleteOutcome::Failed(_)
@@ -787,5 +883,103 @@ mod publisher_tests {
         let ctx = TestContextBuilder::new().crates(vec![crate_cfg]).build();
         let targets = collect_release_targets(&ctx).expect("collect ok");
         assert!(targets.is_empty());
+    }
+
+    /// Monorepo shape: three crates all configured to publish into one
+    /// workspace-wide GitHub release (same owner/repo/tag). The
+    /// ID-capture loop MUST collapse the three lookups into one
+    /// `get_release_by_tag` round-trip and reuse the cached id for the
+    /// remaining two targets.
+    #[test]
+    fn get_release_by_tag_dedups_repeated_target_tuples() {
+        use anodizer_core::github_client::ReleaseInfo;
+
+        let mock = MockGitHubClient::new();
+        mock.set_get_release_by_tag_response(Ok(Some(ReleaseInfo {
+            id: 99,
+            html_url: "https://github.com/acme/widget/releases/tag/v1.0.0".into(),
+            tag_name: "v1.0.0".into(),
+            name: Some("v1.0.0".into()),
+            draft: false,
+        })));
+        let mock = Arc::new(mock);
+
+        // Three targets sharing one (owner, repo, tag) tuple — the
+        // canonical monorepo shape where one workspace-wide release
+        // surfaces under multiple crate logical labels.
+        let mut targets = vec![
+            GithubReleaseTarget {
+                crate_name: "demo-core".into(),
+                owner: "acme".into(),
+                repo: "widget".into(),
+                tag: "v1.0.0".into(),
+                release_id: None,
+            },
+            GithubReleaseTarget {
+                crate_name: "demo-cli".into(),
+                owner: "acme".into(),
+                repo: "widget".into(),
+                tag: "v1.0.0".into(),
+                release_id: None,
+            },
+            GithubReleaseTarget {
+                crate_name: "demo-helper".into(),
+                owner: "acme".into(),
+                repo: "widget".into(),
+                tag: "v1.0.0".into(),
+                release_id: None,
+            },
+        ];
+
+        capture_release_ids(mock.as_ref(), &mut targets);
+
+        // The memo collapsed three logical lookups into one network
+        // round-trip; every target inherited the cached release id.
+        assert_eq!(
+            mock.get_release_by_tag_call_count(),
+            1,
+            "expected memo to collapse 3 lookups to 1 round-trip"
+        );
+        assert_eq!(targets[0].release_id, Some(99));
+        assert_eq!(targets[1].release_id, Some(99));
+        assert_eq!(targets[2].release_id, Some(99));
+    }
+
+    /// Negative — when each target points at a distinct `(owner, repo, tag)`
+    /// tuple the memo never hits, so N targets produce N round-trips.
+    /// Pins that the dedup is keyed on the tuple, not blindly shared.
+    #[test]
+    fn get_release_by_tag_queries_each_distinct_target_tuple() {
+        use anodizer_core::github_client::ReleaseInfo;
+
+        let mock = MockGitHubClient::new();
+        mock.set_get_release_by_tag_response(Ok(Some(ReleaseInfo {
+            id: 7,
+            html_url: "https://github.com/acme/widget/releases/tag/v1.0.0".into(),
+            tag_name: "v1.0.0".into(),
+            name: None,
+            draft: false,
+        })));
+        let mock = Arc::new(mock);
+
+        let mut targets = vec![
+            GithubReleaseTarget {
+                crate_name: "alpha".into(),
+                owner: "acme".into(),
+                repo: "widget".into(),
+                tag: "alpha/v1.0.0".into(),
+                release_id: None,
+            },
+            GithubReleaseTarget {
+                crate_name: "beta".into(),
+                owner: "acme".into(),
+                repo: "widget".into(),
+                tag: "beta/v1.0.0".into(),
+                release_id: None,
+            },
+        ];
+
+        capture_release_ids(mock.as_ref(), &mut targets);
+        assert_eq!(mock.get_release_by_tag_call_count(), 2);
     }
 }
