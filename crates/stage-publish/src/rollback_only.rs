@@ -164,25 +164,40 @@ pub(crate) fn run_with_publishers(
     // back would re-roll everything and is the exact regression this
     // guard exists for.
     let prior_state = rollback_path(ctx, run_id);
-    let (path, source_label) = if prior_state.exists() {
+    let (path, source_label, is_rollback_state) = if prior_state.exists() {
         log.status(&format!(
-            "rollback-only: replaying against prior rollback state at {}",
+            "rollback-only: (replay) resuming from prior rollback state at {}",
             prior_state.display()
         ));
-        (prior_state, "prior rollback state")
+        (prior_state, "prior rollback state", true)
     } else {
         let report = report_path(ctx, run_id);
         log.status(&format!(
-            "rollback-only: loading prior run report from {}",
+            "rollback-only: (first run) loading prior report from {}",
             report.display()
         ));
-        (report, "prior report")
+        (report, "prior report", false)
     };
 
     let report_text = fs::read_to_string(&path)
         .with_context(|| format!("failed to read {} at {}", source_label, path.display()))?;
-    let mut report: PublishReport = serde_json::from_str(&report_text)
-        .with_context(|| format!("failed to parse {} at {}", source_label, path.display()))?;
+    let mut report: PublishReport = serde_json::from_str(&report_text).with_context(|| {
+        // For the rollback-state branch specifically, bake the recovery
+        // hint into the error so the operator doesn't have to dig into
+        // the module rustdoc or commit body to learn the escape hatch.
+        // The report.json branch is a clean "no prior state" or
+        // "pipeline-written file is corrupt" case where the recovery is
+        // re-running the pipeline, not deleting a file.
+        if is_rollback_state {
+            format!(
+                "failed to parse {} at {}; delete the file to force a full re-roll from report.json",
+                source_label,
+                path.display(),
+            )
+        } else {
+            format!("failed to parse {} at {}", source_label, path.display())
+        }
+    })?;
 
     // Re-attempt rollback for every Succeeded or RollbackFailed entry in
     // the Assets / Manager groups. Submitter publishers have no
@@ -618,6 +633,17 @@ mod tests {
             "error must reference parse failure, got '{}'",
             msg,
         );
+        // Regression guard: the report.json branch must NOT carry the
+        // rollback-state-specific recovery hint. Deleting a corrupt
+        // pipeline-written report.json doesn't recover the operator;
+        // re-running the pipeline does. Mis-routing the hint here would
+        // mislead the operator into deleting evidence of the original
+        // run.
+        assert!(
+            !msg.contains("delete the file to force a full re-roll"),
+            "report.json parse error must NOT carry the rollback-state recovery hint, got '{}'",
+            msg,
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -626,36 +652,6 @@ mod tests {
     // These exercise the rollback.json-preferred-over-report.json load path
     // that makes `--rollback-only --from-run=<id>` safe to re-invoke.
     // -----------------------------------------------------------------------
-
-    /// Custom publisher with an atomic rollback-call counter. We need this
-    /// rather than `FakePublisher` because the idempotency assertion is
-    /// "rollback() was NOT called a second time" — that needs a counter
-    /// the shared fake doesn't expose.
-    struct CountingPublisher {
-        name: String,
-        group: PublisherGroup,
-        rollback_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    }
-
-    impl Publisher for CountingPublisher {
-        fn name(&self) -> &str {
-            &self.name
-        }
-        fn group(&self) -> PublisherGroup {
-            self.group
-        }
-        fn required(&self) -> bool {
-            true
-        }
-        fn run(&self, _ctx: &mut Context) -> anyhow::Result<PublishEvidence> {
-            Ok(PublishEvidence::new(self.name.clone()))
-        }
-        fn rollback(&self, _ctx: &mut Context, _evidence: &PublishEvidence) -> anyhow::Result<()> {
-            self.rollback_calls
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Ok(())
-        }
-    }
 
     #[test]
     fn rollback_only_second_invocation_is_noop_for_already_rolled_back_entries() {
@@ -669,12 +665,8 @@ mod tests {
             .push(succeeded_entry("mgr1", PublisherGroup::Manager, true));
         write_fixture_report(&ctx, "fixt", &report);
 
-        let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let publishers: Vec<Box<dyn Publisher>> = vec![Box::new(CountingPublisher {
-            name: "mgr1".into(),
-            group: PublisherGroup::Manager,
-            rollback_calls: counter.clone(),
-        })];
+        let (publisher, counter) = fake_counting("mgr1", PublisherGroup::Manager, true);
+        let publishers: Vec<Box<dyn Publisher>> = vec![publisher];
 
         // First replay: flips Succeeded → RolledBack via one rollback() call.
         let r1 = run_with_publishers(&mut ctx, "fixt", &publishers).expect("first replay");
@@ -784,6 +776,16 @@ mod tests {
         assert!(
             msg.contains(rb_path.to_string_lossy().as_ref()),
             "error must name the rollback.json path, got '{}'",
+            msg,
+        );
+        // The error must surface the recovery hint so operators don't
+        // have to dig into the module rustdoc or commit body. This is
+        // the rollback-state-specific branch; the report.json branch
+        // does NOT carry this suffix (a corrupt pipeline-written file
+        // isn't recovered by deleting it).
+        assert!(
+            msg.contains("delete the file to force a full re-roll"),
+            "error must surface the recovery hint, got '{}'",
             msg,
         );
     }

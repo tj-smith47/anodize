@@ -8,6 +8,8 @@
 
 use anodizer_core::context::Context;
 use anodizer_core::{PublishEvidence, Publisher, PublisherGroup};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Drives [`FakePublisher::run`].
 pub enum FakeOutcome {
@@ -105,6 +107,55 @@ pub fn fake_with_rollback(
         rollback_outcome,
         rollback_scope: None,
     })
+}
+
+/// Minimal [`Publisher`] that counts its `rollback()` invocations.
+/// Used by idempotency tests (audit finding C5 / Bundle B5) that need
+/// to assert "rollback() was NOT called a second time" across two
+/// `run_with_publishers` invocations — the standard [`FakePublisher`]
+/// exposes no such counter.
+pub(crate) struct FakeCountingPublisher {
+    pub name: String,
+    pub group: PublisherGroup,
+    pub required: bool,
+    pub rollback_calls: Arc<AtomicUsize>,
+}
+
+impl Publisher for FakeCountingPublisher {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn group(&self) -> PublisherGroup {
+        self.group
+    }
+    fn required(&self) -> bool {
+        self.required
+    }
+    fn run(&self, _ctx: &mut Context) -> anyhow::Result<PublishEvidence> {
+        Ok(PublishEvidence::new(self.name.clone()))
+    }
+    fn rollback(&self, _ctx: &mut Context, _evidence: &PublishEvidence) -> anyhow::Result<()> {
+        self.rollback_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+/// Convenience constructor for [`FakeCountingPublisher`]. Returns the
+/// boxed publisher alongside the shared counter so the test can assert
+/// `counter.load(Ordering::SeqCst) == N` after dispatch.
+pub fn fake_counting(
+    name: &str,
+    group: PublisherGroup,
+    required: bool,
+) -> (Box<dyn Publisher>, Arc<AtomicUsize>) {
+    let counter = Arc::new(AtomicUsize::new(0));
+    let publisher = Box::new(FakeCountingPublisher {
+        name: name.to_string(),
+        group,
+        required,
+        rollback_calls: counter.clone(),
+    });
+    (publisher, counter)
 }
 
 /// Like [`fake`] but declares a non-`None` `rollback_scope_needed`. Use

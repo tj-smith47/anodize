@@ -164,8 +164,10 @@ pub enum Commands {
             value_name = "id",
             requires = "rollback_only",
             value_parser = parse_run_id,
-            help = "Prior run id whose report.json to load when running --rollback-only. \
-                    Must match the run_id format written by the release pipeline \
+            help = "Prior run id whose state to load when running --rollback-only. \
+                    Loads <dist>/run-<id>/rollback.json if present (a prior replay's state), \
+                    otherwise <dist>/run-<id>/report.json. Delete rollback.json to force a \
+                    full re-roll. Must match the run_id format written by the release pipeline \
                     (alphanumeric, dot, dash, underscore; no path separators)."
         )]
         from_run: Option<String>,
