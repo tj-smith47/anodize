@@ -327,7 +327,6 @@ version = "0.1.0"
 dependencies = [
  "anodizer-core",
  "anodizer-stage-release",
- "anodizer-stage-snapcraft",
  "anyhow",
  "base64",
  "glob",

@@ -30,6 +30,17 @@ use anodizer_core::{Publisher, PublisherGroup};
 /// stays for forward-compat (and as a vocabulary entry the dispatch
 /// path can consult once the publisher dispatch path can replace the
 /// dedicated stage entirely).
+///
+/// Snapcraft follows the same pattern as blob and is intentionally NOT
+/// registered here — `SnapcraftPublishStage` is the load-bearing runner
+/// for `snapcraft upload` and runs as its own pipeline stage AFTER
+/// `BlobStage`. `SnapcraftPublishStage::run` appends its own
+/// `PublisherResult` directly to `ctx.publish_report` so the Submitter
+/// gate observes outcomes uniformly. Registering a trait-based
+/// `SnapcraftPublisher` here would fire `snapcraft upload` a second
+/// time per release (the audit-flagged double-publish; see
+/// `.claude/audits/2026-05-15-release-resilience-review.md` finding C3
+/// and the parallel BlobPublisher fix in commit 026c854).
 pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
     let mut v: Vec<Box<dyn Publisher>> = Vec::new();
     if is_cargo_configured(ctx) {
@@ -84,22 +95,10 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
     if crate::aur_source::is_aur_source_configured(ctx) {
         v.push(Box::new(crate::aur_source::AurSourcePublisher::new()));
     }
-    if is_snapcraft_configured(ctx) {
-        v.push(Box::new(anodizer_stage_snapcraft::SnapcraftPublisher::new()));
-    }
+    // Snapcraft is intentionally NOT registered here — see the
+    // doc comment on `configured_publishers` above.
+    // `SnapcraftPublishStage` writes its own `PublisherResult`.
     v
-}
-
-/// True when at least one crate has a non-empty `snapcrafts:` array
-/// with at least one entry whose `publish: true` opt-in is set. Mirrors
-/// the `SnapcraftPublishStage` skip-gate so the publisher only
-/// registers when there is real work to do.
-fn is_snapcraft_configured(ctx: &Context) -> bool {
-    ctx.config.crates.iter().any(|c| {
-        c.snapcrafts
-            .as_ref()
-            .is_some_and(|configs| configs.iter().any(|s| s.publish.unwrap_or(false)))
-    })
 }
 
 /// True when at least one crate has a `publish.chocolatey` block.
@@ -658,12 +657,15 @@ mod tests {
     }
 
     #[test]
-    fn snapcraft_publisher_registered_when_configured() {
+    fn snapcraft_publisher_not_registered() {
         use anodizer_core::config::SnapcraftConfig;
-        // Snapcraft is per-crate (`crates[].snapcrafts: [...]`) with an
-        // inner `publish: true` opt-in. The publisher must register
-        // exactly when at least one snap entry opts in — empty arrays
-        // and `publish: false` rows do not count.
+        // Pin: SnapcraftPublisher must NOT register from the
+        // stage-publish registry. `SnapcraftPublishStage` is the
+        // load-bearing runner and writes its own entry into
+        // `ctx.publish_report`; registering a trait-based publisher
+        // here would double-publish every snap target (parallel to the
+        // BlobPublisher fix in Task 15 / commit 026c854). See the
+        // doc comment on `configured_publishers` for rationale.
         let demo = CrateConfig {
             name: "demo".to_string(),
             path: ".".to_string(),
@@ -680,25 +682,22 @@ mod tests {
         let publishers = configured_publishers(&ctx);
         let names: Vec<&str> = publishers.iter().map(|p| p.name()).collect();
         assert!(
-            names.contains(&"snapcraft"),
-            "snapcraft missing from registered publishers (got {:?})",
+            !names.contains(&"snapcraft"),
+            "snapcraft must run via SnapcraftPublishStage, not via the trait-based registry — see registry.rs doc comment (got {:?})",
             names
         );
-        let p = publishers
-            .iter()
-            .find(|p| p.name() == "snapcraft")
-            .expect("snapcraft present");
-        assert_eq!(p.group(), PublisherGroup::Submitter);
-        assert!(!p.required(), "snapcraft should not be required");
-        assert_eq!(p.rollback_scope_needed(), Some("SNAPCRAFT_LOGIN"));
     }
 
     #[test]
     fn snapcraft_publisher_not_registered_when_publish_false() {
         use anodizer_core::config::SnapcraftConfig;
         // `publish: false` (the default) is the explicit opt-OUT — the
-        // publisher must NOT register, mirroring the
-        // `SnapcraftPublishStage::run` skip-gate.
+        // publisher must NOT register. Now redundant with
+        // `snapcraft_publisher_not_registered` (snapcraft is never
+        // trait-registered post-Bundle-B2), but retained as a
+        // belt-and-suspenders pin against a future regression that
+        // re-introduces trait-based registration without restoring the
+        // `publish: true` gate.
         let demo = CrateConfig {
             name: "demo".to_string(),
             path: ".".to_string(),
