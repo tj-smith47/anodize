@@ -26,6 +26,17 @@ use serde::{Deserialize, Serialize};
 // gpg --faked-system-time capability probe (release-resilience Task 25)
 // ---------------------------------------------------------------------------
 
+/// Argv passed to `gpg` for the `--faked-system-time` capability probe.
+///
+/// Pinned as a single constant so the production path
+/// ([`gpg_supports_faked_system_time`]) and the test-only injection
+/// seam ([`gpg_supports_faked_system_time_with`]) share the exact same
+/// invocation. A unit test in this module's `#[cfg(test)]` block
+/// asserts the exact contents so a future contributor changing the
+/// argv (e.g. dropping the `!` suffix, reordering flags) updates one
+/// place and the test catches drift.
+pub(crate) const GPG_PROBE_ARGS: &[&str] = &["--faked-system-time", "0!", "--version"];
+
 /// Probe whether the local `gpg` binary supports `--faked-system-time`.
 ///
 /// `--faked-system-time <epoch>!` is the documented way to make gpg emit
@@ -42,21 +53,27 @@ use serde::{Deserialize, Serialize};
 pub fn gpg_supports_faked_system_time() -> bool {
     // Delegates to the allow-listed `tool_detect` module
     // (`.claude/rules/module-boundaries.md`) so the `Command::new`
-    // shell-out lives at an approved boundary. The `_with` injection
-    // seam below is preserved for unit-test mocking.
-    crate::tool_detect::tool_runs_with_args("gpg", &["--faked-system-time", "0!", "--version"])
+    // shell-out lives at an approved boundary. The `_with` seam below
+    // is *not* on this path — it exists solely for unit-test mocking.
+    crate::tool_detect::tool_runs_with_args("gpg", GPG_PROBE_ARGS)
 }
 
-/// Probe with an injected command runner. Production code calls the
-/// public `gpg_supports_faked_system_time()` wrapper; tests pass a
-/// closure that returns a canned `std::process::Output` (or an io
-/// error). Exposed (not `cfg(test)`) so dependent crates' tests can
-/// reuse the seam without compiling stage-sign in test config.
+/// Probe with an injected command runner — kept as a test seam.
+///
+/// The public [`gpg_supports_faked_system_time`] no longer routes
+/// through this function (it now delegates to
+/// `tool_detect::tool_runs_with_args` to satisfy the module-boundaries
+/// rule). This `_with` variant exists solely so the unit tests below,
+/// plus dependent-crate tests that need to mock the probe without
+/// spawning real `gpg`, can supply a canned
+/// [`std::process::Output`] (or an `io::Error`). Exposed (not
+/// `cfg(test)`) so those dependent-crate tests can reuse the seam
+/// without needing `anodizer-core`'s test config.
 pub fn gpg_supports_faked_system_time_with<F>(probe: F) -> bool
 where
     F: FnOnce(&[&str]) -> std::io::Result<std::process::Output>,
 {
-    match probe(&["--faked-system-time", "0!", "--version"]) {
+    match probe(GPG_PROBE_ARGS) {
         Ok(out) => out.status.success(),
         Err(_) => false, // gpg not on PATH or transient io error
     }
@@ -482,6 +499,22 @@ mod tests {
             stdout: Vec::new(),
             stderr: Vec::new(),
         }
+    }
+
+    /// Pins the exact argv shared by the prod path
+    /// (`gpg_supports_faked_system_time`) and the `_with` test seam.
+    /// The seam tests below mock the *return value* of the probe, not
+    /// the argv it receives, so without this test a future refactor
+    /// that quietly changed the flag order or dropped the trailing
+    /// `!` would slip past green CI. Anchoring against the literal
+    /// list (not `GPG_PROBE_ARGS == GPG_PROBE_ARGS`, which is a
+    /// tautology) catches that drift.
+    #[test]
+    fn gpg_probe_argv_is_pinned() {
+        assert_eq!(
+            super::GPG_PROBE_ARGS,
+            &["--faked-system-time", "0!", "--version"]
+        );
     }
 
     #[test]

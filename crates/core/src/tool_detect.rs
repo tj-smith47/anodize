@@ -1,10 +1,15 @@
-//! Generic external-tool detection for the CLI's `healthcheck` command.
+//! Generic external-tool detection — `<tool> --version` and
+//! `<tool> <args>` probes used by the CLI's `healthcheck` command *and*
+//! capability probes elsewhere in core (e.g.
+//! `signing::gpg_supports_faked_system_time`, which delegates to
+//! [`tool_runs_with_args`]).
 //!
 //! Centralised here so the `Command::new(<tool>)` probe shell-outs live
 //! inside the module-boundaries allow-list
 //! (`.claude/rules/module-boundaries.md`). The CLI used to do these probes
 //! inline; that put `Command::new` outside the allow-list and counted as a
-//! boundary violation.
+//! boundary violation. Capability probes in other core modules
+//! (signing, etc.) delegate here for the same reason.
 
 use std::io;
 use std::process::Command;
