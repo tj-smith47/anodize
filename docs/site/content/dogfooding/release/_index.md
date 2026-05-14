@@ -29,6 +29,44 @@ changelog generation, announcers, cloud uploads, and custom publishers.
 | `release.gitea` | 🤝 Help wanted | We dogfood on GitHub only |
 | `milestones[]` | ✅ Verified | [`crates/core/src/config/milestone.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/config/milestone.rs) |
 
+## Release resilience
+
+These features shipped 2026-05-14 in response to the anodize **v0.2.0 cascade
+failure** ([Run 25754442852](https://github.com/tj-smith47/anodizer/actions/runs/25754442852)
+and four siblings on 2026-05-12, all failing in the publish stage). They form
+three-group publisher dispatch (Reversible, Submitter, Irreversible), a gate
+that aborts the irreversible group when reversible/submitter publishers fail,
+opt-in rollback per-publisher, and a `--rollback-only --from-run=<id>` replay
+path. No post-merge release has cut yet, so most rows below are honestly
+"help wanted" until v0.2.x+ tags exercise each codepath.
+
+| Key | Status | Notes |
+|---|---|---|
+| Three-group Submitter gate (default-on) | 🤝 Help wanted | [`crates/stage-publish/src/dispatch.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/dispatch.rs) - Reversible / Submitter / Irreversible groups wired; first v0.2.x release exercises it |
+| `--no-gate-submitter` override | 🤝 Help wanted | Wired through `release` CLI flags; no post-merge release has exercised the override |
+| `--rollback=best-effort` | 🤝 Help wanted | [`crates/stage-publish/src/rollback.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/rollback.rs) - per-publisher rollback path implemented; no live release has rolled back yet |
+| `--rollback-only --from-run=<id>` replay | 🤝 Help wanted | [`crates/stage-publish/src/rollback_only.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/rollback_only.rs) - replay-from-run wired; no live recovery has used it yet |
+| `--fail-fast` | ✅ Verified | [anodize `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) plus [release command wiring](https://github.com/tj-smith47/anodizer/blob/master/crates/cli/src/commands/release/mod.rs) (`fail_fast` opts) - pre-resilience-work flag, exercised in v0.1.x runs |
+| `--summary-json=<path>` audit-trail | 🤝 Help wanted | [`crates/stage-publish/src/run_summary.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/run_summary.rs) - JSON shape stable; no v0.2.x release has emitted one yet |
+| `announce.gate_on` config (default `required_publishers`) | 🤝 Help wanted | Wired; no post-merge release has gated an announce on publisher health |
+| Preflight rollback-scope checks | 🤝 Help wanted | [`crates/stage-publish/src/preflight.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/preflight.rs) - checks active; no live release has tripped them |
+| AnnounceStage emit-summary-on-skip | 🤝 Help wanted | Summary fires even when announce is skipped; no v0.2.x release has skipped an announce yet |
+| BlobStage writes to `ctx.publish_report` | 🤝 Help wanted | Wired into the shared publish-report surface; awaits a release with cloud blob credentials configured |
+
+## Build determinism
+
+Byte-stability contract plus a `check determinism` harness, an operator
+`--allow-nondeterministic <name>=<reason>` escape, and a release-body
+"Non-deterministic exemptions:" block that lists any waived artifacts. Merged
+2026-05-14; rows fill in as v0.2.x+ releases exercise each surface.
+
+| Key | Status | Notes |
+|---|---|---|
+| `anodize check determinism --runs=N` harness | 🤝 Help wanted | [`crates/cli/src/commands/check/determinism.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/cli/src/commands/check/determinism.rs) - N-run harness wired; not yet invoked from a tagged release run |
+| `anodize check config` (post-restructure) | 🤝 Help wanted | [`crates/cli/src/commands/check/config.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/cli/src/commands/check/config.rs) - post-restructure config validator; no release has exercised the new surface yet |
+| `--allow-nondeterministic <name>=<reason>` | 🤝 Help wanted | Operator escape parsed and threaded through the build stage; no live release has waived an artifact yet |
+| "Non-deterministic exemptions:" block in release body | 🤝 Help wanted | [`crates/stage-release/src/release_body.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-release/src/release_body.rs) - emitter wired; release body fragment unused until an exemption ships |
+
 ## Announcers
 
 13 channels implemented. Two are exercised by live cfgd releases; the
