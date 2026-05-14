@@ -297,6 +297,17 @@ impl PublishStage {
     /// the report. `Err` is reserved for catastrophic non-publisher
     /// errors (impossible IO, malformed config); for now `dispatch`
     /// itself never returns `Err`.
+    ///
+    /// # Stability
+    ///
+    /// This function is `pub` only so the in-crate `#[cfg(test)] mod
+    /// tests` block (and any future integration test in
+    /// `crates/stage-publish/tests/`) can substitute a synthetic
+    /// publisher slice. It is **not** part of the public API surface —
+    /// `#[doc(hidden)]` is the marker that downstream crates must not
+    /// couple to this signature; consumers should invoke
+    /// `<PublishStage as Stage>::run` instead.
+    #[doc(hidden)]
     pub fn run_with_publishers(
         ctx: &mut Context,
         log: &StageLogger,

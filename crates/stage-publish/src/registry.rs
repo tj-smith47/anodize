@@ -16,20 +16,28 @@ use anodizer_core::{Publisher, PublisherGroup};
 /// Returns the publishers configured for this release run.
 ///
 /// Walks `ctx.config.crates[*].publish` and the top-level publisher blocks
-/// (`dockerhub`, `artifactories`, `cloudsmiths`, `crates[*].blobs`) and
-/// instantiates a `Box<dyn Publisher>` for each configured publisher. The
-/// returned slice is the single source of truth that
-/// [`crate::dispatch::dispatch`] iterates.
+/// (`dockerhub`, `artifactories`, `cloudsmiths`) and instantiates a
+/// `Box<dyn Publisher>` for each configured publisher. The returned slice
+/// is the single source of truth that [`crate::dispatch::dispatch`]
+/// iterates.
 ///
-/// `BlobPublisher` is sourced from the `stage-blob` crate (added as a
-/// direct dep — `stage-blob` does not depend on `stage-publish`, so no
-/// circular dep is introduced).
+/// `BlobPublisher` is intentionally NOT registered here — `BlobStage` is
+/// the load-bearing runner for blob uploads and runs as its own pipeline
+/// stage (positioned BEFORE `SnapcraftPublishStage` so the snapcraft
+/// submitter gate sees blob's outcome via `ctx.publish_report`).
+/// `BlobStage::run` appends its `PublisherResult` directly to
+/// `ctx.publish_report`. The `BlobPublisher` trait impl in `stage-blob`
+/// stays for forward-compat (and as a vocabulary entry the dispatch
+/// path can consult once the publisher dispatch path can replace the
+/// dedicated stage entirely).
 pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
     let mut v: Vec<Box<dyn Publisher>> = Vec::new();
     if is_cargo_configured(ctx) {
         v.push(Box::new(crate::cargo::CargoPublisher::new()));
     }
-    // Bundle A (Assets group): dockerhub, artifactory, cloudsmith, blob.
+    // Bundle A (Assets group): dockerhub, artifactory, cloudsmith.
+    // `blob` is also Assets-group but runs as its own `BlobStage` (see
+    // doc on `configured_publishers` above for why it's not registered).
     if is_dockerhub_configured(ctx) {
         v.push(Box::new(crate::dockerhub::DockerhubPublisher::new()));
     }
@@ -38,9 +46,6 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
     }
     if is_cloudsmith_configured(ctx) {
         v.push(Box::new(crate::cloudsmith::CloudsmithPublisher::new()));
-    }
-    if anodizer_stage_blob::publisher::is_configured(ctx) {
-        v.push(Box::new(anodizer_stage_blob::BlobPublisher::new()));
     }
     if is_github_release_configured(ctx) {
         v.push(Box::new(
@@ -336,9 +341,11 @@ mod tests {
 
         let publishers = configured_publishers(&ctx);
         let names: Vec<&str> = publishers.iter().map(|p| p.name()).collect();
-        // Every Bundle A publisher must appear; order is whatever
-        // configured_publishers emits (Assets-group registration order).
-        for expected in ["dockerhub", "artifactory", "cloudsmith", "blob"] {
+        // Every Bundle A publisher that registers in this list must
+        // appear; blob is Assets-group but runs as its own `BlobStage`,
+        // not via the publisher dispatch path, so it is NOT registered
+        // here (asserted separately below).
+        for expected in ["dockerhub", "artifactory", "cloudsmith"] {
             assert!(
                 names.contains(&expected),
                 "{} missing from registered publishers (got {:?})",
@@ -352,6 +359,15 @@ mod tests {
             assert_eq!(p.group(), PublisherGroup::Assets, "{}", expected);
             assert!(!p.required(), "{} should not be required", expected);
         }
+        // Pin: BlobPublisher must NOT register from the stage-publish
+        // registry. `BlobStage` is the load-bearing runner and writes
+        // its own entry into `ctx.publish_report`; registering the
+        // publisher here would double-publish every blob target.
+        assert!(
+            !names.contains(&"blob"),
+            "blob must NOT be in the publisher registry (BlobStage owns the upload); got {:?}",
+            names
+        );
     }
 
     #[test]

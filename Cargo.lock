@@ -323,7 +323,6 @@ name = "anodizer-stage-publish"
 version = "0.1.0"
 dependencies = [
  "anodizer-core",
- "anodizer-stage-blob",
  "anodizer-stage-release",
  "anodizer-stage-snapcraft",
  "anyhow",

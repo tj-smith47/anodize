@@ -5,6 +5,7 @@ use anyhow::{Context as _, Result};
 
 use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
+use anodizer_core::{PublishReport, PublisherGroup, PublisherOutcome, PublisherResult};
 
 use object_store::{ObjectStore, PutOptions};
 
@@ -97,12 +98,66 @@ impl Stage for BlobStage {
     }
 
     fn run(&self, ctx: &mut Context) -> Result<()> {
-        // Thin wrapper that discards the uploaded-key list; downstream
-        // consumers that don't need rollback evidence stay unaware of the
-        // new signature.
-        let _ = self.run_with_evidence(ctx)?;
+        // BlobStage is Assets-group and writes its own outcome into
+        // `ctx.publish_report` so the SnapcraftPublishStage submitter
+        // gate (which runs AFTER BlobStage per the pipeline order) sees
+        // a required-blob failure via the standard `any_failed(Assets,
+        // required_only=true)` path. The publisher dispatch in
+        // `PublishStage::run` runs BEFORE BlobStage so `ctx.publish_report`
+        // is already initialized in the common case; the `None` branch
+        // covers `--publish` subset runs where the publish stage was
+        // skipped.
+        //
+        // Per-target failure becomes `PublisherOutcome::Failed(_)` + Ok(()).
+        // Catastrophic errors (missing required config, malformed
+        // provider, IO impossible at the stage boundary) still bubble up
+        // via the `?` operator in `run_with_evidence` -> `prepare_jobs`.
+        let (uploaded, exec_result) = self.run_report(ctx)?;
+        if let Some(exec_result) = exec_result {
+            record_blob_result(ctx, &uploaded, &exec_result);
+        }
+        // Per-target upload errors are reported via PublisherResult;
+        // they must NOT bail the pipeline because the same gate that
+        // protects irreversible Submitter publishers depends on
+        // post-blob stages still running (e.g. announce-gating).
         Ok(())
     }
+}
+
+/// Append a `PublisherResult` for the blob stage to `ctx.publish_report`.
+/// Initializes the report when `None` (covers `--publish` runs where
+/// `PublishStage` was skipped). The required flag mirrors the
+/// `BlobPublisher` trait impl (`required = false`) so the submitter gate
+/// only fires when an operator explicitly opts into a required blob
+/// target via future policy work.
+pub(crate) fn record_blob_result(ctx: &mut Context, uploaded: &[String], exec_result: &Result<()>) {
+    let outcome = match exec_result {
+        Ok(()) => PublisherOutcome::Succeeded,
+        Err(e) => PublisherOutcome::Failed(format!("{e:#}")),
+    };
+    let evidence = match exec_result {
+        Ok(()) if !uploaded.is_empty() => {
+            let mut e = anodizer_core::PublishEvidence::new("blob");
+            e.primary_ref = Some(uploaded[0].clone());
+            e.artifact_paths = uploaded.iter().map(std::path::PathBuf::from).collect();
+            Some(e)
+        }
+        _ => None,
+    };
+    if ctx.publish_report.is_none() {
+        ctx.publish_report = Some(PublishReport::default());
+    }
+    let report = ctx
+        .publish_report
+        .as_mut()
+        .expect("publish_report initialized above");
+    report.results.push(PublisherResult {
+        name: "blob".to_string(),
+        group: PublisherGroup::Assets,
+        required: false,
+        outcome,
+        evidence,
+    });
 }
 
 impl BlobStage {
@@ -119,9 +174,37 @@ impl BlobStage {
     /// implementation runs the upload phase atomically per job; partial
     /// success is captured up to the failing job's boundary.
     pub fn run_with_evidence(&self, ctx: &mut Context) -> Result<Vec<String>> {
+        let (keys, exec) = self.run_report(ctx)?;
+        if let Some(r) = exec {
+            r?;
+        }
+        Ok(keys)
+    }
+
+    /// Like [`Self::run_with_evidence`] but splits the catastrophic
+    /// pre-flight / setup errors (returned as the outer `Result::Err`,
+    /// matching the public `run_with_evidence` contract) from the
+    /// upload-phase outcome.
+    ///
+    /// Return shape:
+    /// - `Err(_)`: catastrophic — config validation failed, runtime
+    ///   construction failed, etc. Bubbled out of `Stage::run` as the
+    ///   pipeline-failing error.
+    /// - `Ok((keys, None))`: no work was attempted (snapshot-skip, no
+    ///   configured crates, every job was disabled or had no files).
+    ///   `Stage::run` does NOT append a `PublisherResult` in this case.
+    /// - `Ok((keys, Some(Ok(()))))`: at least one job ran and every
+    ///   upload succeeded.
+    /// - `Ok((keys, Some(Err(_))))`: at least one job ran and at least
+    ///   one upload failed; `keys` carries the partial-success list
+    ///   captured up to the failure.
+    ///
+    /// `Stage::run` consumes the `Option<Result<()>>` to decide whether
+    /// to record a `PublisherOutcome::Succeeded` / `Failed(_)` entry.
+    fn run_report(&self, ctx: &mut Context) -> Result<(Vec<String>, Option<Result<()>>)> {
         let log = ctx.logger("blob");
         if ctx.skip_in_snapshot(&log, "blob") {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), None));
         }
 
         let selected = ctx.options.selected_crates.clone();
@@ -139,7 +222,7 @@ impl BlobStage {
             .collect();
 
         if crates.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), None));
         }
 
         // Pre-flight: when `provider` is a literal (no template syntax),
@@ -353,7 +436,7 @@ impl BlobStage {
         }
 
         if jobs.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), None));
         }
 
         // Phase 2 (parallel across configs): each worker runs its own
@@ -411,18 +494,24 @@ impl BlobStage {
         // so callers can record partial success in PublishEvidence.
         let mut keys = uploaded_urls.lock().expect("uploaded list lock").clone();
         keys.sort();
-        result?;
 
-        for job in &jobs {
-            log.status(&format!(
-                "uploaded {} file(s) to {} {}/{}",
-                job.upload_items.len(),
-                job.provider_display,
-                job.rendered_bucket,
-                job.rendered_directory,
-            ));
+        if result.is_ok() {
+            for job in &jobs {
+                log.status(&format!(
+                    "uploaded {} file(s) to {} {}/{}",
+                    job.upload_items.len(),
+                    job.provider_display,
+                    job.rendered_bucket,
+                    job.rendered_directory,
+                ));
+            }
         }
 
-        Ok(keys)
+        // Collapse `Vec<()>` -> `()` so the inner Result has the same
+        // shape as `Stage::run`'s return — the per-job successes have
+        // already been folded into the shared `uploaded_urls`
+        // accumulator above.
+        let exec = result.map(|_| ());
+        Ok((keys, Some(exec)))
     }
 }

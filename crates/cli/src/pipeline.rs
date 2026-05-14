@@ -564,6 +564,15 @@ impl Pipeline {
         self.stages.push(stage);
     }
 
+    /// Returns the registered stage names in pipeline order. Used by the
+    /// pipeline-construction tests to assert stage ordering invariants
+    /// (e.g. blob runs before snapcraft-publish so the submitter gate
+    /// sees blob's outcome via `ctx.publish_report`).
+    #[cfg(test)]
+    pub fn stage_names(&self) -> Vec<&str> {
+        self.stages.iter().map(|s| s.name()).collect()
+    }
+
     pub fn run(&self, ctx: &mut Context, log: &StageLogger) -> Result<()> {
         // Skip-stage validation runs at the CLI entry (`validate_skip_values`
         // in main.rs); the command never reaches this point with an unknown
@@ -795,8 +804,13 @@ pub fn build_release_pipeline() -> Pipeline {
     // DockerSignStage runs after DockerStage so docker image artifacts exist.
     p.add(Box::new(DockerSignStage));
     p.add(Box::new(PublishStage));
-    p.add(Box::new(SnapcraftPublishStage));
+    // BlobStage runs before SnapcraftPublishStage so a required-blob
+    // failure can short-circuit the snapcraft upload via the same
+    // `any_failed(Assets, required_only=true)` check that already gates
+    // every other Submitter publisher. See
+    // `.claude/specs/2026-05-14-release-resilience.md#stage-order-decided`.
     p.add(Box::new(BlobStage));
+    p.add(Box::new(SnapcraftPublishStage));
     p.add(Box::new(AnnounceStage));
     p
 }
@@ -812,7 +826,7 @@ pub fn build_split_pipeline() -> Pipeline {
     p
 }
 
-/// Build a publish-only pipeline: release, publish, snapcraft-publish, blob stages.
+/// Build a publish-only pipeline: release, publish, blob, snapcraft-publish stages.
 pub fn build_publish_pipeline() -> Pipeline {
     use anodizer_stage_blob::BlobStage;
     use anodizer_stage_publish::PublishStage;
@@ -822,8 +836,11 @@ pub fn build_publish_pipeline() -> Pipeline {
     let mut p = Pipeline::new();
     p.add(Box::new(ReleaseStage));
     p.add(Box::new(PublishStage));
-    p.add(Box::new(SnapcraftPublishStage));
+    // BlobStage before SnapcraftPublishStage so the snapcraft submitter
+    // gate sees blob's outcome via `ctx.publish_report`. See
+    // `build_release_pipeline` for the spec link.
     p.add(Box::new(BlobStage));
+    p.add(Box::new(SnapcraftPublishStage));
     p
 }
 
@@ -886,8 +903,11 @@ pub fn build_merge_pipeline() -> Pipeline {
     p.add(Box::new(DockerStage::new()));
     p.add(Box::new(DockerSignStage));
     p.add(Box::new(PublishStage));
-    p.add(Box::new(SnapcraftPublishStage));
+    // BlobStage before SnapcraftPublishStage — mirrors
+    // `build_release_pipeline`'s swap so merge-mode runs share the same
+    // submitter-gate semantics.
     p.add(Box::new(BlobStage));
+    p.add(Box::new(SnapcraftPublishStage));
     p.add(Box::new(AnnounceStage));
     p
 }
@@ -1595,5 +1615,52 @@ crates:
             "load_config must succeed from a small caller stack: {:?}",
             result
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Stage-order invariants
+    //
+    // BlobStage must run BEFORE SnapcraftPublishStage in every pipeline
+    // variant so a required-blob failure can short-circuit the
+    // (irreversible) snapcraft upload via the same
+    // `any_failed(Assets, required_only=true)` gate that already
+    // protects every other Submitter publisher. Spec:
+    // `.claude/specs/2026-05-14-release-resilience.md#stage-order-decided`.
+    // -----------------------------------------------------------------------
+
+    fn assert_blob_before_snapcraft(names: &[&str], pipeline: &str) {
+        let blob_idx = names
+            .iter()
+            .position(|n| *n == "blob")
+            .unwrap_or_else(|| panic!("{pipeline}: missing blob stage; got {names:?}"));
+        let snap_idx = names
+            .iter()
+            .position(|n| *n == "snapcraft-publish")
+            .unwrap_or_else(|| panic!("{pipeline}: missing snapcraft-publish; got {names:?}"));
+        assert!(
+            blob_idx < snap_idx,
+            "{pipeline}: blob (idx {blob_idx}) must precede snapcraft-publish (idx {snap_idx}); got {names:?}"
+        );
+    }
+
+    #[test]
+    fn release_pipeline_runs_blob_before_snapcraft_publish() {
+        let p = build_release_pipeline();
+        let names = p.stage_names();
+        assert_blob_before_snapcraft(&names, "build_release_pipeline");
+    }
+
+    #[test]
+    fn publish_pipeline_runs_blob_before_snapcraft_publish() {
+        let p = build_publish_pipeline();
+        let names = p.stage_names();
+        assert_blob_before_snapcraft(&names, "build_publish_pipeline");
+    }
+
+    #[test]
+    fn merge_pipeline_runs_blob_before_snapcraft_publish() {
+        let p = build_merge_pipeline();
+        let names = p.stage_names();
+        assert_blob_before_snapcraft(&names, "build_merge_pipeline");
     }
 }

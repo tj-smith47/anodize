@@ -1474,3 +1474,131 @@ fn make_ctx_with_snapshot() -> Context {
     ctx.template_vars_mut().set("IsSnapshot", "true");
     ctx
 }
+
+// -----------------------------------------------------------------------
+// Publish-report wire-up tests
+//
+// BlobStage runs as its own Stage (positioned BEFORE
+// SnapcraftPublishStage in the pipeline) and must append a
+// `PublisherResult` to `ctx.publish_report` so the submitter gate can
+// see a required-blob failure via the same
+// `any_failed(Assets, required_only=true)` check that already gates
+// every other Submitter publisher.
+// -----------------------------------------------------------------------
+
+#[test]
+fn blob_stage_appends_succeeded_to_publish_report() {
+    use crate::run::record_blob_result;
+    use anodizer_core::{PublisherGroup, PublisherOutcome};
+
+    let mut ctx = make_ctx();
+    let uploaded = vec![
+        "s3://my-bucket/proj/v1/a.tar.gz".to_string(),
+        "s3://my-bucket/proj/v1/b.tar.gz".to_string(),
+    ];
+    record_blob_result(&mut ctx, &uploaded, &Ok(()));
+
+    let report = ctx
+        .publish_report()
+        .expect("publish_report initialized by blob stage");
+    assert_eq!(report.results.len(), 1);
+    let r = &report.results[0];
+    assert_eq!(r.name, "blob");
+    assert_eq!(r.group, PublisherGroup::Assets);
+    assert!(!r.required, "blob is Assets-group and not required");
+    assert!(
+        matches!(r.outcome, PublisherOutcome::Succeeded),
+        "expected Succeeded, got {:?}",
+        r.outcome
+    );
+    let evidence = r
+        .evidence
+        .as_ref()
+        .expect("succeeded entry carries evidence");
+    assert_eq!(
+        evidence.primary_ref.as_deref(),
+        Some("s3://my-bucket/proj/v1/a.tar.gz")
+    );
+    assert_eq!(evidence.artifact_paths.len(), 2);
+}
+
+#[test]
+fn blob_stage_appends_failed_to_publish_report() {
+    use crate::run::record_blob_result;
+    use anodizer_core::PublisherOutcome;
+
+    let mut ctx = make_ctx();
+    // Mid-stream failure: one key landed before the upload errored. The
+    // partial-success list is preserved on the helper input, but
+    // failed entries record no evidence so a downstream rollback can't
+    // mistakenly treat the failed publisher as having a clean
+    // artifact_paths snapshot.
+    let partial = vec!["s3://my-bucket/proj/v1/a.tar.gz".to_string()];
+    let err = anyhow::anyhow!("upload failed: 503 Service Unavailable");
+    record_blob_result(&mut ctx, &partial, &Err(err));
+
+    let report = ctx.publish_report().expect("publish_report initialized");
+    assert_eq!(report.results.len(), 1);
+    let r = &report.results[0];
+    match &r.outcome {
+        PublisherOutcome::Failed(msg) => {
+            assert!(
+                msg.contains("503"),
+                "Failed message should preserve the error text, got {msg}"
+            )
+        }
+        other => panic!("expected Failed, got {other:?}"),
+    }
+    assert!(
+        r.evidence.is_none(),
+        "Failed entries must not carry evidence (downstream rollback safety)"
+    );
+}
+
+#[test]
+fn blob_stage_initializes_publish_report_when_none() {
+    use crate::run::record_blob_result;
+
+    // PublishStage was skipped (e.g. `--publish blob` subset run), so
+    // `ctx.publish_report` is None. BlobStage must initialize the
+    // report on first append so the SnapcraftPublishStage gate has a
+    // report to consult.
+    let mut ctx = make_ctx();
+    assert!(ctx.publish_report().is_none(), "fixture invariant");
+
+    record_blob_result(&mut ctx, &[], &Ok(()));
+
+    let report = ctx
+        .publish_report()
+        .expect("BlobStage initializes the report when None");
+    assert_eq!(report.results.len(), 1);
+    assert_eq!(report.results[0].name, "blob");
+}
+
+#[test]
+fn blob_stage_does_not_touch_publish_report_when_no_work() {
+    // No blob configs → no jobs → no PublisherResult appended. The
+    // submitter gate that follows BlobStage must NOT see a fabricated
+    // "blob: Succeeded" entry just because the stage ran past an empty
+    // crate set.
+    let config = anodizer_core::config::Config {
+        project_name: "test".to_string(),
+        crates: vec![anodizer_core::config::CrateConfig {
+            name: "mycrate".to_string(),
+            path: ".".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let opts = ContextOptions::default();
+    let mut ctx = Context::new(config, opts);
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("ProjectName", "test");
+
+    let stage = BlobStage;
+    stage.run(&mut ctx).expect("no-config run is Ok");
+    assert!(
+        ctx.publish_report().is_none(),
+        "no work attempted → no report entry"
+    );
+}
