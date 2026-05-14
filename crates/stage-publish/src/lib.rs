@@ -40,6 +40,135 @@ use anodizer_core::log::StageLogger;
 use anodizer_core::stage::Stage;
 use anodizer_core::{Publisher, PublisherGroup, PublisherOutcome, SkipReason};
 use anyhow::Result;
+use std::path::PathBuf;
+
+/// Derive a stable per-run identifier suitable for the
+/// `<dist>/run-<id>/` directory written by [`write_report_to_run_dir`]
+/// and read back by [`rollback_only::run`].
+///
+/// Priority order:
+/// 1. `ctx.git_info.tag` — what the operator typed (e.g. `v0.2.1`).
+///    Naturally fits the `[A-Za-z0-9._-]` shape expected by
+///    [`rollback_only::validate_run_id`].
+/// 2. `ctx.git_info.short_commit` — fallback for snapshot / dry-run /
+///    detached-HEAD scenarios where there's no tag.
+/// 3. The literal `"local"` — final fallback for genuinely-no-git
+///    contexts (e.g. some integration tests).
+///
+/// All three branches return a string that satisfies
+/// [`rollback_only::validate_run_id`]; the candidates from `git_info`
+/// are pre-filtered against the validator so a malformed value (e.g. a
+/// short_commit somehow containing slashes) falls through to the next
+/// step instead of producing an invalid path. The `"local"` literal is
+/// fixed and always valid.
+///
+/// Used by [`PublishStage::run`] before writing
+/// `<dist>/run-<id>/report.json`. The write is skipped entirely in
+/// snapshot / dry-run mode, so callers that derive the id outside of
+/// the write path should also gate on `ctx.is_snapshot()` /
+/// `ctx.is_dry_run()` if they want the same behavior.
+pub(crate) fn derive_run_id(ctx: &Context) -> String {
+    if let Some(info) = ctx.git_info.as_ref() {
+        if !info.tag.is_empty() && rollback_only::validate_run_id(&info.tag).is_ok() {
+            return info.tag.clone();
+        }
+        if !info.short_commit.is_empty()
+            && rollback_only::validate_run_id(&info.short_commit).is_ok()
+        {
+            return info.short_commit.clone();
+        }
+    }
+    "local".to_string()
+}
+
+/// Persist `ctx.publish_report` to `<config.dist>/run-<run_id>/report.json`
+/// so a later `--rollback-only --from-run=<run_id>` invocation can
+/// re-attempt rollback against the same run.
+///
+/// Best-effort: any IO / serialization failure is logged as a warn and
+/// returns `Ok(())`. The write does NOT fail the pipeline — the release
+/// itself isn't affected by a missing on-disk replay surface.
+///
+/// Skipped (no-op) when:
+/// - `ctx.is_snapshot()` or `ctx.is_dry_run()` — these modes are not
+///   real releases and shouldn't pollute `dist/run-*/`.
+/// - `report.results.is_empty()` — no work was done; an empty file
+///   just clutters `dist/`. BlobStage / SnapcraftPublishStage append to
+///   `publish_report` independently, so the empty-check correctly
+///   covers "no work done at all."
+///
+/// Mirrors the path-derivation in
+/// [`rollback_only::report_path`] — the two helpers form the
+/// writer/reader contract for the `--rollback-only` flow.
+///
+/// # Stability
+///
+/// This function is `pub` + `#[doc(hidden)]` only so the in-crate
+/// integration test (`tests/run_report_persistence.rs`) can drive the
+/// production writer without re-implementing it. It is **not** part of
+/// the public API surface — downstream crates must invoke
+/// `PublishStage` via the `Stage` trait, which calls this writer
+/// internally at end-of-pipeline.
+#[doc(hidden)]
+pub fn write_report_to_run_dir(ctx: &Context, log: &StageLogger) {
+    if ctx.is_snapshot() || ctx.is_dry_run() {
+        return;
+    }
+    let Some(report) = ctx.publish_report() else {
+        return;
+    };
+    if report.results.is_empty() {
+        return;
+    }
+
+    let run_id = derive_run_id(ctx);
+    // Defense-in-depth: derive_run_id is supposed to always return a
+    // valid id, but a future refactor could regress that invariant. If
+    // the id is bad, skip the write rather than write to an invalid
+    // path — the operator loses replay; the release is unaffected.
+    if let Err(e) = rollback_only::validate_run_id(&run_id) {
+        log.warn(&format!(
+            "publish: skipped run-report write — derived run_id '{}' failed validation: {}",
+            run_id, e,
+        ));
+        return;
+    }
+
+    let dir: PathBuf = ctx.config.dist.join(format!("run-{}", run_id));
+    let path = dir.join("report.json");
+
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        log.warn(&format!(
+            "publish: failed to create run-report dir {}: {}",
+            dir.display(),
+            e,
+        ));
+        return;
+    }
+
+    let file = match std::fs::File::create(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            log.warn(&format!(
+                "publish: failed to open run-report {} for write: {}",
+                path.display(),
+                e,
+            ));
+            return;
+        }
+    };
+
+    if let Err(e) = serde_json::to_writer_pretty(&file, report) {
+        log.warn(&format!(
+            "publish: failed to serialize run-report to {}: {}",
+            path.display(),
+            e,
+        ));
+        return;
+    }
+
+    log.status(&format!("publish: wrote run-report to {}", path.display()));
+}
 
 /// Collect crate names that match the selection filter and have a specific
 /// publisher configured (as determined by the predicate `has_config`).
@@ -493,6 +622,17 @@ impl Stage for PublishStage {
         // rolled back (they are protected by the dispatch-time
         // submitter gate).
         run_rollback_if_needed(ctx, &publishers, &log);
+
+        // ---- Persist end-of-pipeline state to dist/run-<id>/report.json ----
+        //
+        // Writer half of the `--rollback-only --from-run=<id>` contract
+        // (`rollback_only::run` is the reader). Runs AFTER
+        // `run_rollback_if_needed` so per-publisher rollback outcomes
+        // (`RolledBack` / `RollbackFailed`) are captured — the file
+        // represents END-OF-PIPELINE state, not mid-pipeline. Snapshot /
+        // dry-run modes and empty-result reports are no-ops; IO failure
+        // is best-effort (warn + continue, never fail the pipeline).
+        write_report_to_run_dir(ctx, &log);
 
         // ---- Post-publish polling fan-out (Chocolatey moderation + WinGet PR) ----
         //
@@ -1181,6 +1321,279 @@ mod tests {
     // The collect-or-bail policy now lives in `DispatchOptions::fail_fast`
     // and is covered by tests in `crates/stage-publish/src/dispatch.rs`.
     // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // derive_run_id + write_report_to_run_dir — B4 (writer for the
+    // `--rollback-only --from-run=<id>` contract). The writer half was
+    // missing in production; `rollback_only::run` was structurally
+    // unreachable. Tests below pin: (a) the run_id fallback chain
+    // (tag -> short_commit -> "local") with the validator gate, and
+    // (b) the writer's no-op/IO behavior including snapshot/dry-run
+    // skip and empty-results skip.
+    // -----------------------------------------------------------------------
+
+    mod run_report_persistence {
+        use super::*;
+        use crate::testing::*;
+        use anodizer_core::test_helpers::TestContextBuilder;
+        use anodizer_core::{
+            PublishReport, PublisherGroup, PublisherOutcome, PublisherResult, context::Context,
+        };
+
+        fn synthetic_report(name: &str) -> PublishReport {
+            let mut r = PublishReport::default();
+            r.results.push(PublisherResult {
+                name: name.to_string(),
+                group: PublisherGroup::Manager,
+                required: false,
+                outcome: PublisherOutcome::Succeeded,
+                evidence: None,
+            });
+            r
+        }
+
+        #[test]
+        fn derive_run_id_prefers_tag_when_available() {
+            let ctx = TestContextBuilder::new()
+                .tag("v1.2.3")
+                .commit("abc123def4567890")
+                .build();
+            assert_eq!(derive_run_id(&ctx), "v1.2.3");
+        }
+
+        #[test]
+        fn derive_run_id_falls_back_to_short_commit_when_tag_empty() {
+            let mut ctx = TestContextBuilder::new()
+                .tag("v1.2.3")
+                .commit("abc123def4567890")
+                .build();
+            // Force the tag empty post-build to exercise the fallback;
+            // tag("") would still satisfy validation if non-empty rule
+            // were the only check, so blank the field directly.
+            ctx.git_info.as_mut().unwrap().tag = String::new();
+            assert_eq!(derive_run_id(&ctx), "abc123d");
+        }
+
+        #[test]
+        fn derive_run_id_falls_back_to_local_when_no_git_info() {
+            let mut ctx = TestContextBuilder::new().build();
+            ctx.git_info = None;
+            assert_eq!(derive_run_id(&ctx), "local");
+        }
+
+        #[test]
+        fn derive_run_id_falls_back_to_local_when_both_tag_and_short_commit_empty() {
+            let mut ctx = TestContextBuilder::new().build();
+            let info = ctx.git_info.as_mut().unwrap();
+            info.tag = String::new();
+            info.short_commit = String::new();
+            assert_eq!(derive_run_id(&ctx), "local");
+        }
+
+        #[test]
+        fn derive_run_id_skips_tag_with_invalid_chars_and_falls_through() {
+            // A tag containing '/' (e.g. a malformed monorepo prefix
+            // that bypassed earlier validation) must NOT propagate into
+            // the run-dir path. Fall through to short_commit.
+            let mut ctx = TestContextBuilder::new()
+                .tag("v1.2.3")
+                .commit("abc123def4567890")
+                .build();
+            ctx.git_info.as_mut().unwrap().tag = "bad/tag".to_string();
+            assert_eq!(derive_run_id(&ctx), "abc123d");
+        }
+
+        #[test]
+        fn derive_run_id_always_passes_validate_run_id() {
+            // Table-driven: every branch of the fallback chain must
+            // produce a string that satisfies the validator. A future
+            // refactor that loosens an upstream check could regress
+            // this — the validator is the single source of truth.
+            type CaseFn = fn() -> Context;
+            let cases: &[(&str, CaseFn)] = &[
+                ("tag branch", || {
+                    TestContextBuilder::new()
+                        .tag("v0.0.0-test")
+                        .commit("abc123def4567890")
+                        .build()
+                }),
+                ("short_commit branch", || {
+                    let mut ctx = TestContextBuilder::new()
+                        .tag("v0.0.0-test")
+                        .commit("abc123def4567890")
+                        .build();
+                    ctx.git_info.as_mut().unwrap().tag = String::new();
+                    ctx
+                }),
+                ("local fallback (no git_info)", || {
+                    let mut ctx = TestContextBuilder::new().build();
+                    ctx.git_info = None;
+                    ctx
+                }),
+                ("local fallback (both empty)", || {
+                    let mut ctx = TestContextBuilder::new().build();
+                    let info = ctx.git_info.as_mut().unwrap();
+                    info.tag = String::new();
+                    info.short_commit = String::new();
+                    ctx
+                }),
+            ];
+            for (label, make_ctx) in cases {
+                let ctx = make_ctx();
+                let id = derive_run_id(&ctx);
+                rollback_only::validate_run_id(&id).unwrap_or_else(|e| {
+                    panic!(
+                        "case '{label}' produced invalid run_id '{id}': {e}",
+                        label = label,
+                        id = id,
+                        e = e
+                    )
+                });
+            }
+        }
+
+        #[test]
+        fn write_report_creates_parent_directory_and_pretty_json() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let mut ctx = TestContextBuilder::new()
+                .tag("v0.0.0-test")
+                .dist(tmp.path().to_path_buf())
+                .build();
+            ctx.set_publish_report(synthetic_report("manager-only"));
+
+            let log = ctx.logger("publish-test");
+            write_report_to_run_dir(&ctx, &log);
+
+            let path = tmp.path().join("run-v0.0.0-test").join("report.json");
+            assert!(path.exists(), "expected report at {}", path.display());
+
+            let body = std::fs::read_to_string(&path).expect("read");
+            // Pretty-print includes newlines + 2-space indent. Crude
+            // shape-check rather than full whitespace equality so a
+            // future serde_json change doesn't break the test.
+            assert!(body.contains('\n'), "expected pretty JSON, got: {body}");
+            // Round-trip: same shape as PublishReport.
+            let parsed: PublishReport = serde_json::from_str(&body).expect("round-trip");
+            assert_eq!(parsed.results.len(), 1);
+            assert_eq!(parsed.results[0].name, "manager-only");
+            assert!(matches!(
+                parsed.results[0].outcome,
+                PublisherOutcome::Succeeded
+            ));
+        }
+
+        #[test]
+        fn write_report_is_noop_on_empty_results() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let mut ctx = TestContextBuilder::new()
+                .tag("v0.0.0-test")
+                .dist(tmp.path().to_path_buf())
+                .build();
+            // Default report = empty results.
+            ctx.set_publish_report(PublishReport::default());
+
+            let log = ctx.logger("publish-test");
+            write_report_to_run_dir(&ctx, &log);
+
+            let dir = tmp.path().join("run-v0.0.0-test");
+            assert!(
+                !dir.exists(),
+                "no work done -> no dir written; found {}",
+                dir.display(),
+            );
+        }
+
+        #[test]
+        fn write_report_is_noop_in_snapshot_mode() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let mut ctx = TestContextBuilder::new()
+                .tag("v0.0.0-test")
+                .dist(tmp.path().to_path_buf())
+                .snapshot(true)
+                .build();
+            ctx.set_publish_report(synthetic_report("manager-only"));
+
+            let log = ctx.logger("publish-test");
+            write_report_to_run_dir(&ctx, &log);
+
+            let dir = tmp.path().join("run-v0.0.0-test");
+            assert!(
+                !dir.exists(),
+                "snapshot mode must not pollute dist/run-*/; found {}",
+                dir.display(),
+            );
+        }
+
+        #[test]
+        fn write_report_is_noop_in_dry_run_mode() {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let mut ctx = TestContextBuilder::new()
+                .tag("v0.0.0-test")
+                .dist(tmp.path().to_path_buf())
+                .dry_run(true)
+                .build();
+            ctx.set_publish_report(synthetic_report("manager-only"));
+
+            let log = ctx.logger("publish-test");
+            write_report_to_run_dir(&ctx, &log);
+
+            let dir = tmp.path().join("run-v0.0.0-test");
+            assert!(
+                !dir.exists(),
+                "dry-run mode must not pollute dist/run-*/; found {}",
+                dir.display(),
+            );
+        }
+
+        #[test]
+        fn write_report_is_noop_when_no_publish_report_set() {
+            // Edge case: PublishStage::run only calls write after
+            // dispatch sets publish_report, but write_report_to_run_dir
+            // is defensive against being invoked with no report. Verify
+            // the no-op path so a future refactor that moves the call
+            // can't crash on None.
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let ctx = TestContextBuilder::new()
+                .tag("v0.0.0-test")
+                .dist(tmp.path().to_path_buf())
+                .build();
+            // No set_publish_report() call.
+            let log = ctx.logger("publish-test");
+            write_report_to_run_dir(&ctx, &log);
+            assert!(!tmp.path().join("run-v0.0.0-test").exists());
+        }
+
+        #[test]
+        fn publish_stage_run_writes_report_at_end_of_pipeline() {
+            // End-to-end via run_with_publishers + run_rollback_if_needed
+            // + write_report_to_run_dir, exercising the order
+            // (rollback BEFORE write) so any rollback outcomes show up
+            // in the on-disk file.
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let mut ctx = TestContextBuilder::new()
+                .tag("v0.0.0-test")
+                .dist(tmp.path().to_path_buf())
+                .build();
+            let publishers = vec![fake(
+                "manager-only",
+                PublisherGroup::Manager,
+                false,
+                FakeOutcome::Succeed,
+            )];
+            let log = ctx.logger("publish-test");
+            PublishStage::run_with_publishers(&mut ctx, &log, &publishers)
+                .expect("run_with_publishers Ok");
+            run_rollback_if_needed(&mut ctx, &publishers, &log);
+            write_report_to_run_dir(&ctx, &log);
+
+            let path = tmp.path().join("run-v0.0.0-test").join("report.json");
+            assert!(path.exists(), "expected report at {}", path.display());
+            let parsed: PublishReport =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(parsed.results.len(), 1);
+            assert_eq!(parsed.results[0].name, "manager-only");
+        }
+    }
 
     #[test]
     fn test_run_dry_run_nix() {
