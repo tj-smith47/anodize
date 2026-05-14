@@ -124,8 +124,16 @@ tasks:
       - |
         # (a) Re-add files that were staged pre-task. Use -A so deletes and
         # renames staged with `git mv` aren't lost when lint touches them.
+        # Tolerate already-staged deletions: in git 2.53+, `git add -A` on a
+        # path that is only present as a staged deletion (no working-tree
+        # entry, no untracked entry, only an index removal) errors with
+        # "pathspec did not match any files". The deletion is already in
+        # the index from the user's pre-stage, so skipping it is harmless.
         while IFS= read -r f; do
-          [ -n "$f" ] && git add -A -- "$f"
+          [ -z "$f" ] && continue
+          if [ -e "$f" ] || git ls-files --error-unmatch -- "$f" >/dev/null 2>&1; then
+            git add -A -- "$f"
+          fi
         done <<'STAGED_EOF'
         {{.STAGED_LIST}}
         STAGED_EOF
