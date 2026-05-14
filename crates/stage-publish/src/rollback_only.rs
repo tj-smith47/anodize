@@ -1,20 +1,33 @@
 //! `--rollback-only --from-run=<id>` mode.
 //!
-//! Loads `<dist>/run-<id>/report.json` (the `PublishReport` written at
-//! end of a prior `PublishStage` run by the run-summary task) and
+//! Loads `<dist>/run-<id>/rollback.json` if it exists (a prior replay's
+//! state) or falls through to `<dist>/run-<id>/report.json` (the original
+//! end-of-pipeline snapshot written by the run-summary task) and
 //! re-invokes each `Publisher`'s rollback for every `Succeeded` or
-//! `RollbackFailed` entry. Writes the updated state to
-//! `<dist>/run-<id>/rollback.json` so an operator can audit what was
-//! attempted.
+//! `RollbackFailed` Assets/Manager entry. Writes the updated state back
+//! to `<dist>/run-<id>/rollback.json`.
+//!
+//! Re-invoking `--rollback-only` against the same `run_id` is idempotent:
+//! `RolledBack` entries from a prior replay are naturally filtered out
+//! (they match neither `Succeeded` nor `RollbackFailed`); `RollbackFailed`
+//! entries are re-attempted (which is desired — a transient network
+//! error from the first attempt deserves a retry).
+//!
+//! An operator who wants to force a full re-roll can delete
+//! `<dist>/run-<id>/rollback.json` manually; the next replay will fall
+//! through to `report.json` and treat every Succeeded entry as needing
+//! rollback.
 //!
 //! No new publishing happens — the registry is loaded only to find the
 //! matching `Publisher` impl per `result.name`. Submitter publishers and
 //! entries that already terminated as `Failed`, `RolledBack`,
 //! `Skipped(_)`, `PublishedNoRollback`, etc. are left untouched.
 //!
-//! The on-disk report at `<dist>/run-<id>/report.json` is the contract
-//! between the run-summary task (writer) and this module (reader); the
-//! file's format is `serde_json` of [`PublishReport`].
+//! The on-disk reports at `<dist>/run-<id>/report.json` and
+//! `<dist>/run-<id>/rollback.json` share the same schema — `serde_json`
+//! of [`PublishReport`]. `report.json` is the immutable end-of-pipeline
+//! snapshot from the original run; `rollback.json` is the mutable
+//! replay-state file, overwritten on every replay.
 
 use anodizer_core::context::Context;
 use anodizer_core::{PublishReport, Publisher, PublisherGroup, PublisherOutcome};
@@ -102,14 +115,16 @@ fn rollback_path(ctx: &Context, run_id: &str) -> PathBuf {
         .join("rollback.json")
 }
 
-/// Load `<dist>/run-<id>/report.json` and re-attempt rollback for every
-/// `Succeeded` or `RollbackFailed` Assets/Manager entry. Returns the
-/// updated [`PublishReport`] and writes it to
-/// `<dist>/run-<id>/rollback.json`.
+/// Load the prior run state (preferring `<dist>/run-<id>/rollback.json`
+/// from a prior replay over `<dist>/run-<id>/report.json` from the
+/// original run) and re-attempt rollback for every `Succeeded` or
+/// `RollbackFailed` Assets/Manager entry. Returns the updated
+/// [`PublishReport`] and writes it to `<dist>/run-<id>/rollback.json`.
 ///
-/// Errors only when the prior report is missing or unparseable; per-step
-/// rollback failures are recorded as `RollbackFailed` on the result and
-/// do not abort the loop (mirrors the post-publish rollback runner).
+/// Errors only when the prior state file is missing or unparseable;
+/// per-step rollback failures are recorded as `RollbackFailed` on the
+/// result and do not abort the loop (mirrors the post-publish rollback
+/// runner).
 pub fn run(ctx: &mut Context, run_id: &str) -> Result<PublishReport> {
     let publishers = crate::registry::configured_publishers(ctx);
     run_with_publishers(ctx, run_id, &publishers)
@@ -133,16 +148,41 @@ pub(crate) fn run_with_publishers(
 
     let log = ctx.logger("publish");
 
-    let path = report_path(ctx, run_id);
-    log.status(&format!(
-        "rollback-only: loading prior run report from {}",
-        path.display()
-    ));
+    // Prefer rollback.json from a prior replay over the immutable
+    // report.json from the original run. This makes
+    // `--rollback-only --from-run=<id>` idempotent: the second invocation
+    // sees `RolledBack` entries from the first replay and naturally
+    // filters them out (they match neither `Succeeded` nor
+    // `RollbackFailed`). Without this, the second replay would re-read
+    // the unchanged report.json and re-roll every Succeeded entry — for
+    // git-revert-based publishers (homebrew / scoop / nix / our-AUR), a
+    // second revert would revert-the-revert and re-publish the broken
+    // artifact the operator is trying to remove.
+    //
+    // Corruption / version-mismatch on rollback.json surfaces a clear
+    // error rather than silently falling back to report.json — falling
+    // back would re-roll everything and is the exact regression this
+    // guard exists for.
+    let prior_state = rollback_path(ctx, run_id);
+    let (path, source_label) = if prior_state.exists() {
+        log.status(&format!(
+            "rollback-only: replaying against prior rollback state at {}",
+            prior_state.display()
+        ));
+        (prior_state, "prior rollback state")
+    } else {
+        let report = report_path(ctx, run_id);
+        log.status(&format!(
+            "rollback-only: loading prior run report from {}",
+            report.display()
+        ));
+        (report, "prior report")
+    };
 
     let report_text = fs::read_to_string(&path)
-        .with_context(|| format!("failed to read prior report at {}", path.display()))?;
+        .with_context(|| format!("failed to read {} at {}", source_label, path.display()))?;
     let mut report: PublishReport = serde_json::from_str(&report_text)
-        .with_context(|| format!("failed to parse prior report at {}", path.display()))?;
+        .with_context(|| format!("failed to parse {} at {}", source_label, path.display()))?;
 
     // Re-attempt rollback for every Succeeded or RollbackFailed entry in
     // the Assets / Manager groups. Submitter publishers have no
@@ -578,5 +618,206 @@ mod tests {
             "error must reference parse failure, got '{}'",
             msg,
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Idempotency-on-replay tests (audit finding C5).
+    //
+    // These exercise the rollback.json-preferred-over-report.json load path
+    // that makes `--rollback-only --from-run=<id>` safe to re-invoke.
+    // -----------------------------------------------------------------------
+
+    /// Custom publisher with an atomic rollback-call counter. We need this
+    /// rather than `FakePublisher` because the idempotency assertion is
+    /// "rollback() was NOT called a second time" — that needs a counter
+    /// the shared fake doesn't expose.
+    struct CountingPublisher {
+        name: String,
+        group: PublisherGroup,
+        rollback_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Publisher for CountingPublisher {
+        fn name(&self) -> &str {
+            &self.name
+        }
+        fn group(&self) -> PublisherGroup {
+            self.group
+        }
+        fn required(&self) -> bool {
+            true
+        }
+        fn run(&self, _ctx: &mut Context) -> anyhow::Result<PublishEvidence> {
+            Ok(PublishEvidence::new(self.name.clone()))
+        }
+        fn rollback(&self, _ctx: &mut Context, _evidence: &PublishEvidence) -> anyhow::Result<()> {
+            self.rollback_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn rollback_only_second_invocation_is_noop_for_already_rolled_back_entries() {
+        // Audit ref: .claude/audits/2026-05-15-release-resilience-review.md
+        // finding C5 — re-invoking --rollback-only must not re-roll
+        // entries that already reached RolledBack on a prior replay.
+        let (mut ctx, _tmp) = ctx_with_dist();
+        let mut report = PublishReport::default();
+        report
+            .results
+            .push(succeeded_entry("mgr1", PublisherGroup::Manager, true));
+        write_fixture_report(&ctx, "fixt", &report);
+
+        let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let publishers: Vec<Box<dyn Publisher>> = vec![Box::new(CountingPublisher {
+            name: "mgr1".into(),
+            group: PublisherGroup::Manager,
+            rollback_calls: counter.clone(),
+        })];
+
+        // First replay: flips Succeeded → RolledBack via one rollback() call.
+        let r1 = run_with_publishers(&mut ctx, "fixt", &publishers).expect("first replay");
+        assert!(
+            matches!(r1.results[0].outcome, PublisherOutcome::RolledBack),
+            "first replay should flip Succeeded → RolledBack, got {:?}",
+            r1.results[0].outcome,
+        );
+        assert_eq!(
+            counter.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "first replay should have invoked rollback() exactly once",
+        );
+
+        // Second replay: must NOT re-invoke rollback() — the prior
+        // rollback.json state shows the entry is already RolledBack.
+        let r2 = run_with_publishers(&mut ctx, "fixt", &publishers).expect("second replay");
+        assert!(
+            matches!(r2.results[0].outcome, PublisherOutcome::RolledBack),
+            "second replay should leave RolledBack as-is, got {:?}",
+            r2.results[0].outcome,
+        );
+        assert_eq!(
+            counter.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "second replay must NOT have invoked rollback() again (counter should stay at 1)",
+        );
+    }
+
+    #[test]
+    fn rollback_only_retries_rollback_failed_entries_on_second_invocation() {
+        // First replay leaves the entry as RollbackFailed (the publisher's
+        // rollback() returned Err). A second replay must re-attempt it —
+        // `RollbackFailed` IS in the filter set, so it gets dispatched.
+        let (mut ctx, _tmp) = ctx_with_dist();
+        let mut report = PublishReport::default();
+        report
+            .results
+            .push(succeeded_entry("mgr1", PublisherGroup::Manager, true));
+        write_fixture_report(&ctx, "fixt", &report);
+
+        // First replay: rollback() fails, leaving entry as RollbackFailed.
+        let failing: Vec<Box<dyn Publisher>> = vec![fake_with_rollback(
+            "mgr1",
+            PublisherGroup::Manager,
+            true,
+            FakeOutcome::Succeed,
+            FakeRollback::Fail("transient network blip".into()),
+        )];
+        let r1 = run_with_publishers(&mut ctx, "fixt", &failing).expect("first replay");
+        match &r1.results[0].outcome {
+            PublisherOutcome::RollbackFailed(msg) => {
+                assert!(msg.contains("transient network blip"));
+            }
+            other => panic!(
+                "expected RollbackFailed after first replay, got {:?}",
+                other
+            ),
+        }
+
+        // Second replay: same publisher name but rollback() now succeeds
+        // (the operator fixed whatever blocked it). The RollbackFailed
+        // entry from the persisted rollback.json must be re-attempted and
+        // flip to RolledBack.
+        let succeeding: Vec<Box<dyn Publisher>> = vec![fake(
+            "mgr1",
+            PublisherGroup::Manager,
+            true,
+            FakeOutcome::Succeed,
+        )];
+        let r2 = run_with_publishers(&mut ctx, "fixt", &succeeding).expect("second replay");
+        assert!(
+            matches!(r2.results[0].outcome, PublisherOutcome::RolledBack),
+            "second replay should re-attempt RollbackFailed and flip to RolledBack, got {:?}",
+            r2.results[0].outcome,
+        );
+    }
+
+    #[test]
+    fn rollback_only_errors_on_unparseable_rollback_json() {
+        // Corrupt rollback.json must surface a clear error rather than
+        // silently falling back to report.json — that fallback would
+        // re-roll every Succeeded entry, which is exactly the C5
+        // regression we're guarding against.
+        let (mut ctx, _tmp) = ctx_with_dist();
+        let mut report = PublishReport::default();
+        report
+            .results
+            .push(succeeded_entry("mgr1", PublisherGroup::Manager, true));
+        write_fixture_report(&ctx, "fixt", &report);
+
+        // Write garbage to rollback.json. It exists, so the loader picks
+        // it up and tries to parse — which must fail loudly.
+        let rb_path = rollback_path(&ctx, "fixt");
+        std::fs::create_dir_all(rb_path.parent().unwrap()).unwrap();
+        std::fs::write(&rb_path, "not-json-at-all").unwrap();
+
+        let publishers: Vec<Box<dyn Publisher>> = Vec::new();
+        let err = run_with_publishers(&mut ctx, "fixt", &publishers)
+            .expect_err("must error on unparseable rollback.json");
+        let msg = format!("{:#}", err);
+        assert!(
+            msg.contains("prior rollback state"),
+            "error must reference the rollback-state source label, got '{}'",
+            msg,
+        );
+        assert!(
+            msg.contains(rb_path.to_string_lossy().as_ref()),
+            "error must name the rollback.json path, got '{}'",
+            msg,
+        );
+    }
+
+    #[test]
+    fn rollback_only_falls_through_to_report_when_rollback_state_absent() {
+        // Sanity: when rollback.json doesn't exist (first invocation), the
+        // loader falls through to report.json and dispatches as usual.
+        // This is what `rollback_only_reads_report_and_dispatches` already
+        // covers implicitly; this version makes the absence assertion
+        // explicit.
+        let (mut ctx, _tmp) = ctx_with_dist();
+        let mut report = PublishReport::default();
+        report
+            .results
+            .push(succeeded_entry("mgr1", PublisherGroup::Manager, true));
+        write_fixture_report(&ctx, "fixt", &report);
+
+        // Precondition: rollback.json does NOT exist yet.
+        assert!(!rollback_path(&ctx, "fixt").exists());
+
+        let publishers: Vec<Box<dyn Publisher>> = vec![fake(
+            "mgr1",
+            PublisherGroup::Manager,
+            true,
+            FakeOutcome::Succeed,
+        )];
+
+        let updated = run_with_publishers(&mut ctx, "fixt", &publishers).expect("first replay");
+        assert!(
+            matches!(updated.results[0].outcome, PublisherOutcome::RolledBack),
+            "fall-through should still dispatch and flip Succeeded → RolledBack",
+        );
+        // Postcondition: rollback.json now exists (the replay wrote it).
+        assert!(rollback_path(&ctx, "fixt").exists());
     }
 }
