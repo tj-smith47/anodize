@@ -209,10 +209,38 @@ impl Stage for super::BuildStage {
         // timestamps. Initialized lazily so test contexts without a clean
         // commit can still proceed; missing SDE simply leaves the field as
         // `None` and downstream stages fall back to template vars.
-        if ctx.determinism.is_none()
-            && let Some(epoch) = resolve_reproducible_epoch(&commit_timestamp)
-        {
-            ctx.determinism = Some(anodizer_core::DeterminismState::seed_from_commit(epoch));
+        //
+        // Snapshot mode: delegate to `git::resolve_snapshot_sde`, which
+        // picks `ANODIZE_SOURCE_DATE_EPOCH` > HEAD timestamp (clean tree)
+        // > HEAD + dirty-tree-hash. Replaces the prior "snapshot falls
+        // back to commit_timestamp or 0" path so snapshot-mode runs are
+        // reproducible across invocations of the same tree state.
+        if ctx.determinism.is_none() {
+            if ctx.options.snapshot {
+                let repo = ctx
+                    .options
+                    .project_root
+                    .clone()
+                    .unwrap_or_else(|| PathBuf::from("."));
+                match anodizer_core::git::resolve_snapshot_sde(&repo) {
+                    Ok(epoch) => {
+                        ctx.determinism =
+                            Some(anodizer_core::DeterminismState::seed_from_commit(epoch));
+                    }
+                    Err(err) => {
+                        log.status(&format!(
+                            "snapshot SDE resolution failed; falling back to commit timestamp: {}",
+                            err
+                        ));
+                        if let Some(epoch) = resolve_reproducible_epoch(&commit_timestamp) {
+                            ctx.determinism =
+                                Some(anodizer_core::DeterminismState::seed_from_commit(epoch));
+                        }
+                    }
+                }
+            } else if let Some(epoch) = resolve_reproducible_epoch(&commit_timestamp) {
+                ctx.determinism = Some(anodizer_core::DeterminismState::seed_from_commit(epoch));
+            }
         }
 
         for crate_cfg in &crates {

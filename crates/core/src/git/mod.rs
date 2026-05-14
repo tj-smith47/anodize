@@ -6,6 +6,7 @@ mod detect;
 mod github_api;
 mod remote;
 mod semver;
+mod snapshot_sde;
 mod status;
 mod tags;
 
@@ -25,6 +26,7 @@ pub use remote::{
     detect_github_repo, detect_owner_repo, parse_github_remote, parse_remote_owner_repo,
 };
 pub use semver::{SemVer, parse_semver, parse_semver_tag};
+pub use snapshot_sde::resolve_snapshot_sde;
 pub use status::{
     check_git_available, git_status_porcelain, is_git_dirty, is_git_repo, is_shallow_clone,
     local_git_user_email, local_git_user_name,
