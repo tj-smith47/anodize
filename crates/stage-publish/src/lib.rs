@@ -584,11 +584,28 @@ fn validate_runtime_allowlist(ctx: &Context) -> Result<()> {
         .iter()
         .map(|a| a.name.as_str())
         .collect();
+    // Also match against the basename of `artifact.path`: the spec
+    // encourages operators to type `*.crate` / `*.deb` (file-extension
+    // patterns), but `artifact.name` is whatever the build stage
+    // recorded and is not always the on-disk filename. Matching both
+    // surfaces means a `*.crate` glob hits whichever of
+    // `artifact.name` ("anodize-v0.2.1") or
+    // `basename(artifact.path)` ("anodize-v0.2.1.crate") satisfies
+    // the pattern.
+    let artifact_pathnames: Vec<String> = ctx
+        .artifacts
+        .all()
+        .iter()
+        .filter_map(|a| a.path.file_name().map(|f| f.to_string_lossy().into_owned()))
+        .collect();
     let mut unmatched: Vec<&str> = Vec::new();
     for (name, _reason) in entries {
         let matched = artifact_names
             .iter()
-            .any(|n| matches_artifact_pattern(name, n));
+            .any(|n| matches_artifact_pattern(name, n))
+            || artifact_pathnames
+                .iter()
+                .any(|n| matches_artifact_pattern(name, n.as_str()));
         if !matched {
             unmatched.push(name.as_str());
         }
@@ -906,6 +923,68 @@ mod tests {
         let ctx = Context::test_fixture();
         // No allowlist entries, no artifacts — must not error.
         validate_runtime_allowlist(&ctx).expect("empty allowlist must be a no-op");
+    }
+
+    /// Helper for tests that need to control `artifact.name` and
+    /// `artifact.path` independently — exercising the basename-match
+    /// path in `validate_runtime_allowlist`.
+    fn add_artifact_with_path(ctx: &mut Context, name: &str, path: &str) {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from(path),
+            name: name.to_string(),
+            target: None,
+            crate_name: "test".to_string(),
+            metadata: std::collections::HashMap::new(),
+            size: None,
+        });
+    }
+
+    #[test]
+    fn allow_nondeterministic_matches_file_extension_against_path_basename() {
+        // Build stage recorded `artifact.name = "anodize-v0.2.1"` (no
+        // extension), while the actual file on disk is
+        // `dist/anodize-v0.2.1.crate`. A `*.crate` glob must match via
+        // the path-basename surface even though the name alone won't.
+        let mut ctx = Context::test_fixture();
+        add_artifact_with_path(&mut ctx, "anodize-v0.2.1", "dist/anodize-v0.2.1.crate");
+        ctx.options.runtime_nondeterministic_allowlist =
+            vec![("*.crate".to_string(), "cargo embeds mtime".to_string())];
+        validate_runtime_allowlist(&ctx)
+            .expect("*.crate glob must match path basename when name lacks extension");
+    }
+
+    #[test]
+    fn allow_nondeterministic_matches_exact_basename_against_path() {
+        // Exact-match form: operator types the full filename. `name`
+        // is the bare crate identifier; `path` is the real file.
+        let mut ctx = Context::test_fixture();
+        add_artifact_with_path(&mut ctx, "core", "dist/core-aarch64.tar.gz");
+        ctx.options.runtime_nondeterministic_allowlist = vec![(
+            "core-aarch64.tar.gz".to_string(),
+            "tar metadata".to_string(),
+        )];
+        validate_runtime_allowlist(&ctx).expect("exact basename must match path filename");
+    }
+
+    #[test]
+    fn allow_nondeterministic_typo_still_errors() {
+        // Negative case: a real typo against the same artifact above
+        // must still fall through to the unmatched error path — the
+        // basename surface widens what *can* match but does not
+        // suppress typo detection.
+        let mut ctx = Context::test_fixture();
+        add_artifact_with_path(&mut ctx, "core", "dist/core-aarch64.tar.gz");
+        ctx.options.runtime_nondeterministic_allowlist =
+            vec![("corre.tar.gz".to_string(), "typo".to_string())];
+        let err = validate_runtime_allowlist(&ctx)
+            .expect_err("typo must still error even with basename match enabled");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("corre.tar.gz"),
+            "error must name the unmatched entry: {msg}",
+        );
     }
 
     // -----------------------------------------------------------------------

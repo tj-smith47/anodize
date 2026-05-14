@@ -8,11 +8,13 @@
 //! `Worktree::add` constructs the worktree (detached HEAD at the supplied
 //! commit). `Drop` is best-effort: it runs `git worktree remove --force`
 //! against the parent repo so the temporary tree is cleaned up even on
-//! panic. Failure to remove is intentionally swallowed (we never panic
-//! during `Drop`) — operators can run `git worktree prune` to recover
-//! from a leak if the cleanup ever raced an I/O error.
+//! panic. Failure to remove is surfaced via `tracing::warn!` with the
+//! captured stderr — we never panic during `Drop`, but silent swallowing
+//! left operators with no signal when the cleanup raced an I/O error.
+//! Operators can still run `git worktree prune` to reap the stale
+//! administrative entry after such a leak.
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -27,15 +29,28 @@ impl Worktree {
     /// `commit` may be any valid git revision (sha, ref name, `HEAD`).
     /// The parent repository is `repo_root`; `git -C <repo_root>
     /// worktree add --detach <path> <commit>` is invoked verbatim.
+    ///
+    /// On failure (path collision, locked worktree, invalid commit,
+    /// dirty index) the returned error includes the captured stderr
+    /// from git so the operator has an actionable detail rather than
+    /// an opaque "git worktree add failed".
     pub fn add(repo_root: &Path, path: &Path, commit: &str) -> Result<Self> {
-        let status = Command::new("git")
+        let out = Command::new("git")
             .arg("-C")
             .arg(repo_root)
             .args(["worktree", "add", "--detach"])
             .arg(path)
             .arg(commit)
-            .status()?;
-        anyhow::ensure!(status.success(), "git worktree add failed");
+            .output()
+            .with_context(|| format!("spawn 'git worktree add' for {}", path.display()))?;
+        if !out.status.success() {
+            anyhow::bail!(
+                "git worktree add failed (exit {:?}) for {}: {}",
+                out.status.code(),
+                path.display(),
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+        }
         Ok(Self {
             repo_root: repo_root.to_path_buf(),
             path: path.to_path_buf(),
@@ -52,15 +67,38 @@ impl Drop for Worktree {
     fn drop(&mut self) {
         // Best-effort: never panic in Drop. If `git worktree remove`
         // fails (e.g. the worktree was already removed manually, or the
-        // path was deleted externally), there's nothing useful we can
-        // do here — the next `git worktree prune` in the parent repo
-        // will reap the stale administrative entry.
-        let _ = Command::new("git")
+        // path was deleted externally), surface the failure via
+        // `tracing::warn!` with the captured stderr so the operator can
+        // run `git worktree prune` in the parent repo to reap the
+        // stale administrative entry. Silent swallowing (the previous
+        // behavior) left operators with no signal that a leak had
+        // happened.
+        match Command::new("git")
             .arg("-C")
             .arg(&self.repo_root)
             .args(["worktree", "remove", "--force"])
             .arg(&self.path)
-            .status();
+            .output()
+        {
+            Ok(out) if out.status.success() => {}
+            Ok(out) => {
+                tracing::warn!(
+                    path = %self.path.display(),
+                    exit = ?out.status.code(),
+                    stderr = %String::from_utf8_lossy(&out.stderr).trim(),
+                    "git worktree remove failed during Drop; \
+                     run `git worktree prune` in the parent repo to reap the stale entry"
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    path = %self.path.display(),
+                    error = %err,
+                    "failed to spawn 'git worktree remove' during Drop; \
+                     run `git worktree prune` in the parent repo to reap the stale entry"
+                );
+            }
+        }
     }
 }
 
@@ -162,5 +200,51 @@ mod tests {
         assert_ne!(wt1.path(), wt2.path());
         assert!(wt1.path().exists());
         assert!(wt2.path().exists());
+    }
+
+    #[test]
+    fn worktree_add_surfaces_stderr_on_failure() {
+        // Invalid commit-ish: git emits a `fatal:` stderr line. The
+        // returned error must carry that detail through, not the
+        // previous opaque "git worktree add failed" string.
+        let repo = init_repo();
+        let wt_dir = tempfile::tempdir().unwrap();
+        let result = Worktree::add(
+            repo.path(),
+            &wt_dir.path().join("wt-bad"),
+            "this-ref-does-not-exist-anywhere",
+        );
+        let err = match result {
+            Err(e) => e,
+            Ok(_) => panic!("invalid commit must error"),
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("fatal:")
+                || msg.contains("invalid reference")
+                || msg.contains("not a valid"),
+            "error must include captured git stderr; got: {msg}",
+        );
+        assert!(
+            msg.contains("git worktree add failed"),
+            "error must still identify the failing operation; got: {msg}",
+        );
+    }
+
+    #[test]
+    fn worktree_drop_does_not_panic_when_path_already_removed() {
+        // Simulate an external actor (operator, racing CI cleanup)
+        // removing the worktree directory out from under us. Drop must
+        // not panic; the failure is surfaced via tracing::warn! which
+        // the test harness does not assert on directly — we only
+        // assert the absence of a panic.
+        let repo = init_repo();
+        let wt_dir = tempfile::tempdir().unwrap();
+        let wt = Worktree::add(repo.path(), &wt_dir.path().join("wt-vanish"), "HEAD").unwrap();
+        let path = wt.path().to_path_buf();
+        std::fs::remove_dir_all(&path).expect("manual remove should succeed");
+        assert!(!path.exists());
+        // Drop here — must not panic even though the path is gone.
+        drop(wt);
     }
 }
