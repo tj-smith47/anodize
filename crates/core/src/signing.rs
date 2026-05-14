@@ -40,9 +40,11 @@ use serde::{Deserialize, Serialize};
 /// `gpg-signature.asc` so the determinism harness excludes gpg
 /// signatures from drift detection, and emits a warning.
 pub fn gpg_supports_faked_system_time() -> bool {
-    gpg_supports_faked_system_time_with(|args| {
-        std::process::Command::new("gpg").args(args).output()
-    })
+    // Delegates to the allow-listed `tool_detect` module
+    // (`.claude/rules/module-boundaries.md`) so the `Command::new`
+    // shell-out lives at an approved boundary. The `_with` injection
+    // seam below is preserved for unit-test mocking.
+    crate::tool_detect::tool_runs_with_args("gpg", &["--faked-system-time", "0!", "--version"])
 }
 
 /// Probe with an injected command runner. Production code calls the

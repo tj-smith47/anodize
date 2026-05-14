@@ -46,3 +46,46 @@ pub fn tool_version(name: &str) -> io::Result<Option<String>> {
         Ok(None)
     }
 }
+
+/// Probe whether `<name> <args...>` runs and exits zero.
+///
+/// Used by capability probes that pass extra flags beyond bare
+/// `--version` (e.g. `gpg --faked-system-time 0! --version` to check
+/// whether the local gpg supports deterministic-timestamp signing).
+/// stdout/stderr are silenced; `false` covers both "binary missing"
+/// and "exited non-zero" — callers that need to distinguish those two
+/// cases should use [`tool_available`] / [`tool_version`] instead.
+pub fn tool_runs_with_args(name: &str, args: &[&str]) -> bool {
+    Command::new(name)
+        .args(args)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `true(1)` is part of GNU coreutils on Linux/macOS; it accepts no
+    /// args and always exits zero. The test asserts the happy path of
+    /// `tool_runs_with_args` does not regress.
+    #[test]
+    #[cfg(unix)]
+    fn tool_runs_with_args_returns_true_for_existing_zero_exit_tool() {
+        assert!(tool_runs_with_args("true", &[]));
+    }
+
+    /// A binary that definitively does not exist on PATH must collapse
+    /// to `false` (not panic, not return `Err`) — the public contract
+    /// is "Err and exit-non-zero both fold to false".
+    #[test]
+    fn tool_runs_with_args_returns_false_for_missing_binary() {
+        assert!(!tool_runs_with_args(
+            "nonexistent-binary-xyzzy",
+            &["--version"]
+        ));
+    }
+}
