@@ -1372,6 +1372,41 @@ fn test_upload_to_in_memory_store_empty_directory() {
     });
 }
 
+/// Important #3 — `upload_files_owned` returns the list of keys that
+/// successfully landed so `BlobPublisher::run` can record only landed
+/// uploads in evidence (not the planned set). The two test files both
+/// succeed; the returned vec carries both keys in deterministic order.
+#[test]
+fn upload_files_owned_returns_successful_keys() {
+    let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    let tmp = tempfile::TempDir::new().unwrap();
+    let f1 = tmp.path().join("a.txt");
+    std::fs::write(&f1, b"alpha").unwrap();
+    let f2 = tmp.path().join("b.txt");
+    std::fs::write(&f2, b"bravo").unwrap();
+
+    let upload_items = vec![(f1, "alpha.txt".to_string()), (f2, "bravo.txt".to_string())];
+    let config = BlobConfig::default();
+    let ctx = make_ctx();
+    let put_opts: Vec<PutOptions> = upload_items
+        .iter()
+        .map(|(_, k)| build_put_options(&config, k, &ctx).unwrap())
+        .collect();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let keys = upload_files_owned(
+        &rt,
+        store,
+        upload_items,
+        "drop".to_string(),
+        put_opts,
+        1,
+        None,
+    )
+    .expect("upload should succeed");
+    // Order is sorted (deterministic across runs) so evidence is stable.
+    assert_eq!(keys, vec!["drop/alpha.txt", "drop/bravo.txt"]);
+}
+
 #[test]
 fn test_upload_with_content_disposition() {
     let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());

@@ -194,6 +194,13 @@ pub(crate) fn collect_artifacts<'a>(
 /// on worker threads so `ctx` is never touched after Phase 1. `runtime`
 /// is shared across every blob job so we don't spin up one tokio
 /// thread pool per job.
+///
+/// Returns the list of fully-qualified object keys that successfully
+/// landed in the store. On failure the `Err` payload carries the keys
+/// that succeeded BEFORE the first failure so `BlobPublisher` can record
+/// only landed uploads in `PublishEvidence::artifact_paths` — the prior
+/// pre-upload capture produced a rollback checklist that referenced
+/// files which were never uploaded.
 pub(crate) fn upload_files_owned(
     runtime: &tokio::runtime::Runtime,
     store: Arc<dyn ObjectStore>,
@@ -202,9 +209,11 @@ pub(crate) fn upload_files_owned(
     put_opts_per_item: Vec<PutOptions>,
     parallelism: usize,
     client_kms: Option<(String, KmsProvider)>,
-) -> Result<()> {
+) -> Result<Vec<String>> {
     runtime.block_on(async move {
         let semaphore = Arc::new(tokio::sync::Semaphore::new(parallelism.max(1)));
+        let uploaded: Arc<std::sync::Mutex<Vec<String>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
         let mut handles = Vec::new();
 
         for ((local_path, remote_key), put_opts) in items.into_iter().zip(put_opts_per_item) {
@@ -219,6 +228,7 @@ pub(crate) fn upload_files_owned(
 
             let store = Arc::clone(&store);
             let sem = Arc::clone(&semaphore);
+            let uploaded = Arc::clone(&uploaded);
             let path_display = local_path.display().to_string();
             let local = local_path;
             let key_display = object_key.clone();
@@ -245,16 +255,40 @@ pub(crate) fn upload_files_owned(
                     .put_opts(&object_path, upload_data.into(), put_opts)
                     .await
                     .map_err(|e| handle_upload_error(e, &path_display, &key_display))?;
+                // Record the successful upload's key so the caller can
+                // emit it into PublishEvidence. Lock order: held only for
+                // the push, so contention is negligible.
+                uploaded
+                    .lock()
+                    .expect("uploaded list lock")
+                    .push(object_key);
                 Ok::<(), anyhow::Error>(())
             }));
         }
 
+        let mut first_err: Option<anyhow::Error> = None;
         for handle in handles {
-            handle
-                .await
-                .map_err(|e| anyhow::anyhow!("upload task panicked: {}", e))??;
+            match handle.await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    if first_err.is_none() {
+                        first_err = Some(e);
+                    }
+                }
+                Err(e) => {
+                    if first_err.is_none() {
+                        first_err = Some(anyhow::anyhow!("upload task panicked: {}", e));
+                    }
+                }
+            }
         }
-        Ok(())
+        let mut keys = uploaded.lock().expect("uploaded list lock").clone();
+        // Deterministic order so evidence is reproducible across runs.
+        keys.sort();
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(keys),
+        }
     })
 }
 

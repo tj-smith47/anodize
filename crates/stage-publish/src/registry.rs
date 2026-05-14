@@ -49,6 +49,13 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
 /// `publish.cargo` block. Presence of the block is the opt-in; the
 /// per-crate `skip:` template is evaluated later in
 /// [`crate::cargo::publish_to_cargo`].
+///
+/// Shape note: per-crate predicates use `.is_some()` because the inner
+/// `CargoPublishConfig` is itself the opt-in — there is no list to count
+/// non-empty. Top-level publishers (dockerhub, artifactories,
+/// cloudsmiths) instead go through
+/// [`crate::publisher_helpers::is_top_level_block_configured`], which
+/// folds `Option<Vec<_>>` into a single uniform shape.
 fn is_cargo_configured(ctx: &Context) -> bool {
     ctx.config
         .crates
@@ -60,23 +67,17 @@ fn is_cargo_configured(ctx: &Context) -> bool {
 /// `publish_to_dockerhub` short-circuits on an empty vec, so an empty-list
 /// keep also returns false here.
 fn is_dockerhub_configured(ctx: &Context) -> bool {
-    ctx.config.dockerhub.as_ref().is_some_and(|v| !v.is_empty())
+    crate::publisher_helpers::is_top_level_block_configured(ctx.config.dockerhub.as_ref())
 }
 
 /// True when the top-level `artifactories:` block has at least one entry.
 fn is_artifactory_configured(ctx: &Context) -> bool {
-    ctx.config
-        .artifactories
-        .as_ref()
-        .is_some_and(|v| !v.is_empty())
+    crate::publisher_helpers::is_top_level_block_configured(ctx.config.artifactories.as_ref())
 }
 
 /// True when the top-level `cloudsmiths:` block has at least one entry.
 fn is_cloudsmith_configured(ctx: &Context) -> bool {
-    ctx.config
-        .cloudsmiths
-        .as_ref()
-        .is_some_and(|v| !v.is_empty())
+    crate::publisher_helpers::is_top_level_block_configured(ctx.config.cloudsmiths.as_ref())
 }
 
 /// Group dispatch order: Assets first (uploadable bytes, server-side

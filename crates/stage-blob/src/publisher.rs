@@ -28,103 +28,17 @@
 //! same shape as the upload phase.
 
 use anodizer_core::context::Context;
-use anodizer_core::stage::Stage;
 
 use crate::run::BlobStage;
-use crate::upload::collect_artifacts;
-
-/// Walk every configured [`BlobConfig`](anodizer_core::config::BlobConfig)
-/// and return a deterministic list of `<provider>://<bucket>/<key>` strings
-/// describing each upload target. Used as best-effort evidence for
-/// rollback — the strings are operator-readable and uniquely identify each
-/// object, even though they cannot themselves be used to authenticate a
-/// DELETE without the original BlobConfig in hand.
-///
-/// The walk mirrors [`BlobStage::run`]'s artifact-selection logic
-/// (`extra_files_only` short-circuit, `collect_artifacts` per crate,
-/// `extra_files`/`templated_extra_files` extras) but skips the heavier
-/// `build_store` + KMS preflight chain since rollback evidence doesn't
-/// need them. Templating failures and skipped configs short-circuit to
-/// "no target" silently — the publish path's own error handling has
-/// already surfaced any blocker.
-pub(crate) fn collect_blob_targets(ctx: &Context) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let selected = &ctx.options.selected_crates;
-    let crates: Vec<_> = ctx
-        .config
-        .crates
-        .iter()
-        .filter(|c| selected.is_empty() || selected.contains(&c.name))
-        .filter(|c| c.blobs.is_some())
-        .collect();
-    for krate in crates {
-        let Some(blob_configs) = krate.blobs.as_ref() else {
-            continue;
-        };
-        for blob_cfg in blob_configs {
-            // Skip semantics must match BlobStage::run.
-            if let Some(ref s) = blob_cfg.skip
-                && s.try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
-                    .unwrap_or(false)
-            {
-                continue;
-            }
-            if blob_cfg.provider.is_empty() || blob_cfg.bucket.is_empty() {
-                continue;
-            }
-            let provider_str = match ctx.render_template(&blob_cfg.provider) {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
-            let provider = match crate::provider::Provider::parse(&provider_str) {
-                Ok(p) => p,
-                Err(_) => continue,
-            };
-            let rendered_bucket = match ctx.render_template(&blob_cfg.bucket) {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
-            let directory_template = blob_cfg
-                .directory
-                .as_deref()
-                .unwrap_or("{{ ProjectName }}/{{ Tag }}");
-            let rendered_directory = match ctx.render_template(directory_template) {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
-            let dir_trimmed = rendered_directory.trim_matches('/');
-            let scheme = provider.display_name();
-
-            // Mirror the artifact selection BlobStage::run runs.
-            let artifacts = collect_artifacts(ctx, blob_cfg, &krate.name);
-            for artifact in &artifacts {
-                let filename = artifact
-                    .path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("artifact");
-                let url = if dir_trimmed.is_empty() {
-                    format!("{}://{}/{}", scheme, rendered_bucket, filename)
-                } else {
-                    format!(
-                        "{}://{}/{}/{}",
-                        scheme, rendered_bucket, dir_trimmed, filename
-                    )
-                };
-                out.push(url);
-            }
-            // extra_files / templated_extra_files paths are also uploaded;
-            // for evidence purposes we record the destination key under
-            // each extra-file spec. Tightening the walk further would
-            // duplicate non-trivial logic from BlobStage::run; the
-            // primary artifact set already covers the load-bearing
-            // rollback targets.
-        }
-    }
-    out
-}
 
 /// [`anodizer_core::Publisher`] adapter over [`BlobStage::run`].
+///
+/// Evidence records ONLY files that actually landed in the store (via
+/// [`BlobStage::run_with_evidence`]). The prior pre-upload capture would
+/// have given an operator running `--rollback-only` a checklist of paths
+/// that never existed when a mid-stream upload failed; the post-upload
+/// snapshot is the safer end state — fewer rollback items, no phantom
+/// targets.
 pub struct BlobPublisher;
 
 impl BlobPublisher {
@@ -137,6 +51,17 @@ impl Default for BlobPublisher {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// The exact warn message [`BlobPublisher::rollback`] emits for one
+/// recorded object key when the auto-delete path is unavailable
+/// (BlobConfig not surfaced in evidence yet). Exposed as a helper so
+/// tests can pin the wording without intercepting stderr.
+pub(crate) fn blob_manual_cleanup_msg(target: &str) -> String {
+    format!(
+        "blob: cannot auto-delete {} — BlobConfig not surfaced in evidence; delete manually via the cloud provider's console or `aws s3 rm` / `gsutil rm` / `az storage blob delete`",
+        target
+    )
 }
 
 impl anodizer_core::Publisher for BlobPublisher {
@@ -153,18 +78,21 @@ impl anodizer_core::Publisher for BlobPublisher {
     }
 
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
-        // Capture targets before run() so a partial-failure run still
-        // returns the full intended target list as a rollback checklist.
-        // (The current schema can't distinguish "uploaded" from "intended";
-        // erring toward the larger list keeps the manual-cleanup checklist
-        // complete.)
-        let targets = collect_blob_targets(ctx);
-        BlobStage.run(ctx)?;
+        // Capture only files that actually landed. On failure the
+        // returned error is re-raised (so the dispatch path treats the
+        // publisher as failed) but the partial-success list inside
+        // `run_with_evidence` is already discarded by `?` — that's the
+        // accepted trade-off: evidence is post-upload truth, errors
+        // bubble up cleanly. A future refactor that wants partial
+        // evidence on a failure path can switch to a `(Vec, Result)`
+        // shape; for now the publish run is either fully evidenced or
+        // failed.
+        let uploaded = BlobStage::new().run_with_evidence(ctx)?;
         let mut evidence = anodizer_core::PublishEvidence::new("blob");
-        if let Some(first) = targets.first() {
+        if let Some(first) = uploaded.first() {
             evidence.primary_ref = Some(first.clone());
         }
-        evidence.artifact_paths = targets.into_iter().map(std::path::PathBuf::from).collect();
+        evidence.artifact_paths = uploaded.into_iter().map(std::path::PathBuf::from).collect();
         Ok(evidence)
     }
 
@@ -175,7 +103,10 @@ impl anodizer_core::Publisher for BlobPublisher {
     ) -> anyhow::Result<()> {
         let log = ctx.logger("publish");
         if evidence.artifact_paths.is_empty() && evidence.primary_ref.is_none() {
-            log.warn("blob: no upload targets recorded in evidence; verify cloud storage manually");
+            log.warn(&anodizer_core::rollback_empty_warning_msg(
+                "blob",
+                "upload targets",
+            ));
             return Ok(());
         }
         // Deferred: `object_store::ObjectStore::delete` would do the job
@@ -185,10 +116,7 @@ impl anodizer_core::Publisher for BlobPublisher {
         // checklist so `--rollback-only` exposes the manual-cleanup
         // surface.
         for path in &evidence.artifact_paths {
-            log.warn(&format!(
-                "blob: cannot auto-delete {} — BlobConfig not surfaced in evidence; delete manually via the cloud provider's console or `aws s3 rm` / `gsutil rm` / `az storage blob delete`",
-                path.display()
-            ));
+            log.warn(&blob_manual_cleanup_msg(&path.display().to_string()));
         }
         log.status(&format!(
             "blob: rollback emitted manual-cleanup checklist for {} object(s)",
@@ -253,6 +181,50 @@ mod publisher_tests {
         let evidence = PublishEvidence::new("blob");
         let p = BlobPublisher::new();
         assert!(p.rollback(&mut ctx, &evidence).is_ok());
+
+        // The warn message comes from the core shared helper so blob's
+        // empty-evidence wording stays consistent with the stage-publish
+        // publishers.
+        let msg = anodizer_core::rollback_empty_warning_msg("blob", "upload targets");
+        assert!(msg.starts_with("blob:"), "{msg}");
+        assert!(msg.contains("upload targets"), "{msg}");
+        assert!(msg.contains("verify"), "{msg}");
+    }
+
+    /// Important #3 — evidence carries only files that actually uploaded,
+    /// not the planned set. With no real store wired up the run path
+    /// returns an empty list rather than fabricating one — the assertion
+    /// is structural: the resulting evidence shape is empty, not
+    /// pre-populated with planned-but-unsent paths.
+    #[test]
+    fn blob_publisher_records_only_uploaded_keys() {
+        // Empty crates → no upload jobs → empty evidence.
+        let mut ctx = TestContextBuilder::new().build();
+        let p = BlobPublisher::new();
+        let evidence = p
+            .run(&mut ctx)
+            .expect("run should not error on empty config");
+        assert!(
+            evidence.artifact_paths.is_empty(),
+            "no jobs → no recorded uploads, got {:?}",
+            evidence.artifact_paths
+        );
+        assert!(evidence.primary_ref.is_none());
+    }
+
+    /// Per-key warn message shape is fixed by `blob_manual_cleanup_msg`;
+    /// tests pin the wording here so a future refactor cannot silently
+    /// drop the actionable instruction.
+    #[test]
+    fn blob_manual_cleanup_msg_is_actionable() {
+        let msg = blob_manual_cleanup_msg("s3://my-bucket/myapp/v1.0.0/foo.tar.gz");
+        assert!(
+            msg.contains("s3://my-bucket/myapp/v1.0.0/foo.tar.gz"),
+            "{msg}"
+        );
+        assert!(msg.contains("aws s3 rm"), "{msg}");
+        assert!(msg.contains("gsutil rm"), "{msg}");
+        assert!(msg.contains("az storage blob delete"), "{msg}");
     }
 
     #[test]

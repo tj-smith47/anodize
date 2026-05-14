@@ -310,44 +310,44 @@ pub fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<()> {
 // DockerhubPublisher (Publisher trait wrapper)
 // ---------------------------------------------------------------------------
 
-/// Wraps [`publish_to_dockerhub`] in the [`anodizer_core::Publisher`] trait so
-/// the new dispatch path (see [`crate::registry::configured_publishers`]) can
-/// drive Docker Hub description sync alongside every other publisher.
-///
-/// Group: [`anodizer_core::PublisherGroup::Assets`] (description sync is a
-/// non-load-bearing publisher; not required for the release to succeed).
-///
-/// Rollback shape: DockerHub publishes a PATCH against the repo's
-/// description and `full_description` fields. The PATCH overwrites the
-/// previous value; we do not snapshot the prior state, so the rollback is
-/// **deferred-with-warn**: each affected image is logged so an operator
-/// running `--rollback-only` has a checklist of repos to inspect and revert
-/// manually.
-pub struct DockerhubPublisher;
-
-impl DockerhubPublisher {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for DockerhubPublisher {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// Wraps [`publish_to_dockerhub`] in the [`anodizer_core::Publisher`] trait so
+// the new dispatch path (see [`crate::registry::configured_publishers`]) can
+// drive Docker Hub description sync alongside every other publisher.
+//
+// Group: [`anodizer_core::PublisherGroup::Assets`] (description sync is a
+// non-load-bearing publisher; not required for the release to succeed).
+//
+// Rollback shape: DockerHub publishes a PATCH against the repo's
+// description and `full_description` fields. The PATCH overwrites the
+// previous value; we do not snapshot the prior state, so the rollback is
+// **deferred-with-warn**: each affected image is logged so an operator
+// running `--rollback-only` has a checklist of repos to inspect and revert
+// manually.
+simple_publisher!(
+    DockerhubPublisher,
+    "dockerhub",
+    anodizer_core::PublisherGroup::Assets,
+    false,
+    // Snapshot-then-restore is what an actual rollback would need; the
+    // current implementation only emits a manual-cleanup checklist.
+    Some("DOCKER_TOKEN description snapshot+restore"),
+);
 
 impl anodizer_core::Publisher for DockerhubPublisher {
     fn name(&self) -> &str {
-        "dockerhub"
+        Self::PUBLISHER_NAME
     }
 
     fn group(&self) -> anodizer_core::PublisherGroup {
-        anodizer_core::PublisherGroup::Assets
+        Self::PUBLISHER_GROUP
     }
 
     fn required(&self) -> bool {
-        false
+        Self::PUBLISHER_REQUIRED
+    }
+
+    fn rollback_scope_needed(&self) -> Option<&'static str> {
+        Self::ROLLBACK_SCOPE
     }
 
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
@@ -392,7 +392,10 @@ impl anodizer_core::Publisher for DockerhubPublisher {
     ) -> anyhow::Result<()> {
         let log = ctx.logger("publish");
         if evidence.artifact_paths.is_empty() && evidence.primary_ref.is_none() {
-            log.warn("dockerhub: no description-sync targets recorded; verify Docker Hub manually");
+            log.warn(&crate::publisher_helpers::rollback_empty_warning_msg(
+                "dockerhub",
+                "description-sync targets",
+            ));
             return Ok(());
         }
         // Deferred: Docker Hub PATCH overwrites the prior description and we
@@ -414,12 +417,6 @@ impl anodizer_core::Publisher for DockerhubPublisher {
 
     fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
         Ok(anodizer_core::PreflightCheck::Pass)
-    }
-
-    fn rollback_scope_needed(&self) -> Option<&'static str> {
-        // Snapshot-then-restore is what an actual rollback would need; the
-        // current implementation only emits a manual-cleanup checklist.
-        Some("DOCKER_TOKEN description snapshot+restore")
     }
 }
 
@@ -810,11 +807,22 @@ mod publisher_tests {
     #[test]
     fn dockerhub_rollback_warns_when_no_targets_recorded() {
         // Empty evidence — rollback emits a single warn and returns Ok.
-        // Capturing the warn requires a logger sink we don't have here;
-        // the contract under test is: Ok(()) with no side-effect crash.
+        // The warn text comes from the shared `rollback_empty_warning_msg`
+        // helper; we pin the shape via the helper rather than intercepting
+        // stderr (eprintln! cannot be portably captured from the same
+        // process).
         let mut ctx = TestContextBuilder::new().build();
         let evidence = PublishEvidence::new("dockerhub");
         let p = DockerhubPublisher::new();
         assert!(p.rollback(&mut ctx, &evidence).is_ok());
+
+        let msg = crate::publisher_helpers::rollback_empty_warning_msg(
+            "dockerhub",
+            "description-sync targets",
+        );
+        assert!(msg.starts_with("dockerhub:"), "{msg}");
+        assert!(msg.contains("description-sync targets"), "{msg}");
+        assert!(msg.contains("verify"), "{msg}");
+        assert!(msg.contains("manually"), "{msg}");
     }
 }

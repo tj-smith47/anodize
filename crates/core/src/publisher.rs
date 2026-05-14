@@ -105,6 +105,22 @@ pub trait Publisher: Send + Sync {
     }
 }
 
+/// The exact warn message a publisher emits when `rollback()` is invoked
+/// with no evidence to act on (empty `artifact_paths`, no `primary_ref`).
+/// Each publisher's empty-evidence branch calls this helper; tests can
+/// assert on the returned string without having to intercept stderr
+/// (`eprintln!` cannot be portably captured from the same process).
+///
+/// Lives in `anodizer_core` because the rollback shape is shared across
+/// publishers spread between `stage-publish` and `stage-blob` (and any
+/// future stage crate that implements `Publisher`).
+pub fn rollback_empty_warning_msg(publisher: &str, target_label: &str) -> String {
+    format!(
+        "{}: no {} recorded in evidence; verify {} state manually",
+        publisher, target_label, publisher
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

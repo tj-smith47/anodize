@@ -705,19 +705,30 @@ pub fn publish_to_artifactory(ctx: &Context, log: &StageLogger) -> Result<()> {
 // collect_artifactory_targets — evidence helper
 // ---------------------------------------------------------------------------
 
+/// One uploaded URL plus the name of the entry that produced it. Threaded
+/// into [`PublishEvidence::extra`] so the rollback path can resolve the
+/// same credentials [`publish_to_artifactory`] used (basic auth via
+/// `username` + `password`, plus per-entry `ARTIFACTORY_<NAME>_SECRET`
+/// overrides) rather than narrowly looking up `ARTIFACTORY_TOKEN`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ArtifactoryTarget {
+    pub entry: String,
+    pub url: String,
+}
+
 /// Re-walk the configured artifactory entries to produce the list of fully
 /// rendered upload URLs that [`publish_to_artifactory`] would PUT to. Used by
 /// the [`Publisher`] wrapper to populate
-/// [`anodizer_core::PublishEvidence::artifact_paths`] so a subsequent
-/// rollback can DELETE each URL.
+/// [`anodizer_core::PublishEvidence::artifact_paths`] (URLs) and
+/// [`anodizer_core::PublishEvidence::extra`] (entry-name tags) so a
+/// subsequent rollback can DELETE each URL using the same credential
+/// resolution the publish path used.
 ///
-/// Returns URLs only — the rollback DELETE re-resolves credentials from env
-/// at rollback time (same env-var contract `publish_to_artifactory` uses).
 /// Best-effort: entries that hit a render or filter error are silently
 /// skipped, since failures here only narrow the rollback checklist (the
 /// publish path's own error handling has already surfaced any blocker).
-fn collect_artifactory_targets(ctx: &Context) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
+pub(crate) fn collect_artifactory_targets(ctx: &Context) -> Vec<ArtifactoryTarget> {
+    let mut out: Vec<ArtifactoryTarget> = Vec::new();
     let entries = match ctx.config.artifactories.as_ref() {
         Some(v) if !v.is_empty() => v,
         _ => return out,
@@ -731,6 +742,10 @@ fn collect_artifactory_targets(ctx: &Context) -> Vec<String> {
         {
             continue;
         }
+        let entry_name = match entry.name.as_deref() {
+            Some(n) if !n.is_empty() => n.to_string(),
+            _ => continue,
+        };
         let target_template = match entry.target.as_deref() {
             Some(t) if !t.is_empty() => t,
             _ => continue,
@@ -755,55 +770,152 @@ fn collect_artifactory_targets(ctx: &Context) -> Vec<String> {
         );
         for a in &artifacts {
             if let Ok(url) = render_artifact_url(ctx, target_template, a, custom_artifact_name) {
-                out.push(url);
+                out.push(ArtifactoryTarget {
+                    entry: entry_name.clone(),
+                    url,
+                });
             }
         }
     }
     out
 }
 
+/// Encode the per-target `(entry, url)` pairs into the JSON shape stored
+/// at `PublishEvidence::extra.artifactory_targets`. The wrapper key keeps
+/// the slot extensible — other publishers can land alongside without
+/// colliding.
+pub(crate) fn encode_artifactory_targets(targets: &[ArtifactoryTarget]) -> serde_json::Value {
+    serde_json::json!({
+        "artifactory_targets": targets
+            .iter()
+            .map(|t| serde_json::json!({ "entry": t.entry, "url": t.url }))
+            .collect::<Vec<_>>(),
+    })
+}
+
+/// Decode the JSON shape produced by [`encode_artifactory_targets`] back
+/// into structured targets. Returns an empty vec if the field is missing
+/// or malformed — rollback then falls back to URL-only deletion against
+/// the legacy `ARTIFACTORY_TOKEN` ladder.
+pub(crate) fn decode_artifactory_targets(extra: &serde_json::Value) -> Vec<ArtifactoryTarget> {
+    let array = extra
+        .get("artifactory_targets")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    array
+        .into_iter()
+        .filter_map(|v| {
+            let entry = v.get("entry")?.as_str()?.to_string();
+            let url = v.get("url")?.as_str()?.to_string();
+            Some(ArtifactoryTarget { entry, url })
+        })
+        .collect()
+}
+
+/// Resolve `(username, password)` for an artifactory entry at rollback
+/// time, mirroring the exact credential cascade `publish_to_artifactory`
+/// uses (config → `ARTIFACTORY_<NAME>_USERNAME` / `ARTIFACTORY_<NAME>_SECRET`
+/// env, with the per-entry override honoured). Returns `None` when the
+/// entry is no longer present in config (e.g. the operator pruned the
+/// YAML between publish and rollback) so the caller can decide between
+/// best-effort token fallback and skipping.
+fn resolve_rollback_credentials(ctx: &Context, entry_name: &str) -> Option<(String, String)> {
+    let entries = ctx.config.artifactories.as_ref()?;
+    let entry = entries
+        .iter()
+        .find(|e| e.name.as_deref() == Some(entry_name))?;
+    crate::http_upload::resolve_http_credentials(
+        ctx,
+        &crate::http_upload::CredentialResolveSpec {
+            publisher: "artifactory",
+            entry_name,
+            config_username: entry.username.as_deref(),
+            config_password: entry.password.as_deref(),
+            env_prefix: "ARTIFACTORY",
+            // Rollback is best-effort; tolerate anonymous so we surface a
+            // 401 in the deletion summary rather than bailing here.
+            anonymous_ok: true,
+        },
+    )
+    .ok()
+}
+
+/// Outcome of one DELETE attempt against a single artifactory URL.
+/// Returned by [`delete_one_artifactory_target`] so the per-URL response
+/// can be aggregated into the summary line.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum DeleteOutcome {
+    Deleted,
+    AlreadyAbsent,
+    Failed(String),
+}
+
+/// Classify a DELETE response's status code into the rollback summary
+/// bucket. 2xx → `Deleted`, 404 / 410 → `AlreadyAbsent`, everything else
+/// → `Failed`. Pure helper so the bucket boundary can be unit-tested
+/// without firing an HTTP request.
+pub(crate) fn classify_delete_status(status: reqwest::StatusCode) -> DeleteOutcome {
+    if status.is_success() {
+        DeleteOutcome::Deleted
+    } else if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::GONE {
+        DeleteOutcome::AlreadyAbsent
+    } else {
+        DeleteOutcome::Failed(format!("HTTP {}", status))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // ArtifactoryPublisher (Publisher trait wrapper)
 // ---------------------------------------------------------------------------
 
-/// Wraps [`publish_to_artifactory`] in the [`anodizer_core::Publisher`] trait
-/// so the new dispatch path (see [`crate::registry::configured_publishers`])
-/// can drive Artifactory uploads alongside every other publisher.
-///
-/// Group: [`anodizer_core::PublisherGroup::Assets`] (uploadable bytes,
-/// server-side deletable). `required = false`.
-///
-/// Rollback shape: per uploaded URL, issue an HTTP DELETE with the same
-/// credential cascade `publish_to_artifactory` uses
-/// (`ARTIFACTORY_TOKEN` / per-entry env). Each DELETE is independent; a
-/// failure logs a warn line and the loop continues. The rollback function
-/// returns Ok regardless of per-target failures — the operator's review
-/// log carries the diagnosis.
-pub struct ArtifactoryPublisher;
+// Wraps [`publish_to_artifactory`] in the [`anodizer_core::Publisher`] trait
+// so the new dispatch path (see [`crate::registry::configured_publishers`])
+// can drive Artifactory uploads alongside every other publisher.
+//
+// Group: [`anodizer_core::PublisherGroup::Assets`] (uploadable bytes,
+// server-side deletable). `required = false`.
+//
+// Rollback shape: per uploaded URL, issue an HTTP DELETE with the same
+// credential cascade `publish_to_artifactory` uses (basic auth from
+// `username` + `password` plus per-entry `ARTIFACTORY_<NAME>_SECRET`
+// override; the legacy `ARTIFACTORY_TOKEN` bearer is a last-resort
+// fallback when no entry name was threaded through evidence). DELETEs
+// fan out under a fixed concurrency cap (4) so a v0.2.0-sized 143-artifact
+// rollback finishes in minutes, not over an hour. 404 / 410 responses are
+// classified `AlreadyAbsent` (not `Failed`) so a re-run after a partial
+// rollback doesn't print phantom failures. The rollback function returns
+// Ok regardless of per-target outcome — the summary line + per-failure
+// warns carry the operator-facing diagnosis.
+simple_publisher!(
+    ArtifactoryPublisher,
+    "artifactory",
+    anodizer_core::PublisherGroup::Assets,
+    false,
+    Some("ARTIFACTORY_TOKEN delete"),
+);
 
-impl ArtifactoryPublisher {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-impl Default for ArtifactoryPublisher {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+/// Bound for parallel DELETE fan-out during rollback. Chosen to match the
+/// scale at which v0.2.0's 143-artifact cascade case becomes operator-usable
+/// (~36 batches of 4 at 30s/req ≈ 18 min worst-case vs. 71 min serial)
+/// without exhausting any reasonable Artifactory rate limit.
+const ROLLBACK_PARALLELISM: usize = 4;
 
 impl anodizer_core::Publisher for ArtifactoryPublisher {
     fn name(&self) -> &str {
-        "artifactory"
+        Self::PUBLISHER_NAME
     }
 
     fn group(&self) -> anodizer_core::PublisherGroup {
-        anodizer_core::PublisherGroup::Assets
+        Self::PUBLISHER_GROUP
     }
 
     fn required(&self) -> bool {
-        false
+        Self::PUBLISHER_REQUIRED
+    }
+
+    fn rollback_scope_needed(&self) -> Option<&'static str> {
+        Self::ROLLBACK_SCOPE
     }
 
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
@@ -812,9 +924,13 @@ impl anodizer_core::Publisher for ArtifactoryPublisher {
         let mut evidence = anodizer_core::PublishEvidence::new("artifactory");
         let targets = collect_artifactory_targets(ctx);
         if let Some(first) = targets.first() {
-            evidence.primary_ref = Some(first.clone());
+            evidence.primary_ref = Some(first.url.clone());
         }
-        evidence.artifact_paths = targets.into_iter().map(std::path::PathBuf::from).collect();
+        evidence.artifact_paths = targets
+            .iter()
+            .map(|t| std::path::PathBuf::from(&t.url))
+            .collect();
+        evidence.extra = encode_artifactory_targets(&targets);
         Ok(evidence)
     }
 
@@ -825,16 +941,20 @@ impl anodizer_core::Publisher for ArtifactoryPublisher {
     ) -> anyhow::Result<()> {
         let log = ctx.logger("publish");
         if evidence.artifact_paths.is_empty() && evidence.primary_ref.is_none() {
-            log.warn(
-                "artifactory: no upload URLs recorded in evidence; verify Artifactory manually",
-            );
+            log.warn(&crate::publisher_helpers::rollback_empty_warning_msg(
+                "artifactory",
+                "upload URLs",
+            ));
             return Ok(());
         }
-        // ARTIFACTORY_TOKEN is the default bearer; per-entry overrides via
-        // `ARTIFACTORY_<NAME>_SECRET` are honoured by the publish path but
-        // not threaded into evidence — at rollback time the operator may
-        // need to set the matching env. We fall back through the env-var
-        // ladder and warn if none match.
+        // Decode the structured (entry, url) pairs from evidence.extra so
+        // each DELETE can resolve credentials through the publish path's
+        // own resolver (basic auth + per-entry env override). When the
+        // field is missing (older evidence, or a config change between
+        // publish and rollback) fall back to URL-only deletion against
+        // the legacy bearer ladder so existing rollbacks don't silently
+        // break.
+        let structured = decode_artifactory_targets(&evidence.extra);
         let token_env = std::env::var("ARTIFACTORY_TOKEN")
             .or_else(|_| std::env::var("ARTIFACTORY_SECRET"))
             .ok();
@@ -849,39 +969,40 @@ impl anodizer_core::Publisher for ArtifactoryPublisher {
                 return Ok(());
             }
         };
-        let mut deleted = 0usize;
-        let mut failed = 0usize;
-        for path in &evidence.artifact_paths {
-            let url = path.display().to_string();
-            log.status(&format!("artifactory: DELETE {}", url));
-            let mut req = client.delete(&url);
-            if let Some(ref tok) = token_env {
-                req = req.bearer_auth(tok);
-            }
-            match req.send() {
-                Ok(resp) if resp.status().is_success() => {
-                    deleted += 1;
+
+        // Build (url, auth) pairs honouring structured evidence first,
+        // falling back to URL-only deletion against the bearer ladder for
+        // legacy / pruned-config rollbacks.
+        let by_url: std::collections::HashMap<String, String> = structured
+            .iter()
+            .map(|t| (t.url.clone(), t.entry.clone()))
+            .collect();
+        let jobs: Vec<RollbackJob> = evidence
+            .artifact_paths
+            .iter()
+            .map(|p| {
+                let url = p.display().to_string();
+                let basic_auth = by_url
+                    .get(&url)
+                    .and_then(|entry| resolve_rollback_credentials(ctx, entry))
+                    .filter(|(u, p)| !u.is_empty() && !p.is_empty());
+                let bearer = if basic_auth.is_none() {
+                    token_env.clone()
+                } else {
+                    None
+                };
+                RollbackJob {
+                    url,
+                    basic_auth,
+                    bearer,
                 }
-                Ok(resp) => {
-                    failed += 1;
-                    log.warn(&format!(
-                        "artifactory: DELETE {} returned HTTP {} (manual cleanup may be required)",
-                        url,
-                        resp.status()
-                    ));
-                }
-                Err(e) => {
-                    failed += 1;
-                    log.warn(&format!(
-                        "artifactory: DELETE {} transport error: {} (manual cleanup may be required)",
-                        url, e
-                    ));
-                }
-            }
-        }
+            })
+            .collect();
+
+        let (deleted, already_absent, failed) = parallel_delete(&client, &jobs, &log);
         log.status(&format!(
-            "artifactory: deleted {} artifact(s), {} failure(s)",
-            deleted, failed
+            "artifactory: deleted {} artifact(s), {} already absent, {} failure(s)",
+            deleted, already_absent, failed
         ));
         Ok(())
     }
@@ -889,10 +1010,94 @@ impl anodizer_core::Publisher for ArtifactoryPublisher {
     fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
         Ok(anodizer_core::PreflightCheck::Pass)
     }
+}
 
-    fn rollback_scope_needed(&self) -> Option<&'static str> {
-        Some("ARTIFACTORY_TOKEN delete")
+/// One rollback DELETE job: target URL + the auth to send with it.
+/// `basic_auth` carries (username, password) when the entry tag in
+/// `PublishEvidence::extra` resolved to a configured basic-auth pair;
+/// otherwise `bearer` falls back to `ARTIFACTORY_TOKEN` /
+/// `ARTIFACTORY_SECRET`. Both `None` is acceptable — the DELETE will
+/// surface a 401 in the failed bucket rather than silently 200ing.
+#[derive(Clone, Debug)]
+struct RollbackJob {
+    url: String,
+    basic_auth: Option<(String, String)>,
+    bearer: Option<String>,
+}
+
+/// Fan out per-URL DELETE requests under [`ROLLBACK_PARALLELISM`], applying
+/// the resolved auth per request. Each request's outcome is classified via
+/// [`classify_delete_status`] so 404 / 410 land in `already_absent` instead
+/// of `failed`. Returns `(deleted, already_absent, failed)` counts.
+fn parallel_delete(
+    client: &reqwest::blocking::Client,
+    jobs: &[RollbackJob],
+    log: &StageLogger,
+) -> (usize, usize, usize) {
+    use std::sync::Mutex;
+    let counts = Mutex::new((0usize, 0usize, 0usize));
+    let chunks = jobs.chunks(ROLLBACK_PARALLELISM);
+    for chunk in chunks {
+        std::thread::scope(|s| {
+            let mut handles = Vec::with_capacity(chunk.len());
+            for job in chunk {
+                let client = client.clone();
+                let url = job.url.clone();
+                let basic_auth = job.basic_auth.clone();
+                let bearer = job.bearer.clone();
+                let log = log.clone();
+                let counts = &counts;
+                handles.push(s.spawn(move || {
+                    log.status(&format!("artifactory: DELETE {}", url));
+                    let mut req = client.delete(&url);
+                    if let Some((ref u, ref p)) = basic_auth {
+                        req = req.basic_auth(u, Some(p));
+                    } else if let Some(ref tok) = bearer {
+                        req = req.bearer_auth(tok);
+                    }
+                    match req.send() {
+                        Ok(resp) => {
+                            let status = resp.status();
+                            match classify_delete_status(status) {
+                                DeleteOutcome::Deleted => {
+                                    let mut c = counts.lock().expect("counts lock");
+                                    c.0 += 1;
+                                }
+                                DeleteOutcome::AlreadyAbsent => {
+                                    let mut c = counts.lock().expect("counts lock");
+                                    c.1 += 1;
+                                    log.status(&format!(
+                                        "artifactory: DELETE {} returned HTTP {} (already absent)",
+                                        url, status
+                                    ));
+                                }
+                                DeleteOutcome::Failed(_) => {
+                                    let mut c = counts.lock().expect("counts lock");
+                                    c.2 += 1;
+                                    log.warn(&format!(
+                                        "artifactory: DELETE {} returned HTTP {} (manual cleanup may be required)",
+                                        url, status
+                                    ));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            let mut c = counts.lock().expect("counts lock");
+                            c.2 += 1;
+                            log.warn(&format!(
+                                "artifactory: DELETE {} transport error: {} (manual cleanup may be required)",
+                                url, e
+                            ));
+                        }
+                    }
+                }));
+            }
+            for h in handles {
+                let _ = h.join();
+            }
+        });
     }
+    counts.into_inner().expect("counts lock")
 }
 
 // ---------------------------------------------------------------------------
@@ -1486,6 +1691,7 @@ mod tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod publisher_tests {
     use super::*;
     use anodizer_core::test_helpers::TestContextBuilder;
@@ -1513,9 +1719,113 @@ mod publisher_tests {
     #[test]
     fn artifactory_rollback_warns_when_no_targets_recorded() {
         // Empty evidence — rollback emits a single warn and returns Ok.
+        // The warn text is fixed by `rollback_empty_warning_msg` and
+        // independently asserted there; this case proves the empty branch
+        // does not crash and returns Ok.
         let mut ctx = TestContextBuilder::new().build();
         let evidence = PublishEvidence::new("artifactory");
         let p = ArtifactoryPublisher::new();
         assert!(p.rollback(&mut ctx, &evidence).is_ok());
+    }
+
+    /// The empty-evidence warn text comes from the shared helper. Tests
+    /// across the four Bundle A publishers reuse this helper so the
+    /// message wording can be pinned in one place.
+    #[test]
+    fn artifactory_rollback_empty_warning_msg_shape() {
+        let msg =
+            crate::publisher_helpers::rollback_empty_warning_msg("artifactory", "upload URLs");
+        assert!(msg.starts_with("artifactory:"), "{msg}");
+        assert!(msg.contains("upload URLs"), "{msg}");
+        assert!(msg.contains("verify"), "{msg}");
+        assert!(msg.contains("manually"), "{msg}");
+    }
+
+    /// Critical #1 — rollback must reuse the publish path's basic-auth
+    /// credentials, not narrowly read `ARTIFACTORY_TOKEN`. Verified at
+    /// the seam: the helper that resolves a given entry's credentials
+    /// returns the configured (username, password) for an entry whose
+    /// config carries them.
+    #[test]
+    fn artifactory_rollback_uses_publish_credentials() {
+        use anodizer_core::config::{ArtifactoryConfig, Config};
+        use anodizer_core::context::ContextOptions;
+        let mut config = Config::default();
+        config.artifactories = Some(vec![ArtifactoryConfig {
+            name: Some("prod".to_string()),
+            target: Some("https://art.example.com/repo/".to_string()),
+            username: Some("deployer".to_string()),
+            password: Some("hunter2".to_string()),
+            ..Default::default()
+        }]);
+        let ctx = Context::new(config, ContextOptions::default());
+        let resolved = resolve_rollback_credentials(&ctx, "prod")
+            .expect("entry credentials must resolve via publish-path helper");
+        assert_eq!(resolved.0, "deployer");
+        assert_eq!(resolved.1, "hunter2");
+    }
+
+    /// Critical #3 — 404 / 410 on DELETE classify as already-absent so a
+    /// re-run after a partial rollback does not print false failures.
+    #[test]
+    fn artifactory_rollback_treats_404_as_already_absent() {
+        let outcome = classify_delete_status(reqwest::StatusCode::NOT_FOUND);
+        assert!(matches!(outcome, DeleteOutcome::AlreadyAbsent));
+        let outcome = classify_delete_status(reqwest::StatusCode::GONE);
+        assert!(matches!(outcome, DeleteOutcome::AlreadyAbsent));
+    }
+
+    /// 2xx → Deleted; everything else → Failed (so 5xx still surfaces as
+    /// a failure for the operator).
+    #[test]
+    fn artifactory_rollback_classifies_status_buckets() {
+        assert!(matches!(
+            classify_delete_status(reqwest::StatusCode::OK),
+            DeleteOutcome::Deleted
+        ));
+        assert!(matches!(
+            classify_delete_status(reqwest::StatusCode::NO_CONTENT),
+            DeleteOutcome::Deleted
+        ));
+        assert!(matches!(
+            classify_delete_status(reqwest::StatusCode::UNAUTHORIZED),
+            DeleteOutcome::Failed(_)
+        ));
+        assert!(matches!(
+            classify_delete_status(reqwest::StatusCode::INTERNAL_SERVER_ERROR),
+            DeleteOutcome::Failed(_)
+        ));
+    }
+
+    /// Round-trip the structured (entry, url) JSON shape so a future
+    /// schema change cannot silently break rollback's entry lookup.
+    #[test]
+    fn artifactory_rollback_target_extra_roundtrips() {
+        let targets = vec![
+            ArtifactoryTarget {
+                entry: "prod".to_string(),
+                url: "https://art.example.com/repo/foo.tar.gz".to_string(),
+            },
+            ArtifactoryTarget {
+                entry: "staging".to_string(),
+                url: "https://art.example.com/staging/bar.zip".to_string(),
+            },
+        ];
+        let encoded = encode_artifactory_targets(&targets);
+        let decoded = decode_artifactory_targets(&encoded);
+        assert_eq!(decoded, targets);
+    }
+
+    /// A missing or malformed `artifactory_targets` field decodes to an
+    /// empty vec so rollback falls back to URL-only deletion without
+    /// panicking.
+    #[test]
+    fn artifactory_rollback_target_extra_tolerates_missing_field() {
+        assert!(decode_artifactory_targets(&serde_json::Value::Null).is_empty());
+        assert!(decode_artifactory_targets(&serde_json::json!({})).is_empty());
+        assert!(
+            decode_artifactory_targets(&serde_json::json!({ "artifactory_targets": "bogus" }))
+                .is_empty()
+        );
     }
 }

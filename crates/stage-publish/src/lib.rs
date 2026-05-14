@@ -1,3 +1,9 @@
+// Must appear before any module that uses `simple_publisher!` because
+// `#[macro_use]` imports macros from this module into the crate-root
+// namespace only for siblings that come AFTER it textually.
+#[macro_use]
+pub(crate) mod publisher_helpers;
+
 pub mod artifactory;
 pub mod aur;
 pub mod aur_source;

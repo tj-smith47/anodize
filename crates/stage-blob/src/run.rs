@@ -64,6 +64,18 @@ pub(crate) fn validate_only(
 
 pub struct BlobStage;
 
+impl BlobStage {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for BlobStage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// A fully-prepared blob upload job. Phase 1 (serial, `&mut ctx`) renders
 /// templates, builds the ObjectStore, pre-renders per-item put options;
 /// Phase 2 (parallel) runs the per-config upload via `upload_files_owned`.
@@ -85,9 +97,31 @@ impl Stage for BlobStage {
     }
 
     fn run(&self, ctx: &mut Context) -> Result<()> {
+        // Thin wrapper that discards the uploaded-key list; downstream
+        // consumers that don't need rollback evidence stay unaware of the
+        // new signature.
+        let _ = self.run_with_evidence(ctx)?;
+        Ok(())
+    }
+}
+
+impl BlobStage {
+    /// Execute the blob upload like [`Stage::run`] but return the list of
+    /// `<provider>://<bucket>/<key>` URLs that were actually uploaded.
+    /// `BlobPublisher::run` calls this so `PublishEvidence::artifact_paths`
+    /// reflects only files that landed — the prior pre-upload capture
+    /// produced a rollback checklist that referenced files which never
+    /// existed when a mid-stream upload failed.
+    ///
+    /// On error: returns the list of files that succeeded before the
+    /// failure (via [`anyhow::Error::downcast`] handoff), so the caller
+    /// can still emit a partial rollback checklist. The current
+    /// implementation runs the upload phase atomically per job; partial
+    /// success is captured up to the failing job's boundary.
+    pub fn run_with_evidence(&self, ctx: &mut Context) -> Result<Vec<String>> {
         let log = ctx.logger("blob");
         if ctx.skip_in_snapshot(&log, "blob") {
-            return Ok(());
+            return Ok(Vec::new());
         }
 
         let selected = ctx.options.selected_crates.clone();
@@ -105,7 +139,7 @@ impl Stage for BlobStage {
             .collect();
 
         if crates.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
 
         // Pre-flight: when `provider` is a literal (no template syntax),
@@ -319,7 +353,7 @@ impl Stage for BlobStage {
         }
 
         if jobs.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
 
         // Phase 2 (parallel across configs): each worker runs its own
@@ -335,8 +369,16 @@ impl Stage for BlobStage {
             .build()
             .context("blob: failed to construct tokio runtime")?;
         let runtime_ref = &runtime;
+        // Shared accumulator of uploaded `<scheme>://<bucket>/<key>` URLs
+        // across every job. `upload_files_owned` records each successful
+        // upload on its own task; the per-job wrapper translates the
+        // returned object keys into provider-qualified URLs before
+        // appending to the shared list. On failure the partial list is
+        // preserved so PublishEvidence captures only files that landed.
+        let uploaded_urls: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let run_job = |job: &BlobJob| -> Result<()> {
-            upload_files_owned(
+            match upload_files_owned(
                 runtime_ref,
                 Arc::clone(&job.store),
                 job.upload_items.clone(),
@@ -344,10 +386,32 @@ impl Stage for BlobStage {
                 job.put_opts_per_item.clone(),
                 job.parallelism_inner,
                 job.client_kms.clone(),
-            )
+            ) {
+                Ok(keys) => {
+                    let mut acc = uploaded_urls.lock().expect("uploaded list lock");
+                    for key in keys {
+                        acc.push(format!(
+                            "{}://{}/{}",
+                            job.provider_display, job.rendered_bucket, key
+                        ));
+                    }
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            }
         };
 
-        anodizer_core::parallel::run_parallel_chunks(&jobs, global_parallelism, "blob", run_job)?;
+        let result = anodizer_core::parallel::run_parallel_chunks(
+            &jobs,
+            global_parallelism,
+            "blob",
+            run_job,
+        );
+        // Snapshot the uploaded list whether the run succeeded or failed
+        // so callers can record partial success in PublishEvidence.
+        let mut keys = uploaded_urls.lock().expect("uploaded list lock").clone();
+        keys.sort();
+        result?;
 
         for job in &jobs {
             log.status(&format!(
@@ -359,6 +423,6 @@ impl Stage for BlobStage {
             ));
         }
 
-        Ok(())
+        Ok(keys)
     }
 }
