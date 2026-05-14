@@ -18,11 +18,14 @@
 //!    [`anodizer_core::git::worktree::Worktree`] rooted at `commit`.
 //! 2. Builds an isolated env (per-run `CARGO_HOME`, `CARGO_TARGET_DIR`,
 //!    `TMPDIR`, `HOME`; `SOURCE_DATE_EPOCH=self.sde`; `PATH` trimmed to
-//!    `allow_listed_path()`; everything else stripped except `CI`,
-//!    `RUNNER_*`, `GITHUB_*`, `RUSTUP_HOME`).
+//!    `allow_listed_path()`; everything else stripped except an explicit
+//!    identity-only allow-list — see [`HARNESS_ENV_ALLOWLIST`]. Notably
+//!    excluded: `GITHUB_TOKEN`, `ACTIONS_RUNTIME_TOKEN`, every other
+//!    credential-bearing var).
 //! 3. Invokes the build-side pipeline (`anodize release --snapshot
-//!    --skip=release,publish,blob,snapcraft-publish,announce`) inside the
-//!    worktree with that env.
+//!    --skip=<SIDE_EFFECT_STAGES>`, see
+//!    [`anodizer_core::determinism_runner::SIDE_EFFECT_STAGES`]) inside
+//!    the worktree with that env.
 //! 4. Walks `<worktree>/dist`, SHA256s every file, returns a
 //!    `BTreeMap<artifact_name, hash>` for the run.
 //! 5. Once all runs complete, diffs the maps and constructs a
@@ -182,35 +185,13 @@ impl Harness {
         std::fs::create_dir_all(&cargo_home)?;
         std::fs::create_dir_all(&home_dir)?;
 
-        let mut env = HashMap::new();
-        env.insert(
-            "CARGO_HOME".into(),
-            cargo_home.to_string_lossy().into_owned(),
-        );
-        env.insert(
-            "CARGO_TARGET_DIR".into(),
-            cargo_target.to_string_lossy().into_owned(),
-        );
-        env.insert("TMPDIR".into(), tmpdir.to_string_lossy().into_owned());
-        env.insert("HOME".into(), home_dir.to_string_lossy().into_owned());
-        env.insert("SOURCE_DATE_EPOCH".into(), self.sde.to_string());
-        env.insert("PATH".into(), allow_listed_path());
-
-        // Inherit a narrow allow-list of host env so build scripts that
-        // conditionally embed git/CI info still work.
-        for (k, v) in std::env::vars() {
-            if k == "RUSTUP_HOME"
-                || k == "CI"
-                || k.starts_with("RUNNER_")
-                || k.starts_with("GITHUB_")
-            {
-                env.insert(k, v);
-            }
-        }
-        // Always set CI=true so build scripts know they're in a sealed env.
-        env.entry("CI".into()).or_insert_with(|| "true".into());
-
-        Ok(env)
+        Ok(build_subprocess_env(&BuildSubprocessEnv {
+            cargo_home: &cargo_home,
+            cargo_target: &cargo_target,
+            tmpdir: &tmpdir,
+            home_dir: &home_dir,
+            sde: self.sde,
+        }))
     }
 
     /// Shell to the running `anodize` binary inside the worktree.
@@ -220,11 +201,13 @@ impl Harness {
     /// the actual `Command::new` lives in core where subprocess spawn is
     /// allow-listed.
     ///
-    /// `--skip=release,publish,blob,snapcraft-publish,announce` is
-    /// load-bearing: it pins the harness to build-side stages even if a
-    /// future operator extends the pipeline. The skip list is encoded in
-    /// the runner itself, not here, so every harness invocation gets the
-    /// same hermetic guarantee.
+    /// The `--skip=<list>` argument is load-bearing: it pins the harness
+    /// to build-side stages even if a future operator extends the
+    /// pipeline. The skip list is encoded in
+    /// [`anodizer_core::determinism_runner::SIDE_EFFECT_STAGES`] (a
+    /// single source of truth — adding a new side-effect stage to
+    /// `pipeline.rs` MUST register it there), not here, so every harness
+    /// invocation gets the same hermetic guarantee.
     fn run_build_pipeline(
         &self,
         worktree_path: &Path,
@@ -342,6 +325,111 @@ impl Harness {
         }
         None
     }
+}
+
+/// Explicit allow-list of host env vars the harness propagates into the
+/// child build subprocess.
+///
+/// Two policy goals:
+///
+/// 1. **No credentials leak through.** Earlier shape was
+///    `k.starts_with("GITHUB_")`, which would inherit `GITHUB_TOKEN` (the
+///    OAuth token) and any future `GITHUB_PASSWORD`-style sibling. The
+///    harness skips every token-consuming stage today, so the leak is
+///    latent — but a future stage added to the build phase (e.g. a
+///    registry-prefetch step) would silently acquire network creds inside
+///    a supposedly-hermetic build. Audit reference:
+///    `.claude/audits/2026-05-15-release-resilience-review.md#i7`.
+///
+/// 2. **Identity, not credentials.** Each entry below is either an
+///    informational field (`GITHUB_REPOSITORY`, `RUNNER_OS`) or a build-
+///    script identity input (`GITHUB_SHA`, `GITHUB_REF`). Nothing here
+///    grants the child process network reach.
+///
+/// Notably *excluded*:
+///
+/// - `GITHUB_TOKEN`, `ACTIONS_RUNTIME_TOKEN`, `ACTIONS_CACHE_URL`,
+///   `ACTIONS_*` — credential surface.
+/// - `RUNNER_TEMP` — the harness already pins `TMPDIR` to a per-run path,
+///   and `RUNNER_TEMP` would point outside the worktree.
+///
+/// Adding a new var here must be justified as identity-only; cred-bearing
+/// vars belong in `crates/core/src/user_command.rs`'s sandboxed env
+/// whitelist, not the harness's inheritance set.
+const HARNESS_ENV_ALLOWLIST: &[&str] = &[
+    // Toolchain identity.
+    "RUSTUP_HOME",
+    // CI signal (overridden to "true" below if unset).
+    "CI",
+    // GitHub Actions identity vars — owner/repo, commit, refs, run #.
+    "GITHUB_REPOSITORY",
+    "GITHUB_SHA",
+    "GITHUB_REF",
+    "GITHUB_REF_NAME",
+    "GITHUB_RUN_ID",
+    "GITHUB_RUN_NUMBER",
+    "GITHUB_WORKFLOW",
+    "GITHUB_ACTOR",
+    // Runner identity — OS / arch / hostname for build-script `cfg!()`.
+    "RUNNER_OS",
+    "RUNNER_ARCH",
+    "RUNNER_NAME",
+];
+
+/// Inputs for [`build_subprocess_env`]. Bundled so the function signature
+/// doesn't grow more positional arguments every time we add an isolated-
+/// path knob.
+pub(crate) struct BuildSubprocessEnv<'a> {
+    pub cargo_home: &'a Path,
+    pub cargo_target: &'a Path,
+    pub tmpdir: &'a Path,
+    pub home_dir: &'a Path,
+    pub sde: i64,
+}
+
+/// Pure constructor for the child env map. Factored out of
+/// [`Harness::build_isolated_env`] so unit tests can drive the env-shape
+/// logic without standing up a real worktree on disk.
+///
+/// Reads from `std::env::vars()` for the allow-listed identity vars (see
+/// [`HARNESS_ENV_ALLOWLIST`]). Unit tests that care about the host-env
+/// pass-through must serialize on the `harness_env` lock group via
+/// `serial_test::serial(harness_env)` — env vars are process-global state
+/// and parallel tests racing on the same key cause flakes.
+pub(crate) fn build_subprocess_env(inputs: &BuildSubprocessEnv<'_>) -> HashMap<String, String> {
+    let mut env = HashMap::new();
+    env.insert(
+        "CARGO_HOME".into(),
+        inputs.cargo_home.to_string_lossy().into_owned(),
+    );
+    env.insert(
+        "CARGO_TARGET_DIR".into(),
+        inputs.cargo_target.to_string_lossy().into_owned(),
+    );
+    env.insert(
+        "TMPDIR".into(),
+        inputs.tmpdir.to_string_lossy().into_owned(),
+    );
+    env.insert(
+        "HOME".into(),
+        inputs.home_dir.to_string_lossy().into_owned(),
+    );
+    env.insert("SOURCE_DATE_EPOCH".into(), inputs.sde.to_string());
+    env.insert("PATH".into(), allow_listed_path());
+
+    // Inherit only the explicit allow-list of identity-only host env so
+    // build scripts that conditionally embed git/CI info still work, and
+    // no credential-bearing vars (GITHUB_TOKEN, ACTIONS_RUNTIME_TOKEN,
+    // etc.) leak into the child.
+    for &key in HARNESS_ENV_ALLOWLIST {
+        if let Ok(v) = std::env::var(key) {
+            env.insert(key.into(), v);
+        }
+    }
+    // Always set CI=true so build scripts know they're in a sealed env.
+    env.entry("CI".into()).or_insert_with(|| "true".into());
+
+    env
 }
 
 /// Per-run artifact info captured by `hash_artifacts`. Internal-only.
@@ -774,5 +862,184 @@ mod tests {
             b"hello world".len() + 1,
             "exactly one byte must be appended"
         );
+    }
+
+    // ── I7 — build_subprocess_env env allow-list ─────────────────────────
+    //
+    // Env-var reads happen on the live process env, so these tests
+    // serialize on the `harness_env` group. SAFETY: `std::env::set_var` /
+    // `remove_var` are unsafe in multi-threaded processes from Rust 2024
+    // onward; the `serial_test::serial(harness_env)` annotation ensures
+    // exclusive ownership of the env for the duration of each test.
+    //
+    // Pattern: `unsafe { std::env::remove_var(k) }` before AND after each
+    // env-touching test so a leaked value from a previous run can't poison
+    // an assertion (`harness_env_omits_unset_github_vars` in particular).
+
+    mod env_allowlist {
+        use super::*;
+        use serial_test::serial;
+
+        fn inputs<'a>(scratch: &'a Path) -> BuildSubprocessEnv<'a> {
+            BuildSubprocessEnv {
+                cargo_home: scratch,
+                cargo_target: scratch,
+                tmpdir: scratch,
+                home_dir: scratch,
+                sde: 1_715_000_000,
+            }
+        }
+
+        fn with_cleared<F: FnOnce()>(keys: &[&str], f: F) {
+            // SAFETY: gated by `#[serial(harness_env)]` on every caller.
+            for k in keys {
+                unsafe { std::env::remove_var(k) };
+            }
+            f();
+            for k in keys {
+                unsafe { std::env::remove_var(k) };
+            }
+        }
+
+        #[test]
+        #[serial(harness_env)]
+        fn harness_env_does_not_leak_github_token() {
+            let tmp = tempfile::tempdir().unwrap();
+            with_cleared(&["GITHUB_TOKEN"], || {
+                // SAFETY: serial(harness_env) holds the lock.
+                unsafe { std::env::set_var("GITHUB_TOKEN", "ghp_secret_value") };
+                let env = build_subprocess_env(&inputs(tmp.path()));
+                assert!(
+                    !env.contains_key("GITHUB_TOKEN"),
+                    "GITHUB_TOKEN must NOT propagate into the harness subprocess env (regression: I7)"
+                );
+                // Also: no value of the env map should equal the token —
+                // belt-and-braces against an accidental rename / aliasing.
+                assert!(
+                    !env.values().any(|v| v == "ghp_secret_value"),
+                    "no env entry may carry the token value"
+                );
+            });
+        }
+
+        #[test]
+        #[serial(harness_env)]
+        fn harness_env_does_not_leak_actions_runtime_token() {
+            let tmp = tempfile::tempdir().unwrap();
+            with_cleared(&["ACTIONS_RUNTIME_TOKEN"], || {
+                // SAFETY: serial(harness_env) holds the lock.
+                unsafe { std::env::set_var("ACTIONS_RUNTIME_TOKEN", "actions_secret") };
+                let env = build_subprocess_env(&inputs(tmp.path()));
+                assert!(
+                    !env.contains_key("ACTIONS_RUNTIME_TOKEN"),
+                    "ACTIONS_RUNTIME_TOKEN must NOT propagate into the harness subprocess env"
+                );
+            });
+        }
+
+        #[test]
+        #[serial(harness_env)]
+        fn harness_env_does_not_leak_actions_cache_url() {
+            let tmp = tempfile::tempdir().unwrap();
+            with_cleared(&["ACTIONS_CACHE_URL"], || {
+                // SAFETY: serial(harness_env) holds the lock.
+                unsafe { std::env::set_var("ACTIONS_CACHE_URL", "https://cache.example") };
+                let env = build_subprocess_env(&inputs(tmp.path()));
+                assert!(
+                    !env.contains_key("ACTIONS_CACHE_URL"),
+                    "ACTIONS_CACHE_URL must NOT propagate (network-reach surface)"
+                );
+            });
+        }
+
+        #[test]
+        #[serial(harness_env)]
+        fn harness_env_includes_github_repository_when_set() {
+            let tmp = tempfile::tempdir().unwrap();
+            with_cleared(&["GITHUB_REPOSITORY"], || {
+                // SAFETY: serial(harness_env) holds the lock.
+                unsafe { std::env::set_var("GITHUB_REPOSITORY", "toss45/anodizer") };
+                let env = build_subprocess_env(&inputs(tmp.path()));
+                assert_eq!(
+                    env.get("GITHUB_REPOSITORY").map(String::as_str),
+                    Some("toss45/anodizer"),
+                    "GITHUB_REPOSITORY is identity and must propagate"
+                );
+            });
+        }
+
+        #[test]
+        #[serial(harness_env)]
+        fn harness_env_includes_github_sha_when_set() {
+            let tmp = tempfile::tempdir().unwrap();
+            with_cleared(&["GITHUB_SHA"], || {
+                // SAFETY: serial(harness_env) holds the lock.
+                unsafe { std::env::set_var("GITHUB_SHA", "deadbeefcafe") };
+                let env = build_subprocess_env(&inputs(tmp.path()));
+                assert_eq!(
+                    env.get("GITHUB_SHA").map(String::as_str),
+                    Some("deadbeefcafe"),
+                    "GITHUB_SHA is identity and must propagate"
+                );
+            });
+        }
+
+        #[test]
+        #[serial(harness_env)]
+        fn harness_env_omits_unset_github_vars() {
+            let tmp = tempfile::tempdir().unwrap();
+            // Pre-clear every identity var so the host process's own env
+            // (a real GHA runner) can't inject a value.
+            let all_identity = [
+                "GITHUB_REPOSITORY",
+                "GITHUB_SHA",
+                "GITHUB_REF",
+                "GITHUB_REF_NAME",
+                "GITHUB_RUN_ID",
+                "GITHUB_RUN_NUMBER",
+                "GITHUB_WORKFLOW",
+                "GITHUB_ACTOR",
+            ];
+            with_cleared(&all_identity, || {
+                let env = build_subprocess_env(&inputs(tmp.path()));
+                for k in all_identity {
+                    assert!(
+                        !env.contains_key(k),
+                        "unset host var `{k}` must not appear in env (no empty-string default)"
+                    );
+                }
+            });
+        }
+
+        #[test]
+        #[serial(harness_env)]
+        fn harness_env_does_not_leak_runner_temp() {
+            let tmp = tempfile::tempdir().unwrap();
+            with_cleared(&["RUNNER_TEMP"], || {
+                // SAFETY: serial(harness_env) holds the lock.
+                unsafe { std::env::set_var("RUNNER_TEMP", "/some/host/tmpdir") };
+                let env = build_subprocess_env(&inputs(tmp.path()));
+                // RUNNER_TEMP would point outside the worktree; the
+                // harness pins TMPDIR to a per-run worktree subdir.
+                assert!(
+                    !env.contains_key("RUNNER_TEMP"),
+                    "RUNNER_TEMP must NOT propagate — harness owns TMPDIR"
+                );
+            });
+        }
+
+        #[test]
+        #[serial(harness_env)]
+        fn harness_env_sets_ci_true_when_host_lacks_it() {
+            let tmp = tempfile::tempdir().unwrap();
+            with_cleared(&["CI"], || {
+                let env = build_subprocess_env(&inputs(tmp.path()));
+                assert_eq!(
+                    env.get("CI").map(String::as_str),
+                    Some("true"),
+                    "harness defaults CI=true when host has no CI var set"
+                );
+            });
+        }
     }
 }

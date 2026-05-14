@@ -17,6 +17,44 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Stage names the determinism harness must NOT run.
+///
+/// Single source of truth for the `--skip=...` list passed to the child
+/// `anodize release --snapshot` invocation. Every entry here is a stage
+/// in `crates/cli/src/pipeline.rs::build_release_pipeline` that either:
+///
+/// - touches upstream (uploads, API calls, push, announce), OR
+/// - mutates host state outside `<worktree>/dist` (docker daemon, kms),
+///
+/// i.e. a "side-effect" stage that has no place in a hermetic regression
+/// rebuild. Adding a future side-effect stage to the release pipeline
+/// MUST add its stage name here too — otherwise the harness will fire it
+/// from inside the supposedly-hermetic build.
+///
+/// Audit reference: `.claude/audits/2026-05-15-release-resilience-review.md#i8`.
+///
+/// Order mirrors the position in `build_release_pipeline` so reviewers
+/// scanning both files can pattern-match. Listed exhaustively (no
+/// `starts_with` / glob matching) so a new stage with a similar name
+/// (e.g. `docker-extra`) doesn't accidentally inherit the skip.
+pub const SIDE_EFFECT_STAGES: &[&str] = &[
+    // Publish phase — upstream side effects.
+    "release",
+    "docker",
+    "docker-sign",
+    "publish",
+    "blob",
+    "snapcraft-publish",
+    "announce",
+];
+
+/// Comma-join [`SIDE_EFFECT_STAGES`] for use as the `--skip=<list>` CLI
+/// argument value. Kept as a function (not a const) because Rust can't
+/// const-evaluate `[&str]::join`.
+fn side_effect_stages_skip_arg() -> String {
+    format!("--skip={}", SIDE_EFFECT_STAGES.join(","))
+}
+
 /// Invoke the running `anodize` binary against `worktree_path` with the
 /// supplied isolated env.
 ///
@@ -24,9 +62,8 @@ use std::process::Command;
 /// - `release` — drives the full build-side pipeline.
 /// - `--snapshot` — disables tag-cutting and tells stages to use the
 ///   pre-resolved SDE.
-/// - `--skip=release,publish,blob,snapcraft-publish,announce` — strips
-///   every side-effect-producing stage. Doubling N is safe in any env
-///   because of this skip list.
+/// - `--skip=<SIDE_EFFECT_STAGES>` — strips every side-effect-producing
+///   stage. Doubling N is safe in any env because of this skip list.
 ///
 /// The child env is fully replaced (`env_clear` then re-populate) so
 /// host env vars cannot leak through and perturb the build. Caller
@@ -37,11 +74,7 @@ pub fn run_build_pipeline_subprocess(
     env: &HashMap<String, String>,
 ) -> Result<()> {
     let mut cmd = Command::new(anodize_binary);
-    cmd.args([
-        "release",
-        "--snapshot",
-        "--skip=release,publish,blob,snapcraft-publish,announce",
-    ]);
+    cmd.args(["release", "--snapshot", &side_effect_stages_skip_arg()]);
     cmd.current_dir(worktree_path);
     cmd.env_clear();
     for (k, v) in env {
@@ -88,5 +121,56 @@ mod tests {
             res.is_err(),
             "missing binary should surface as an error, not a panic"
         );
+    }
+
+    #[test]
+    fn side_effect_stages_covers_every_known_publish_side_effect() {
+        // Regression guard against I8 (audit 2026-05-15): if a future
+        // pipeline edit adds a side-effect stage and forgets to register
+        // it here, this test surfaces the omission. Add the new stage to
+        // SIDE_EFFECT_STAGES (and update this list) once the new entry is
+        // confirmed to belong in the skip set.
+        let expected = [
+            "release",
+            "docker",
+            "docker-sign",
+            "publish",
+            "blob",
+            "snapcraft-publish",
+            "announce",
+        ];
+        for name in expected {
+            assert!(
+                SIDE_EFFECT_STAGES.contains(&name),
+                "SIDE_EFFECT_STAGES missing known publish-side stage `{name}`"
+            );
+        }
+    }
+
+    #[test]
+    fn side_effect_stages_skip_arg_starts_with_skip_flag() {
+        // I8 fix shape: harness still uses --skip=<list> (the conservative
+        // path; --only=<list> would require a new CLI flag). Guard against
+        // a future refactor accidentally flipping to a different prefix.
+        let arg = super::side_effect_stages_skip_arg();
+        assert!(
+            arg.starts_with("--skip="),
+            "expected --skip= prefix, got `{arg}`"
+        );
+        // And the joined list is non-empty.
+        assert!(arg.len() > "--skip=".len(), "skip list must not be empty");
+    }
+
+    #[test]
+    fn side_effect_stages_skip_arg_round_trips_through_comma_join() {
+        let arg = super::side_effect_stages_skip_arg();
+        let list = arg
+            .trim_start_matches("--skip=")
+            .split(',')
+            .collect::<Vec<_>>();
+        assert_eq!(list.len(), SIDE_EFFECT_STAGES.len());
+        for (a, b) in list.iter().zip(SIDE_EFFECT_STAGES.iter()) {
+            assert_eq!(a, b);
+        }
     }
 }
