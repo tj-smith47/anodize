@@ -4,6 +4,7 @@ pub mod config;
 pub mod content_source;
 pub mod context;
 pub mod defaults_merge;
+pub mod determinism;
 pub mod docker_detect;
 pub mod env;
 pub mod env_expand;
@@ -36,6 +37,7 @@ pub mod url;
 pub mod user_command;
 pub mod util;
 
+pub use determinism::DeterminismState;
 pub use publish_evidence::PublishEvidence;
 pub use publish_report::{
     PublishReport, PublisherGroup, PublisherOutcome, PublisherResult, SkipReason,

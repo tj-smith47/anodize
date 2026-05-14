@@ -1,0 +1,204 @@
+//! SOURCE_DATE_EPOCH seeding + compile-time / runtime allow-list state.
+//!
+//! `DeterminismState` is the per-run home for:
+//! - `sde`: the SOURCE_DATE_EPOCH value (seconds since epoch) that every
+//!   stage exports into subprocess env so artifacts have deterministic
+//!   timestamps.
+//! - `compile_time_allowlist`: artifact-name -> reason pairs known at
+//!   build time (tool-bug allow-lists for cargo .crate, docker manifest
+//!   descriptors, etc.).
+//! - `runtime_allowlist`: operator-supplied opt-outs via the
+//!   `--allow-nondeterministic <name>=<reason>` CLI flag.
+//!
+//! Both lists are surfaced into the run-summary JSON
+//! (`determinism_allowlist.compile_time` and `.runtime`) and the
+//! per-artifact `PublishEvidence.nondeterministic` field. On collision
+//! between the two lists, the compile-time reason wins on the per-
+//! artifact field; both entries still appear in the report so the
+//! audit trail is complete.
+
+use serde::{Deserialize, Serialize};
+use std::process::Command;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeterminismState {
+    pub sde: i64,
+    pub compile_time_allowlist: Vec<(String, String)>,
+    pub runtime_allowlist: Vec<(String, String)>,
+}
+
+impl DeterminismState {
+    /// Seed from a commit timestamp (seconds since UNIX epoch). All built-
+    /// in compile-time allow-list entries listed in the spec's contract
+    /// table are added here.
+    pub fn seed_from_commit(commit_ts: i64) -> Self {
+        // Per spec contract table: these are the artifacts whose
+        // deeper reproducibility work is deferred. Listed up-front so
+        // every stage that consumes them sees the same allow-list.
+        let compile_time_allowlist = vec![
+            (
+                "*.crate".into(),
+                "cargo package non-determinism, tracked in determinism-followups".into(),
+            ),
+            (
+                "docker-manifest-descriptor".into(),
+                "cosign attestation timestamp embedded; consumers verify image digest, not descriptor bytes".into(),
+            ),
+            (
+                "docker-image-blob".into(),
+                "BuildKit reproducible-build flags deferred to determinism-docker follow-up".into(),
+            ),
+            (
+                "*.rpm".into(),
+                "rpmbuild reproducibility deferred to determinism-installers follow-up".into(),
+            ),
+            (
+                "*.msi".into(),
+                "wix/candle/light reproducibility deferred to determinism-installers follow-up".into(),
+            ),
+            (
+                "*.exe-nsis".into(),
+                "makensis reproducibility deferred to determinism-installers follow-up".into(),
+            ),
+            (
+                "*.dmg".into(),
+                "hdiutil reproducibility deferred to determinism-installers follow-up".into(),
+            ),
+            (
+                "*.pkg".into(),
+                "pkgbuild reproducibility deferred to determinism-installers follow-up".into(),
+            ),
+            (
+                "*.deb".into(),
+                "dpkg-deb reproducibility varies by version; tracked in determinism-installers".into(),
+            ),
+            (
+                "apple-notarization-receipt".into(),
+                "Apple notarization service embeds a timestamp anodize cannot control".into(),
+            ),
+        ];
+
+        Self {
+            sde: commit_ts,
+            compile_time_allowlist,
+            runtime_allowlist: Vec::new(),
+        }
+    }
+
+    /// Export SOURCE_DATE_EPOCH onto a `std::process::Command` so
+    /// child subprocesses (cargo, tar, sbom tools, etc.) see the
+    /// reproducible epoch.
+    pub fn export_env(&self, cmd: &mut Command) {
+        cmd.env("SOURCE_DATE_EPOCH", self.sde.to_string());
+    }
+
+    /// Resolve the allow-list reason for an artifact name. Compile-time
+    /// entries win on collision per the spec's "Operator escape /
+    /// Precedence on collision" section. Returns None when the artifact
+    /// is not in either list.
+    pub fn resolve_reason(&self, artifact: &str) -> Option<&str> {
+        // Compile-time first
+        for (name, reason) in &self.compile_time_allowlist {
+            if matches_artifact_pattern(name, artifact) {
+                return Some(reason.as_str());
+            }
+        }
+        // Then runtime
+        for (name, reason) in &self.runtime_allowlist {
+            if matches_artifact_pattern(name, artifact) {
+                return Some(reason.as_str());
+            }
+        }
+        None
+    }
+
+    /// Append a runtime allow-list entry. Caller is the CLI flag
+    /// handler for `--allow-nondeterministic <name>=<reason>`.
+    pub fn append_runtime(&mut self, artifact: String, reason: String) {
+        self.runtime_allowlist.push((artifact, reason));
+    }
+}
+
+/// Simple glob: `*.ext` matches any artifact ending in `.ext`;
+/// exact-match otherwise. Avoids pulling a globbing crate for this
+/// narrow case.
+fn matches_artifact_pattern(pattern: &str, artifact: &str) -> bool {
+    if let Some(suffix) = pattern.strip_prefix('*') {
+        return artifact.ends_with(suffix);
+    }
+    pattern == artifact
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sde_from_commit_timestamp_is_idempotent() {
+        let s = DeterminismState::seed_from_commit(1_715_000_000);
+        assert_eq!(s.sde, 1_715_000_000);
+        let s2 = DeterminismState::seed_from_commit(1_715_000_000);
+        assert_eq!(s, s2);
+    }
+
+    #[test]
+    fn compile_time_allowlist_resolves_for_cargo_crate() {
+        let s = DeterminismState::seed_from_commit(0);
+        let reason = s
+            .resolve_reason("anodizer-0.2.1.crate")
+            .expect("matches *.crate");
+        assert!(reason.contains("cargo package"));
+    }
+
+    #[test]
+    fn compile_time_allowlist_resolves_for_rpm() {
+        let s = DeterminismState::seed_from_commit(0);
+        assert!(s.resolve_reason("foo-1.0.rpm").is_some());
+    }
+
+    #[test]
+    fn nondeterministic_allowlist_compile_time_wins_on_collision() {
+        let mut s = DeterminismState::seed_from_commit(0);
+        // Runtime entry shadowing a compile-time pattern. Compile-time
+        // wins so the report shows the deeper rationale.
+        s.append_runtime(
+            "*.crate".into(),
+            "operator escape (wrong runtime reason)".into(),
+        );
+        let reason = s.resolve_reason("anodizer-0.2.1.crate").unwrap();
+        assert!(
+            reason.contains("cargo package"),
+            "compile-time reason takes precedence"
+        );
+    }
+
+    #[test]
+    fn nondeterministic_allowlist_serializes_with_both_categories() {
+        let mut s = DeterminismState::seed_from_commit(0);
+        s.append_runtime("foo.bin".into(), "tool-bug-1234".into());
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains("compile_time_allowlist"));
+        assert!(json.contains("runtime_allowlist"));
+        assert!(json.contains("foo.bin"));
+    }
+
+    #[test]
+    fn export_env_sets_source_date_epoch() {
+        let s = DeterminismState::seed_from_commit(1_715_000_000);
+        let mut cmd = Command::new("true");
+        s.export_env(&mut cmd);
+        let env_vars: Vec<(_, _)> = cmd
+            .get_envs()
+            .filter_map(|(k, v)| v.map(|v| (k.to_owned(), v.to_owned())))
+            .collect();
+        let sde_entry = env_vars.iter().find(|(k, _)| k == "SOURCE_DATE_EPOCH");
+        assert!(sde_entry.is_some());
+        assert_eq!(sde_entry.unwrap().1, "1715000000");
+    }
+
+    #[test]
+    fn resolve_reason_returns_none_for_unrecognized() {
+        let s = DeterminismState::seed_from_commit(0);
+        assert!(s.resolve_reason("unrelated.txt").is_none());
+    }
+}
