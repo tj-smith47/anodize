@@ -10,7 +10,7 @@
 //!
 //! Provides:
 //! - [`TestContextBuilder`] — fluent builder for [`Context`] with sensible defaults
-//! - [`Context::test_fixture`] — stable minimally-populated Context for cross-crate unit tests
+//! - [`Context::test_fixture`] - stable minimally-populated Context for cross-crate unit tests
 //! - [`CwdGuard`] — RAII helper that restores the original cwd on Drop (panic-safe)
 //! - [`create_test_project`] — creates a minimal Cargo project on disk
 //! - [`init_git_repo`] — initializes a git repo with config, initial commit, and tag
