@@ -559,6 +559,372 @@ fn generate_source_pkgbuild(
 }
 
 // ---------------------------------------------------------------------------
+// AurSourcePublisher — Publisher trait wrapper (Submitter group)
+// ---------------------------------------------------------------------------
+//
+// Submitter-group; upstream-AUR force-push publisher. Distinct from
+// [`crate::aur::AurOurPublisher`] in `aur.rs` which is Manager group with
+// `git revert`-based rollback against AUR repos we own. This publisher
+// covers the **upstream-AUR source-package** flow: it generates a
+// PKGBUILD/.SRCINFO and force-pushes them to an AUR git repo
+// (`ssh://aur@aur.archlinux.org/<package>.git`). The push is irreversible
+// without coordinating with the AUR maintainer, so rollback is
+// warn-only.
+//
+// CREDENTIAL HANDLING: [`AurSourceTarget`] stores no key material. The
+// SSH private key / `GIT_SSH_COMMAND` resolved at publish time
+// (`cfg.private_key`, `cfg.git_ssh_command`) is irrelevant to a
+// warn-only rollback. We only name the env-var scope operators are
+// expected to control (`AUR_SSH_KEY write`) — never the resolved
+// secret.
+
+// Submitter-group `Publisher` for the upstream-AUR force-push
+// source-publishing flow. Wraps both `publish_to_aur_source` (per-crate)
+// and `publish_top_level_aur_sources` (top-level `aur_sources:` array).
+//
+// Disambiguation: this publisher is NOT the same as
+// `crate::aur::AurOurPublisher`. That one is Manager group, with a
+// `git revert`-based rollback against AUR repos we own. This one is
+// Submitter group, force-pushes upstream AUR repos, and has no
+// programmatic rollback.
+simple_publisher!(
+    AurSourcePublisher,
+    "upstream-aur",
+    anodizer_core::PublisherGroup::Submitter,
+    false,
+    Some("AUR_SSH_KEY write"),
+);
+
+/// Serialized shape of a recorded upstream-AUR force-push target.
+///
+/// `package` is the resolved AUR package name (post-template, post
+/// `-bin` strip when relevant); `tag` is the current
+/// [`anodizer_core::context::Context::version`] tag the source archive
+/// references. `git_url` is the `ssh://aur@aur.archlinux.org/...`
+/// URL — captured for the warn line only; no credential travels with
+/// it.
+///
+/// NB: no `private_key` / `git_ssh_command` fields — see the Submitter
+/// rustdoc above for the credential-handling rationale.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+struct AurSourceTarget {
+    /// Per-target label — `aur_source: crate '<name>'` for the per-crate
+    /// path or `aur_sources[<i>]` for the top-level array entries.
+    target: String,
+    /// Resolved AUR package name (the basename of `<package>.git` in
+    /// the AUR git URL).
+    package: String,
+    /// Bare semver / tag string from
+    /// [`anodizer_core::context::Context::version`].
+    tag: String,
+    /// AUR SSH git URL — typically
+    /// `ssh://aur@aur.archlinux.org/<package>.git`. Empty when no
+    /// `git_url` was configured (publish path also no-ops in that case).
+    git_url: String,
+}
+
+/// Decode the `aur_source_targets` array from
+/// [`anodizer_core::PublishEvidence::extra`].
+fn decode_aur_source_targets(extra: &serde_json::Value) -> Vec<AurSourceTarget> {
+    extra
+        .get("aur_source_targets")
+        .and_then(|v| serde_json::from_value::<Vec<AurSourceTarget>>(v.clone()).ok())
+        .unwrap_or_default()
+}
+
+/// True when at least one crate has a `publish.aur_source` block OR the
+/// top-level `aur_sources:` array is non-empty. Mirrors the dispatch in
+/// `lib.rs` so the publisher runs whenever the existing per-crate +
+/// top-level macros would have.
+pub(crate) fn is_aur_source_configured(ctx: &Context) -> bool {
+    let per_crate = ctx
+        .config
+        .crates
+        .iter()
+        .any(|c| c.publish.as_ref().is_some_and(|p| p.aur_source.is_some()));
+    let top_level = ctx
+        .config
+        .aur_sources
+        .as_ref()
+        .is_some_and(|v| !v.is_empty());
+    per_crate || top_level
+}
+
+/// True when the named crate has a `publish.aur_source` block. Per-crate
+/// gate for the iteration in `run()`.
+fn is_aur_source_per_crate_configured(ctx: &Context, crate_name: &str) -> bool {
+    ctx.config
+        .crates
+        .iter()
+        .any(|c| c.name == crate_name && c.publish.as_ref().is_some_and(|p| p.aur_source.is_some()))
+}
+
+/// Reproduce the AUR-source package-name resolution that
+/// `publish_aur_source_entry` uses: explicit `cfg.name` wins, otherwise
+/// the default name (crate name for per-crate, project name for top-level)
+/// with optional `-bin` stripping.
+fn resolve_aur_source_package_name(
+    cfg: &anodizer_core::config::AurSourceConfig,
+    default_name: &str,
+    strip_bin_suffix: bool,
+) -> String {
+    let raw = cfg.name.as_deref().unwrap_or(default_name);
+    if strip_bin_suffix {
+        raw.strip_suffix("-bin").unwrap_or(raw).to_string()
+    } else {
+        raw.to_string()
+    }
+}
+
+/// Build an [`AurSourceTarget`] for a single per-crate `aur_source:` block.
+fn collect_aur_source_per_crate_target(ctx: &Context, crate_name: &str) -> Option<AurSourceTarget> {
+    let c = ctx.config.crates.iter().find(|c| c.name == crate_name)?;
+    let cfg = c.publish.as_ref().and_then(|p| p.aur_source.as_ref())?;
+    let pkg_name = resolve_aur_source_package_name(cfg, crate_name, false);
+    Some(AurSourceTarget {
+        target: format!("aur_source: crate '{}'", crate_name),
+        package: pkg_name,
+        tag: ctx.version(),
+        git_url: cfg.git_url.clone().unwrap_or_default(),
+    })
+}
+
+/// Build [`AurSourceTarget`]s for every entry in the top-level
+/// `aur_sources:` array.
+fn collect_aur_source_top_level_targets(ctx: &Context) -> Vec<AurSourceTarget> {
+    let mut out: Vec<AurSourceTarget> = Vec::new();
+    let Some(entries) = ctx.config.aur_sources.as_ref() else {
+        return out;
+    };
+    let project_name = ctx
+        .template_vars()
+        .get("ProjectName")
+        .cloned()
+        .unwrap_or_default();
+    for (i, cfg) in entries.iter().enumerate() {
+        let pkg_name = resolve_aur_source_package_name(cfg, &project_name, true);
+        out.push(AurSourceTarget {
+            target: format!("aur_sources[{}]", i),
+            package: pkg_name,
+            tag: ctx.version(),
+            git_url: cfg.git_url.clone().unwrap_or_default(),
+        });
+    }
+    out
+}
+
+impl anodizer_core::Publisher for AurSourcePublisher {
+    fn name(&self) -> &str {
+        Self::PUBLISHER_NAME
+    }
+    fn group(&self) -> anodizer_core::PublisherGroup {
+        Self::PUBLISHER_GROUP
+    }
+    fn required(&self) -> bool {
+        Self::PUBLISHER_REQUIRED
+    }
+    fn rollback_scope_needed(&self) -> Option<&'static str> {
+        Self::ROLLBACK_SCOPE
+    }
+
+    fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
+        let log = ctx.logger("publish");
+        let mut targets: Vec<AurSourceTarget> = Vec::new();
+        let selected = ctx.options.selected_crates.clone();
+        // Per-crate aur_source blocks.
+        for crate_name in &selected {
+            if !is_aur_source_per_crate_configured(ctx, crate_name) {
+                continue;
+            }
+            if let Some(t) = collect_aur_source_per_crate_target(ctx, crate_name) {
+                targets.push(t);
+            }
+            publish_to_aur_source(ctx, crate_name, &log)?;
+        }
+        // Top-level aur_sources array (project-wide).
+        let top_level_targets = collect_aur_source_top_level_targets(ctx);
+        if !top_level_targets.is_empty() {
+            targets.extend(top_level_targets);
+            publish_top_level_aur_sources(ctx, &log)?;
+        }
+        let mut evidence = anodizer_core::PublishEvidence::new("upstream-aur");
+        if let Some(first) = targets.first() {
+            evidence.primary_ref = Some(format!(
+                "https://aur.archlinux.org/packages/{}",
+                first.package
+            ));
+        }
+        evidence.extra = serde_json::json!({ "aur_source_targets": targets });
+        Ok(evidence)
+    }
+
+    fn rollback(
+        &self,
+        ctx: &mut Context,
+        evidence: &anodizer_core::PublishEvidence,
+    ) -> anyhow::Result<()> {
+        let log = ctx.logger("publish");
+        let targets = decode_aur_source_targets(&evidence.extra);
+        if targets.is_empty() {
+            log.warn(&crate::publisher_helpers::rollback_empty_warning_msg(
+                "upstream-aur",
+                "recorded force-pushes",
+            ));
+            return Ok(());
+        }
+        for t in &targets {
+            log.warn(&format!(
+                "upstream-aur: force-push to '{}' at tag '{}' is irreversible \
+                 without AUR maintainer coordination; verify state at \
+                 https://aur.archlinux.org/packages/{} (git URL: {})",
+                t.package, t.tag, t.package, t.git_url
+            ));
+        }
+        log.status(&format!(
+            "upstream-aur: {} force-push(es) recorded; irreversible",
+            targets.len()
+        ));
+        Ok(())
+    }
+
+    fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
+        Ok(anodizer_core::PreflightCheck::Pass)
+    }
+}
+
+#[cfg(test)]
+mod publisher_tests {
+    use super::*;
+    use anodizer_core::config::{AurSourceConfig, CrateConfig, PublishConfig};
+    use anodizer_core::test_helpers::TestContextBuilder;
+    use anodizer_core::{PreflightCheck, PublishEvidence, Publisher, PublisherGroup};
+
+    fn aur_source_crate(name: &str, git_url: &str) -> CrateConfig {
+        CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                aur_source: Some(AurSourceConfig {
+                    git_url: Some(git_url.to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn aur_source_publisher_classification() {
+        let p = AurSourcePublisher::new();
+        assert_eq!(p.name(), "upstream-aur");
+        assert_eq!(p.group(), PublisherGroup::Submitter);
+        assert!(!p.required());
+        assert_eq!(p.rollback_scope_needed(), Some("AUR_SSH_KEY write"));
+    }
+
+    #[test]
+    fn aur_source_preflight_defaults_to_pass() {
+        let ctx = TestContextBuilder::new().build();
+        let p = AurSourcePublisher::new();
+        assert!(matches!(
+            p.preflight(&ctx).expect("preflight ok"),
+            PreflightCheck::Pass
+        ));
+    }
+
+    #[test]
+    fn aur_source_rollback_warns_when_no_targets_recorded() {
+        let mut ctx = TestContextBuilder::new().build();
+        let evidence = PublishEvidence::new("upstream-aur");
+        let p = AurSourcePublisher::new();
+        assert!(p.rollback(&mut ctx, &evidence).is_ok());
+
+        let msg = crate::publisher_helpers::rollback_empty_warning_msg(
+            "upstream-aur",
+            "recorded force-pushes",
+        );
+        assert!(msg.starts_with("upstream-aur:"), "{msg}");
+        assert!(msg.contains("recorded force-pushes"), "{msg}");
+        assert!(msg.contains("verify"), "{msg}");
+        assert!(msg.contains("manually"), "{msg}");
+    }
+
+    #[test]
+    fn aur_source_rollback_warns_per_target_when_evidence_present() {
+        let mut ctx = TestContextBuilder::new().build();
+        let mut evidence = PublishEvidence::new("upstream-aur");
+        evidence.extra = serde_json::json!({
+            "aur_source_targets": [
+                {
+                    "target": "aur_source: crate 'demo'",
+                    "package": "demo",
+                    "tag": "1.2.3",
+                    "git_url": "ssh://aur@aur.archlinux.org/demo.git",
+                },
+                {
+                    "target": "aur_sources[0]",
+                    "package": "widget",
+                    "tag": "1.2.3",
+                    "git_url": "ssh://aur@aur.archlinux.org/widget.git",
+                },
+            ],
+        });
+        let p = AurSourcePublisher::new();
+        assert!(p.rollback(&mut ctx, &evidence).is_ok());
+        assert_eq!(decode_aur_source_targets(&evidence.extra).len(), 2);
+    }
+
+    #[test]
+    fn aur_source_target_extra_roundtrips() {
+        let original = vec![AurSourceTarget {
+            target: "aur_source: crate 'demo'".into(),
+            package: "demo".into(),
+            tag: "1.2.3".into(),
+            git_url: "ssh://aur@aur.archlinux.org/demo.git".into(),
+        }];
+        let extra = serde_json::json!({ "aur_source_targets": original.clone() });
+        let decoded = decode_aur_source_targets(&extra);
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn aur_source_target_extra_carries_no_secret_material() {
+        // SECURITY: persisting `private_key` / `git_ssh_command` into
+        // evidence (`dist/run-<id>/report.json`, the run summary, or
+        // the announce-time release-body text) would leak the SSH key.
+        // The struct deliberately has no such fields — this test pins
+        // that contract.
+        let t = AurSourceTarget {
+            target: "aur_source: crate 'demo'".into(),
+            package: "demo".into(),
+            tag: "1.2.3".into(),
+            git_url: "ssh://aur@aur.archlinux.org/demo.git".into(),
+        };
+        let s = serde_json::to_string(&t).expect("serialize");
+        assert!(!s.contains("\"private_key\":"), "{s}");
+        assert!(!s.contains("\"git_ssh_command\":"), "{s}");
+        assert!(!s.contains("\"token\":"), "{s}");
+        assert!(!s.contains("\"auth\":"), "{s}");
+        assert!(!s.contains("\"password\":"), "{s}");
+    }
+
+    #[test]
+    fn aur_source_collect_per_crate_target_uses_default_name() {
+        let ctx = TestContextBuilder::new()
+            .crates(vec![aur_source_crate(
+                "demo",
+                "ssh://aur@aur.archlinux.org/demo.git",
+            )])
+            .build();
+        let t = collect_aur_source_per_crate_target(&ctx, "demo").expect("target");
+        assert_eq!(t.package, "demo");
+        assert_eq!(t.git_url, "ssh://aur@aur.archlinux.org/demo.git");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

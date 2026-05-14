@@ -1013,6 +1013,401 @@ pub fn publish_to_winget(ctx: &Context, crate_name: &str, log: &StageLogger) -> 
 }
 
 // ---------------------------------------------------------------------------
+// WingetPublisher — Publisher trait wrapper (Submitter group)
+// ---------------------------------------------------------------------------
+//
+// WinGet is structurally a Submitter publisher: each successful per-crate
+// publish opens a PR against `microsoft/winget-pkgs` (or the upstream the
+// `repository.pull_request.base` override names). That PR then goes
+// through *automated validation* + *manual maintainer review*. Auto-closing
+// a PR mid-validation is unreliable — the validation pipeline interacts
+// with PR state in ways that can interfere with `gh pr close` — so unlike
+// the krew publisher we do NOT close the PR programmatically on
+// rollback. Instead, the rollback path warns per recorded target with
+// the upstream coordinates and the operator's fork branch so a human
+// can close the PR via the GitHub UI.
+//
+// CREDENTIAL HANDLING: [`WingetTarget`] stores no auth material. The
+// GitHub token feeding the publish path (resolved through
+// `repository.git.access_token` / `ANODIZER_GITHUB_TOKEN` /
+// `GITHUB_TOKEN`) is irrelevant to a warn-only rollback — we only name
+// the env var operators are expected to have set if they want to
+// re-run publish, not the resolved value.
+
+// Submitter-group `Publisher` for winget. Wraps the existing per-crate
+// `publish_to_winget` entrypoint. Rollback is warn-only — winget PRs
+// require manual operator action against `microsoft/winget-pkgs`
+// (or the configured `repository.pull_request.base` upstream).
+simple_publisher!(
+    WingetPublisher,
+    "winget",
+    anodizer_core::PublisherGroup::Submitter,
+    false,
+    Some("GITHUB_TOKEN pull_request:write"),
+);
+
+/// Serialized shape of a recorded winget PR target. One entry per crate
+/// whose publish path successfully pushed a branch toward an upstream
+/// winget-pkgs PR.
+///
+/// `package_id` is the resolved `PackageIdentifier` (e.g.
+/// `TJSmith.Anodizer`); `version` is the bare semver from
+/// [`anodizer_core::context::Context::version`]. `branch` matches the
+/// auto-generated `{package_id}-{version}` shape the publish path uses
+/// when `repository.branch` is unset (mirrors `publish_to_winget`).
+///
+/// NB: no `token` / `pat` / `password` fields — see the Submitter
+/// rustdoc above for the credential-handling rationale.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+struct WingetTarget {
+    /// Per-target label — the crate the manifest was generated for.
+    target: String,
+    /// Crate the manifest covers.
+    crate_name: String,
+    /// Resolved `PackageIdentifier` (e.g. `TJSmith.Anodizer`).
+    package_id: String,
+    /// Bare semver (no leading `v`).
+    version: String,
+    /// Upstream owner — typically `microsoft` (or
+    /// `repository.pull_request.base.owner` override).
+    upstream_owner: String,
+    /// Upstream repo — typically `winget-pkgs`.
+    upstream_repo: String,
+    /// Fork owner — the user/org the publish path pushed the branch to.
+    fork_owner: String,
+    /// Branch name on the fork — `{package_id}-{version}` by default,
+    /// or `repository.branch` when set.
+    branch: String,
+}
+
+/// Decode the `winget_targets` array from
+/// [`anodizer_core::PublishEvidence::extra`].
+fn decode_winget_targets(extra: &serde_json::Value) -> Vec<WingetTarget> {
+    extra
+        .get("winget_targets")
+        .and_then(|v| serde_json::from_value::<Vec<WingetTarget>>(v.clone()).ok())
+        .unwrap_or_default()
+}
+
+/// Resolve the upstream `<owner>/<repo>` slug for a winget target —
+/// mirrors the dispatch logic in `publish_to_winget`: prefer
+/// `repository.pull_request.base` when set, else fall back to the
+/// canonical `microsoft/winget-pkgs`.
+fn resolve_winget_upstream(winget_cfg: &anodizer_core::config::WingetConfig) -> (String, String) {
+    if let Some(base) = winget_cfg
+        .repository
+        .as_ref()
+        .and_then(|r| r.pull_request.as_ref())
+        .and_then(|pr| pr.base.as_ref())
+        && let (Some(o), Some(n)) = (base.owner.as_deref(), base.name.as_deref())
+    {
+        return (o.to_string(), n.to_string());
+    }
+    ("microsoft".to_string(), "winget-pkgs".to_string())
+}
+
+/// True when the crate has a `publish.winget` block — mirrors the
+/// `per_crate!` predicate in `lib.rs`.
+fn is_winget_per_crate_configured(ctx: &Context, crate_name: &str) -> bool {
+    ctx.config
+        .crates
+        .iter()
+        .any(|c| c.name == crate_name && c.publish.as_ref().is_some_and(|p| p.winget.is_some()))
+}
+
+/// Build a [`WingetTarget`] for the given crate. Reads config + the
+/// live process version so the recorded coordinates match what
+/// `publish_to_winget` will push. Returns `None` when no winget block
+/// is configured or when the publisher / repo resolution would itself
+/// no-op (matches the publish path's skip semantics).
+fn collect_winget_target(ctx: &Context, crate_name: &str) -> Option<WingetTarget> {
+    let c = ctx.config.crates.iter().find(|c| c.name == crate_name)?;
+    let cfg = c.publish.as_ref().and_then(|p| p.winget.as_ref())?;
+    let (repo_owner, _repo_name) = crate::util::resolve_repo_owner_name(cfg.repository.as_ref())?;
+    let fork_owner = ctx
+        .render_template(&repo_owner)
+        .unwrap_or_else(|_| repo_owner.clone());
+
+    let name_raw = cfg.name.as_deref().unwrap_or(crate_name);
+    let name_rendered = ctx
+        .render_template(name_raw)
+        .unwrap_or_else(|_| name_raw.to_string());
+
+    let publisher_name = match cfg.publisher.as_deref() {
+        Some(p) if !p.is_empty() => p.to_string(),
+        _ => fork_owner.clone(),
+    };
+
+    let auto_pkg_id = format!("{}.{}", publisher_name.replace(' ', ""), name_rendered);
+    let package_id = cfg
+        .package_identifier
+        .as_deref()
+        .map(|s| s.to_string())
+        .unwrap_or(auto_pkg_id);
+
+    let version = ctx.version();
+    let auto_branch = format!("{}-{}", package_id, version);
+    let branch = crate::util::resolve_branch(cfg.repository.as_ref())
+        .map(|b| b.to_string())
+        .unwrap_or(auto_branch);
+
+    let (upstream_owner, upstream_repo) = resolve_winget_upstream(cfg);
+
+    Some(WingetTarget {
+        target: package_id.clone(),
+        crate_name: crate_name.to_string(),
+        package_id,
+        version,
+        upstream_owner,
+        upstream_repo,
+        fork_owner,
+        branch,
+    })
+}
+
+impl anodizer_core::Publisher for WingetPublisher {
+    fn name(&self) -> &str {
+        Self::PUBLISHER_NAME
+    }
+    fn group(&self) -> anodizer_core::PublisherGroup {
+        Self::PUBLISHER_GROUP
+    }
+    fn required(&self) -> bool {
+        Self::PUBLISHER_REQUIRED
+    }
+    fn rollback_scope_needed(&self) -> Option<&'static str> {
+        Self::ROLLBACK_SCOPE
+    }
+
+    fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
+        let log = ctx.logger("publish");
+        let mut targets: Vec<WingetTarget> = Vec::new();
+        let selected = ctx.options.selected_crates.clone();
+        for crate_name in &selected {
+            if !is_winget_per_crate_configured(ctx, crate_name) {
+                continue;
+            }
+            // Snapshot the target shape BEFORE the publish path runs so
+            // a mid-publish failure still leaves the operator a manual
+            // PR-close pointer.
+            if let Some(t) = collect_winget_target(ctx, crate_name) {
+                targets.push(t);
+            }
+            publish_to_winget(ctx, crate_name, &log)?;
+        }
+        let mut evidence = anodizer_core::PublishEvidence::new("winget");
+        if let Some(first) = targets.first() {
+            evidence.primary_ref = Some(format!(
+                "https://github.com/{}/{}/pulls?q=head%3A{}%3A{}",
+                first.upstream_owner, first.upstream_repo, first.fork_owner, first.branch
+            ));
+        }
+        evidence.extra = serde_json::json!({ "winget_targets": targets });
+        Ok(evidence)
+    }
+
+    fn rollback(
+        &self,
+        ctx: &mut Context,
+        evidence: &anodizer_core::PublishEvidence,
+    ) -> anyhow::Result<()> {
+        let log = ctx.logger("publish");
+        let targets = decode_winget_targets(&evidence.extra);
+        if targets.is_empty() {
+            log.warn(&crate::publisher_helpers::rollback_empty_warning_msg(
+                "winget",
+                "submitted PR targets",
+            ));
+            return Ok(());
+        }
+        // WinGet PRs go through automated validation; auto-close
+        // mid-validation is unreliable. Surface a warn per recorded
+        // target with the fork-branch query so the operator can find
+        // and close the PR manually.
+        for t in &targets {
+            log.warn(&format!(
+                "winget: manual PR closure required for '{}' version '{}'; \
+                 visit https://github.com/{}/{}/pulls?q=is%3Apr+head%3A{}%3A{} \
+                 and close the PR (winget validation cannot be reliably \
+                 cancelled programmatically mid-flight)",
+                t.package_id, t.version, t.upstream_owner, t.upstream_repo, t.fork_owner, t.branch
+            ));
+        }
+        log.status(&format!(
+            "winget: {} PR(s) require manual closure",
+            targets.len()
+        ));
+        Ok(())
+    }
+
+    fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
+        Ok(anodizer_core::PreflightCheck::Pass)
+    }
+}
+
+#[cfg(test)]
+mod publisher_tests {
+    use super::*;
+    use anodizer_core::config::{CrateConfig, PublishConfig, RepositoryConfig, WingetConfig};
+    use anodizer_core::test_helpers::TestContextBuilder;
+    use anodizer_core::{PreflightCheck, PublishEvidence, Publisher, PublisherGroup};
+
+    fn winget_crate(crate_name: &str) -> CrateConfig {
+        CrateConfig {
+            name: crate_name.to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                winget: Some(WingetConfig {
+                    publisher: Some("AcmeCo".to_string()),
+                    repository: Some(RepositoryConfig {
+                        owner: Some("acme".to_string()),
+                        name: Some("winget-pkgs-fork".to_string()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn winget_publisher_classification() {
+        let p = WingetPublisher::new();
+        assert_eq!(p.name(), "winget");
+        assert_eq!(p.group(), PublisherGroup::Submitter);
+        assert!(!p.required());
+        assert_eq!(
+            p.rollback_scope_needed(),
+            Some("GITHUB_TOKEN pull_request:write")
+        );
+    }
+
+    #[test]
+    fn winget_preflight_defaults_to_pass() {
+        let ctx = TestContextBuilder::new().build();
+        let p = WingetPublisher::new();
+        assert!(matches!(
+            p.preflight(&ctx).expect("preflight ok"),
+            PreflightCheck::Pass
+        ));
+    }
+
+    #[test]
+    fn winget_rollback_warns_when_no_targets_recorded() {
+        let mut ctx = TestContextBuilder::new().build();
+        let evidence = PublishEvidence::new("winget");
+        let p = WingetPublisher::new();
+        assert!(p.rollback(&mut ctx, &evidence).is_ok());
+
+        let msg =
+            crate::publisher_helpers::rollback_empty_warning_msg("winget", "submitted PR targets");
+        assert!(msg.starts_with("winget:"), "{msg}");
+        assert!(msg.contains("submitted PR targets"), "{msg}");
+        assert!(msg.contains("verify"), "{msg}");
+        assert!(msg.contains("manually"), "{msg}");
+    }
+
+    #[test]
+    fn winget_rollback_warns_per_target_when_evidence_present() {
+        let mut ctx = TestContextBuilder::new().build();
+        let mut evidence = PublishEvidence::new("winget");
+        evidence.extra = serde_json::json!({
+            "winget_targets": [
+                {
+                    "target": "AcmeCo.demo",
+                    "crate_name": "demo",
+                    "package_id": "AcmeCo.demo",
+                    "version": "1.2.3",
+                    "upstream_owner": "microsoft",
+                    "upstream_repo": "winget-pkgs",
+                    "fork_owner": "acme",
+                    "branch": "AcmeCo.demo-1.2.3",
+                },
+                {
+                    "target": "AcmeCo.widget",
+                    "crate_name": "widget",
+                    "package_id": "AcmeCo.widget",
+                    "version": "1.2.3",
+                    "upstream_owner": "microsoft",
+                    "upstream_repo": "winget-pkgs",
+                    "fork_owner": "acme",
+                    "branch": "AcmeCo.widget-1.2.3",
+                },
+            ],
+        });
+        let p = WingetPublisher::new();
+        assert!(p.rollback(&mut ctx, &evidence).is_ok());
+        assert_eq!(decode_winget_targets(&evidence.extra).len(), 2);
+    }
+
+    #[test]
+    fn winget_target_extra_roundtrips() {
+        let original = vec![WingetTarget {
+            target: "AcmeCo.demo".into(),
+            crate_name: "demo".into(),
+            package_id: "AcmeCo.demo".into(),
+            version: "1.2.3".into(),
+            upstream_owner: "microsoft".into(),
+            upstream_repo: "winget-pkgs".into(),
+            fork_owner: "acme".into(),
+            branch: "AcmeCo.demo-1.2.3".into(),
+        }];
+        let extra = serde_json::json!({ "winget_targets": original.clone() });
+        let decoded = decode_winget_targets(&extra);
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn winget_target_extra_carries_no_secret_material() {
+        let t = WingetTarget {
+            target: "AcmeCo.demo".into(),
+            crate_name: "demo".into(),
+            package_id: "AcmeCo.demo".into(),
+            version: "1.2.3".into(),
+            upstream_owner: "microsoft".into(),
+            upstream_repo: "winget-pkgs".into(),
+            fork_owner: "acme".into(),
+            branch: "AcmeCo.demo-1.2.3".into(),
+        };
+        let s = serde_json::to_string(&t).expect("serialize");
+        assert!(!s.contains("\"token\":"), "{s}");
+        assert!(!s.contains("\"pat\":"), "{s}");
+        assert!(!s.contains("\"auth\":"), "{s}");
+        assert!(!s.contains("\"password\":"), "{s}");
+    }
+
+    #[test]
+    fn winget_collect_target_uses_explicit_package_identifier() {
+        let mut c = winget_crate("demo");
+        if let Some(p) = c.publish.as_mut()
+            && let Some(w) = p.winget.as_mut()
+        {
+            w.package_identifier = Some("ExplicitOrg.Demo".to_string());
+        }
+        let ctx = TestContextBuilder::new().crates(vec![c]).build();
+        let t = collect_winget_target(&ctx, "demo").expect("target");
+        assert_eq!(t.package_id, "ExplicitOrg.Demo");
+        assert_eq!(t.upstream_owner, "microsoft");
+        assert_eq!(t.upstream_repo, "winget-pkgs");
+        assert_eq!(t.fork_owner, "acme");
+    }
+
+    #[test]
+    fn winget_collect_target_auto_generates_package_identifier() {
+        let ctx = TestContextBuilder::new()
+            .crates(vec![winget_crate("demo")])
+            .build();
+        let t = collect_winget_target(&ctx, "demo").expect("target");
+        // Publisher "AcmeCo" + name "demo" → "AcmeCo.demo".
+        assert_eq!(t.package_id, "AcmeCo.demo");
+        assert!(t.branch.starts_with("AcmeCo.demo-"));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

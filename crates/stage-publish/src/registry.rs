@@ -69,7 +69,33 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
     if is_mcp_configured(ctx) {
         v.push(Box::new(crate::mcp::publisher::McpPublisher::new()));
     }
+    // Submitter group (no programmatic rollback — warn-only).
+    if is_chocolatey_configured(ctx) {
+        v.push(Box::new(crate::chocolatey::ChocolateyPublisher::new()));
+    }
+    if is_winget_configured(ctx) {
+        v.push(Box::new(crate::winget::WingetPublisher::new()));
+    }
+    if crate::aur_source::is_aur_source_configured(ctx) {
+        v.push(Box::new(crate::aur_source::AurSourcePublisher::new()));
+    }
     v
+}
+
+/// True when at least one crate has a `publish.chocolatey` block.
+fn is_chocolatey_configured(ctx: &Context) -> bool {
+    ctx.config
+        .crates
+        .iter()
+        .any(|c| c.publish.as_ref().is_some_and(|p| p.chocolatey.is_some()))
+}
+
+/// True when at least one crate has a `publish.winget` block.
+fn is_winget_configured(ctx: &Context) -> bool {
+    ctx.config
+        .crates
+        .iter()
+        .any(|c| c.publish.as_ref().is_some_and(|p| p.winget.is_some()))
 }
 
 /// True when ANY crate has `publish.homebrew` OR the top-level
@@ -108,8 +134,9 @@ fn is_nix_configured(ctx: &Context) -> bool {
 
 /// True when at least one crate has a `publish.aur` block. The
 /// `publish.aur_source` upstream-AUR publisher is intentionally NOT
-/// gated by this predicate — it gets its own Submitter-group
-/// publisher in a follow-up task.
+/// gated by this predicate — it has its own Submitter-group
+/// publisher (see [`crate::aur_source::AurSourcePublisher`] +
+/// [`crate::aur_source::is_aur_source_configured`]).
 fn is_aur_configured(ctx: &Context) -> bool {
     ctx.config
         .crates
@@ -527,5 +554,75 @@ mod tests {
             "mcp should not register when name trims to empty (got {:?})",
             names
         );
+    }
+
+    #[test]
+    fn submitter_solo_publishers_registered_when_configured() {
+        use anodizer_core::config::{
+            AurSourceConfig, ChocolateyConfig, RepositoryConfig, WingetConfig,
+        };
+        // One fixture exercises all three Submitter-group "solo"
+        // (no-rollback) publishers: chocolatey, winget, upstream-aur.
+        // cargo is also Submitter group but lives outside this trio
+        // (it has its own scope + required=true classification).
+        let demo = CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                chocolatey: Some(ChocolateyConfig {
+                    name: Some("demo".to_string()),
+                    ..Default::default()
+                }),
+                winget: Some(WingetConfig {
+                    publisher: Some("AcmeCo".to_string()),
+                    repository: Some(RepositoryConfig {
+                        owner: Some("acme".to_string()),
+                        name: Some("winget-pkgs-fork".to_string()),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                aur_source: Some(AurSourceConfig {
+                    git_url: Some("ssh://aur@aur.archlinux.org/demo.git".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new().crates(vec![demo]).build();
+        let publishers = configured_publishers(&ctx);
+        let names: Vec<&str> = publishers.iter().map(|p| p.name()).collect();
+        let expected_scopes: &[(&str, Option<&str>)] = &[
+            ("chocolatey", None),
+            ("winget", Some("GITHUB_TOKEN pull_request:write")),
+            ("upstream-aur", Some("AUR_SSH_KEY write")),
+        ];
+        for (publisher_name, expected_scope) in expected_scopes {
+            assert!(
+                names.contains(publisher_name),
+                "{} missing from registered publishers (got {:?})",
+                publisher_name,
+                names
+            );
+            let p = publishers
+                .iter()
+                .find(|p| &p.name() == publisher_name)
+                .expect("publisher present");
+            assert_eq!(
+                p.group(),
+                PublisherGroup::Submitter,
+                "{} should be Submitter group",
+                publisher_name
+            );
+            assert!(!p.required(), "{} should not be required", publisher_name);
+            assert_eq!(
+                p.rollback_scope_needed(),
+                *expected_scope,
+                "{} rollback scope",
+                publisher_name
+            );
+        }
     }
 }

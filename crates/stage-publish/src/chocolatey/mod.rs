@@ -4,7 +4,8 @@
 mod install;
 mod nuspec;
 pub(crate) mod package;
-mod publish;
+pub(crate) mod publish;
+pub mod publisher;
 
 #[cfg(test)]
 mod tests;
@@ -12,3 +13,4 @@ mod tests;
 pub use install::{InstallScriptDual, generate_install_script, generate_install_script_dual};
 pub use nuspec::{NuspecParams, generate_nuspec};
 pub use publish::publish_to_chocolatey;
+pub use publisher::ChocolateyPublisher;
