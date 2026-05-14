@@ -116,6 +116,7 @@ name = "anodizer-stage-announce"
 version = "0.1.0"
 dependencies = [
  "anodizer-core",
+ "anodizer-stage-publish",
  "anyhow",
  "base64",
  "chrono",
@@ -127,6 +128,7 @@ dependencies = [
  "serde_yaml_ng",
  "serial_test",
  "sha1",
+ "tempfile",
  "tracing",
 ]
 
