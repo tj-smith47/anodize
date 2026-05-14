@@ -20,6 +20,7 @@ pub mod nix;
 pub mod post_publish;
 pub mod preflight;
 pub mod registry;
+pub mod rollback;
 pub mod scoop;
 pub mod upload;
 pub(crate) mod util;
@@ -32,10 +33,10 @@ pub use dispatch::{DispatchOptions, dispatch};
 pub use registry::{configured_publishers, group_dispatch_order};
 
 use anodizer_core::config::PublishConfig;
-use anodizer_core::context::Context;
+use anodizer_core::context::{Context, RollbackMode};
 use anodizer_core::log::StageLogger;
 use anodizer_core::stage::Stage;
-use anodizer_core::{PublisherOutcome, SkipReason};
+use anodizer_core::{Publisher, PublisherGroup, PublisherOutcome, SkipReason};
 use anyhow::Result;
 
 /// Collect crate names that match the selection filter and have a specific
@@ -283,6 +284,54 @@ fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], log: &StageL
         .collect();
 }
 
+/// Run best-effort rollback when the trigger conditions are met:
+///
+/// 1. At least one required Assets or Manager publisher failed, AND
+/// 2. `ctx.options.rollback_mode != Some(RollbackMode::None)`.
+///
+/// When `ctx.options.rollback_mode` is `None`, this defaults to
+/// `RollbackMode::BestEffort` so the rollback path engages by default.
+/// The `--rollback=none` CLI flag plumbs `Some(RollbackMode::None)` here
+/// to suppress rollback entirely.
+///
+/// The function takes `ctx.publish_report` out, mutates it via
+/// `rollback::run`, and writes it back. Doing the dance here keeps the
+/// `&mut Context` borrow scope tight: `rollback::run` needs mutable
+/// access to `ctx` (each publisher's `rollback()` is `&mut Context`),
+/// which would otherwise conflict with an active `&mut PublishReport`
+/// borrow through `ctx.publish_report`.
+fn run_rollback_if_needed(ctx: &mut Context, publishers: &[Box<dyn Publisher>], log: &StageLogger) {
+    let mode = ctx
+        .options
+        .rollback_mode
+        .unwrap_or(RollbackMode::BestEffort);
+    if mode == RollbackMode::None {
+        return;
+    }
+
+    let needs_rollback = ctx.publish_report.as_ref().is_some_and(|r| {
+        r.any_failed(PublisherGroup::Assets, true) || r.any_failed(PublisherGroup::Manager, true)
+    });
+    if !needs_rollback {
+        return;
+    }
+
+    log.status("rollback: required failure(s) detected; invoking best-effort rollback");
+
+    // Take the report out so `rollback::run` can mutate it while
+    // calling `publisher.rollback(ctx, ...)` (which itself needs
+    // `&mut Context`). We unconditionally write it back below.
+    let Some(mut report) = ctx.publish_report.take() else {
+        // Defensive: `needs_rollback` was true above, so the Option
+        // must have been `Some`. If a future refactor changes that
+        // invariant, log and bail rather than panic.
+        log.warn("rollback: publish_report missing; nothing to dispatch");
+        return;
+    };
+    rollback::run(publishers, &mut report, ctx, mode);
+    ctx.set_publish_report(report);
+}
+
 pub struct PublishStage;
 
 impl PublishStage {
@@ -375,6 +424,19 @@ impl Stage for PublishStage {
         let publishers = registry::configured_publishers(ctx);
         Self::run_with_publishers(ctx, &log, &publishers)?;
 
+        // ---- Best-effort rollback dispatch ----
+        //
+        // Runs only when a required Assets/Manager publisher failed AND
+        // the operator did not opt out via `--rollback=none`. Reversible
+        // publishers (Assets/Manager) that recorded `Succeeded` get
+        // their `Publisher::rollback` invoked; per-step outcomes flip
+        // to `RolledBack` / `RollbackFailed` / `RollbackSkippedNoScope`
+        // in the report so the run-summary task and downstream stages
+        // can render the final state. Submitter publishers are never
+        // rolled back (they are protected by the dispatch-time
+        // submitter gate).
+        run_rollback_if_needed(ctx, &publishers, &log);
+
         // ---- Post-publish polling fan-out (Chocolatey moderation + WinGet PR) ----
         //
         // Runs AFTER every publisher has completed so polling isn't gated
@@ -456,6 +518,156 @@ mod tests {
             anodizer_core::PublisherOutcome::Succeeded
         ));
         assert!(!report.submitter_gated);
+    }
+
+    // -----------------------------------------------------------------------
+    // Rollback dispatch integration - end-to-end PublishStage::run path
+    // through `run_with_publishers` + `run_rollback_if_needed`.
+    // -----------------------------------------------------------------------
+
+    /// Helper to drive the same end-to-end shape `Stage::run` exercises
+    /// (dispatch -> rollback) but with a synthetic publisher slice.
+    /// Skips the post-publish polling fan-out because the fan-out only
+    /// reads per-crate config blocks; with no chocolatey/winget blocks
+    /// configured, the helper is a no-op.
+    fn run_dispatch_and_rollback(
+        ctx: &mut Context,
+        publishers: &[Box<dyn anodizer_core::Publisher>],
+    ) -> Result<()> {
+        let log = ctx.logger("publish-test");
+        PublishStage::run_with_publishers(ctx, &log, publishers)?;
+        run_rollback_if_needed(ctx, publishers, &log);
+        Ok(())
+    }
+
+    #[test]
+    fn publish_stage_invokes_rollback_after_required_failure() {
+        use crate::testing::*;
+        use anodizer_core::PublisherGroup;
+
+        let mut ctx = Context::test_fixture();
+        // Required Manager publisher fails; Assets publisher succeeds.
+        // Rollback dispatch should flip the Assets entry to RolledBack.
+        let publishers = vec![
+            fake(
+                "assets",
+                PublisherGroup::Assets,
+                false,
+                FakeOutcome::Succeed,
+            ),
+            fake(
+                "manager",
+                PublisherGroup::Manager,
+                true,
+                FakeOutcome::Fail("manager boom".into()),
+            ),
+        ];
+        run_dispatch_and_rollback(&mut ctx, &publishers)
+            .expect("stage run returns Ok even when required publisher fails");
+
+        let report = ctx.publish_report().expect("publish_report set");
+        let assets = report
+            .results
+            .iter()
+            .find(|r| r.name == "assets")
+            .expect("assets entry present");
+        assert!(
+            matches!(assets.outcome, anodizer_core::PublisherOutcome::RolledBack),
+            "expected Assets publisher to be rolled back, got {:?}",
+            assets.outcome
+        );
+        // Manager remains Failed (rollback doesn't touch failed entries).
+        let manager = report
+            .results
+            .iter()
+            .find(|r| r.name == "manager")
+            .expect("manager entry present");
+        assert!(matches!(
+            manager.outcome,
+            anodizer_core::PublisherOutcome::Failed(_)
+        ));
+    }
+
+    #[test]
+    fn publish_stage_skips_rollback_when_mode_is_none() {
+        use crate::testing::*;
+        use anodizer_core::PublisherGroup;
+
+        let mut ctx = Context::new(
+            anodizer_core::config::Config::default(),
+            ContextOptions {
+                rollback_mode: Some(RollbackMode::None),
+                ..Default::default()
+            },
+        );
+        // Same fixture as the prior test, but `--rollback=none`
+        // (Some(None)) suppresses the rollback dispatch.
+        let publishers = vec![
+            fake(
+                "assets",
+                PublisherGroup::Assets,
+                false,
+                FakeOutcome::Succeed,
+            ),
+            fake(
+                "manager",
+                PublisherGroup::Manager,
+                true,
+                FakeOutcome::Fail("manager boom".into()),
+            ),
+        ];
+        run_dispatch_and_rollback(&mut ctx, &publishers)
+            .expect("stage run returns Ok in rollback=none mode");
+
+        let report = ctx.publish_report().expect("publish_report set");
+        let assets = report
+            .results
+            .iter()
+            .find(|r| r.name == "assets")
+            .expect("assets entry present");
+        assert!(
+            matches!(assets.outcome, anodizer_core::PublisherOutcome::Succeeded),
+            "expected Assets publisher to remain Succeeded under rollback=none, got {:?}",
+            assets.outcome
+        );
+    }
+
+    #[test]
+    fn publish_stage_skips_rollback_when_no_required_failure() {
+        use crate::testing::*;
+        use anodizer_core::PublisherGroup;
+
+        let mut ctx = Context::test_fixture();
+        // Optional Manager publisher fails - rollback should NOT fire
+        // because no REQUIRED publisher failed.
+        let publishers = vec![
+            fake(
+                "assets",
+                PublisherGroup::Assets,
+                false,
+                FakeOutcome::Succeed,
+            ),
+            fake(
+                "manager",
+                PublisherGroup::Manager,
+                false,
+                FakeOutcome::Fail("manager boom".into()),
+            ),
+        ];
+        run_dispatch_and_rollback(&mut ctx, &publishers)
+            .expect("stage run returns Ok on optional failure");
+
+        let report = ctx.publish_report().expect("publish_report set");
+        let assets = report
+            .results
+            .iter()
+            .find(|r| r.name == "assets")
+            .expect("assets entry present");
+        assert!(
+            matches!(assets.outcome, anodizer_core::PublisherOutcome::Succeeded),
+            "expected Assets publisher to remain Succeeded when no required failure, got {:?}",
+            assets.outcome
+        );
     }
 
     #[test]

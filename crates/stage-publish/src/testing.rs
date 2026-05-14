@@ -15,6 +15,16 @@ pub enum FakeOutcome {
     Fail(String),
 }
 
+/// Drives [`FakePublisher::rollback`]. Independent from [`FakeOutcome`]
+/// because publishing and rollback are exercised by separate tests:
+/// rollback dispatch only walks publishers whose `run()` succeeded, so
+/// the rollback-failure path needs `Succeed` for the publish side AND a
+/// failing rollback to verify the per-step `RollbackFailed` outcome.
+pub enum FakeRollback {
+    Succeed,
+    Fail(String),
+}
+
 /// Minimal [`Publisher`] implementation that records its identity and
 /// returns a predetermined [`FakeOutcome`] from `run`.
 pub struct FakePublisher {
@@ -22,6 +32,11 @@ pub struct FakePublisher {
     pub group: PublisherGroup,
     pub required: bool,
     pub outcome: FakeOutcome,
+    pub rollback_outcome: FakeRollback,
+    /// Mirrors [`Publisher::rollback_scope_needed`]. When `Some`, the
+    /// rollback dispatcher checks for the corresponding env var before
+    /// invoking `rollback()`.
+    pub rollback_scope: Option<&'static str>,
 }
 
 impl Publisher for FakePublisher {
@@ -40,10 +55,21 @@ impl Publisher for FakePublisher {
             FakeOutcome::Fail(msg) => anyhow::bail!("{}", msg),
         }
     }
+    fn rollback(&self, _ctx: &mut Context, _evidence: &PublishEvidence) -> anyhow::Result<()> {
+        match &self.rollback_outcome {
+            FakeRollback::Succeed => Ok(()),
+            FakeRollback::Fail(msg) => anyhow::bail!("{}", msg),
+        }
+    }
+    fn rollback_scope_needed(&self) -> Option<&'static str> {
+        self.rollback_scope
+    }
 }
 
 /// Convenience constructor returning the boxed-trait-object shape the
-/// dispatcher consumes.
+/// dispatcher consumes. Defaults rollback to a no-op success and
+/// declares no scope, matching the dispatcher's "rollback runs cleanly"
+/// case used by every dispatch-side test.
 pub fn fake(
     name: &str,
     group: PublisherGroup,
@@ -55,5 +81,48 @@ pub fn fake(
         group,
         required,
         outcome,
+        rollback_outcome: FakeRollback::Succeed,
+        rollback_scope: None,
+    })
+}
+
+/// Like [`fake`] but lets the test drive both the publish outcome AND
+/// the rollback outcome. Use for rollback-failure tests where the
+/// publisher must `Succeed` (so rollback dispatch picks it up) but the
+/// `rollback()` call itself returns `Err`.
+pub fn fake_with_rollback(
+    name: &str,
+    group: PublisherGroup,
+    required: bool,
+    outcome: FakeOutcome,
+    rollback_outcome: FakeRollback,
+) -> Box<dyn Publisher> {
+    Box::new(FakePublisher {
+        name: name.to_string(),
+        group,
+        required,
+        outcome,
+        rollback_outcome,
+        rollback_scope: None,
+    })
+}
+
+/// Like [`fake`] but declares a non-`None` `rollback_scope_needed`. Use
+/// for the `RollbackSkippedNoScope` path where the dispatcher should
+/// skip the rollback because the env var is unset.
+pub fn fake_with_scope(
+    name: &str,
+    group: PublisherGroup,
+    required: bool,
+    outcome: FakeOutcome,
+    rollback_scope: &'static str,
+) -> Box<dyn Publisher> {
+    Box::new(FakePublisher {
+        name: name.to_string(),
+        group,
+        required,
+        outcome,
+        rollback_outcome: FakeRollback::Succeed,
+        rollback_scope: Some(rollback_scope),
     })
 }
