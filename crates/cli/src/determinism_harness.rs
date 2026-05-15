@@ -17,10 +17,12 @@
 //! 1. For each of `runs` runs, opens a fresh
 //!    [`anodizer_core::git::worktree::Worktree`] rooted at `commit`.
 //! 2. Builds an isolated env: per-run `CARGO_HOME`, `CARGO_TARGET_DIR`,
-//!    `TMPDIR`, `HOME`; `SOURCE_DATE_EPOCH=self.sde`; `PATH` trimmed to
-//!    `allow_listed_path()`; everything else stripped except an explicit
-//!    identity-only allow-list — see [`HARNESS_ENV_ALLOWLIST`]. Notably
-//!    excluded: `GITHUB_TOKEN`, `ACTIONS_RUNTIME_TOKEN`, and every other
+//!    `TMPDIR`, `HOME`; `SOURCE_DATE_EPOCH=self.sde`; `PATH` inherited
+//!    from the host via [`allow_listed_path()`] (two harness runs from
+//!    the same host process see identical PATH, so determinism holds);
+//!    everything else stripped except an explicit identity-only
+//!    allow-list — see [`HARNESS_ENV_ALLOWLIST`]. Notably excluded:
+//!    `GITHUB_TOKEN`, `ACTIONS_RUNTIME_TOKEN`, and every other
 //!    credential-bearing var.
 //! 3. Invokes the build-side pipeline (`anodize release --snapshot
 //!    --skip=<SIDE_EFFECT_STAGES>`, see
@@ -426,6 +428,20 @@ pub(crate) fn build_subprocess_env(inputs: &BuildSubprocessEnv<'_>) -> HashMap<S
             env.insert(key.into(), v);
         }
     }
+    // rustup needs RUSTUP_HOME to dispatch a toolchain; on GH Actions
+    // runners (and most dev machines) it isn't set in the env — rustup
+    // defaults to $HOME/.rustup. Since the child runs with HOME=tmpdir,
+    // we must compute the default from the HOST's HOME (Unix) or
+    // USERPROFILE (Windows) and propagate it explicitly. Uses
+    // `or_insert_with` so a host RUSTUP_HOME (inherited via the
+    // allow-list above) takes precedence over the synthesized default.
+    env.entry("RUSTUP_HOME".into()).or_insert_with(|| {
+        let host_home = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map(std::path::PathBuf::from)
+            .unwrap_or_default();
+        host_home.join(".rustup").to_string_lossy().into_owned()
+    });
     // Always set CI=true so build scripts know they're in a sealed env.
     env.entry("CI".into()).or_insert_with(|| "true".into());
 
@@ -444,17 +460,18 @@ struct ArtifactInfo {
     stage: String,
 }
 
-/// Conservative PATH for harness children — `/usr/bin`, `/bin`, and
-/// `$HOME/.cargo/bin` when `HOME` is set (rustup-managed cargo lives
-/// there on most installs).
+/// PATH for harness children — inherits the host's PATH directly.
+///
+/// The harness's hermeticity goal is to isolate cargo/build outputs
+/// from the host's CARGO_HOME and HOME (so two runs of the same commit
+/// don't share warm caches), NOT to tighten the binary-search path.
+/// Two runs from the same host process see identical host PATH, so
+/// determinism is preserved. Inheriting host PATH also makes the
+/// harness work uniformly on Windows (git at `C:\Program Files\Git\cmd`),
+/// macOS Apple Silicon (`/opt/homebrew/bin`), and Linux (`/usr/bin`,
+/// `~/.cargo/bin`) without per-platform allow-list maintenance.
 fn allow_listed_path() -> String {
-    let mut parts: Vec<String> = vec!["/usr/bin".into(), "/bin".into()];
-    // Prepend the rustup cargo bin so `cargo` / `rustc` resolve to the
-    // pinned toolchain rather than a system package.
-    if let Ok(home) = std::env::var("HOME") {
-        parts.insert(0, format!("{}/.cargo/bin", home));
-    }
-    parts.join(":")
+    std::env::var("PATH").unwrap_or_default()
 }
 
 /// Walk `<worktree>/dist` and collect every regular file. Sorted by path
@@ -784,10 +801,16 @@ mod tests {
     }
 
     #[test]
-    fn allow_listed_path_includes_usr_bin_and_bin() {
-        let p = allow_listed_path();
-        assert!(p.contains("/usr/bin"));
-        assert!(p.contains("/bin"));
+    fn allow_listed_path_inherits_host_path() {
+        // The harness inherits the host PATH verbatim — its hermeticity
+        // goal is CARGO_HOME/HOME isolation, not PATH narrowing. Two runs
+        // from the same host process see identical PATH, so determinism
+        // is preserved while the harness stays cross-platform (Windows
+        // git lives at `C:\Program Files\Git\cmd`, macOS Homebrew at
+        // `/opt/homebrew/bin`, etc.).
+        // SAFETY: this test is read-only on the env; no need to serialize.
+        let expected = std::env::var("PATH").unwrap_or_default();
+        assert_eq!(allow_listed_path(), expected);
     }
 
     #[test]
@@ -1067,6 +1090,78 @@ mod tests {
                     env.get("CI").map(String::as_str),
                     Some("true"),
                     "harness defaults CI=true when host has no CI var set"
+                );
+            });
+        }
+
+        // ── RUSTUP_HOME defaulting (W5) ─────────────────────────────────
+        //
+        // rustup needs RUSTUP_HOME to dispatch a toolchain. GH Actions
+        // runners and most dev machines don't set it; rustup falls back to
+        // `$HOME/.rustup`, but the harness's per-run HOME is a fresh
+        // tmpdir, so the fallback dereferences to an empty rustup root.
+        // The harness must synthesize a default from the HOST's HOME
+        // (Unix) or USERPROFILE (Windows) so a cleared child can still
+        // find a toolchain.
+
+        /// Restore the host's HOME on Drop so RUSTUP_HOME tests can mutate
+        /// it under the serial(harness_env) lock without leaking a fake
+        /// value into sibling tests that read HOME (e.g. the next test in
+        /// the env_allowlist module).
+        struct HomeGuard {
+            previous: Option<std::ffi::OsString>,
+        }
+        impl HomeGuard {
+            fn capture() -> Self {
+                Self {
+                    previous: std::env::var_os("HOME"),
+                }
+            }
+        }
+        impl Drop for HomeGuard {
+            fn drop(&mut self) {
+                // SAFETY: caller holds serial(harness_env).
+                match &self.previous {
+                    Some(v) => unsafe { std::env::set_var("HOME", v) },
+                    None => unsafe { std::env::remove_var("HOME") },
+                }
+            }
+        }
+
+        #[test]
+        #[serial(harness_env)]
+        fn harness_env_defaults_rustup_home_from_host_home_when_unset() {
+            let tmp = tempfile::tempdir().unwrap();
+            let _home = HomeGuard::capture();
+            with_cleared(&["RUSTUP_HOME"], || {
+                // SAFETY: serial(harness_env) holds the lock.
+                unsafe { std::env::set_var("HOME", "/host/home/user") };
+                let env = build_subprocess_env(&inputs(tmp.path()));
+                let rh = env
+                    .get("RUSTUP_HOME")
+                    .expect("RUSTUP_HOME must be defaulted when unset")
+                    .replace('\\', "/");
+                assert_eq!(
+                    rh, "/host/home/user/.rustup",
+                    "harness must default RUSTUP_HOME to <host HOME>/.rustup"
+                );
+            });
+        }
+
+        #[test]
+        #[serial(harness_env)]
+        fn harness_env_rustup_home_explicit_wins_over_default() {
+            let tmp = tempfile::tempdir().unwrap();
+            let _home = HomeGuard::capture();
+            with_cleared(&["RUSTUP_HOME"], || {
+                // SAFETY: serial(harness_env) holds the lock.
+                unsafe { std::env::set_var("HOME", "/host/home/user") };
+                unsafe { std::env::set_var("RUSTUP_HOME", "/operator/override") };
+                let env = build_subprocess_env(&inputs(tmp.path()));
+                assert_eq!(
+                    env.get("RUSTUP_HOME").map(String::as_str),
+                    Some("/operator/override"),
+                    "an explicit host RUSTUP_HOME must take precedence over the synthesized default"
                 );
             });
         }

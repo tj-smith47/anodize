@@ -205,6 +205,25 @@ fn run_git(dir: &Path, args: &[&str]) {
     );
 }
 
+/// Detect the host's target triple via `rustc -vV`. Used to populate the
+/// fixture `.anodizer.yaml` so the build stage targets the same triple
+/// the harness's rustup proxy will actually compile for — without this,
+/// macOS / Windows hosts crash trying to link an x86_64-unknown-linux-gnu
+/// binary they have no toolchain for.
+fn host_triple() -> String {
+    let out = Command::new("rustc")
+        .args(["-vV"])
+        .output()
+        .expect("rustc -vV must succeed (cargo is on PATH; rustc is sibling)");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for line in stdout.lines() {
+        if let Some(host) = line.strip_prefix("host: ") {
+            return host.trim().to_string();
+        }
+    }
+    panic!("no `host:` line in `rustc -vV` output:\n{}", stdout);
+}
+
 /// Bootstrap a minimal cargo workspace (no deps) at `dir`, init it as a
 /// git repo, and commit. Returns the populated fixture root.
 fn bootstrap_minimal_cargo_repo(dir: &Path) {
@@ -234,8 +253,13 @@ path = "src/main.rs"
     // is empty, and the build stage's `Command::new("cargo")
     // .current_dir("")` fails to spawn (cwd resolution treats empty as
     // a nonexistent dir on some kernels).
-    fs::write(
-        dir.join(".anodizer.yaml"),
+    //
+    // `targets:` is populated with the host triple at runtime so the
+    // build stage compiles for a target the host toolchain actually
+    // supports — macOS Apple Silicon → aarch64-apple-darwin, Windows →
+    // x86_64-pc-windows-msvc, Linux → x86_64-unknown-linux-gnu, etc.
+    let host = host_triple();
+    let yaml = format!(
         r#"crates:
   - name: anodize-det-fixture
     path: .
@@ -243,10 +267,10 @@ path = "src/main.rs"
       - id: anodize-det-fixture
         binary: anodize-det-fixture
         targets:
-          - x86_64-unknown-linux-gnu
+          - {host}
 "#,
-    )
-    .unwrap();
+    );
+    fs::write(dir.join(".anodizer.yaml"), yaml).unwrap();
 
     run_git(dir, &["init", "-q", "-b", "master"]);
     run_git(dir, &["config", "user.email", "test@test.com"]);
@@ -263,10 +287,6 @@ path = "src/main.rs"
 /// On hosts without `cargo` or `git` on PATH, prints a skip marker and
 /// returns early so the suite stays green on minimal hosts.
 #[test]
-#[cfg_attr(
-    not(target_os = "linux"),
-    ignore = "fixture targets x86_64-unknown-linux-gnu; harness PATH is Unix-only (tracked in v0.3.0 deferred-work W5)"
-)]
 fn inject_drift_archive_reports_drift_on_minimal_workspace() {
     if !tool_on_path("cargo") || !tool_on_path("git") {
         eprintln!(
@@ -280,14 +300,10 @@ fn inject_drift_archive_reports_drift_on_minimal_workspace() {
     let repo = tmp.path();
     bootstrap_minimal_cargo_repo(repo);
 
-    // Per-run HOME inside the harness is a fresh tmpdir, so the rustup
-    // proxy cargo can't find its toolchain unless RUSTUP_HOME is
-    // explicitly set. The harness allow-lists RUSTUP_HOME for exactly
-    // this case — supply a default pointing at the host's `~/.rustup`
-    // when the var is unset.
-    let host_home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
-    let rustup_home =
-        std::env::var("RUSTUP_HOME").unwrap_or_else(|_| format!("{host_home}/.rustup"));
+    // RUSTUP_HOME / PATH propagation is the harness's responsibility —
+    // `build_subprocess_env` defaults RUSTUP_HOME from the host's
+    // HOME/USERPROFILE when unset, and `allow_listed_path` inherits the
+    // host PATH verbatim. No per-test workaround needed.
 
     let report_path = repo.join("det.json");
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
@@ -303,7 +319,6 @@ fn inject_drift_archive_reports_drift_on_minimal_workspace() {
         .arg(&report_path)
         .current_dir(repo)
         .env("ANODIZE_TEST_HARNESS", "1")
-        .env("RUSTUP_HOME", &rustup_home)
         .output()
         .expect("invoking anodize check determinism");
 
