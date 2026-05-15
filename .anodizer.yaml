@@ -98,9 +98,13 @@ defaults:
 
 before:
   hooks:
-    - cargo fmt --check
-    - cargo clippy -- -D warnings
-    - cargo test
+    # Generate the release-time man page artifact. CI gates fmt + clippy
+    # + cargo test on every push; running them again at release time was
+    # double-running (~5 min wasted per release) AND caused nested-harness
+    # recursion when `anodize check determinism` ran the release pipeline,
+    # which ran `cargo test`, which ran integration tests that themselves
+    # spawn `anodize check determinism`. The validation gate stays in CI;
+    # this hook stays focused on artifact generation.
     - mkdir -p dist && cargo run --release --bin anodizer -- man > dist/anodizer.1
 
 after:
