@@ -34,24 +34,25 @@ changelog generation, announcers, cloud uploads, and custom publishers.
 These features shipped 2026-05-14 in response to the anodize **v0.2.0 cascade
 failure** ([Run 25754442852](https://github.com/tj-smith47/anodizer/actions/runs/25754442852)
 and four siblings on 2026-05-12, all failing in the publish stage). They form
-three-group publisher dispatch (Reversible, Submitter, Irreversible), a gate
-that aborts the irreversible group when reversible/submitter publishers fail,
-opt-in rollback per-publisher, and a `--rollback-only --from-run=<id>` replay
-path. No post-merge release has cut yet, so most rows below are honestly
-"help wanted" until v0.2.x+ tags exercise each codepath.
+three-group publisher dispatch (Assets, Manager, Submitter), a Submitter gate
+that aborts the Submitter group when required Assets or Manager publishers
+fail, opt-in rollback per-publisher, and a `--rollback-only --from-run=<id>`
+replay path. Several behaviors have unit/integration test coverage today
+(rows marked `✅ Verified (tests)` below); rows that need a live v0.2.x+ tag
+to exercise the codepath stay `🤝 Help wanted`.
 
 | Key | Status | Notes |
 |---|---|---|
-| Three-group Submitter gate (default-on) | 🤝 Help wanted | [`crates/stage-publish/src/dispatch.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/dispatch.rs) - Reversible / Submitter / Irreversible groups wired; first v0.2.x release exercises it |
-| `--no-gate-submitter` override | 🤝 Help wanted | Wired through `release` CLI flags; no post-merge release has exercised the override |
-| `--rollback=best-effort` | 🤝 Help wanted | [`crates/stage-publish/src/rollback.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/rollback.rs) - per-publisher rollback path implemented; no live release has rolled back yet |
-| `--rollback-only --from-run=<id>` replay | 🤝 Help wanted | [`crates/stage-publish/src/rollback_only.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/rollback_only.rs) - replay-from-run wired; no live recovery has used it yet |
+| Three-group Submitter gate (default-on) | ✅ Verified (tests) | [`crates/stage-publish/src/dispatch.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/dispatch.rs) — Assets / Manager / Submitter groups wired and gate verified via `dispatch::tests::submitter_gate_skips_submitter_when_required_manager_fails`; first v0.2.x release confirms end-to-end |
+| `--no-gate-submitter` override | ✅ Verified (tests) | [`crates/stage-publish/src/dispatch.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/dispatch.rs) (`dispatch::tests::no_gate_submitter_runs_submitter_anyway`) + CLI parse (`crates/cli/src/main.rs::tests::release_parses_no_gate_submitter_flag`); awaits a live release that flips the override |
+| `--rollback=best-effort` | ✅ Verified (tests) | [`crates/stage-publish/src/rollback.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/rollback.rs) — per-publisher rollback path verified via `preflight::tests::preflight_bails_when_required_publisher_missing_scope_and_rollback_best_effort` + CLI parse (`crates/cli/src/main.rs::tests::release_parses_rollback_best_effort`); no live release has rolled back yet |
+| `--rollback-only --from-run=<id>` replay | ✅ Verified (tests) | [`crates/stage-publish/src/rollback_only.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/rollback_only.rs) — idempotency + read/dispatch covered by `rollback_only::tests::rollback_only_reads_report_and_dispatches`, `rollback_only_second_invocation_is_noop_for_already_rolled_back_entries`, plus path-traversal guard at the binary surface (`crates/cli/tests/integration.rs::release_from_run_rejects_path_traversal_at_binary_surface`, `release_rollback_only_invokes_replay_from_disk`) and `crates/stage-publish/tests/run_report_persistence.rs::publish_stage_writes_report_and_rollback_only_can_read_it` |
 | `--fail-fast` | ✅ Verified | [anodize `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) plus [release command wiring](https://github.com/tj-smith47/anodizer/blob/master/crates/cli/src/commands/release/mod.rs) (`fail_fast` opts) - pre-resilience-work flag, exercised in v0.1.x runs |
-| `--summary-json=<path>` audit-trail | 🤝 Help wanted | [`crates/stage-publish/src/run_summary.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/run_summary.rs) - JSON shape stable; no v0.2.x release has emitted one yet |
-| `announce.gate_on` config (default `required_publishers`) | 🤝 Help wanted | Wired; no post-merge release has gated an announce on publisher health |
-| Preflight rollback-scope checks | 🤝 Help wanted | [`crates/stage-publish/src/preflight.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/preflight.rs) - checks active; no live release has tripped them |
-| AnnounceStage emit-summary-on-skip | 🤝 Help wanted | Summary fires even when announce is skipped; no v0.2.x release has skipped an announce yet |
-| BlobStage writes to `ctx.publish_report` | 🤝 Help wanted | Wired into the shared publish-report surface; awaits a release with cloud blob credentials configured |
+| `--summary-json=<path>` audit-trail | ✅ Verified (tests) | [`crates/stage-publish/src/run_summary.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/run_summary.rs) — JSON schema v1 round-trip + writer covered by `run_summary::tests::run_summary_schema_v1_roundtrips_through_json`, `run_summary_rejects_unknown_fields`, `write_summary_json_creates_parent_dir`; CLI parse at `crates/cli/src/main.rs::tests::release_parses_summary_json`; no v0.2.x release has emitted one yet |
+| `announce.gate_on` config (default `required_publishers`) | ✅ Verified (tests) | [`crates/stage-announce/src/run.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-announce/src/run.rs) — gate evaluation covered by `run::tests::announce_skips_when_gate_required_and_required_failure`, `announce_skips_when_gate_all_and_any_failure`, `announce_gate_serializes_as_snake_case`; no post-merge release has gated an announce on publisher health |
+| Preflight rollback-scope checks | ✅ Verified (tests) | [`crates/stage-publish/src/preflight.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-publish/src/preflight.rs) — warn / strict-block / best-effort-bail paths covered by `preflight::tests::preflight_warns_on_missing_rollback_scope`, `preflight_blocks_on_missing_rollback_scope_when_strict`, `preflight_bails_when_required_publisher_missing_scope_and_rollback_best_effort`; no live release has tripped them |
+| AnnounceStage emit-summary-on-skip | ✅ Verified (tests) | [`crates/stage-announce/src/run.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-announce/src/run.rs) — emit-on-gate-skip + emit-when-stage-not-called covered by `run::tests::emit_summary_writes_when_gate_would_fire`, `emit_summary_writes_when_announce_stage_was_not_called`, `emit_summary_writes_summary_when_path_set`, plus integration test `crates/cli/tests/integration.rs::test_release_skip_announce_still_writes_summary_json`; no v0.2.x release has skipped an announce yet |
+| BlobStage writes to `ctx.publish_report` | ✅ Verified (tests) | [`crates/stage-blob/src/run.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-blob/src/run.rs) — publish-report append + `BlobConfig.required` gating covered by `tests::blob_stage_appends_succeeded_to_publish_report`, `blob_stage_appends_failed_to_publish_report`, `blob_stage_initializes_publish_report_when_none`, `record_blob_result_required_false_by_default`, `record_blob_result_failed_required_blob_trips_assets_required_gate`; awaits a release with cloud blob credentials configured |
 
 ## Build determinism
 
