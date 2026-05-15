@@ -755,7 +755,70 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         run_post_pipeline(&mut ctx, &config, opts.dry_run, &log)?;
     }
 
+    // Gate: required-publisher failures must surface as a non-zero exit
+    // even when the pipeline body itself returned Ok. The body returns
+    // Ok because per-publisher failures are intentionally non-fatal at
+    // the stage layer (rollback / announce-gating / summary all depend
+    // on the pipeline running to completion). The final exit code, in
+    // contrast, MUST reflect required-publisher failure so CI / shell
+    // callers see the right signal. See
+    // `.claude/audits/2026-05-15-release-resilience-review.md#I14`.
+    if result.is_ok() {
+        gate_required_failures(&ctx)?;
+    }
+
     result
+}
+
+/// End-of-pipeline gate: bail when any *required* publisher finished in a
+/// failure state, so the CLI exits non-zero even though the pipeline body
+/// returned Ok.
+///
+/// "Failure state" here counts both `Failed(_)` (publish itself failed)
+/// and `RollbackFailed(_)` (publish ran, rollback was attempted, and the
+/// rollback also failed — leaving the operator with a half-published
+/// surface that needs manual intervention). Either way, a downstream
+/// shell / CI caller MUST see a non-zero exit.
+///
+/// **Snapshot / dry-run skip**: publishers don't actually run in either
+/// mode, so `required_failures` should already be 0; the explicit skip
+/// is defense-in-depth in case a future stage starts recording
+/// publisher results in those modes (e.g. for `--snapshot` evidence
+/// preview).
+///
+/// See `.claude/audits/2026-05-15-release-resilience-review.md#I14`.
+pub(crate) fn gate_required_failures(ctx: &Context) -> Result<()> {
+    if ctx.is_snapshot() || ctx.is_dry_run() {
+        return Ok(());
+    }
+    let Some(report) = ctx.publish_report.as_ref() else {
+        return Ok(());
+    };
+    let failed: Vec<&str> = report
+        .results
+        .iter()
+        .filter(|r| {
+            r.required
+                && matches!(
+                    r.outcome,
+                    anodizer_core::publish_report::PublisherOutcome::Failed(_)
+                        | anodizer_core::publish_report::PublisherOutcome::RollbackFailed(_)
+                )
+        })
+        .map(|r| r.name.as_str())
+        .collect();
+    if failed.is_empty() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "release pipeline finished but {} required publisher(s) failed: {}. \
+         The pipeline ran to completion so rollback / announce-gating / \
+         summary all observed final state; this non-zero exit ensures CI \
+         and shell callers see the failure. Inspect dist/run-<id>/report.json \
+         for details and use --rollback-only --from-run=<id> to retry rollback.",
+        failed.len(),
+        failed.join(", ")
+    );
 }
 
 /// Post-pipeline tasks: metadata writing, publishers, after hooks.
@@ -1400,5 +1463,152 @@ mod tests {
         assert!(report.has_blockers(combine(true, false)));
         assert!(report.has_blockers(combine(false, true)));
         assert!(report.has_blockers(combine(true, true)));
+    }
+
+    // ---- gate_required_failures (audit I14) -----------------------------
+
+    /// Build a `Context` with a `publish_report` containing a single
+    /// publisher result with the given outcome and `required` flag.
+    fn ctx_with_report(
+        name: &str,
+        required: bool,
+        outcome: anodizer_core::publish_report::PublisherOutcome,
+        opts: ContextOptions,
+    ) -> Context {
+        use anodizer_core::publish_report::{PublishReport, PublisherGroup, PublisherResult};
+
+        let mut ctx = Context::new(Config::default(), opts);
+        let mut report = PublishReport::default();
+        report.results.push(PublisherResult {
+            name: name.to_string(),
+            group: PublisherGroup::Manager,
+            required,
+            outcome,
+            evidence: None,
+        });
+        ctx.set_publish_report(report);
+        ctx
+    }
+
+    #[test]
+    fn release_exits_nonzero_when_required_publisher_failed() {
+        use anodizer_core::publish_report::PublisherOutcome;
+
+        let ctx = ctx_with_report(
+            "homebrew",
+            true,
+            PublisherOutcome::Failed("git push refused".into()),
+            ContextOptions::default(),
+        );
+        let err = gate_required_failures(&ctx).expect_err("must error");
+        let msg = format!("{err}");
+        assert!(msg.contains("homebrew"), "error names publisher: {msg}");
+        assert!(
+            msg.contains("required publisher"),
+            "error mentions required: {msg}"
+        );
+    }
+
+    #[test]
+    fn release_exits_zero_when_no_required_failures() {
+        use anodizer_core::publish_report::{
+            PublishReport, PublisherGroup, PublisherOutcome, PublisherResult,
+        };
+
+        let mut ctx = Context::new(Config::default(), ContextOptions::default());
+        let mut report = PublishReport::default();
+        report.results.push(PublisherResult {
+            name: "homebrew".to_string(),
+            group: PublisherGroup::Manager,
+            required: true,
+            outcome: PublisherOutcome::Succeeded,
+            evidence: None,
+        });
+        // A *non*-required publisher that failed must NOT trip the gate.
+        report.results.push(PublisherResult {
+            name: "scoop".to_string(),
+            group: PublisherGroup::Manager,
+            required: false,
+            outcome: PublisherOutcome::Failed("network".to_string()),
+            evidence: None,
+        });
+        ctx.set_publish_report(report);
+
+        gate_required_failures(&ctx).expect("must succeed");
+    }
+
+    #[test]
+    fn release_required_failures_gate_skipped_in_snapshot() {
+        use anodizer_core::publish_report::PublisherOutcome;
+
+        let opts = ContextOptions {
+            snapshot: true,
+            ..Default::default()
+        };
+        let ctx = ctx_with_report(
+            "homebrew",
+            true,
+            PublisherOutcome::Failed("boom".into()),
+            opts,
+        );
+        // Snapshot mode skips the gate (defense-in-depth — publishers
+        // shouldn't run in snapshot mode at all).
+        gate_required_failures(&ctx).expect("snapshot must short-circuit gate");
+    }
+
+    #[test]
+    fn release_required_failures_gate_skipped_in_dry_run() {
+        use anodizer_core::publish_report::PublisherOutcome;
+
+        let opts = ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        };
+        let ctx = ctx_with_report(
+            "homebrew",
+            true,
+            PublisherOutcome::Failed("boom".into()),
+            opts,
+        );
+        gate_required_failures(&ctx).expect("dry-run must short-circuit gate");
+    }
+
+    #[test]
+    fn release_required_failures_counts_rollback_failed() {
+        use anodizer_core::publish_report::PublisherOutcome;
+
+        // A rolled-back-failed required publisher leaves the operator
+        // with a half-published surface — must also produce non-zero exit.
+        let ctx = ctx_with_report(
+            "homebrew",
+            true,
+            PublisherOutcome::RollbackFailed("manual cleanup required".into()),
+            ContextOptions::default(),
+        );
+        let err = gate_required_failures(&ctx).expect_err("rollback-failed must error");
+        let msg = format!("{err}");
+        assert!(msg.contains("homebrew"), "names publisher: {msg}");
+    }
+
+    #[test]
+    fn release_required_failures_ignored_when_not_required() {
+        use anodizer_core::publish_report::PublisherOutcome;
+
+        // `required: false` + Failed must NOT trip the gate.
+        let ctx = ctx_with_report(
+            "scoop",
+            false,
+            PublisherOutcome::Failed("boom".into()),
+            ContextOptions::default(),
+        );
+        gate_required_failures(&ctx).expect("optional failure must not gate");
+    }
+
+    #[test]
+    fn release_required_failures_noop_without_report() {
+        // No publish_report on the context at all (publish stage didn't
+        // run, e.g. preflight-only) → gate is a no-op.
+        let ctx = Context::new(Config::default(), ContextOptions::default());
+        gate_required_failures(&ctx).expect("missing report must short-circuit");
     }
 }

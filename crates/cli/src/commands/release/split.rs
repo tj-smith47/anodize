@@ -537,6 +537,15 @@ pub fn run_merge(
         super::run_post_pipeline(ctx, config, dry_run, log)?;
     }
 
+    // See `release::gate_required_failures` for rationale: per-publisher
+    // failures are intentionally non-fatal inside the pipeline body, but
+    // the CLI's final exit code MUST reflect them. `--merge` runs the
+    // same post-build / publish stages as a normal release so the same
+    // gate applies.
+    if result.is_ok() {
+        super::gate_required_failures(ctx)?;
+    }
+
     result
 }
 
@@ -600,6 +609,12 @@ fn run_merge_legacy(
     let result = p.run(ctx, log);
     if result.is_ok() {
         super::run_post_pipeline(ctx, config, dry_run, log)?;
+    }
+    // See `release::gate_required_failures` — required-publisher
+    // failures must surface as non-zero exit even on the legacy merge
+    // path.
+    if result.is_ok() {
+        super::gate_required_failures(ctx)?;
     }
     result
 }
