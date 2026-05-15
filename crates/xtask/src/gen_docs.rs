@@ -198,6 +198,71 @@ struct CmdInfo {
     args: Vec<ArgInfo>,
 }
 
+/// Build an `ArgInfo` for a single non-global, visible flag. Emits a warning
+/// to stderr when the flag has no help text (caught by `gen-docs --check`).
+fn arg_info(a: &clap::Arg, owner_label: &str) -> ArgInfo {
+    if a.get_help().is_none() {
+        let flag = a.get_long().unwrap_or_else(|| a.get_id().as_str());
+        eprintln!("warning: {owner_label}.--{flag} has no help text");
+    }
+    ArgInfo {
+        long: a
+            .get_long()
+            .map(|l| format!("`--{l}`"))
+            .unwrap_or_else(|| format!("`<{}>`", a.get_id())),
+        short: a
+            .get_short()
+            .map(|s| format!("`-{s}`"))
+            .unwrap_or_else(|| "\u{2014}".into()),
+        default: a
+            .get_default_values()
+            .first()
+            .map(|d| format!("`{}`", d.to_string_lossy()))
+            .unwrap_or_else(|| "\u{2014}".into()),
+        help: a.get_help().map(|h| h.to_string()).unwrap_or_default(),
+    }
+}
+
+/// Recursively collect this command and all of its visible subcommands into a
+/// flat list of `CmdInfo`. `parent_path` carries the names of ancestors so the
+/// rendered `CmdInfo.name` becomes e.g. `"check determinism"` for nested
+/// subcommands.
+///
+/// Hidden args (`Arg::hide(true)`) and hidden subcommands (`Command::hide(true)`)
+/// are filtered out so test-harness plumbing like `--simulate-failure` and
+/// `--inject-drift` doesn't leak into user-facing docs.
+fn collect_command(cmd: &clap::Command, parent_path: &[&str]) -> Vec<CmdInfo> {
+    let mut path: Vec<&str> = parent_path.to_vec();
+    path.push(cmd.get_name());
+    let full_name = path.join(" ");
+
+    let args: Vec<ArgInfo> = cmd
+        .get_arguments()
+        .filter(|a| {
+            !a.is_global_set()
+                && a.get_id() != "help"
+                && a.get_id() != "version"
+                && !a.is_hide_set()
+        })
+        .map(|a| arg_info(a, &full_name))
+        .collect();
+
+    let mut result = vec![CmdInfo {
+        name: full_name,
+        about: cmd.get_about().map(|a| a.to_string()).unwrap_or_default(),
+        args,
+    }];
+
+    for sub in cmd.get_subcommands() {
+        if sub.is_hide_set() {
+            continue;
+        }
+        result.extend(collect_command(sub, &path));
+    }
+
+    result
+}
+
 fn generate_cli_reference(tera: &Tera) -> Result<String, String> {
     let cmd = anodizer_cli::build_cli();
 
@@ -205,7 +270,7 @@ fn generate_cli_reference(tera: &Tera) -> Result<String, String> {
 
     let global_args: Vec<ArgInfo> = cmd
         .get_arguments()
-        .filter(|a| a.is_global_set())
+        .filter(|a| a.is_global_set() && !a.is_hide_set())
         .map(|a| {
             if a.get_help().is_none()
                 && let Some(long) = a.get_long()
@@ -226,39 +291,8 @@ fn generate_cli_reference(tera: &Tera) -> Result<String, String> {
 
     let commands: Vec<CmdInfo> = cmd
         .get_subcommands()
-        .map(|sub| {
-            let args = sub
-                .get_arguments()
-                .filter(|a| !a.is_global_set() && a.get_id() != "help" && a.get_id() != "version")
-                .map(|a| {
-                    if a.get_help().is_none() {
-                        let flag = a.get_long().unwrap_or_else(|| a.get_id().as_str());
-                        eprintln!("warning: {}.--{flag} has no help text", sub.get_name());
-                    }
-                    ArgInfo {
-                        long: a
-                            .get_long()
-                            .map(|l| format!("`--{l}`"))
-                            .unwrap_or_else(|| format!("`<{}>`", a.get_id())),
-                        short: a
-                            .get_short()
-                            .map(|s| format!("`-{s}`"))
-                            .unwrap_or_else(|| "\u{2014}".into()),
-                        default: a
-                            .get_default_values()
-                            .first()
-                            .map(|d| format!("`{}`", d.to_string_lossy()))
-                            .unwrap_or_else(|| "\u{2014}".into()),
-                        help: a.get_help().map(|h| h.to_string()).unwrap_or_default(),
-                    }
-                })
-                .collect();
-            CmdInfo {
-                name: sub.get_name().to_string(),
-                about: sub.get_about().map(|a| a.to_string()).unwrap_or_default(),
-                args,
-            }
-        })
+        .filter(|s| !s.is_hide_set())
+        .flat_map(|sub| collect_command(sub, &[]))
         .collect();
 
     let mut ctx = Context::new();
@@ -557,6 +591,177 @@ fn generate_config_reference(tera: &Tera) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use clap::{Arg, Command};
+
+    /// Convenience: collect all visible commands rooted at `cmd` (excluding
+    /// `cmd` itself), mirroring what `generate_cli_reference` puts into the
+    /// `commands` Tera context.
+    fn collect_all_commands(cmd: &clap::Command) -> Vec<CmdInfo> {
+        cmd.get_subcommands()
+            .filter(|s| !s.is_hide_set())
+            .flat_map(|sub| collect_command(sub, &[]))
+            .collect()
+    }
+
+    #[test]
+    fn gen_docs_filters_hidden_flags() {
+        let cmd = Command::new("root").subcommand(
+            Command::new("leaf")
+                .arg(Arg::new("visible").long("visible").help("visible flag"))
+                .arg(
+                    Arg::new("hidden")
+                        .long("hidden-flag")
+                        .help("hidden flag")
+                        .hide(true),
+                ),
+        );
+
+        let commands = collect_all_commands(&cmd);
+        let leaf = commands
+            .iter()
+            .find(|c| c.name == "leaf")
+            .expect("leaf command present");
+        let longs: Vec<&str> = leaf.args.iter().map(|a| a.long.as_str()).collect();
+        assert!(
+            longs.iter().any(|l| l.contains("visible")),
+            "visible flag should be rendered: {longs:?}"
+        );
+        assert!(
+            !longs.iter().any(|l| l.contains("hidden-flag")),
+            "hidden flag must be filtered: {longs:?}"
+        );
+    }
+
+    #[test]
+    fn gen_docs_recurses_into_nested_subcommands() {
+        let cmd = Command::new("root").subcommand(
+            Command::new("parent")
+                .subcommand(Command::new("child-a"))
+                .subcommand(Command::new("child-b")),
+        );
+
+        let commands = collect_all_commands(&cmd);
+        let names: Vec<&str> = commands.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"parent"), "parent must appear: {names:?}");
+        assert!(
+            names.contains(&"parent child-a"),
+            "nested child-a must appear: {names:?}"
+        );
+        assert!(
+            names.contains(&"parent child-b"),
+            "nested child-b must appear: {names:?}"
+        );
+    }
+
+    #[test]
+    fn gen_docs_excludes_hidden_subcommands() {
+        let cmd = Command::new("root").subcommand(
+            Command::new("parent")
+                .subcommand(Command::new("visible-child"))
+                .subcommand(Command::new("hidden-child").hide(true)),
+        );
+
+        let commands = collect_all_commands(&cmd);
+        let names: Vec<&str> = commands.iter().map(|c| c.name.as_str()).collect();
+        assert!(
+            names.contains(&"parent visible-child"),
+            "visible nested subcommand must appear: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.contains("hidden-child")),
+            "hidden nested subcommand must be filtered: {names:?}"
+        );
+    }
+
+    #[test]
+    fn gen_docs_excludes_hidden_global_flags() {
+        // Mirror the production filter used in `generate_cli_reference` for
+        // global args.
+        let cmd = Command::new("root")
+            .arg(
+                Arg::new("g-visible")
+                    .long("g-visible")
+                    .global(true)
+                    .help("visible global"),
+            )
+            .arg(
+                Arg::new("g-hidden")
+                    .long("g-hidden")
+                    .global(true)
+                    .hide(true)
+                    .help("hidden global"),
+            )
+            .subcommand(Command::new("leaf"));
+
+        let global_longs: Vec<String> = cmd
+            .get_arguments()
+            .filter(|a| a.is_global_set() && !a.is_hide_set())
+            .filter_map(|a| a.get_long().map(|l| l.to_string()))
+            .collect();
+
+        assert!(
+            global_longs.iter().any(|l| l == "g-visible"),
+            "visible global should appear: {global_longs:?}"
+        );
+        assert!(
+            !global_longs.iter().any(|l| l == "g-hidden"),
+            "hidden global must be filtered: {global_longs:?}"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // Integration tests against the real `anodizer_cli::build_cli()` output.
+    // These pin the audit-I18 closures: `check config` / `check determinism`
+    // must be documented, and `--simulate-failure` / `--inject-drift` must
+    // not leak into rendered docs.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn gen_docs_includes_check_config_subcommand() {
+        let cmd = anodizer_cli::build_cli();
+        let commands = collect_all_commands(&cmd);
+        let names: Vec<&str> = commands.iter().map(|c| c.name.as_str()).collect();
+        assert!(
+            names.iter().any(|n| *n == "check config"),
+            "`check config` must be documented: {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| *n == "check determinism"),
+            "`check determinism` must be documented: {names:?}"
+        );
+    }
+
+    #[test]
+    fn gen_docs_omits_simulate_failure_flag() {
+        let cmd = anodizer_cli::build_cli();
+        let commands = collect_all_commands(&cmd);
+        let release_cmd = commands
+            .iter()
+            .find(|c| c.name == "release")
+            .unwrap_or_else(|| panic!("release subcommand must exist"));
+        let flag_names: Vec<&str> = release_cmd.args.iter().map(|a| a.long.as_str()).collect();
+        assert!(
+            !flag_names.iter().any(|f| f.contains("simulate-failure")),
+            "--simulate-failure must not appear in rendered docs: {flag_names:?}"
+        );
+    }
+
+    #[test]
+    fn gen_docs_omits_inject_drift_flag() {
+        let cmd = anodizer_cli::build_cli();
+        let commands = collect_all_commands(&cmd);
+        let check_det_cmd = commands
+            .iter()
+            .find(|c| c.name == "check determinism")
+            .unwrap_or_else(|| panic!("`check determinism` must be documented"));
+        let flag_names: Vec<&str> = check_det_cmd.args.iter().map(|a| a.long.as_str()).collect();
+        assert!(
+            !flag_names.iter().any(|f| f.contains("inject-drift")),
+            "--inject-drift must not appear in rendered docs: {flag_names:?}"
+        );
+    }
+
     #[test]
     fn test_schema_has_all_config_fields() {
         let schema = schemars::schema_for!(anodizer_core::config::Config);
