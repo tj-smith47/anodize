@@ -20,10 +20,30 @@
 //!    `TMPDIR`, `HOME`; `SOURCE_DATE_EPOCH=self.sde`; `PATH` inherited
 //!    from the host via [`allow_listed_path()`] (two harness runs from
 //!    the same host process see identical PATH, so determinism holds);
-//!    everything else stripped except an explicit identity-only
-//!    allow-list — see [`HARNESS_ENV_ALLOWLIST`]. Notably excluded:
-//!    `GITHUB_TOKEN`, `ACTIONS_RUNTIME_TOKEN`, and every other
-//!    credential-bearing var.
+//!    plus an identity-only allow-list — see [`HARNESS_ENV_ALLOWLIST`].
+//!    The remaining shape is platform-specific:
+//!
+//!    - **Linux / macOS**: everything else is stripped. Unix env is
+//!      sparse and well-understood; an explicit identity-only allow-list
+//!      is the safest contract.
+//!    - **Windows**: inherits the FULL host env, then drops a
+//!      credential-bearing deny-list (`GITHUB_TOKEN`,
+//!      `CARGO_REGISTRY_TOKEN`, `AWS_*`, cosign / gpg / docker /
+//!      chocolatey / snapcraft creds, anodize-publisher creds), the GH
+//!      Actions workflow internals (`ACTIONS_*`, `RUNNER_TOKEN`), and a
+//!      defense-in-depth suffix sweep (any name ending in `_TOKEN`,
+//!      `_KEY`, `_SECRET`, `_PASSWORD`, `_PASSPHRASE`, `_CREDENTIALS`).
+//!      Rationale: Windows env is sprawling — cc-rs / cargo / rustc
+//!      need `PROCESSOR_ARCHITECTURE`, `PROGRAMFILES*`, `WINDIR`,
+//!      `SystemRoot`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `TEMP`,
+//!      `TMP`, `PATHEXT`, plus the entire MSVC toolchain block
+//!      (`VC*` / `VS*` / `INCLUDE` / `LIB` / `LIBPATH` /
+//!      `WindowsSdk*` / `UCRT*`) and likely more. Enumerating each in
+//!      an allow-list is whack-a-mole; a deny-list with a suffix sweep
+//!      is the auditable inverse. Audit reference
+//!      `.claude/audits/2026-05-15-release-resilience-review.md#i7`
+//!      asked for "no credentials leak through"; the deny-list (plus
+//!      suffix sweep) upholds that contract on Windows.
 //! 3. Invokes the build-side pipeline (`anodize release --snapshot
 //!    --skip=<SIDE_EFFECT_STAGES>`, see
 //!    [`anodizer_core::determinism_runner::SIDE_EFFECT_STAGES`]) inside
@@ -359,17 +379,13 @@ impl Harness {
 /// vars belong in `crates/core/src/user_command.rs`'s sandboxed env
 /// whitelist, not the harness's inheritance set.
 ///
-/// **Windows MSVC toolchain identity** — the `V*INSTALLDIR`, `INCLUDE`,
-/// `LIB`, `LIBPATH`, `Windows*`, `UCRTVersion`, and `Platform` vars at the
-/// tail of the list are populated by `vcvarsall.bat` / `Set-VsDevShell` on
-/// the GH Actions windows-latest runner. They let `cc-rs` and rustc locate
-/// MSVC's `link.exe` by absolute path rather than by bare PATH lookup —
-/// which is critical because Git for Windows ships a GNU coreutils
-/// `link.exe` (the hardlink tool) that shadows MSVC's `link.exe` (the
-/// linker) on the inherited PATH (see [`allow_listed_path`] for the
-/// matching PATH filter). Identity-only: these vars carry directory
-/// locations and version strings, no credentials. They're a no-op on
-/// macOS / Linux runners where they aren't set.
+/// This list is the contractual surface on **all** platforms. On Windows,
+/// [`build_subprocess_env`] additionally inherits the rest of the host env
+/// (minus a credential deny-list and suffix sweep — see
+/// [`WINDOWS_ENV_DENYLIST`] / [`windows_env_is_credential`]) because the
+/// MSVC toolchain block alone spans dozens of vars that an allow-list
+/// cannot reasonably enumerate. The deny-list approach is the auditable
+/// inverse: every name added there is a known credential carrier.
 const HARNESS_ENV_ALLOWLIST: &[&str] = &[
     // Toolchain identity.
     "RUSTUP_HOME",
@@ -388,21 +404,97 @@ const HARNESS_ENV_ALLOWLIST: &[&str] = &[
     "RUNNER_OS",
     "RUNNER_ARCH",
     "RUNNER_NAME",
-    // MSVC toolchain identity (Windows only; no-op elsewhere). These let
-    // cc-rs / rustc locate the MSVC linker via env rather than bare PATH
-    // lookup, which avoids the Git-Bash `link.exe` shadow problem on
-    // Windows runners. Identity-only — no credentials.
-    "VCINSTALLDIR",
-    "VSINSTALLDIR",
-    "INCLUDE",
-    "LIB",
-    "LIBPATH",
-    "WindowsSdkDir",
-    "WindowsSdkVerBinPath",
-    "WindowsSDKVersion",
-    "UCRTVersion",
-    "Platform",
 ];
+
+/// Credential-bearing env vars the Windows inherit-everything pass MUST
+/// drop. The explicit list is the contractual surface; the
+/// [`windows_env_is_credential`] suffix sweep is the defense-in-depth net
+/// for vars not named here.
+///
+/// Membership policy: any var whose value grants network reach, signing
+/// authority, or store-publishing rights. Workflow-internal vars that
+/// aren't strictly credentials but pollute the child env
+/// (`ACTIONS_RUNTIME_TOKEN`, `ACTIONS_CACHE_URL`, etc.) are also dropped
+/// by name-pattern matching in [`windows_env_is_credential`].
+#[cfg(windows)]
+const WINDOWS_ENV_DENYLIST: &[&str] = &[
+    // GitHub Actions / generic Git credentials.
+    "GITHUB_TOKEN",
+    "GH_TOKEN",
+    "GH_PAT",
+    // Cargo / publish credentials.
+    "CARGO_REGISTRY_TOKEN",
+    "CARGO_REGISTRIES_CRATES_IO_TOKEN",
+    // Cloud / store credentials.
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GCP_SERVICE_ACCOUNT_KEY",
+    "AZURE_CLIENT_SECRET",
+    // Anodize-publisher credentials.
+    "CHOCOLATEY_API_KEY",
+    "DOCKER_TOKEN",
+    "DOCKERHUB_TOKEN",
+    "GPG_PRIVATE_KEY",
+    "GPG_PASSPHRASE",
+    "COSIGN_KEY",
+    "COSIGN_PASSWORD",
+    "SNAPCRAFT_STORE_CREDENTIALS",
+    "CLOUDSMITH_TOKEN",
+    "MCP_GITHUB_TOKEN",
+    "SMTP_PASSWORD",
+    "ARTIFACTORY_TOKEN",
+    "APK_PRIVATE_KEY",
+    // Runner workflow-internal (drops also caught by ACTIONS_* prefix
+    // and RUNNER_TOKEN exact-match in `windows_env_is_credential`; listed
+    // here for explicit documentation).
+    "ACTIONS_RUNTIME_TOKEN",
+    "ACTIONS_RUNTIME_URL",
+    "ACTIONS_CACHE_URL",
+    "ACTIONS_RESULTS_URL",
+    "RUNNER_TOKEN",
+];
+
+/// True when `key` names a credential-bearing or workflow-internal env
+/// var the Windows inherit-everything pass must drop.
+///
+/// Three checks, in order:
+///
+/// 1. Exact match (case-insensitive) against [`WINDOWS_ENV_DENYLIST`].
+/// 2. Workflow-internal pattern: `ACTIONS_*` prefix and exact
+///    `RUNNER_TOKEN`. These aren't strictly credentials but they pollute
+///    the child env with runner-side state.
+/// 3. Defense-in-depth suffix sweep: any name ending (case-insensitive)
+///    in `_TOKEN`, `_KEY`, `_SECRET`, `_PASSWORD`, `_PASSPHRASE`, or
+///    `_CREDENTIALS`. Catches future creds not in the explicit list
+///    (e.g. `STRIPE_API_KEY`, `NPM_TOKEN`).
+#[cfg(windows)]
+fn windows_env_is_credential(key: &str) -> bool {
+    if WINDOWS_ENV_DENYLIST
+        .iter()
+        .any(|d| d.eq_ignore_ascii_case(key))
+    {
+        return true;
+    }
+    if key.starts_with("ACTIONS_") || key.eq_ignore_ascii_case("RUNNER_TOKEN") {
+        return true;
+    }
+    let lower = key.to_ascii_lowercase();
+    for suffix in [
+        "_token",
+        "_key",
+        "_secret",
+        "_password",
+        "_passphrase",
+        "_credentials",
+    ] {
+        if lower.ends_with(suffix) {
+            return true;
+        }
+    }
+    false
+}
 
 /// Inputs for [`build_subprocess_env`]. Bundled so the function signature
 /// doesn't grow more positional arguments every time we add an isolated-
@@ -454,6 +546,24 @@ pub(crate) fn build_subprocess_env(inputs: &BuildSubprocessEnv<'_>) -> HashMap<S
             env.insert(key.into(), v);
         }
     }
+    // Windows env is sprawling; cc-rs / cargo / rustc rely on
+    // PROGRAMFILES*, WINDIR, SystemRoot, PROCESSOR_*, USERPROFILE,
+    // APPDATA, LOCALAPPDATA, TEMP, TMP, PATHEXT, and the entire MSVC
+    // toolchain block (VC* / VS* / INCLUDE / LIB / LIBPATH / WindowsSdk*
+    // / UCRT* / Platform). Enumerating each in the allow-list is fragile
+    // and discovery-driven. Instead: inherit everything from the host
+    // env and drop the credential deny-list (plus a suffix sweep as a
+    // safety net for vars not in the explicit list). The allow-list
+    // pass above still ran first; this loop adds the rest. `or_insert`
+    // preserves any value already set (the child's CARGO_HOME / HOME /
+    // TMPDIR overrides above survive even if the host carries them).
+    #[cfg(windows)]
+    for (key, value) in std::env::vars() {
+        if windows_env_is_credential(&key) {
+            continue;
+        }
+        env.entry(key).or_insert(value);
+    }
     // rustup needs RUSTUP_HOME to dispatch a toolchain; on GH Actions
     // runners (and most dev machines) it isn't set in the env — rustup
     // defaults to $HOME/.rustup. Since the child runs with HOME=tmpdir,
@@ -486,8 +596,8 @@ struct ArtifactInfo {
     stage: String,
 }
 
-/// PATH for harness children — inherits the host's PATH, filtered on
-/// Windows to remove Git-Bash's GNU coreutils directories.
+/// PATH for harness children — inherits the host's PATH verbatim on
+/// every platform.
 ///
 /// The harness's hermeticity goal is to isolate cargo/build outputs
 /// from the host's CARGO_HOME and HOME (so two runs of the same commit
@@ -498,36 +608,17 @@ struct ArtifactInfo {
 /// macOS Apple Silicon (`/opt/homebrew/bin`), and Linux (`/usr/bin`,
 /// `~/.cargo/bin`) without per-platform allow-list maintenance.
 ///
-/// **Windows caveat**: Git for Windows ships GNU coreutils at
-/// `<git>\usr\bin` and `<git>\mingw64\bin`, including a `link.exe` (the
-/// GNU hardlink tool) that shadows MSVC's `link.exe` (the linker) for any
-/// `cargo build --target *-msvc`. Both directories are filtered out of
-/// the inherited PATH on Windows so rustc / cc-rs resolve `link.exe` to
-/// the real linker. `<git>\cmd` is preserved so `git.exe` itself remains
-/// resolvable. See also the MSVC-identity entries in
-/// [`HARNESS_ENV_ALLOWLIST`], which let cc-rs locate the linker by
-/// absolute path even if the PATH ordering is still wrong.
+/// **Windows note**: the deny-list inherit-everything pass in
+/// [`build_subprocess_env`] propagates the full MSVC toolchain block
+/// (`VC*` / `VS*` / `INCLUDE` / `LIB` / `LIBPATH` / `WindowsSdk*` /
+/// `UCRT*`) from the host. cc-rs uses those env vars (and a registry
+/// lookup) to resolve MSVC's `link.exe` to an *absolute* path before
+/// invoking rustc with `-Clinker=<abs>`, so PATH ordering ambiguity
+/// between MSVC's `link.exe` (the linker) and Git for Windows's GNU
+/// `link.exe` (the hardlink tool) is moot — rustc never falls back to a
+/// bare PATH lookup. No PATH filtering is needed.
 fn allow_listed_path() -> String {
-    let raw = std::env::var("PATH").unwrap_or_default();
-    #[cfg(windows)]
-    {
-        let filtered: Vec<&str> = raw
-            .split(';')
-            .filter(|p| {
-                // Normalize: lowercase + forward-to-back slashes so a
-                // PATH entry written as `C:/Program Files/Git/usr/bin`
-                // (cygwin-style) is matched the same as the canonical
-                // backslash form.
-                let norm = p.to_ascii_lowercase().replace('/', "\\");
-                !norm.contains(r"\git\usr\bin") && !norm.contains(r"\git\mingw64\bin")
-            })
-            .collect();
-        filtered.join(";")
-    }
-    #[cfg(not(windows))]
-    {
-        raw
-    }
+    std::env::var("PATH").unwrap_or_default()
 }
 
 /// Walk `<worktree>/dist` and collect every regular file. Sorted by path
@@ -857,81 +948,22 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(windows))]
     fn allow_listed_path_inherits_host_path() {
-        // The harness inherits the host PATH verbatim on Unix — its
-        // hermeticity goal is CARGO_HOME/HOME isolation, not PATH
+        // The harness inherits the host PATH verbatim on every platform
+        // — its hermeticity goal is CARGO_HOME/HOME isolation, not PATH
         // narrowing. Two runs from the same host process see identical
         // PATH, so determinism is preserved while the harness stays
         // cross-platform (macOS Homebrew at `/opt/homebrew/bin`, Linux
-        // at `/usr/bin` / `~/.cargo/bin`, etc.). The Windows path
-        // filtering is exercised in
-        // `allow_listed_path_filters_git_bash_gnu_coreutils_on_windows`.
+        // at `/usr/bin` / `~/.cargo/bin`, Windows Git at
+        // `C:\Program Files\Git\cmd`, etc.). The Windows MSVC vs.
+        // Git-Bash `link.exe` shadowing concern is handled by the
+        // inherit-everything pass in `build_subprocess_env`: cc-rs
+        // resolves MSVC's `link.exe` to an absolute path via env +
+        // registry, so rustc never relies on PATH ordering.
         // SAFETY: this test is read-only on the env; no need to
         // serialize.
         let expected = std::env::var("PATH").unwrap_or_default();
         assert_eq!(allow_listed_path(), expected);
-    }
-
-    /// Windows runners ship Git for Windows with GNU coreutils on PATH,
-    /// including a `link.exe` (hardlink tool) at `<git>\usr\bin` that
-    /// shadows MSVC's `link.exe` (the linker). The harness's PATH
-    /// constructor must filter those entries out so `cargo build
-    /// --target *-msvc` resolves the right `link.exe`. We test by
-    /// temporarily overlaying the process PATH with a synthetic value
-    /// that contains both shadowing dirs and verifying they're stripped
-    /// while every non-Git-Bash entry survives.
-    ///
-    /// Serialized via `serial_test::serial(harness_env)` because PATH
-    /// is process-global and other harness-env tests race on the same
-    /// key.
-    #[test]
-    #[cfg(windows)]
-    #[serial_test::serial(harness_env)]
-    fn allow_listed_path_filters_git_bash_gnu_coreutils_on_windows() {
-        let original = std::env::var_os("PATH");
-        let synthetic = [
-            r"C:\Windows\System32",
-            r"C:\Program Files\Git\cmd",
-            r"C:\Program Files\Git\usr\bin",
-            r"C:\Program Files\Git\mingw64\bin",
-            r"C:/Program Files/Git/usr/bin", // forward-slash variant
-            r"C:\Users\runneradmin\.cargo\bin",
-        ]
-        .join(";");
-        // SAFETY: we restore the original PATH before returning, and the
-        // test is serialized on the `harness_env` group.
-        unsafe { std::env::set_var("PATH", &synthetic) };
-        let got = allow_listed_path();
-        // Restore PATH before asserting so a failed assertion doesn't
-        // poison sibling tests in the same process.
-        match original {
-            Some(v) => unsafe { std::env::set_var("PATH", v) },
-            None => unsafe { std::env::remove_var("PATH") },
-        }
-
-        let entries: Vec<&str> = got.split(';').collect();
-        assert!(entries.contains(&r"C:\Windows\System32"), "got: {got}");
-        assert!(
-            entries.contains(&r"C:\Program Files\Git\cmd"),
-            "Git's cmd dir (where git.exe lives) must survive: {got}"
-        );
-        assert!(
-            entries.contains(&r"C:\Users\runneradmin\.cargo\bin"),
-            "cargo bin must survive: {got}"
-        );
-        assert!(
-            !entries.iter().any(|e| e.contains(r"\Git\usr\bin")),
-            "Git Bash usr\\bin (GNU coreutils, incl. link.exe) must be filtered: {got}"
-        );
-        assert!(
-            !entries.iter().any(|e| e.contains(r"/Git/usr/bin")),
-            "forward-slash variant of Git Bash usr/bin must be filtered too: {got}"
-        );
-        assert!(
-            !entries.iter().any(|e| e.contains(r"\Git\mingw64\bin")),
-            "Git Bash mingw64\\bin must be filtered: {got}"
-        );
     }
 
     #[test]
@@ -1283,6 +1315,83 @@ mod tests {
                     env.get("RUSTUP_HOME").map(String::as_str),
                     Some("/operator/override"),
                     "an explicit host RUSTUP_HOME must take precedence over the synthesized default"
+                );
+            });
+        }
+
+        // ── Windows inherit-everything deny-list ─────────────────────────
+        //
+        // The Windows pass inherits the FULL host env minus
+        // [`WINDOWS_ENV_DENYLIST`] + the suffix sweep. Allow-list pass
+        // results above are platform-agnostic; these tests pin the
+        // Windows-only deny-list behavior so a future allow-list edit
+        // can't accidentally re-leak credentials.
+
+        #[test]
+        #[cfg(windows)]
+        #[serial(harness_env)]
+        fn harness_env_windows_inherits_host_system_vars() {
+            let tmp = tempfile::tempdir().unwrap();
+            with_cleared(&["PROGRAMFILES"], || {
+                // SAFETY: serial(harness_env) holds the lock.
+                unsafe { std::env::set_var("PROGRAMFILES", r"C:\fake\Program Files") };
+                let env = build_subprocess_env(&inputs(tmp.path()));
+                assert_eq!(
+                    env.get("PROGRAMFILES").map(String::as_str),
+                    Some(r"C:\fake\Program Files"),
+                    "Windows pass must inherit non-credential host system vars (PROGRAMFILES is load-bearing for cc-rs link.exe discovery)"
+                );
+            });
+        }
+
+        #[test]
+        #[cfg(windows)]
+        #[serial(harness_env)]
+        fn harness_env_windows_drops_credentials() {
+            let tmp = tempfile::tempdir().unwrap();
+            let keys = [
+                "GITHUB_TOKEN",
+                "CARGO_REGISTRY_TOKEN",
+                "SOMETHING_TOKEN",
+                "SOMETHING_PASSWORD",
+            ];
+            with_cleared(&keys, || {
+                // SAFETY: serial(harness_env) holds the lock.
+                unsafe {
+                    std::env::set_var("GITHUB_TOKEN", "ghp_x");
+                    std::env::set_var("CARGO_REGISTRY_TOKEN", "cratesio_y");
+                    std::env::set_var("SOMETHING_TOKEN", "z");
+                    std::env::set_var("SOMETHING_PASSWORD", "w");
+                }
+                let env = build_subprocess_env(&inputs(tmp.path()));
+                for k in keys {
+                    assert!(
+                        !env.contains_key(k),
+                        "credential-bearing host var `{k}` must NOT propagate on Windows (deny-list + suffix sweep)"
+                    );
+                }
+                // Belt-and-braces: none of the *values* may leak either.
+                for v in ["ghp_x", "cratesio_y", "z", "w"] {
+                    assert!(
+                        !env.values().any(|got| got == v),
+                        "credential value `{v}` leaked under a different key"
+                    );
+                }
+            });
+        }
+
+        #[test]
+        #[cfg(windows)]
+        #[serial(harness_env)]
+        fn harness_env_windows_drops_actions_workflow_internals() {
+            let tmp = tempfile::tempdir().unwrap();
+            with_cleared(&["ACTIONS_RUNTIME_TOKEN"], || {
+                // SAFETY: serial(harness_env) holds the lock.
+                unsafe { std::env::set_var("ACTIONS_RUNTIME_TOKEN", "actions_x") };
+                let env = build_subprocess_env(&inputs(tmp.path()));
+                assert!(
+                    !env.contains_key("ACTIONS_RUNTIME_TOKEN"),
+                    "ACTIONS_* workflow-internal vars must be dropped by the Windows pass"
                 );
             });
         }
