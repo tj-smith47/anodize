@@ -1486,16 +1486,28 @@ fn make_ctx_with_snapshot() -> Context {
 // every other Submitter publisher.
 // -----------------------------------------------------------------------
 
+/// Build a `BlobTarget` for the `s3://my-bucket/<key>` shape used by the
+/// `record_blob_result` test fixtures. Bundle B14 (audit I17) changed
+/// `record_blob_result` to take `&[BlobTarget]` instead of `&[String]`
+/// so the rollback DELETE path has the structured (provider, bucket,
+/// key, region, endpoint) tuple it needs to reconstruct the store.
+fn mk_target(key: &str) -> crate::publisher::BlobTarget {
+    crate::publisher::BlobTarget {
+        provider: "s3".to_string(),
+        bucket: "my-bucket".to_string(),
+        key: key.to_string(),
+        region: None,
+        endpoint: None,
+    }
+}
+
 #[test]
 fn blob_stage_appends_succeeded_to_publish_report() {
     use crate::run::record_blob_result;
     use anodizer_core::{PublisherGroup, PublisherOutcome};
 
     let mut ctx = make_ctx();
-    let uploaded = vec![
-        "s3://my-bucket/proj/v1/a.tar.gz".to_string(),
-        "s3://my-bucket/proj/v1/b.tar.gz".to_string(),
-    ];
+    let uploaded = vec![mk_target("proj/v1/a.tar.gz"), mk_target("proj/v1/b.tar.gz")];
     record_blob_result(&mut ctx, &uploaded, &Ok(()), /* required = */ false);
 
     let report = ctx
@@ -1536,7 +1548,7 @@ fn blob_stage_appends_failed_to_publish_report() {
     // failed entries record no evidence so a downstream rollback can't
     // mistakenly treat the failed publisher as having a clean
     // artifact_paths snapshot.
-    let partial = vec!["s3://my-bucket/proj/v1/a.tar.gz".to_string()];
+    let partial = vec![mk_target("proj/v1/a.tar.gz")];
     let err = anyhow::anyhow!("upload failed: 503 Service Unavailable");
     record_blob_result(&mut ctx, &partial, &Err(err), /* required = */ false);
 
@@ -1624,7 +1636,7 @@ fn record_blob_result_required_false_by_default() {
     let mut ctx = make_ctx();
     record_blob_result(
         &mut ctx,
-        &["s3://b/k".to_string()],
+        &[mk_target("k")],
         &Ok(()),
         /* required = */ false,
     );
@@ -1642,7 +1654,7 @@ fn record_blob_result_required_true_when_set() {
     let mut ctx = make_ctx();
     record_blob_result(
         &mut ctx,
-        &["s3://b/k".to_string()],
+        &[mk_target("k")],
         &Ok(()),
         /* required = */ true,
     );

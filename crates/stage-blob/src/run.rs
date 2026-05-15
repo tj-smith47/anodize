@@ -11,6 +11,7 @@ use object_store::{ObjectStore, PutOptions};
 
 use crate::kms::{KmsProvider, parse_kms_provider, preflight_kms_cli, validate_kms_provider_match};
 use crate::provider::Provider;
+use crate::publisher::BlobTarget;
 use crate::store::build_store;
 use crate::upload::{
     build_put_options, collect_artifacts, format_remote_path, resolve_extra_files,
@@ -85,6 +86,12 @@ struct BlobJob {
     provider_display: &'static str,
     rendered_bucket: String,
     rendered_directory: String,
+    /// Rendered (post-template) S3 region, threaded through so the
+    /// publisher can capture it into [`crate::publisher::BlobTarget`] for
+    /// the DELETE-on-rollback path.
+    rendered_region: Option<String>,
+    /// Rendered (post-template) S3-compatible endpoint URL.
+    rendered_endpoint: Option<String>,
     upload_items: Vec<(PathBuf, String)>,
     store: Arc<dyn ObjectStore>,
     put_opts_per_item: Vec<PutOptions>,
@@ -139,9 +146,17 @@ impl Stage for BlobStage {
 /// recorded outcome carries `required = true` so the submitter gate
 /// and the CLI's required-failures exit-code gate fire on a failed
 /// blob upload.
+///
+/// `uploaded` is the structured per-object capture (provider, bucket,
+/// key, region, endpoint) — both the operator-readable
+/// `provider://bucket/key` URL list (rendered into
+/// `evidence.artifact_paths`) and the structured form (encoded into
+/// `evidence.extra.blob_targets` via [`crate::publisher::encode_blob_targets`])
+/// are derived from it so the rollback path can issue real
+/// `ObjectStore::delete` calls.
 pub(crate) fn record_blob_result(
     ctx: &mut Context,
-    uploaded: &[String],
+    uploaded: &[BlobTarget],
     exec_result: &Result<()>,
     required: bool,
 ) {
@@ -152,8 +167,12 @@ pub(crate) fn record_blob_result(
     let evidence = match exec_result {
         Ok(()) if !uploaded.is_empty() => {
             let mut e = anodizer_core::PublishEvidence::new("blob");
-            e.primary_ref = Some(uploaded[0].clone());
-            e.artifact_paths = uploaded.iter().map(std::path::PathBuf::from).collect();
+            e.primary_ref = Some(uploaded[0].url());
+            e.artifact_paths = uploaded
+                .iter()
+                .map(|t| std::path::PathBuf::from(t.url()))
+                .collect();
+            e.extra = crate::publisher::encode_blob_targets(uploaded);
             Some(e)
         }
         _ => None,
@@ -193,9 +212,11 @@ pub(crate) fn derive_blob_required(ctx: &Context) -> bool {
 
 impl BlobStage {
     /// Execute the blob upload like [`Stage::run`] but return the list of
-    /// `<provider>://<bucket>/<key>` URLs that were actually uploaded.
-    /// `BlobPublisher::run` calls this so `PublishEvidence::artifact_paths`
-    /// reflects only files that landed — the prior pre-upload capture
+    /// per-object [`BlobTarget`] tuples that were actually uploaded.
+    /// `BlobPublisher::run` calls this so `PublishEvidence` records the
+    /// structured (provider, bucket, key, region, endpoint) shape needed
+    /// for the rollback DELETE path, plus the operator-readable
+    /// `provider://bucket/key` URL list. The prior pre-upload capture
     /// produced a rollback checklist that referenced files which never
     /// existed when a mid-stream upload failed.
     ///
@@ -204,12 +225,12 @@ impl BlobStage {
     /// can still emit a partial rollback checklist. The current
     /// implementation runs the upload phase atomically per job; partial
     /// success is captured up to the failing job's boundary.
-    pub fn run_with_evidence(&self, ctx: &mut Context) -> Result<Vec<String>> {
-        let (keys, exec) = self.run_report(ctx)?;
+    pub(crate) fn run_with_evidence(&self, ctx: &mut Context) -> Result<Vec<BlobTarget>> {
+        let (targets, exec) = self.run_report(ctx)?;
         if let Some(r) = exec {
             r?;
         }
-        Ok(keys)
+        Ok(targets)
     }
 
     /// Like [`Self::run_with_evidence`] but splits the catastrophic
@@ -232,7 +253,7 @@ impl BlobStage {
     ///
     /// `Stage::run` consumes the `Option<Result<()>>` to decide whether
     /// to record a `PublisherOutcome::Succeeded` / `Failed(_)` entry.
-    fn run_report(&self, ctx: &mut Context) -> Result<(Vec<String>, Option<Result<()>>)> {
+    fn run_report(&self, ctx: &mut Context) -> Result<(Vec<BlobTarget>, Option<Result<()>>)> {
         let log = ctx.logger("blob");
         if ctx.skip_in_snapshot(&log, "blob") {
             return Ok((Vec::new(), None));
@@ -318,6 +339,38 @@ impl BlobStage {
                         config_label, krate.name
                     )
                 })?;
+
+                // Render region / endpoint here so the publisher can
+                // capture the post-template values into BlobTarget for
+                // the rollback DELETE path. `build_store` re-renders
+                // internally; doing it again here is cheap (Tera caches
+                // the parsed AST) and keeps the rollback evidence
+                // self-contained — no template re-evaluation at rollback
+                // time, no dependency on the live ctx vars.
+                let rendered_region = blob_cfg
+                    .region
+                    .as_deref()
+                    .map(|r| {
+                        ctx.render_template(r).with_context(|| {
+                            format!(
+                                "blobs[{}]: render region template for crate {}",
+                                config_label, krate.name
+                            )
+                        })
+                    })
+                    .transpose()?;
+                let rendered_endpoint = blob_cfg
+                    .endpoint
+                    .as_deref()
+                    .map(|e| {
+                        ctx.render_template(e).with_context(|| {
+                            format!(
+                                "blobs[{}]: render endpoint template for crate {}",
+                                config_label, krate.name
+                            )
+                        })
+                    })
+                    .transpose()?;
 
                 // Default mirrors GoReleaser's `{{ .ProjectName }}/{{ .Tag }}`
                 // (blob.go:27) but expressed in Tera syntax (no leading `.`).
@@ -457,6 +510,8 @@ impl BlobStage {
                     provider_display: provider.display_name(),
                     rendered_bucket,
                     rendered_directory,
+                    rendered_region,
+                    rendered_endpoint,
                     upload_items,
                     store,
                     put_opts_per_item,
@@ -483,13 +538,15 @@ impl BlobStage {
             .build()
             .context("blob: failed to construct tokio runtime")?;
         let runtime_ref = &runtime;
-        // Shared accumulator of uploaded `<scheme>://<bucket>/<key>` URLs
-        // across every job. `upload_files_owned` records each successful
-        // upload on its own task; the per-job wrapper translates the
-        // returned object keys into provider-qualified URLs before
-        // appending to the shared list. On failure the partial list is
-        // preserved so PublishEvidence captures only files that landed.
-        let uploaded_urls: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+        // Shared accumulator of uploaded [`BlobTarget`]s across every
+        // job. `upload_files_owned` records each successful upload on
+        // its own task; the per-job wrapper translates the returned
+        // object keys into structured `BlobTarget` tuples (provider,
+        // bucket, key, region, endpoint) before appending to the shared
+        // list. On failure the partial list is preserved so
+        // PublishEvidence captures only files that landed — and carries
+        // the structured shape needed for the rollback DELETE path.
+        let uploaded_targets: std::sync::Arc<std::sync::Mutex<Vec<BlobTarget>>> =
             std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let run_job = |job: &BlobJob| -> Result<()> {
             match upload_files_owned(
@@ -502,12 +559,15 @@ impl BlobStage {
                 job.client_kms.clone(),
             ) {
                 Ok(keys) => {
-                    let mut acc = uploaded_urls.lock().expect("uploaded list lock");
+                    let mut acc = uploaded_targets.lock().expect("uploaded list lock");
                     for key in keys {
-                        acc.push(format!(
-                            "{}://{}/{}",
-                            job.provider_display, job.rendered_bucket, key
-                        ));
+                        acc.push(BlobTarget {
+                            provider: job.provider_display.to_string(),
+                            bucket: job.rendered_bucket.clone(),
+                            key,
+                            region: job.rendered_region.clone(),
+                            endpoint: job.rendered_endpoint.clone(),
+                        });
                     }
                     Ok(())
                 }
@@ -523,8 +583,10 @@ impl BlobStage {
         );
         // Snapshot the uploaded list whether the run succeeded or failed
         // so callers can record partial success in PublishEvidence.
-        let mut keys = uploaded_urls.lock().expect("uploaded list lock").clone();
-        keys.sort();
+        // Sort by URL so the resulting evidence is deterministic across
+        // runs of the same job graph.
+        let mut targets = uploaded_targets.lock().expect("uploaded list lock").clone();
+        targets.sort_by_key(|t| t.url());
 
         if result.is_ok() {
             for job in &jobs {
@@ -540,9 +602,9 @@ impl BlobStage {
 
         // Collapse `Vec<()>` -> `()` so the inner Result has the same
         // shape as `Stage::run`'s return — the per-job successes have
-        // already been folded into the shared `uploaded_urls`
+        // already been folded into the shared `uploaded_targets`
         // accumulator above.
         let exec = result.map(|_| ());
-        Ok((keys, Some(exec)))
+        Ok((targets, Some(exec)))
     }
 }
