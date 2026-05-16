@@ -48,11 +48,34 @@ pub const SIDE_EFFECT_STAGES: &[&str] = &[
     "announce",
 ];
 
-/// Comma-join [`SIDE_EFFECT_STAGES`] for use as the `--skip=<list>` CLI
-/// argument value. Kept as a function (not a const) because Rust can't
+/// Comma-join [`SIDE_EFFECT_STAGES`] plus an `extra` list for use as
+/// the `--skip=<list>` CLI argument value. Order-preserving and
+/// duplicate-free: every entry from [`SIDE_EFFECT_STAGES`] comes first
+/// (in declared order), then each `extra` entry that hasn't already been
+/// seen. Kept as a function (not a const) because Rust can't
 /// const-evaluate `[&str]::join`.
-fn side_effect_stages_skip_arg() -> String {
-    format!("--skip={}", SIDE_EFFECT_STAGES.join(","))
+///
+/// The `extra` argument is the harness's "complement set": every stage
+/// the operator did NOT request via `--stages=` AND that doesn't belong
+/// to the preamble preserve set (`validate` / `before` / `changelog` /
+/// `templatefiles`). Skipping them in the child release subprocess
+/// matches the spec's promise that `anodize check determinism
+/// --stages=<list>` only exercises (and validates) the named stages —
+/// previously the child still ran the full pipeline, attempting nfpm /
+/// nsis / dmg / etc. on shards that have no business running them.
+pub fn compute_skip_arg(extra: &[&str]) -> String {
+    let mut merged: Vec<&str> = Vec::with_capacity(SIDE_EFFECT_STAGES.len() + extra.len());
+    for &name in SIDE_EFFECT_STAGES {
+        if !merged.contains(&name) {
+            merged.push(name);
+        }
+    }
+    for &name in extra {
+        if !merged.contains(&name) {
+            merged.push(name);
+        }
+    }
+    format!("--skip={}", merged.join(","))
 }
 
 /// Invoke the running `anodize` binary against `worktree_path` with the
@@ -62,13 +85,23 @@ fn side_effect_stages_skip_arg() -> String {
 /// - `release` — drives the full build-side pipeline.
 /// - `--snapshot` — disables tag-cutting and tells stages to use the
 ///   pre-resolved SDE.
-/// - `--skip=<SIDE_EFFECT_STAGES>` — strips every side-effect-producing
-///   stage. Doubling N is safe in any env because of this skip list.
+/// - `--skip=<SIDE_EFFECT_STAGES + extra_skip>` — strips every
+///   side-effect-producing stage AND every non-requested produce-stage
+///   (the harness's complement set). Doubling N is safe in any env
+///   because of this skip list.
 /// - `--targets=<csv>` (when `targets` is `Some`) — restricts the
 ///   rebuild to a subset of configured triples. The sharded
 ///   `release.yml` matrix passes this so each runner only validates
 ///   the targets it can natively build (cross-compile to Apple /
 ///   Windows from a Linux runner would otherwise fail at link time).
+///
+/// The `extra_skip` slice carries the harness's complement set: stages
+/// the operator did NOT name via `--stages=` (minus the preamble
+/// preserve set). Merged with [`SIDE_EFFECT_STAGES`] via
+/// [`compute_skip_arg`]; the harness in
+/// `crates/cli/src/determinism_harness.rs` is the canonical caller and
+/// computes the set from `anodizer_core::context::VALID_RELEASE_SKIPS`.
+/// Pass `&[]` to keep the legacy "side-effect stages only" behavior.
 ///
 /// The child env is fully replaced (`env_clear` then re-populate) so
 /// host env vars cannot leak through and perturb the build. Caller
@@ -78,8 +111,9 @@ pub fn run_build_pipeline_subprocess(
     worktree_path: &Path,
     env: &HashMap<String, String>,
     targets: Option<&[String]>,
+    extra_skip: &[String],
 ) -> Result<()> {
-    let mut cmd = build_subprocess_command(anodize_binary, worktree_path, env, targets);
+    let mut cmd = build_subprocess_command(anodize_binary, worktree_path, env, targets, extra_skip);
     let status = cmd
         .status()
         .context("spawning anodize release for determinism harness")?;
@@ -101,9 +135,11 @@ fn build_subprocess_command(
     worktree_path: &Path,
     env: &HashMap<String, String>,
     targets: Option<&[String]>,
+    extra_skip: &[String],
 ) -> Command {
     let mut cmd = Command::new(anodize_binary);
-    cmd.args(["release", "--snapshot", &side_effect_stages_skip_arg()]);
+    let extra_refs: Vec<&str> = extra_skip.iter().map(String::as_str).collect();
+    cmd.args(["release", "--snapshot", &compute_skip_arg(&extra_refs)]);
     if let Some(list) = targets
         && !list.is_empty()
     {
@@ -141,7 +177,7 @@ mod tests {
         let env = HashMap::new();
         let worktree = std::env::temp_dir();
         let bogus = PathBuf::from("/nonexistent/anodize-binary-for-tests");
-        let res = run_build_pipeline_subprocess(&bogus, &worktree, &env, None);
+        let res = run_build_pipeline_subprocess(&bogus, &worktree, &env, None, &[]);
         assert!(
             res.is_err(),
             "missing binary should surface as an error, not a panic"
@@ -159,6 +195,7 @@ mod tests {
             &std::env::temp_dir(),
             &env,
             None,
+            &[],
         );
         let args: Vec<&str> = cmd.get_args().map(|s| s.to_str().expect("ascii")).collect();
         assert!(
@@ -192,6 +229,7 @@ mod tests {
             &std::env::temp_dir(),
             &env,
             Some(&triples),
+            &[],
         );
         let args: Vec<String> = cmd
             .get_args()
@@ -218,6 +256,7 @@ mod tests {
             &std::env::temp_dir(),
             &env,
             Some(&empty),
+            &[],
         );
         let args: Vec<String> = cmd
             .get_args()
@@ -254,11 +293,11 @@ mod tests {
     }
 
     #[test]
-    fn side_effect_stages_skip_arg_starts_with_skip_flag() {
+    fn compute_skip_arg_starts_with_skip_flag() {
         // I8 fix shape: harness still uses --skip=<list> (the conservative
         // path; --only=<list> would require a new CLI flag). Guard against
         // a future refactor accidentally flipping to a different prefix.
-        let arg = super::side_effect_stages_skip_arg();
+        let arg = compute_skip_arg(&[]);
         assert!(
             arg.starts_with("--skip="),
             "expected --skip= prefix, got `{arg}`"
@@ -268,8 +307,8 @@ mod tests {
     }
 
     #[test]
-    fn side_effect_stages_skip_arg_round_trips_through_comma_join() {
-        let arg = super::side_effect_stages_skip_arg();
+    fn compute_skip_arg_round_trips_through_comma_join() {
+        let arg = compute_skip_arg(&[]);
         let list = arg
             .trim_start_matches("--skip=")
             .split(',')
@@ -278,6 +317,57 @@ mod tests {
         for (a, b) in list.iter().zip(SIDE_EFFECT_STAGES.iter()) {
             assert_eq!(a, b);
         }
+    }
+
+    /// `compute_skip_arg` MUST merge `SIDE_EFFECT_STAGES` with the
+    /// harness's complement set — otherwise the child release subprocess
+    /// runs produce-stages like `nfpm` / `nsis` / `dmg` on shards that
+    /// have no business running them, and the run dies with `No such
+    /// file or directory`. The harness fix in
+    /// `crates/cli/src/determinism_harness.rs` relies on this merge.
+    #[test]
+    fn compute_skip_arg_includes_side_effects_and_extra() {
+        let extra = ["nfpm".to_string(), "msi".to_string(), "dmg".to_string()];
+        let extra_refs: Vec<&str> = extra.iter().map(String::as_str).collect();
+        let arg = compute_skip_arg(&extra_refs);
+        let list: Vec<&str> = arg.trim_start_matches("--skip=").split(',').collect();
+        for &name in SIDE_EFFECT_STAGES {
+            assert!(
+                list.contains(&name),
+                "merged skip list missing side-effect stage `{name}`: {list:?}"
+            );
+        }
+        for name in ["nfpm", "msi", "dmg"] {
+            assert!(
+                list.contains(&name),
+                "merged skip list missing extra stage `{name}`: {list:?}"
+            );
+        }
+    }
+
+    /// Overlap is a real scenario — the harness's complement set is
+    /// computed against `VALID_RELEASE_SKIPS`, which contains the same
+    /// `release` / `publish` / `announce` names as `SIDE_EFFECT_STAGES`.
+    /// `compute_skip_arg` MUST de-dupe so the final argv isn't bloated
+    /// and CLI validation doesn't choke on a repeated token.
+    #[test]
+    fn compute_skip_arg_dedupes_overlap() {
+        // Pass a SIDE_EFFECT_STAGES member through `extra` and confirm it
+        // appears exactly once in the merged list.
+        let extra = ["release".to_string(), "nfpm".to_string()];
+        let extra_refs: Vec<&str> = extra.iter().map(String::as_str).collect();
+        let arg = compute_skip_arg(&extra_refs);
+        let list: Vec<&str> = arg.trim_start_matches("--skip=").split(',').collect();
+        let release_count = list.iter().filter(|&&s| s == "release").count();
+        assert_eq!(
+            release_count, 1,
+            "expected `release` exactly once in merged skip list, got {release_count} in {list:?}"
+        );
+        // And nfpm did come through.
+        assert!(
+            list.contains(&"nfpm"),
+            "merged list missing extra entry `nfpm`: {list:?}"
+        );
     }
 
     /// Every name the harness shovels into `--skip=...` MUST be accepted

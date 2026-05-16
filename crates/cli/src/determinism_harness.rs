@@ -118,6 +118,60 @@ impl StageId {
     }
 }
 
+/// Preamble stages the child release subprocess MUST keep enabled
+/// regardless of `--stages=`. These don't produce per-target artifacts
+/// the harness diffs, but the pipeline needs them to function:
+///
+/// - `validate` — config / target / signing-cred validation.
+/// - `before` — user `before:` hooks (e.g. codegen).
+/// - `changelog` — populates release notes context downstream stages may
+///   read; cheap and side-effect-free in `--snapshot` mode.
+/// - `templatefiles` — pre-build template materialization.
+///
+/// Adding any of these to the child `--skip=` list would break stages
+/// that depend on their side-effects-on-context (not on disk), which is
+/// why the harness's complement-set calculation subtracts them.
+const PRESERVE_SET: &[&str] = &["validate", "before", "changelog", "templatefiles"];
+
+/// Compute the harness's child-subprocess "extra skip" set — every stage
+/// name in [`anodizer_core::context::VALID_RELEASE_SKIPS`] that is NOT:
+///
+/// - in the operator's requested-stages list (`requested`), OR
+/// - in [`PRESERVE_SET`] (preamble helpers the pipeline needs), OR
+/// - already in
+///   [`anodizer_core::determinism_runner::SIDE_EFFECT_STAGES`] (the
+///   runner merges those in unconditionally; subtracting them here just
+///   keeps the returned list lean).
+///
+/// The result is fed into
+/// [`anodizer_core::determinism_runner::run_build_pipeline_subprocess`]
+/// as the `extra_skip` argument; the runner merges + dedupes against
+/// `SIDE_EFFECT_STAGES` before joining into `--skip=<csv>`.
+///
+/// Why this matters: `--stages=` is the harness's "what to diff" filter,
+/// but it does NOT restrict which stages the child release subprocess
+/// runs. Without this complement set the child runs the full pipeline
+/// (minus side-effects), including produce-stages like `nfpm`, `nsis`,
+/// `msi`, `dmg`, `pkg`, `snapcraft`, `source`, `flatpak`, `appbundle`,
+/// `srpm`, `upx`, `makeself`, `notarize`. On macOS / Windows shards
+/// those binaries aren't installed; on Linux shards some are but the
+/// target artifacts don't exist on a non-native shard. Skipping every
+/// non-requested produce-stage matches the spec's "only exercise the
+/// requested stages" contract.
+fn compute_extra_skip(requested: &[StageId]) -> Vec<String> {
+    use anodizer_core::context::VALID_RELEASE_SKIPS;
+    use anodizer_core::determinism_runner::SIDE_EFFECT_STAGES;
+    let requested_names: BTreeSet<&str> = requested.iter().map(|s| s.as_str()).collect();
+    VALID_RELEASE_SKIPS
+        .iter()
+        .copied()
+        .filter(|name| !requested_names.contains(name))
+        .filter(|name| !PRESERVE_SET.contains(name))
+        .filter(|name| !SIDE_EFFECT_STAGES.contains(name))
+        .map(str::to_string)
+        .collect()
+}
+
 /// Harness configuration. Constructed by the CLI dispatcher
 /// (`crate::commands::check::determinism::run`) and consumed once via
 /// [`Harness::run`].
@@ -238,24 +292,34 @@ impl Harness {
     /// the actual `Command::new` lives in core where subprocess spawn is
     /// allow-listed.
     ///
-    /// The `--skip=<list>` argument is load-bearing: it pins the harness
-    /// to build-side stages even if a future operator extends the
-    /// pipeline. The skip list is encoded in
-    /// [`anodizer_core::determinism_runner::SIDE_EFFECT_STAGES`] (a
-    /// single source of truth — adding a new side-effect stage to
-    /// `pipeline.rs` MUST register it there), not here, so every harness
-    /// invocation gets the same hermetic guarantee.
+    /// The `--skip=<list>` argument is load-bearing — it pins the harness
+    /// to the stages the operator actually asked to validate. Two
+    /// independent contributions to the list:
+    ///
+    /// 1. [`anodizer_core::determinism_runner::SIDE_EFFECT_STAGES`] —
+    ///    upstream-touching stages that have no place in a hermetic
+    ///    rebuild (publish, release, announce, blob, docker, ...). Lives
+    ///    in core as the single source of truth so adding a new
+    ///    side-effect stage to `pipeline.rs` MUST register it there.
+    /// 2. [`compute_extra_skip`] — every other produce-stage the
+    ///    operator did NOT request via `--stages=` (and that isn't in
+    ///    [`PRESERVE_SET`]). Without this, the child release subprocess
+    ///    would still try to run `nfpm` / `nsis` / `msi` / `dmg` / etc.
+    ///    on shards that have no business running them, dying with `No
+    ///    such file or directory` on missing tooling.
     fn run_build_pipeline(
         &self,
         worktree_path: &Path,
         env: &HashMap<String, String>,
     ) -> Result<()> {
         let exe = anodizer_core::determinism_runner::current_anodize_binary()?;
+        let extra_skip = compute_extra_skip(&self.stages);
         anodizer_core::determinism_runner::run_build_pipeline_subprocess(
             &exe,
             worktree_path,
             env,
             self.targets.as_deref(),
+            &extra_skip,
         )
     }
 
@@ -1023,6 +1087,100 @@ mod tests {
         assert_eq!(StageId::Sbom.as_str(), "sbom");
         assert_eq!(StageId::Sign.as_str(), "sign");
         assert_eq!(StageId::Checksum.as_str(), "checksum");
+    }
+
+    /// Default `--stages=build,archive,sbom,sign,checksum` MUST drive
+    /// `compute_extra_skip` to emit produce-stages like `nfpm`, `nsis`,
+    /// `msi`, `dmg`, `pkg`, `snapcraft`, `source`, `flatpak`,
+    /// `appbundle`, `srpm`, `upx`, `makeself`, `notarize`. The release
+    /// run 25967997789 failure happened because none of these were
+    /// being skipped — the child release subprocess attempted `nfpm pkg
+    /// --packager deb` on a macOS shard and died with `No such file or
+    /// directory`. This test pins the contract that prevented that
+    /// failure.
+    #[test]
+    fn harness_extra_skip_with_default_stages_includes_nfpm() {
+        let stages = vec![
+            StageId::Build,
+            StageId::Archive,
+            StageId::Sbom,
+            StageId::Sign,
+            StageId::Checksum,
+        ];
+        let extra = compute_extra_skip(&stages);
+        for name in [
+            "nfpm",
+            "nsis",
+            "msi",
+            "dmg",
+            "pkg",
+            "snapcraft",
+            "source",
+            "flatpak",
+            "appbundle",
+            "srpm",
+            "upx",
+            "makeself",
+            "notarize",
+        ] {
+            assert!(
+                extra.iter().any(|s| s == name),
+                "compute_extra_skip(default-stages) missing `{name}`: {extra:?}"
+            );
+        }
+    }
+
+    /// PRESERVE_SET stages MUST never appear in the extra skip list,
+    /// regardless of whether the operator listed them via `--stages=`.
+    /// Skipping `validate` would let bad configs through; skipping
+    /// `before` would silently drop user hooks; skipping `changelog`
+    /// would strip release-notes context downstream stages may read.
+    #[test]
+    fn harness_extra_skip_omits_preserve_set() {
+        let stages = vec![StageId::Build, StageId::Archive];
+        let extra = compute_extra_skip(&stages);
+        for name in PRESERVE_SET {
+            assert!(
+                !extra.iter().any(|s| s == name),
+                "compute_extra_skip emitted PRESERVE_SET stage `{name}`: {extra:?}"
+            );
+        }
+    }
+
+    /// If the operator names a produce-stage in `--stages=`, the harness
+    /// MUST NOT add it to the extra skip list — that would defeat the
+    /// whole point of asking for it. The dispatcher's `parse_stages`
+    /// only accepts the canonical build-side set today, but
+    /// `compute_extra_skip` is written generically against `StageId`'s
+    /// `as_str()` so a future extension (e.g. adding `nfpm` as a
+    /// `StageId` variant) still gets the right behavior.
+    #[test]
+    fn harness_extra_skip_omits_requested_stages() {
+        let stages = vec![StageId::Build, StageId::Archive, StageId::Sign];
+        let extra = compute_extra_skip(&stages);
+        for name in ["build", "archive", "sign"] {
+            assert!(
+                !extra.iter().any(|s| s == name),
+                "compute_extra_skip dropped requested stage `{name}`: {extra:?}"
+            );
+        }
+    }
+
+    /// `SIDE_EFFECT_STAGES` entries are added back unconditionally by
+    /// the runner's `compute_skip_arg`, so the harness's complement set
+    /// shouldn't double-list them. (Pure efficiency / readability
+    /// guarantee — `compute_skip_arg` already de-dupes for safety.)
+    #[test]
+    fn harness_extra_skip_excludes_side_effect_stages() {
+        use anodizer_core::determinism_runner::SIDE_EFFECT_STAGES;
+        let stages = vec![StageId::Build];
+        let extra = compute_extra_skip(&stages);
+        for &name in SIDE_EFFECT_STAGES {
+            assert!(
+                !extra.iter().any(|s| s == name),
+                "compute_extra_skip double-listed side-effect stage `{name}`: {extra:?}"
+            );
+        }
     }
 
     #[test]
