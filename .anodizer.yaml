@@ -626,7 +626,11 @@ signs:
       - "{{ Artifact }}"
     env:
       - "GPG_TTY={{ Env.GPG_TTY }}"
-    if_condition: "{{ not .IsSnapshot }}"
+    # Tera-correct: `not IsSnapshot` doesn't short-circuit because Tera treats
+    # both "true" and "false" as truthy non-empty strings. Compare explicitly
+    # so the rendered output is empty in snapshot mode (process.rs treats
+    # empty / "false" as skip) and "true" in release mode.
+    if_condition: '{% if IsSnapshot == "false" %}true{% endif %}'
 
 source:
   enabled: true
@@ -694,7 +698,8 @@ binary_signs:
       - "{{ Artifact }}"
     env:
       - "COSIGN_EXPERIMENTAL=1"
-    if_condition: "{{ not .IsSnapshot }}"
+    # See archive `signs:` block above for why this form is required.
+    if_condition: '{% if IsSnapshot == "false" %}true{% endif %}'
 
 # Docker image signing
 docker_signs:
@@ -708,7 +713,8 @@ docker_signs:
       - "{{ Artifact }}"
     env:
       - "COSIGN_EXPERIMENTAL=1"
-    if_condition: "{{ not .IsSnapshot }}"
+    # See archive `signs:` block above for why this form is required.
+    if_condition: '{% if IsSnapshot == "false" %}true{% endif %}'
 
 # Milestone closing — close GitHub milestones matching the release tag
 milestones:
