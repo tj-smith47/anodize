@@ -716,7 +716,43 @@ pub(crate) fn build_subprocess_env(inputs: &BuildSubprocessEnv<'_>) -> HashMap<S
         rustflags.push_str(&flag);
     }
     if !rustflags.is_empty() {
-        env.insert("RUSTFLAGS".into(), rustflags);
+        env.insert("RUSTFLAGS".into(), rustflags.clone());
+    }
+
+    // Windows MSVC determinism: link.exe stamps the PE COFF
+    // `TimeDateStamp` with wall-clock build time by default, so two
+    // harness runs at different times produce `anodizer.exe` binaries
+    // that differ in the 4 timestamp bytes — and every archive
+    // (.zip / .tar.gz) that wraps the binary inherits the drift.
+    // `/Brepro` swaps the timestamp for a content hash (same input →
+    // same stamp), per
+    // <https://learn.microsoft.com/en-us/cpp/build/reference/brepro>.
+    //
+    // Why a per-target env var (not just `[target.<triple>] rustflags`
+    // in `.cargo/config.toml`): cargo precedence is
+    // `CARGO_TARGET_<triple>_RUSTFLAGS` > `[target.<triple>] rustflags`
+    // > `[build] rustflags` / `RUSTFLAGS`. The harness sets `RUSTFLAGS`
+    // above for `--remap-path-prefix`, which suppresses the
+    // `[target.<triple>] rustflags` config entry; we therefore mirror
+    // the same flags via the per-target env var so the MSVC build
+    // gets BOTH the remap (path determinism) and `/Brepro` (timestamp
+    // determinism). Linux/macOS targets fall through to the global
+    // `RUSTFLAGS` (no `/Brepro`, which would error on lld/ld).
+    //
+    // The `[target.<triple>] rustflags` entry in `.cargo/config.toml`
+    // covers the non-harness path (normal `cargo build --target=...`)
+    // where `RUSTFLAGS` isn't set.
+    for triple in ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"] {
+        let mut per_target = rustflags.clone();
+        if !per_target.is_empty() {
+            per_target.push(' ');
+        }
+        per_target.push_str("-C link-arg=/Brepro");
+        let key = format!(
+            "CARGO_TARGET_{}_RUSTFLAGS",
+            triple.replace('-', "_").to_uppercase()
+        );
+        env.insert(key, per_target);
     }
 
     // Inherit only the explicit allow-list of identity-only host env so
@@ -2062,6 +2098,65 @@ mod tests {
                     rf.contains("--remap-path-prefix="),
                     "remap-path-prefix must be appended even when host RUSTFLAGS is set. got={rf}"
                 );
+            });
+        }
+
+        /// Regression: the harness MUST inject
+        /// `CARGO_TARGET_<msvc-triple>_RUSTFLAGS` containing
+        /// `-C link-arg=/Brepro` so the MSVC linker stamps the PE
+        /// COFF `TimeDateStamp` with a content hash instead of
+        /// wall-clock build time. Without this, every Windows
+        /// `anodizer.exe` differs in 4 header bytes across runs,
+        /// drifting every archive that wraps the binary. CI shard
+        /// "Determinism (windows-latest)" surfaced 20 drifted
+        /// artifacts before this knob landed — all rooted in `.exe`
+        /// timestamp drift.
+        ///
+        /// Per-target (not global) because `/Brepro` is link.exe-only;
+        /// rustc forwards `link-arg` verbatim and lld/ld would reject
+        /// it on Linux/macOS targets.
+        ///
+        /// Per-target RUSTFLAGS must ALSO carry the remap-path-prefix
+        /// entries: cargo precedence is `CARGO_TARGET_<triple>_RUSTFLAGS`
+        /// > `RUSTFLAGS`, so the per-target value REPLACES (not merges
+        /// with) the global. Dropping the remap on MSVC would
+        /// re-introduce the worktree-path drift the cycle-8 fix
+        /// closed.
+        #[test]
+        #[serial(harness_env)]
+        fn harness_env_injects_brepro_for_msvc_targets() {
+            let tmp = tempfile::tempdir().unwrap();
+            with_cleared(&["RUSTFLAGS"], || {
+                let env = build_subprocess_env(&inputs(tmp.path()));
+                for triple_env in [
+                    "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS",
+                    "CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_RUSTFLAGS",
+                ] {
+                    let rf = env.get(triple_env).unwrap_or_else(|| {
+                        panic!(
+                            "{triple_env} must be injected so link.exe gets /Brepro for reproducible PE TimeDateStamp"
+                        )
+                    });
+                    assert!(
+                        rf.contains("-C link-arg=/Brepro"),
+                        "{triple_env} must carry /Brepro. got={rf}"
+                    );
+                    assert!(
+                        rf.contains("--remap-path-prefix="),
+                        "{triple_env} must also carry --remap-path-prefix (per-target rustflags REPLACES global RUSTFLAGS, not appends). got={rf}"
+                    );
+                }
+                // Linux / macOS targets must NOT get a per-target
+                // entry — `/Brepro` would error on lld/ld.
+                for triple_env in [
+                    "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS",
+                    "CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS",
+                ] {
+                    assert!(
+                        !env.contains_key(triple_env),
+                        "{triple_env} must NOT be injected — /Brepro is MSVC-link-only"
+                    );
+                }
             });
         }
 
