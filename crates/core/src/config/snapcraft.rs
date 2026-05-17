@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -43,15 +43,15 @@ pub struct SnapcraftConfig {
     /// Keys are plug names, values are either `null` (simple plug) or an object
     /// with `interface` and optional attributes (e.g. `{ interface: "content", target: "$SNAP/shared" }`).
     /// GoReleaser uses `map[string]any` for this field.
-    pub plugs: Option<HashMap<String, serde_json::Value>>,
+    pub plugs: Option<BTreeMap<String, serde_json::Value>>,
     // No top-level `slots:` — Snapcraft itself has no top-level slots
     // concept; use `apps.<name>.slots` for per-app slots.
     /// Required snapd features/versions.
     pub assumes: Option<Vec<String>>,
     /// Application configurations defining daemons, commands, env vars.
-    pub apps: Option<HashMap<String, SnapcraftApp>>,
+    pub apps: Option<BTreeMap<String, SnapcraftApp>>,
     /// Directory mappings for sandbox accessibility.
-    pub layouts: Option<HashMap<String, SnapcraftLayout>>,
+    pub layouts: Option<BTreeMap<String, SnapcraftLayout>>,
     /// Additional static files to bundle (string shorthand or structured form).
     pub extra_files: Option<Vec<SnapcraftExtraFileSpec>>,
     /// Extra files whose contents are rendered through the template engine before bundling.
@@ -76,7 +76,7 @@ pub struct SnapcraftConfig {
     /// Output timestamp for reproducible builds.
     pub mod_timestamp: Option<String>,
     /// Snap hooks — maps hook name to arbitrary hook config.
-    pub hooks: Option<HashMap<String, serde_json::Value>>,
+    pub hooks: Option<BTreeMap<String, serde_json::Value>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -92,7 +92,7 @@ pub struct SnapcraftApp {
     /// Interface plugs the app needs.
     pub plugs: Option<Vec<String>>,
     /// Environment variables for the app (supports string, integer, and boolean values).
-    pub environment: Option<HashMap<String, serde_json::Value>>,
+    pub environment: Option<BTreeMap<String, serde_json::Value>>,
     /// Additional arguments passed to the command.
     pub args: Option<String>,
     /// Restart condition: on-failure, always, on-success, on-abnormal, on-abort, on-watchdog, never.
@@ -127,7 +127,7 @@ pub struct SnapcraftApp {
     #[serde(alias = "install-mode")]
     pub install_mode: Option<String>,
     /// Arbitrary YAML passed through to snap.yaml.
-    pub passthrough: Option<HashMap<String, serde_json::Value>>,
+    pub passthrough: Option<BTreeMap<String, serde_json::Value>>,
     /// Command to run after daemon stops.
     #[serde(alias = "post-stop-command")]
     pub post_stop_command: Option<String>,
@@ -143,7 +143,7 @@ pub struct SnapcraftApp {
     /// Interface slots this app provides.
     pub slots: Option<Vec<String>>,
     /// Socket definitions map.
-    pub sockets: Option<HashMap<String, serde_json::Value>>,
+    pub sockets: Option<BTreeMap<String, serde_json::Value>>,
     /// Start timeout duration string.
     #[serde(alias = "start-timeout")]
     pub start_timeout: Option<String>,

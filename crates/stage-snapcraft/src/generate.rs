@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use anyhow::{Context as _, Result};
 
@@ -57,7 +57,7 @@ pub fn generate_snap_yaml(
     // Build apps section — if args is set, append it to command.
     // When no apps are configured, generate a default app entry using the
     // first binary's name (like GoReleaser does).
-    let apps: HashMap<String, SnapcraftYamlApp> = if let Some(app_map) = config.apps.as_ref()
+    let apps: BTreeMap<String, SnapcraftYamlApp> = if let Some(app_map) = config.apps.as_ref()
         && !app_map.is_empty()
     {
         app_map
@@ -111,7 +111,7 @@ pub fn generate_snap_yaml(
             .as_deref()
             .filter(|n| !n.is_empty())
             .unwrap_or(primary_binary);
-        let mut default_apps = HashMap::new();
+        let mut default_apps = BTreeMap::new();
         default_apps.insert(
             default_app_name.to_string(),
             SnapcraftYamlApp {
@@ -123,7 +123,7 @@ pub fn generate_snap_yaml(
     };
 
     // Build layouts section
-    let layouts: HashMap<String, SnapcraftYamlLayout> = config
+    let layouts: BTreeMap<String, SnapcraftYamlLayout> = config
         .layouts
         .as_ref()
         .map(|layout_map| {
@@ -177,7 +177,7 @@ pub fn generate_snap_yaml(
         plugs: if has_apps {
             config.plugs.clone().unwrap_or_default()
         } else {
-            HashMap::new()
+            BTreeMap::new()
         },
         // Snapcraft has no top-level `slots:` concept; app-scoped slots live
         // under `apps.<name>.slots` and are emitted via the apps walker above.
@@ -185,7 +185,7 @@ pub fn generate_snap_yaml(
         hooks: if has_apps {
             config.hooks.clone().unwrap_or_default()
         } else {
-            HashMap::new()
+            BTreeMap::new()
         },
     };
 

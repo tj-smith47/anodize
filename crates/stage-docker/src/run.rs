@@ -453,7 +453,12 @@ impl Stage for super::DockerStage {
                             dist: dist.clone(),
                             skip_digest,
                             digest_name_template,
-                            env_vars: ctx.template_vars().all_config_env().clone(),
+                            env_vars: ctx
+                                .template_vars()
+                                .all_config_env()
+                                .iter()
+                                .map(|(k, v)| (k.clone(), v.clone()))
+                                .collect(),
                         });
                     }
                 } // end for snapshot_plats

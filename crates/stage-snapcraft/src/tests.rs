@@ -1,7 +1,7 @@
 #![cfg(test)]
 #![allow(clippy::field_reassign_with_default)]
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 
 use anodizer_core::artifact::{Artifact, ArtifactKind};
@@ -57,7 +57,7 @@ fn test_generate_snap_yaml_basic() {
 
 #[test]
 fn test_generate_snap_yaml_with_apps() {
-    let mut apps = HashMap::new();
+    let mut apps = BTreeMap::new();
     apps.insert(
         "myapp".to_string(),
         SnapcraftApp {
@@ -66,7 +66,7 @@ fn test_generate_snap_yaml_with_apps() {
             stop_mode: Some("sigterm".to_string()),
             restart_condition: Some("on-failure".to_string()),
             plugs: Some(vec!["network".to_string(), "home".to_string()]),
-            environment: Some(HashMap::from([(
+            environment: Some(BTreeMap::from([(
                 "LANG".to_string(),
                 serde_json::json!("C.UTF-8"),
             )])),
@@ -109,7 +109,7 @@ fn test_generate_snap_yaml_with_apps() {
 fn test_generate_snapcraft_yaml_with_plugs_and_app_slots() {
     // Snapcraft has no top-level `slots:` concept; app-scoped slots remain
     // via `apps.<name>.slots` and that path is exercised here.
-    let mut plugs = HashMap::new();
+    let mut plugs = BTreeMap::new();
     plugs.insert("network".to_string(), serde_json::Value::Null);
     plugs.insert("home".to_string(), serde_json::Value::Null);
     plugs.insert(
@@ -117,7 +117,7 @@ fn test_generate_snapcraft_yaml_with_plugs_and_app_slots() {
         serde_json::json!({ "interface": "personal-files", "read": ["/etc/myapp"] }),
     );
 
-    let mut apps_map = HashMap::new();
+    let mut apps_map = BTreeMap::new();
     apps_map.insert(
         "mysnap".to_string(),
         anodizer_core::config::SnapcraftApp {
@@ -151,7 +151,7 @@ fn test_generate_snapcraft_yaml_with_plugs_and_app_slots() {
 
 #[test]
 fn test_generate_snapcraft_yaml_with_layouts() {
-    let mut layouts = HashMap::new();
+    let mut layouts = BTreeMap::new();
     layouts.insert(
         "/usr/share/myapp".to_string(),
         SnapcraftLayout {
@@ -1519,7 +1519,7 @@ fn test_publish_stage_skips_disabled_config() {
 
 #[test]
 fn test_generate_yaml_all_new_app_fields() {
-    let mut apps = HashMap::new();
+    let mut apps = BTreeMap::new();
     apps.insert(
         "mydaemon".to_string(),
         SnapcraftApp {
@@ -1537,7 +1537,7 @@ fn test_generate_yaml_all_new_app_fields() {
             desktop: Some("gui/mydaemon.desktop".to_string()),
             extensions: Some(vec!["gnome".to_string()]),
             install_mode: Some("disable".to_string()),
-            passthrough: Some(HashMap::from([(
+            passthrough: Some(BTreeMap::from([(
                 "custom-key".to_string(),
                 serde_json::json!("custom-value"),
             )])),
@@ -1547,7 +1547,7 @@ fn test_generate_yaml_all_new_app_fields() {
             restart_condition: Some("on-failure".to_string()),
             restart_delay: Some("10s".to_string()),
             slots: Some(vec!["dbus-slot".to_string()]),
-            sockets: Some(HashMap::from([(
+            sockets: Some(BTreeMap::from([(
                 "mysock".to_string(),
                 serde_json::json!({"listen-stream": "$SNAP_DATA/mysock.sock"}),
             )])),
@@ -1663,7 +1663,7 @@ fn test_generate_yaml_all_new_app_fields() {
 
 #[test]
 fn test_generate_yaml_with_hooks() {
-    let mut hooks = HashMap::new();
+    let mut hooks = BTreeMap::new();
     hooks.insert(
         "configure".to_string(),
         serde_json::json!({"plugs": ["network"]}),
@@ -1675,7 +1675,7 @@ fn test_generate_yaml_with_hooks() {
 
     // hooks are emitted only when
     // `apps` is non-empty (the loop runs per-app). Supply a minimal app.
-    let mut apps_map = HashMap::new();
+    let mut apps_map = BTreeMap::new();
     apps_map.insert(
         "mysnap".to_string(),
         anodizer_core::config::SnapcraftApp::default(),
@@ -1701,7 +1701,7 @@ fn test_generate_yaml_with_hooks() {
 #[test]
 fn test_generate_snap_yaml_layout_key_is_singular() {
     // snap.yaml uses "layout:" (singular), not "layouts:"
-    let mut layouts = HashMap::new();
+    let mut layouts = BTreeMap::new();
     layouts.insert(
         "/usr/share/myapp".to_string(),
         SnapcraftLayout {
@@ -1842,12 +1842,12 @@ crates:
 
 #[test]
 fn test_generate_yaml_environment_non_string_values() {
-    let mut env = HashMap::new();
+    let mut env = BTreeMap::new();
     env.insert("MY_PORT".to_string(), serde_json::json!(8080));
     env.insert("DEBUG".to_string(), serde_json::json!(true));
     env.insert("NAME".to_string(), serde_json::json!("myapp"));
 
-    let mut apps = HashMap::new();
+    let mut apps = BTreeMap::new();
     apps.insert(
         "myapp".to_string(),
         SnapcraftApp {
@@ -1942,7 +1942,7 @@ crates:
 #[test]
 fn test_new_app_fields_omitted_when_empty() {
     // When new fields are not set, they should NOT appear in generated YAML
-    let mut apps = HashMap::new();
+    let mut apps = BTreeMap::new();
     apps.insert(
         "myapp".to_string(),
         SnapcraftApp {

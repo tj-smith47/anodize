@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -96,14 +96,19 @@ pub(crate) struct DockerBuildJob {
     /// Digest file name template (rendered). None = use default tag-based naming.
     pub(crate) digest_name_template: Option<String>,
     /// Context environment variables to inject into docker commands.
-    /// These come from .env files and config `env:` sections.
-    pub(crate) env_vars: HashMap<String, String>,
+    /// These come from .env files and config `env:` sections. Ordered map
+    /// so iteration order is stable across runs (load-bearing for the
+    /// determinism harness: any env-iteration leak into command argv or
+    /// log lines would otherwise drift).
+    pub(crate) env_vars: BTreeMap<String, String>,
 }
 
 /// Result of executing a single docker build job.
 pub(crate) struct DockerBuildResult {
-    /// Digests captured after a successful push, keyed by tag.
-    pub(crate) tag_digests: HashMap<String, String>,
+    /// Digests captured after a successful push, keyed by tag. Ordered
+    /// map so per-tag digest files are written in stable order (see
+    /// `env_vars` note above).
+    pub(crate) tag_digests: BTreeMap<String, String>,
     /// Paths to digest files written to the dist directory.
     pub(crate) digest_files: Vec<PathBuf>,
 }
@@ -234,7 +239,7 @@ pub(crate) fn execute_docker_build(
     // V2 builds always use buildx with --push baked into the build invocation,
     // so there is no separate "docker push" / "podman push" step here.
     // Capture digests from the --iidfile written by buildx.
-    let mut tag_digests = HashMap::new();
+    let mut tag_digests = BTreeMap::new();
     let mut digest_files = Vec::new();
 
     // V2: read digest from --iidfile (works even without push).

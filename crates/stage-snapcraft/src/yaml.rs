@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use serde::Serialize;
 
@@ -36,15 +36,15 @@ pub(super) struct SnapcraftYaml {
     pub assumes: Vec<String>,
     #[serde(skip_serializing_if = "is_empty_vec")]
     pub architectures: Vec<String>,
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
-    pub apps: HashMap<String, SnapcraftYamlApp>,
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
-    pub plugs: HashMap<String, serde_json::Value>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub apps: BTreeMap<String, SnapcraftYamlApp>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub plugs: BTreeMap<String, serde_json::Value>,
     #[serde(rename = "layout")]
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
-    pub layouts: HashMap<String, SnapcraftYamlLayout>,
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
-    pub hooks: HashMap<String, serde_json::Value>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub layouts: BTreeMap<String, SnapcraftYamlLayout>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub hooks: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Default, Serialize)]
@@ -59,8 +59,8 @@ pub(super) struct SnapcraftYamlApp {
     pub restart_condition: Option<String>,
     #[serde(skip_serializing_if = "is_empty_vec")]
     pub plugs: Vec<String>,
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
-    pub environment: HashMap<String, serde_json::Value>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub environment: BTreeMap<String, serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub adapter: Option<String>,
     #[serde(skip_serializing_if = "is_empty_vec")]
@@ -86,8 +86,8 @@ pub(super) struct SnapcraftYamlApp {
     #[serde(skip_serializing_if = "Option::is_none", rename = "install-mode")]
     pub install_mode: Option<String>,
     #[serde(flatten)]
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
-    pub passthrough: HashMap<String, serde_json::Value>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub passthrough: BTreeMap<String, serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "post-stop-command")]
     pub post_stop_command: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "refresh-mode")]
@@ -98,8 +98,8 @@ pub(super) struct SnapcraftYamlApp {
     pub restart_delay: Option<String>,
     #[serde(skip_serializing_if = "is_empty_vec")]
     pub slots: Vec<String>,
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
-    pub sockets: HashMap<String, serde_json::Value>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub sockets: BTreeMap<String, serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "start-timeout")]
     pub start_timeout: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", rename = "stop-command")]

@@ -14,7 +14,7 @@ use super::platform::{platform_to_arch, tag_suffix};
 use super::retry::{parse_duration_string, resolve_retry_params};
 use super::spelling::levenshtein_distance;
 use super::staging::PROJECT_MARKERS;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -2491,7 +2491,7 @@ skip: "{{ .IsSnapshot }}"
 #[test]
 fn test_docker_build_job_env_vars_field() {
     // Verify DockerBuildJob carries env_vars through to execution
-    let mut env = HashMap::new();
+    let mut env = BTreeMap::new();
     env.insert("DOCKER_BUILDKIT".to_string(), "1".to_string());
     env.insert("MY_VAR".to_string(), "value".to_string());
 
@@ -2538,7 +2538,7 @@ fn test_v2_iidfile_digest_read() {
 
     // Verify per-tag digests are populated correctly
     let tags = vec!["img:latest".to_string(), "img:v1.0.0".to_string()];
-    let mut tag_digests = HashMap::new();
+    let mut tag_digests = BTreeMap::new();
     for tag in &tags {
         tag_digests.insert(tag.clone(), read_digest.clone());
     }
