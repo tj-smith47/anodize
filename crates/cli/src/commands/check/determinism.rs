@@ -163,7 +163,10 @@ fn parse_stages(s: Option<&str>) -> Result<Vec<StageId>, String> {
                 }
                 match tok {
                     "build" => parsed.push(StageId::Build),
+                    "source" => parsed.push(StageId::Source),
+                    "upx" => parsed.push(StageId::Upx),
                     "archive" => parsed.push(StageId::Archive),
+                    "nfpm" => parsed.push(StageId::Nfpm),
                     "sbom" => parsed.push(StageId::Sbom),
                     "sign" => parsed.push(StageId::Sign),
                     "checksum" => parsed.push(StageId::Checksum),
@@ -173,7 +176,7 @@ fn parse_stages(s: Option<&str>) -> Result<Vec<StageId>, String> {
             if !unknown.is_empty() {
                 return Err(format!(
                     "--stages contained unknown stage(s): {}. \
-                     Known stages: build, archive, sbom, sign, checksum.",
+                     Known stages: build, source, upx, archive, nfpm, sbom, sign, checksum.",
                     unknown.join(", ")
                 ));
             }
@@ -246,6 +249,22 @@ mod tests {
         assert_eq!(
             stages.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
             vec!["archive", "checksum"]
+        );
+    }
+
+    #[test]
+    fn parse_stages_accepts_full_byte_stable_set() {
+        // Every stage name reachable from anodizer-action's per-OS
+        // determinism-stages default must parse cleanly. Drift between
+        // this parser and the action's expanded default surfaces as
+        // "unknown stage(s): source, upx, nfpm" in CI.
+        let stages = parse_stages(Some("build,source,upx,archive,nfpm,sbom,sign,checksum"))
+            .expect("all stages in the action's Linux default must parse");
+        assert_eq!(
+            stages.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+            vec![
+                "build", "source", "upx", "archive", "nfpm", "sbom", "sign", "checksum"
+            ]
         );
     }
 

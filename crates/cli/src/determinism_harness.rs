@@ -99,7 +99,10 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StageId {
     Build,
+    Source,
+    Upx,
     Archive,
+    Nfpm,
     Sbom,
     Sign,
     Checksum,
@@ -111,7 +114,10 @@ impl StageId {
     pub fn as_str(self) -> &'static str {
         match self {
             StageId::Build => "build",
+            StageId::Source => "source",
+            StageId::Upx => "upx",
             StageId::Archive => "archive",
+            StageId::Nfpm => "nfpm",
             StageId::Sbom => "sbom",
             StageId::Sign => "sign",
             StageId::Checksum => "checksum",
