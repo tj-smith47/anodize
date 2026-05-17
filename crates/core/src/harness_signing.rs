@@ -96,9 +96,11 @@ fn provision_cosign(tmpdir: &Path) -> Result<String> {
              `anodizer check determinism --stages=`."
         );
     }
-    let prefix = "anodize-harness";
+    // Use cosign's default `cosign.key` / `cosign.pub` output names —
+    // `--output-key-prefix` only exists in cosign 2.x, and chocolatey
+    // ships an older version on Windows runners.
     let output = Command::new("cosign")
-        .args(["generate-key-pair", "--output-key-prefix", prefix])
+        .args(["generate-key-pair"])
         .current_dir(tmpdir)
         .env("COSIGN_PASSWORD", HARNESS_COSIGN_PASSWORD)
         .output()
@@ -111,7 +113,7 @@ fn provision_cosign(tmpdir: &Path) -> Result<String> {
             String::from_utf8_lossy(&output.stderr)
         );
     }
-    let key_path = tmpdir.join(format!("{prefix}.key"));
+    let key_path = tmpdir.join("cosign.key");
     let contents = std::fs::read_to_string(&key_path)
         .with_context(|| format!("harness signing: read cosign key at {}", key_path.display()))?;
     Ok(contents)
@@ -144,6 +146,26 @@ fn provision_gpg(tmpdir: &Path) -> Result<(PathBuf, String, PathBuf)> {
         std::fs::set_permissions(&gnupg_home, perms)
             .context("harness signing: chmod 0700 GNUPGHOME")?;
     }
+
+    // Pre-write gpg-agent + gpg config so the agent that gets spawned
+    // for keygen accepts non-interactive operation. Without this, fresh
+    // GNUPGHOMEs on macOS runners fail with `agent_genkey failed: No
+    // agent running` because the auto-spawned agent can't establish its
+    // IPC socket without the loopback-pinentry pragma.
+    std::fs::write(
+        gnupg_home.join("gpg-agent.conf"),
+        "allow-loopback-pinentry\n",
+    )
+    .context("harness signing: write gpg-agent.conf")?;
+    std::fs::write(gnupg_home.join("gpg.conf"), "pinentry-mode loopback\n")
+        .context("harness signing: write gpg.conf")?;
+
+    // Explicitly launch the agent before keygen so the socket exists
+    // by the time `gpg --gen-key` attempts to talk to it.
+    let _ = Command::new("gpgconf")
+        .args(["--launch", "gpg-agent"])
+        .env("GNUPGHOME", &gnupg_home)
+        .output();
 
     let batch_path = tmpdir.join("gen-key.batch");
     std::fs::write(&batch_path, HARNESS_GPG_BATCH)
