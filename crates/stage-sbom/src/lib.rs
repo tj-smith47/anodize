@@ -638,6 +638,19 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
 }
 
 /// Built-in SBOM generation using Cargo.lock parsing (CycloneDX/SPDX).
+///
+/// Iterates the same artifact-filter shape as the external (syft) path:
+///
+/// * `artifacts: any` (or unset) → one SBOM at the
+///   `<project>-<version>.<ext>` legacy filename, no per-artifact template
+///   rendering.
+/// * `artifacts: archive|binary|source|package|diskimage|installer` →
+///   one SBOM per matched artifact, rendered through `documents[0]` so
+///   the user gets the same per-archive layout (`<artifact>.cdx.json`)
+///   syft would have produced. The SBOM *contents* are Cargo.lock-derived
+///   and byte-identical across the iteration (every archive shares the
+///   same workspace dependency graph), so the harness sees stable bytes
+///   while consumers keep the per-artifact filename contract.
 fn run_sbom_builtin(
     ctx: &mut Context,
     dist: &Path,
@@ -647,6 +660,8 @@ fn run_sbom_builtin(
 ) -> Result<()> {
     let log = ctx.logger("sbom");
     let id = sbom_cfg.resolved_id();
+    let artifacts_type = sbom_cfg.resolved_artifacts();
+    let documents = sbom_cfg.resolved_documents(artifacts_type);
 
     // Detect format from the document's extension chain rather than a raw
     // substring match. `mytool-spdx-companion.cdx.json` should resolve to
@@ -654,9 +669,9 @@ fn run_sbom_builtin(
     // `.contains("spdx")` heuristic flipped to SPDX based on the marketing
     // word in the basename and produced a malformed CycloneDX-by-name /
     // SPDX-by-payload file.
-    let format = if let Some(ref docs) = sbom_cfg.documents {
+    let format = {
         let mut detected = "cyclonedx";
-        for d in docs {
+        for d in &documents {
             let lower = d.to_lowercase();
             if lower.ends_with(".spdx.json") || lower.ends_with(".spdx") {
                 detected = "spdx";
@@ -668,8 +683,6 @@ fn run_sbom_builtin(
             }
         }
         detected
-    } else {
-        "cyclonedx"
     };
 
     if ctx.is_dry_run() {
@@ -708,8 +721,11 @@ fn run_sbom_builtin(
     //      under the release-resilience determinism contract.
     //   2. `CommitDate` template var — fallback for runs where the
     //      determinism state was not seeded (e.g. SBOM-only commands).
-    //   3. `chrono::Utc::now()` — last-resort fallback; emits a one-line
-    //      warn so the operator sees the reproducibility regression.
+    //   3. `anodizer_core::sde::resolve_now()` — last-resort fallback.
+    //      `resolve_now` itself honors `SOURCE_DATE_EPOCH` so an external
+    //      reproducibility harness (debian builders, nix, etc.) still
+    //      gets a stable timestamp without the in-process determinism
+    //      state being seeded.
     let timestamp = if let Some(state) = ctx.determinism.as_ref() {
         chrono::DateTime::<chrono::Utc>::from_timestamp(state.sde, 0)
             .map(|dt| dt.to_rfc3339())
@@ -721,7 +737,7 @@ fn run_sbom_builtin(
                 ctx.template_vars()
                     .get("CommitDate")
                     .cloned()
-                    .unwrap_or_else(|| chrono::Utc::now().to_rfc3339())
+                    .unwrap_or_else(|| anodizer_core::sde::resolve_now().to_rfc3339())
             })
     } else if let Some(cd) = ctx.template_vars().get("CommitDate").cloned() {
         cd
@@ -730,7 +746,7 @@ fn run_sbom_builtin(
             "sbom[{}]: warn — no SOURCE_DATE_EPOCH or CommitDate; SBOM timestamp will not be reproducible",
             id
         ));
-        chrono::Utc::now().to_rfc3339()
+        anodizer_core::sde::resolve_now().to_rfc3339()
     };
     let namespace_uuid = deterministic_uuid_from(&format!("{}-{}", project_name, version));
 
@@ -756,33 +772,160 @@ fn run_sbom_builtin(
         ),
     };
 
-    let filename = format!("{}-{}.{}", project_name, version, extension);
-    let output_path = dist.join(&filename);
-
     let json_string = serde_json::to_string_pretty(&sbom_json)
         .context("sbom: failed to serialize SBOM to JSON")?;
-    std::fs::write(&output_path, &json_string)
-        .with_context(|| format!("sbom: failed to write {}", output_path.display()))?;
 
-    log.status(&format!("sbom[{}]: wrote {} ({})", id, filename, format));
+    // Filter artifacts to write the SBOM next to. Mirrors the external
+    // (syft) path's artifact-filter shape so swapping `cmd:` in and out
+    // of the config doesn't change the user-visible artifact set.
+    let matching_artifacts: Vec<(PathBuf, HashMap<String, String>, Option<String>)> =
+        match artifacts_type {
+            "any" => vec![(PathBuf::new(), HashMap::new(), None)],
+            "binary" => ctx
+                .artifacts
+                .binary_like_dedup()
+                .into_iter()
+                .filter(|a| matches_id_filter(a, sbom_cfg.ids.as_deref()))
+                .map(|a| (a.path.clone(), a.metadata.clone(), a.target.clone()))
+                .collect(),
+            _ => {
+                let kind = match artifacts_type {
+                    "source" => ArtifactKind::SourceArchive,
+                    "archive" => ArtifactKind::Archive,
+                    "package" => ArtifactKind::LinuxPackage,
+                    "diskimage" => ArtifactKind::DiskImage,
+                    "installer" => ArtifactKind::Installer,
+                    other => bail!(
+                        "sbom[{}]: unknown artifacts type '{}'. Valid values are: \
+                         source, archive, package, diskimage, installer, binary, any",
+                        id,
+                        other
+                    ),
+                };
+                ctx.artifacts
+                    .all()
+                    .iter()
+                    .filter(|a| a.kind == kind)
+                    .filter(|a| matches_id_filter(a, sbom_cfg.ids.as_deref()))
+                    .map(|a| (a.path.clone(), a.metadata.clone(), a.target.clone()))
+                    .collect()
+            }
+        };
 
-    let mut metadata = HashMap::new();
-    metadata.insert("format".to_string(), format.to_string());
-    metadata.insert("sbom_id".to_string(), id.to_string());
+    if matching_artifacts.is_empty() {
+        // Mirror the external path's strict-guard behavior: a configured
+        // SBOM that matches zero artifacts is a config bug under strict
+        // mode, a silent skip under non-strict.
+        ctx.strict_guard(
+            &log,
+            &format!(
+                "sbom[{}]: no matching '{}' artifacts found, skipping",
+                id, artifacts_type
+            ),
+        )?;
+        return Ok(());
+    }
 
-    let name = output_path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    ctx.artifacts.add(Artifact {
-        kind: ArtifactKind::Sbom,
-        name,
-        path: output_path,
-        target: None,
-        crate_name: project_name.to_string(),
-        metadata,
-        size: None,
-    });
+    // Track rendered output filenames so a misconfigured `documents:`
+    // template (e.g. one missing `{{ .ArtifactName }}` while iterating
+    // multiple archives) bails loudly rather than silently overwriting
+    // the same file N times.
+    let mut written_paths: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
+
+    for (artifact_path, artifact_meta, artifact_target) in &matching_artifacts {
+        let output_path = if artifacts_type == "any" {
+            // Legacy global-SBOM filename: `<project>-<version>.<ext>`.
+            let filename = format!("{}-{}.{}", project_name, version, extension);
+            dist.join(filename)
+        } else {
+            // Per-artifact: render `documents[0]` with `ArtifactName`
+            // bound to the matched archive. Matches the external path's
+            // template surface so config templates port verbatim.
+            let artifact_name = artifact_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("artifact");
+            ctx.template_vars_mut().set("ArtifactName", artifact_name);
+            ctx.template_vars_mut().set(
+                "ArtifactExt",
+                anodizer_core::template::extract_artifact_ext(artifact_name),
+            );
+            ctx.template_vars_mut().set(
+                "ArtifactID",
+                artifact_meta.get("id").map(|s| s.as_str()).unwrap_or(""),
+            );
+            if let Some(target) = artifact_target {
+                let (os, arch) = anodizer_core::target::map_target(target);
+                ctx.template_vars_mut().set("Os", &os);
+                ctx.template_vars_mut().set("Arch", &arch);
+                ctx.template_vars_mut().set("Target", target);
+            } else if let Some(target) = artifact_meta.get("target") {
+                let (os, arch) = anodizer_core::target::map_target(target);
+                ctx.template_vars_mut().set("Os", &os);
+                ctx.template_vars_mut().set("Arch", &arch);
+                ctx.template_vars_mut().set("Target", target);
+            }
+
+            let doc_tpl = documents.first().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "sbom[{}]: built-in mode with `artifacts: {}` requires a `documents:` \
+                     template (e.g. \"{{{{ .ArtifactName }}}}.cdx.json\")",
+                    id,
+                    artifacts_type
+                )
+            })?;
+            let rendered = ctx.render_template(doc_tpl).with_context(|| {
+                format!(
+                    "sbom[{}]: failed to render document template '{}'",
+                    id, doc_tpl
+                )
+            })?;
+            if Path::new(&rendered).is_absolute() {
+                bail!(
+                    "sbom[{}]: rendered document path '{}' is absolute; \
+                     SBOM outputs must be relative to the dist directory",
+                    id,
+                    rendered
+                );
+            }
+            dist.join(rendered)
+        };
+
+        if !written_paths.insert(output_path.clone()) {
+            bail!(
+                "sbom[{}]: built-in mode rendered the same output path '{}' for two \
+                 artifacts — add `{{{{ .ArtifactName }}}}` (or another per-artifact \
+                 var) to the `documents:` template",
+                id,
+                output_path.display()
+            );
+        }
+
+        std::fs::write(&output_path, &json_string)
+            .with_context(|| format!("sbom: failed to write {}", output_path.display()))?;
+
+        let name = output_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        log.status(&format!("sbom[{}]: wrote {} ({})", id, name, format));
+
+        let mut metadata = HashMap::new();
+        metadata.insert("format".to_string(), format.to_string());
+        metadata.insert("sbom_id".to_string(), id.to_string());
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Sbom,
+            name,
+            path: output_path,
+            target: artifact_target.clone(),
+            crate_name: project_name.to_string(),
+            metadata,
+            size: None,
+        });
+    }
+
+    anodizer_core::template::clear_per_artifact_vars(ctx.template_vars_mut());
 
     Ok(())
 }

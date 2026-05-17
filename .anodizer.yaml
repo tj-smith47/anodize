@@ -645,18 +645,14 @@ source:
     - "README.md"
 
 sboms:
+  # Built-in CycloneDX from Cargo.lock — omit `cmd`/`args` to opt out of
+  # syft. Built-in emits an SDE-pinned timestamp and a project-derived
+  # deterministic serialNumber, so every run produces byte-identical SBOMs.
   - id: default
     enabled: true
-    cmd: syft
-    args:
-      - "$artifact"
-      - "--output"
-      - "cyclonedx-json=$document"
     documents:
       - "{{ .ArtifactName }}.cdx.json"
     artifacts: archive
-    env:
-      - "SYFT_QUIET=true"
 
 upx:
   - id: default
