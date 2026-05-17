@@ -403,10 +403,19 @@ impl Harness {
                 // NOT bump `drift_count`. See spec §"Verification harness
                 // behavior".
                 if allow_reason.is_none() {
+                    // Diagnostic: scan the per-run head samples for the
+                    // first differing byte offset. Without this, every
+                    // drift cycle is blind — operators see "20 artifacts
+                    // drift" but cannot tell whether the bytes are in
+                    // the PE header, the gzip mtime, the SBOM UUID, or
+                    // padding. The summary points the next fix-cycle at
+                    // the right region in O(N) compute (vs an external
+                    // hex-dump diff round-trip).
+                    let summary = summarize_drift(name, &per_run_hashes);
                     drift.push(DriftRow {
                         artifact: name.clone(),
                         hashes,
-                        differing_bytes_summary: None,
+                        differing_bytes_summary: summary,
                     });
                     drift_count += 1;
                 }
@@ -719,35 +728,60 @@ pub(crate) fn build_subprocess_env(inputs: &BuildSubprocessEnv<'_>) -> HashMap<S
         env.insert("RUSTFLAGS".into(), rustflags.clone());
     }
 
-    // Windows MSVC determinism: link.exe stamps the PE COFF
-    // `TimeDateStamp` with wall-clock build time by default, so two
-    // harness runs at different times produce `anodizer.exe` binaries
-    // that differ in the 4 timestamp bytes — and every archive
-    // (.zip / .tar.gz) that wraps the binary inherits the drift.
-    // `/Brepro` swaps the timestamp for a content hash (same input →
-    // same stamp), per
-    // <https://learn.microsoft.com/en-us/cpp/build/reference/brepro>.
+    // Windows MSVC determinism. Mirrors `.cargo/config.toml` per the
+    // cargo precedence rule:
+    //   `CARGO_TARGET_<triple>_RUSTFLAGS`
+    //   > `[target.<triple>] rustflags`
+    //   > `[build] rustflags` / `RUSTFLAGS`
+    // Because the harness sets `RUSTFLAGS` above for the path remap, the
+    // `[target.<triple>] rustflags` table in `.cargo/config.toml` is
+    // suppressed for harness runs — we therefore mirror it here so the
+    // MSVC build gets the full determinism flag set.
     //
-    // Why a per-target env var (not just `[target.<triple>] rustflags`
-    // in `.cargo/config.toml`): cargo precedence is
-    // `CARGO_TARGET_<triple>_RUSTFLAGS` > `[target.<triple>] rustflags`
-    // > `[build] rustflags` / `RUSTFLAGS`. The harness sets `RUSTFLAGS`
-    // above for `--remap-path-prefix`, which suppresses the
-    // `[target.<triple>] rustflags` config entry; we therefore mirror
-    // the same flags via the per-target env var so the MSVC build
-    // gets BOTH the remap (path determinism) and `/Brepro` (timestamp
-    // determinism). Linux/macOS targets fall through to the global
-    // `RUSTFLAGS` (no `/Brepro`, which would error on lld/ld).
+    // Flags (each addresses a distinct link.exe / rustc non-determinism
+    // source — see the comment block in `.cargo/config.toml` for the
+    // root-cause analysis of each):
     //
-    // The `[target.<triple>] rustflags` entry in `.cargo/config.toml`
-    // covers the non-harness path (normal `cargo build --target=...`)
-    // where `RUSTFLAGS` isn't set.
+    //   `-C link-arg=/Brepro`
+    //     PE COFF `TimeDateStamp` becomes a content hash instead of the
+    //     wall-clock build time. Per
+    //     <https://learn.microsoft.com/en-us/cpp/build/reference/brepro>.
+    //   `-C link-arg=/EMITTOOLVERSIONINFO:NO`
+    //     Suppresses linker tool-version metadata (Rich header +
+    //     IMAGE_OPTIONAL_HEADER.MajorLinkerVersion fields). Without
+    //     this, link.exe writes its toolchain build number into every
+    //     binary it produces, drifting across runner image updates.
+    //   `-C link-arg=/DEBUG:NONE`
+    //     Forbids the IMAGE_DEBUG_TYPE_CODEVIEW debug-directory entry
+    //     (per-build GUID + Age). `strip = "debuginfo"` is supposed to
+    //     drop this on MSVC but defense-in-depth — the entry still
+    //     appears in some toolchain versions.
+    //   `-C link-arg=/OPT:NOICF`
+    //     Disables Identical COMDAT Folding. link.exe's default
+    //     `/OPT:ICF` is multi-pass and parallel; fold ordering varies
+    //     across runs even with identical input.
+    //   `-C codegen-units=1`
+    //     Forces single codegen-unit emission for this rustc
+    //     invocation. The release default (`codegen-units=16`) emits
+    //     16 .obj files concurrently; rustc may write them in a
+    //     non-deterministic order, and link.exe consumes them in argv
+    //     order, which feeds into PE section layout.
+    //
+    // All flags are MSVC-link-specific (or, in `codegen-units`'s case,
+    // scoped to the cargo invocation targeting MSVC) — Linux/macOS
+    // targets fall through to the global `RUSTFLAGS` (no MSVC link
+    // flags, which would error on lld/ld) and are already at 0-drift.
+    const MSVC_DETERMINISM_FLAGS: &str = "-C link-arg=/Brepro \
+        -C link-arg=/EMITTOOLVERSIONINFO:NO \
+        -C link-arg=/DEBUG:NONE \
+        -C link-arg=/OPT:NOICF \
+        -C codegen-units=1";
     for triple in ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"] {
         let mut per_target = rustflags.clone();
         if !per_target.is_empty() {
             per_target.push(' ');
         }
-        per_target.push_str("-C link-arg=/Brepro");
+        per_target.push_str(MSVC_DETERMINISM_FLAGS);
         let key = format!(
             "CARGO_TARGET_{}_RUSTFLAGS",
             triple.replace('-', "_").to_uppercase()
@@ -813,7 +847,38 @@ struct ArtifactInfo {
     relative_path: String,
     /// Best-effort stage attribution from the path prefix.
     stage: String,
+    /// First [`HEAD_SAMPLE_BYTES`] bytes of the artifact, retained so
+    /// the harness can populate `DriftRow.differing_bytes_summary`
+    /// after the worktree is dropped. Why a head sample (not the full
+    /// content): the largest artifact in the pipeline is the raw
+    /// `.exe` at ~50 MB; multiplied by N runs and ~50 artifacts/run
+    /// the retained bytes would blow past the report file's useful
+    /// size. The head is what matters for PE / archive / Mach-O drift
+    /// (their metadata is front-loaded), and the sample is read
+    /// once during the existing `std::fs::read` so there's no extra
+    /// I/O.
+    head_sample: Vec<u8>,
 }
+
+/// How many leading bytes of each artifact to retain for drift
+/// diagnostics. 1 KiB covers:
+///   - PE: DOS stub + PE signature + COFF header + Optional header +
+///     first ~10 section table entries (each entry is 40 B). Catches
+///     `TimeDateStamp`, `MajorLinkerVersion`, debug directory RVA, and
+///     the start of the Rich header.
+///   - tar.gz: gzip header (10 B) + first tar entry header (512 B) +
+///     500 B of the first file's data. Catches gzip `mtime` and tar
+///     `mtime` drift.
+///   - zip: local file header + filename + first file's data start.
+///     Catches `mod_time` / `mod_date` drift.
+///   - CycloneDX SBOM JSON: top-level keys including
+///     `serialNumber` (per-run UUID — a known drift source).
+///
+/// The summary emits the FIRST differing byte offset within this
+/// window, so an artifact whose drift is entirely past byte 1024
+/// (e.g. signature trailers) gets a "no diff in first 1 KiB" hint
+/// that still helps narrow the search.
+const HEAD_SAMPLE_BYTES: usize = 1024;
 
 /// PATH for harness children — inherits the host's PATH verbatim on
 /// every platform.
@@ -1013,6 +1078,8 @@ fn hash_artifacts(
                 .into_owned()
         };
         let stage = infer_stage_from_path(&relative);
+        let head_len = bytes.len().min(HEAD_SAMPLE_BYTES);
+        let head_sample = bytes[..head_len].to_vec();
         out.insert(
             name,
             ArtifactInfo {
@@ -1020,10 +1087,106 @@ fn hash_artifacts(
                 size_bytes: bytes.len() as u64,
                 relative_path: relative,
                 stage,
+                head_sample,
             },
         );
     }
     Ok(out)
+}
+
+/// Produce a one-line human-readable summary of where two runs' head
+/// samples diverge for a given artifact. Returns `None` when fewer
+/// than two runs have head-sample data for the artifact (the comparison
+/// is meaningless with one data point — the surrounding `if all_equal`
+/// already established that the hashes differed, so the missing-sample
+/// path is purely a defensive guard, not the common case).
+///
+/// Output shape: `"first diff at offset 0xNN (run0=0xXX, run1=0xYY)"`
+/// for offsets within [`HEAD_SAMPLE_BYTES`]; `"no diff in first
+/// {HEAD_SAMPLE_BYTES} bytes; size run0=A run1=B"` when the prefixes
+/// match (drift is past the window, often a trailing-section / payload
+/// difference). This is intentionally terse — `determinism.json` is
+/// machine-readable first, human-readable second, and the offset alone
+/// is enough to point a future fix-cycle at the right PE region (`0x00`
+/// → DOS stub, `0x80` → Rich header, `0xC0-0x100` → COFF / Optional
+/// header / TimeDateStamp, `0x1F0+` → section table).
+///
+/// For three-or-more-run reports (currently the harness defaults to 2
+/// but `--runs=N` is a CLI flag), the summary compares run0 vs the
+/// first differing run; if all subsequent runs also diverge from run0,
+/// reporting the first divergence is sufficient to localize the source.
+fn summarize_drift(
+    name: &str,
+    per_run_hashes: &[BTreeMap<String, ArtifactInfo>],
+) -> Option<String> {
+    // Gather head samples + sizes for runs that produced this artifact.
+    let samples: Vec<(&[u8], u64)> = per_run_hashes
+        .iter()
+        .filter_map(|run| {
+            run.get(name)
+                .map(|info| (info.head_sample.as_slice(), info.size_bytes))
+        })
+        .collect();
+    if samples.len() < 2 {
+        return None;
+    }
+    let (head0, size0) = samples[0];
+    // Prefer the first run whose head bytes differ from run0 (most
+    // actionable signal — points at the exact PE/tar/zip header
+    // offset). Fall back to size or hash divergence reports when all
+    // runs share the same head sample.
+    if let Some((idx, head_n, offset)) =
+        samples
+            .iter()
+            .enumerate()
+            .skip(1)
+            .find_map(|(idx, &(head_n, _))| {
+                let common = head0.len().min(head_n.len());
+                (0..common)
+                    .find(|&i| head0[i] != head_n[i])
+                    .map(|off| (idx, head_n, off))
+            })
+    {
+        return Some(format!(
+            "first diff at offset {:#x} (run0={:#04x}, run{idx}={:#04x})",
+            offset, head0[offset], head_n[offset]
+        ));
+    }
+    // No head-byte divergence. Check head-length divergence next
+    // (truncated payload at the very start — rare but possible).
+    if let Some((idx, head_n)) = samples
+        .iter()
+        .enumerate()
+        .skip(1)
+        .find_map(|(idx, &(head_n, _))| (head_n.len() != head0.len()).then_some((idx, head_n)))
+    {
+        return Some(format!(
+            "head samples differ in length: run0={} bytes, run{idx}={} bytes",
+            head0.len(),
+            head_n.len()
+        ));
+    }
+    // Heads are bit-identical; drift is past the captured window. If
+    // total sizes also differ, surface those — otherwise it's a
+    // trailing-bytes-only diff (signatures, trailing checksums, etc.).
+    if let Some((idx, size_n)) = samples
+        .iter()
+        .enumerate()
+        .skip(1)
+        .find_map(|(idx, &(_, size_n))| (size_n != size0).then_some((idx, size_n)))
+    {
+        return Some(format!(
+            "no diff in first {} bytes; total size run0={} run{idx}={} (diff outside head window)",
+            head0.len(),
+            size0,
+            size_n
+        ));
+    }
+    Some(format!(
+        "no diff in first {} bytes; sizes equal at {} bytes (diff is past the head window)",
+        head0.len(),
+        size0
+    ))
 }
 
 /// Best-effort stage attribution from the artifact path. The harness
@@ -1156,6 +1319,7 @@ mod tests {
                     let mut hasher = Sha256::new();
                     hasher.update(bytes);
                     let digest = format!("sha256:{:x}", hasher.finalize());
+                    let head_len = bytes.len().min(HEAD_SAMPLE_BYTES);
                     map.insert(
                         name.into(),
                         ArtifactInfo {
@@ -1163,6 +1327,7 @@ mod tests {
                             size_bytes: bytes.len() as u64,
                             relative_path: format!("dist/{}", name),
                             stage: infer_stage_from_path(name),
+                            head_sample: bytes[..head_len].to_vec(),
                         },
                     );
                 }
@@ -1214,6 +1379,19 @@ mod tests {
         assert_eq!(report.drift[0].artifact, "drifting.tar.gz");
         assert_eq!(report.drift[0].hashes.len(), 2);
         assert_ne!(report.drift[0].hashes[0], report.drift[0].hashes[1]);
+        // Diagnostic: the drift row must carry a `differing_bytes_summary`
+        // so future fix-cycles aren't blind. "first" and "second" diverge
+        // at byte 0 (0x66 'f' vs 0x73 's'), so the summary should call
+        // out offset 0x0. Without this, every drift cycle is a guess
+        // about which region of the binary moved.
+        let summary = report.drift[0]
+            .differing_bytes_summary
+            .as_deref()
+            .expect("drift row must populate differing_bytes_summary");
+        assert!(
+            summary.contains("offset 0x0"),
+            "summary should point at byte 0 for diverging single-byte prefixes. got={summary}"
+        );
 
         // Both artifacts appear in `artifacts`, with the stable one
         // marked deterministic and the drifting one marked not.
@@ -2102,19 +2280,21 @@ mod tests {
         }
 
         /// Regression: the harness MUST inject
-        /// `CARGO_TARGET_<msvc-triple>_RUSTFLAGS` containing
-        /// `-C link-arg=/Brepro` so the MSVC linker stamps the PE
-        /// COFF `TimeDateStamp` with a content hash instead of
-        /// wall-clock build time. Without this, every Windows
-        /// `anodizer.exe` differs in 4 header bytes across runs,
-        /// drifting every archive that wraps the binary. CI shard
-        /// "Determinism (windows-latest)" surfaced 20 drifted
-        /// artifacts before this knob landed — all rooted in `.exe`
-        /// timestamp drift.
+        /// `CARGO_TARGET_<msvc-triple>_RUSTFLAGS` containing the full
+        /// Windows MSVC determinism flag set so two harness runs
+        /// produce byte-identical `anodizer.exe` binaries.
         ///
-        /// Per-target (not global) because `/Brepro` is link.exe-only;
-        /// rustc forwards `link-arg` verbatim and lld/ld would reject
-        /// it on Linux/macOS targets.
+        /// Each flag closes a distinct non-determinism source — see
+        /// `.cargo/config.toml` for the root-cause analysis. CI shard
+        /// "Determinism (windows-latest)" surfaced 20 drifted
+        /// artifacts before this knob landed (cycle 8 + 12 + 13 fixed
+        /// path remap / `/Brepro` / `strip=debuginfo`; cycle 14 adds
+        /// the rest).
+        ///
+        /// Per-target (not global) because all flags are link.exe-only
+        /// (or, in `codegen-units`'s case, harmless on lld/ld but
+        /// scoped to MSVC for symmetry with the `.cargo/config.toml`
+        /// entry that covers the non-harness path).
         ///
         /// Per-target RUSTFLAGS must ALSO carry the remap-path-prefix
         /// entries: cargo precedence is `CARGO_TARGET_<triple>_RUSTFLAGS`
@@ -2124,7 +2304,7 @@ mod tests {
         /// closed.
         #[test]
         #[serial(harness_env)]
-        fn harness_env_injects_brepro_for_msvc_targets() {
+        fn harness_env_injects_msvc_determinism_flags() {
             let tmp = tempfile::tempdir().unwrap();
             with_cleared(&["RUSTFLAGS"], || {
                 let env = build_subprocess_env(&inputs(tmp.path()));
@@ -2134,27 +2314,39 @@ mod tests {
                 ] {
                     let rf = env.get(triple_env).unwrap_or_else(|| {
                         panic!(
-                            "{triple_env} must be injected so link.exe gets /Brepro for reproducible PE TimeDateStamp"
+                            "{triple_env} must be injected so link.exe gets the MSVC determinism flag set"
                         )
                     });
-                    assert!(
-                        rf.contains("-C link-arg=/Brepro"),
-                        "{triple_env} must carry /Brepro. got={rf}"
-                    );
+                    // Each flag is load-bearing — see the comment block
+                    // above `MSVC_DETERMINISM_FLAGS` for which drift
+                    // source each closes. Asserting every flag prevents
+                    // silent regressions if one entry is dropped.
+                    for flag in [
+                        "-C link-arg=/Brepro",
+                        "-C link-arg=/EMITTOOLVERSIONINFO:NO",
+                        "-C link-arg=/DEBUG:NONE",
+                        "-C link-arg=/OPT:NOICF",
+                        "-C codegen-units=1",
+                    ] {
+                        assert!(
+                            rf.contains(flag),
+                            "{triple_env} must carry `{flag}`. got={rf}"
+                        );
+                    }
                     assert!(
                         rf.contains("--remap-path-prefix="),
                         "{triple_env} must also carry --remap-path-prefix (per-target rustflags REPLACES global RUSTFLAGS, not appends). got={rf}"
                     );
                 }
                 // Linux / macOS targets must NOT get a per-target
-                // entry — `/Brepro` would error on lld/ld.
+                // entry — `/Brepro` & friends would error on lld/ld.
                 for triple_env in [
                     "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS",
                     "CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS",
                 ] {
                     assert!(
                         !env.contains_key(triple_env),
-                        "{triple_env} must NOT be injected — /Brepro is MSVC-link-only"
+                        "{triple_env} must NOT be injected — MSVC determinism flags are link.exe-only"
                     );
                 }
             });
