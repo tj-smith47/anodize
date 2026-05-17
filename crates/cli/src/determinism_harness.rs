@@ -273,18 +273,38 @@ impl Harness {
             let artifacts = discover_artifacts(worktree.path())?;
             // `--inject-drift=<stage>` (test-harness gated): mutate the
             // first artifact of the named stage before hashing so the
-            // report records drift. This is the failure-path canary the
-            // integration tests exercise.
-            if let Some(stage) = self.inject_drift.as_deref()
-                && let Some(victim) = pick_first_artifact_for_stage(&artifacts, stage)
-            {
-                inject_drift_byte(victim).with_context(|| {
-                    format!(
-                        "injecting drift byte into {} on run {}",
-                        victim.display(),
-                        run_idx
-                    )
-                })?;
+            // report records drift. The miss path logs the discovered
+            // artifact set so a silent "found no matching stage" in CI
+            // is debuggable from logs alone.
+            if let Some(stage) = self.inject_drift.as_deref() {
+                match pick_first_artifact_for_stage(&artifacts, stage) {
+                    Some(victim) => {
+                        inject_drift_byte(victim).with_context(|| {
+                            format!(
+                                "injecting drift byte into {} on run {}",
+                                victim.display(),
+                                run_idx
+                            )
+                        })?;
+                    }
+                    None => {
+                        let summary: Vec<String> = artifacts
+                            .iter()
+                            .map(|p| {
+                                let s = p.to_string_lossy();
+                                format!("  {} -> {}", p.display(), infer_stage_from_path(&s))
+                            })
+                            .collect();
+                        eprintln!(
+                            "warn: --inject-drift={} matched no artifact on run {}; \
+                             discovered artifacts ({}):\n{}",
+                            stage,
+                            run_idx,
+                            artifacts.len(),
+                            summary.join("\n")
+                        );
+                    }
+                }
             }
             per_run_hashes.push(hash_artifacts(worktree.path(), &artifacts)?);
             // Worktree dropped at end of scope → cleanup automatic.
