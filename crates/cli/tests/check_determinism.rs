@@ -312,6 +312,8 @@ fn inject_drift_archive_reports_drift_on_minimal_workspace() {
             "determinism",
             "--runs",
             "2",
+            "--stages",
+            "build,archive",
             "--inject-drift",
             "archive",
             "--report",

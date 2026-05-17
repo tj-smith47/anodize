@@ -106,12 +106,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Build anodize CLI
-        run: cargo build --release -p anodizer
-      - name: Run fast determinism check
-        run: ./target/release/anodizer check determinism --stages=archive,sbom,sign,checksum --runs=2
+      - uses: tj-smith47/anodizer-action@v1
+        with:
+          determinism: true
+          determinism-stages: archive,sbom,sign,checksum
+          determinism-runs: 2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
   check-config:
     name: Check Config
