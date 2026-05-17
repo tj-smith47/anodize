@@ -239,7 +239,9 @@ impl Harness {
         // material, otherwise even byte-deterministic GPG signatures
         // would diverge.
         let signing_keys: Option<EphemeralSigningKeys> = if self.stages.contains(&StageId::Sign) {
-            Some(anodizer_core::harness_signing::provision_ephemeral_keys()?)
+            Some(anodizer_core::harness_signing::provision_ephemeral_keys(
+                self.sde,
+            )?)
         } else {
             None
         };
@@ -872,13 +874,13 @@ pub(crate) fn build_subprocess_env(inputs: &BuildSubprocessEnv<'_>) -> HashMap<S
         env.insert("COSIGN_PASSWORD".into(), keys.cosign_password.clone());
         env.insert(
             "GNUPGHOME".into(),
-            keys.gnupg_home.to_string_lossy().into_owned(),
+            anodizer_core::harness_signing::path_for_subprocess_env(&keys.gnupg_home),
         );
         env.insert("GPG_FINGERPRINT".into(), keys.gpg_fingerprint.clone());
         env.insert("GPG_TTY".into(), "/dev/null".into());
         env.insert(
             "GPG_KEY_PATH".into(),
-            keys.gpg_key_path.to_string_lossy().into_owned(),
+            anodizer_core::harness_signing::path_for_subprocess_env(&keys.gpg_key_path),
         );
     }
 

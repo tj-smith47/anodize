@@ -24,16 +24,22 @@ use tempfile::TempDir;
 /// private key). Hardcoded so a single value is used across runs.
 const HARNESS_COSIGN_PASSWORD: &str = "anodize-harness";
 
-/// EdDSA ed25519 keypair config for `gpg --batch --gen-key`.
+/// EdDSA ed25519 keypair config template for `gpg --batch --gen-key`.
 /// `%no-protection` skips the passphrase prompt; ed25519 + an SDE-pinned
 /// signing time gives byte-stable detached signatures per RFC 8032.
-const HARNESS_GPG_BATCH: &str = "%no-protection
+/// `Creation-Date: {creation}` is filled in at provision time so the
+/// key's creation timestamp matches the harness's pinned epoch — sign
+/// calls that use `--faked-system-time=<sde>` would otherwise see the
+/// key as "not yet existing at that time" and bail with `Unusable
+/// secret key`.
+const HARNESS_GPG_BATCH_TEMPLATE: &str = "%no-protection
 Key-Type: EDDSA
 Key-Curve: ed25519
 Subkey-Type: EDDSA
 Subkey-Curve: ed25519
 Name-Real: Anodize Harness
 Name-Email: harness@anodize.invalid
+Creation-Date: {creation}
 Expire-Date: 0
 %commit
 ";
@@ -60,17 +66,31 @@ pub struct EphemeralSigningKeys {
     _tmpdir: TempDir,
 }
 
-/// Provision ephemeral cosign + GPG keys. Returns `Err` when either
-/// tool is missing or key generation fails — bailing is preferable to
-/// silently skipping sign-stage validation.
-pub fn provision_ephemeral_keys() -> Result<EphemeralSigningKeys> {
+/// Provision ephemeral cosign + GPG keys. `sde` is the harness's
+/// pinned `SOURCE_DATE_EPOCH`; the GPG key's creation timestamp is
+/// pinned to it so subsequent signs at the same epoch can use the key.
+/// Returns `Err` when either tool is missing or key generation fails —
+/// bailing is preferable to silently skipping sign-stage validation.
+pub fn provision_ephemeral_keys(sde: i64) -> Result<EphemeralSigningKeys> {
+    // GNUPGHOME root must stay SHORT — macOS Unix-domain socket paths
+    // are capped at 104 chars (`sun_path`), and gpg-agent's
+    // `S.gpg-agent.extra` socket name eats ~18 of those. The system
+    // temp dir on macOS is `/var/folders/<hash>/T/` (~50 chars) which
+    // leaves no room. `/tmp` is universally short on Linux + macOS;
+    // Windows uses named pipes (no socket length limit) so the
+    // system temp dir is fine there.
+    let root: PathBuf = if cfg!(target_os = "macos") || cfg!(target_os = "linux") {
+        PathBuf::from("/tmp")
+    } else {
+        std::env::temp_dir()
+    };
     let tmpdir = tempfile::Builder::new()
-        .prefix("anodize-harness-signing-")
-        .tempdir()
+        .prefix("agpg-")
+        .tempdir_in(&root)
         .context("harness signing: create tempdir")?;
 
     let cosign_key_contents = provision_cosign(tmpdir.path())?;
-    let (gnupg_home, gpg_fingerprint, gpg_key_path) = provision_gpg(tmpdir.path())?;
+    let (gnupg_home, gpg_fingerprint, gpg_key_path) = provision_gpg(tmpdir.path(), sde)?;
 
     Ok(EphemeralSigningKeys {
         cosign_key_contents,
@@ -80,6 +100,21 @@ pub fn provision_ephemeral_keys() -> Result<EphemeralSigningKeys> {
         gpg_key_path,
         _tmpdir: tmpdir,
     })
+}
+
+/// Render `path` as the string we pass to subprocess env vars. On
+/// Windows the runner's gpg is the MSYS2 build (Git for Windows) which
+/// treats a leading `C:` as a filename and prepends its current
+/// working directory — backslash separators trigger the same
+/// misparse. Forward slashes are accepted as-is by both MSYS gpg and
+/// native Windows tools.
+pub fn path_for_subprocess_env(path: &Path) -> String {
+    let raw = path.to_string_lossy().into_owned();
+    if cfg!(windows) {
+        raw.replace('\\', "/")
+    } else {
+        raw
+    }
 }
 
 fn provision_cosign(tmpdir: &Path) -> Result<String> {
@@ -119,7 +154,7 @@ fn provision_cosign(tmpdir: &Path) -> Result<String> {
     Ok(contents)
 }
 
-fn provision_gpg(tmpdir: &Path) -> Result<(PathBuf, String, PathBuf)> {
+fn provision_gpg(tmpdir: &Path, sde: i64) -> Result<(PathBuf, String, PathBuf)> {
     if Command::new("gpg")
         .arg("--version")
         .output()
@@ -164,17 +199,21 @@ fn provision_gpg(tmpdir: &Path) -> Result<(PathBuf, String, PathBuf)> {
     // by the time `gpg --gen-key` attempts to talk to it.
     let _ = Command::new("gpgconf")
         .args(["--launch", "gpg-agent"])
-        .env("GNUPGHOME", &gnupg_home)
+        .env("GNUPGHOME", path_for_subprocess_env(&gnupg_home))
         .output();
 
+    let creation_dt = chrono::DateTime::<chrono::Utc>::from_timestamp(sde, 0)
+        .ok_or_else(|| anyhow::anyhow!("harness signing: SDE {} out of range", sde))?;
+    let creation_str = creation_dt.format("%Y%m%dT%H%M%S").to_string();
     let batch_path = tmpdir.join("gen-key.batch");
-    std::fs::write(&batch_path, HARNESS_GPG_BATCH)
+    let batch_config = HARNESS_GPG_BATCH_TEMPLATE.replace("{creation}", &creation_str);
+    std::fs::write(&batch_path, &batch_config)
         .context("harness signing: write gpg batch-key-gen config")?;
 
     let gen_out = Command::new("gpg")
         .args(["--batch", "--gen-key"])
-        .arg(&batch_path)
-        .env("GNUPGHOME", &gnupg_home)
+        .arg(path_for_subprocess_env(&batch_path))
+        .env("GNUPGHOME", path_for_subprocess_env(&gnupg_home))
         .output()
         .context("harness signing: spawn `gpg --batch --gen-key`")?;
     if !gen_out.status.success() {
@@ -188,7 +227,7 @@ fn provision_gpg(tmpdir: &Path) -> Result<(PathBuf, String, PathBuf)> {
 
     let list_out = Command::new("gpg")
         .args(["--list-secret-keys", "--with-colons"])
-        .env("GNUPGHOME", &gnupg_home)
+        .env("GNUPGHOME", path_for_subprocess_env(&gnupg_home))
         .output()
         .context("harness signing: spawn `gpg --list-secret-keys`")?;
     if !list_out.status.success() {
@@ -209,7 +248,7 @@ fn provision_gpg(tmpdir: &Path) -> Result<(PathBuf, String, PathBuf)> {
     let gpg_key_path = tmpdir.join("anodize-harness.asc");
     let export_out = Command::new("gpg")
         .args(["--batch", "--armor", "--export-secret-keys", &fingerprint])
-        .env("GNUPGHOME", &gnupg_home)
+        .env("GNUPGHOME", path_for_subprocess_env(&gnupg_home))
         .output()
         .context("harness signing: spawn `gpg --export-secret-keys`")?;
     if !export_out.status.success() {
