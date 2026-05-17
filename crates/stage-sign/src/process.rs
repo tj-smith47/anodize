@@ -386,15 +386,26 @@ pub(crate) fn process_sign_configs(
                 certificate_str.as_deref(),
             );
 
-            let fully_resolved: Vec<String> = resolved
+            // Empty rendered args (from conditional Tera blocks that
+            // evaluated to "") are dropped — passing them to the signer
+            // as empty positional args confuses gpg.
+            let mut fully_resolved: Vec<String> = resolved
                 .iter()
-                .map(|arg| -> Result<String> {
+                .map(|arg| -> Result<Option<String>> {
                     let rendered = ctx
                         .render_template(arg)
                         .with_context(|| format!("sign: render {} arg '{}'", label, arg))?;
-                    Ok(expand_shell_vars(&rendered, &shell_vars))
+                    let expanded = expand_shell_vars(&rendered, &shell_vars);
+                    if expanded.is_empty() {
+                        Ok(None)
+                    } else {
+                        Ok(Some(expanded))
+                    }
                 })
+                .filter_map(|r| r.transpose())
                 .collect::<Result<Vec<_>>>()?;
+
+            inject_gpg_faked_system_time(&cmd, &mut fully_resolved);
 
             let dist = &ctx.config.dist;
             let sig_path = {
@@ -561,5 +572,122 @@ fn label_to_static(label: &str) -> &'static str {
         "sign" => "sign",
         "binary-sign" => "binary-sign",
         _ => "sign",
+    }
+}
+
+/// Inject `--faked-system-time=<SOURCE_DATE_EPOCH>!` after the first
+/// arg when `cmd` is gpg and SDE is set, so the OpenPGP signature
+/// packet's creation timestamp is pinned. With an EdDSA key this gives
+/// byte-identical detached signatures across runs (RFC 8032). No-op if
+/// the user already supplied `--faked-system-time`.
+fn inject_gpg_faked_system_time(cmd: &str, args: &mut Vec<String>) {
+    if cmd != "gpg" {
+        return;
+    }
+    let Ok(sde) = std::env::var("SOURCE_DATE_EPOCH") else {
+        return;
+    };
+    if args
+        .iter()
+        .any(|a| a == "--faked-system-time" || a.starts_with("--faked-system-time="))
+    {
+        return;
+    }
+    let injection = format!("--faked-system-time={}!", sde);
+    let insert_at = if args.is_empty() { 0 } else { 1 };
+    args.insert(insert_at, injection);
+}
+
+#[cfg(test)]
+mod faked_time_tests {
+    use super::inject_gpg_faked_system_time;
+    use serial_test::serial;
+
+    fn with_sde<F: FnOnce()>(value: Option<&str>, f: F) {
+        let prior = std::env::var("SOURCE_DATE_EPOCH").ok();
+        // SAFETY: serialized via #[serial(env)] on every caller.
+        unsafe {
+            std::env::remove_var("SOURCE_DATE_EPOCH");
+            if let Some(v) = value {
+                std::env::set_var("SOURCE_DATE_EPOCH", v);
+            }
+        }
+        f();
+        unsafe {
+            std::env::remove_var("SOURCE_DATE_EPOCH");
+            if let Some(v) = prior {
+                std::env::set_var("SOURCE_DATE_EPOCH", v);
+            }
+        }
+    }
+
+    #[test]
+    #[serial(env)]
+    fn injects_after_first_arg_for_gpg_with_sde() {
+        with_sde(Some("1715000000"), || {
+            let mut args = vec![
+                "--batch".into(),
+                "--local-user".into(),
+                "ABCD".into(),
+                "--detach-sig".into(),
+                "file".into(),
+            ];
+            inject_gpg_faked_system_time("gpg", &mut args);
+            assert_eq!(args[0], "--batch");
+            assert_eq!(args[1], "--faked-system-time=1715000000!");
+            assert_eq!(args[2], "--local-user");
+        });
+    }
+
+    #[test]
+    #[serial(env)]
+    fn no_inject_when_sde_unset() {
+        with_sde(None, || {
+            let mut args = vec!["--batch".into(), "--detach-sig".into()];
+            inject_gpg_faked_system_time("gpg", &mut args);
+            assert_eq!(args, vec!["--batch".to_string(), "--detach-sig".into()]);
+        });
+    }
+
+    #[test]
+    #[serial(env)]
+    fn no_inject_when_cmd_is_not_gpg() {
+        with_sde(Some("1715000000"), || {
+            let mut args = vec!["sign-blob".into(), "--key=env://KEY".into()];
+            inject_gpg_faked_system_time("cosign", &mut args);
+            assert_eq!(
+                args,
+                vec!["sign-blob".to_string(), "--key=env://KEY".into()]
+            );
+        });
+    }
+
+    #[test]
+    #[serial(env)]
+    fn no_inject_when_user_already_passed_faked_system_time() {
+        with_sde(Some("1715000000"), || {
+            let mut args = vec![
+                "--batch".into(),
+                "--faked-system-time=999!".into(),
+                "--detach-sig".into(),
+            ];
+            inject_gpg_faked_system_time("gpg", &mut args);
+            let count = args
+                .iter()
+                .filter(|a| a.starts_with("--faked-system-time"))
+                .count();
+            assert_eq!(count, 1);
+            assert_eq!(args[1], "--faked-system-time=999!");
+        });
+    }
+
+    #[test]
+    #[serial(env)]
+    fn injects_at_position_zero_when_args_empty() {
+        with_sde(Some("42"), || {
+            let mut args: Vec<String> = vec![];
+            inject_gpg_faked_system_time("gpg", &mut args);
+            assert_eq!(args, vec!["--faked-system-time=42!".to_string()]);
+        });
     }
 }
