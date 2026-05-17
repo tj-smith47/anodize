@@ -7,7 +7,6 @@ use crate::publish_report::PublishReport;
 use crate::scm::ScmTokenType;
 use crate::template::TemplateVars;
 use anyhow::Context as _;
-use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -767,14 +766,12 @@ impl Context {
     ///    — under SDE-aware reproducible builds we deviate from that
     ///    behavior intentionally.
     pub fn populate_time_vars(&mut self) {
-        let now = match std::env::var("SOURCE_DATE_EPOCH")
-            .ok()
-            .and_then(|s| s.parse::<i64>().ok())
-            .and_then(|secs| chrono::DateTime::<Utc>::from_timestamp(secs, 0))
-        {
-            Some(dt) => dt,
-            None => Utc::now(),
-        };
+        // Resolution order (SDE first, else wall-clock) is centralized in
+        // `crate::sde::resolve_now` so any caller — `populate_time_vars`,
+        // Tera built-ins, stage-srpm's `%changelog` date, nightly
+        // `date_str` — sees identical "now" semantics. Earlier this
+        // function inlined the resolution and drifted from the helper.
+        let now = crate::sde::resolve_now();
         self.template_vars.set("Date", &now.to_rfc3339());
         self.template_vars
             .set("Timestamp", &now.timestamp().to_string());
