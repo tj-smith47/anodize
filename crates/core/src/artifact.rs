@@ -183,10 +183,28 @@ pub struct Artifact {
     pub name: String,
     pub target: Option<String>,
     pub crate_name: String,
+    #[serde(serialize_with = "serialize_metadata_sorted")]
     pub metadata: HashMap<String, String>,
     /// File size in bytes, populated by report_sizes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<u64>,
+}
+
+/// Serialize the metadata map as a sorted-key JSON object so two runs
+/// of the same release pipeline produce byte-identical artifact
+/// entries — HashMap iteration order is otherwise unspecified and
+/// drives `artifacts.json` drift.
+fn serialize_metadata_sorted<S>(map: &HashMap<String, String>, ser: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use serde::ser::SerializeMap as _;
+    let sorted: std::collections::BTreeMap<&String, &String> = map.iter().collect();
+    let mut m = ser.serialize_map(Some(sorted.len()))?;
+    for (k, v) in sorted {
+        m.serialize_entry(k, v)?;
+    }
+    m.end()
 }
 
 impl Artifact {
