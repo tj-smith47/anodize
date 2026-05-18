@@ -820,14 +820,27 @@ pub(crate) fn build_subprocess_env(inputs: &BuildSubprocessEnv<'_>) -> HashMap<S
     //     (release profile default, but explicit because `/Brepro` is
     //     incompatible with incremental linking and a future profile
     //     edit shouldn't silently re-enable it).
+    //   - `-C link-arg=/PDBALTPATH:%_PDB%` — embed only the PDB
+    //     filename (no absolute path) in the binary's debug directory.
+    //     Otherwise the per-run worktree path embeds into the binary
+    //     and drifts even with `/Brepro` content-hashing.
+    //   - `-C link-arg=/DEBUG:NONE` — do not emit PDB or CodeView
+    //     records. Even with `/PDBALTPATH`, the linker still embeds a
+    //     CV_INFO_PDB70 record whose GUID is derived non-deterministically
+    //     from the build session. Eliminating the debug directory is the
+    //     reliable cure; production debug symbols are not generally
+    //     needed for a CLI binary.
+    let msvc_flags = [
+        "-C codegen-units=1",
+        "-C link-arg=/Brepro",
+        "-C link-arg=/OPT:NOICF",
+        "-C link-arg=/INCREMENTAL:NO",
+        "-C link-arg=/PDBALTPATH:%_PDB%",
+        "-C link-arg=/DEBUG:NONE",
+    ];
     for triple in ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"] {
         let mut per_target = rustflags.clone();
-        for flag in [
-            "-C codegen-units=1",
-            "-C link-arg=/Brepro",
-            "-C link-arg=/OPT:NOICF",
-            "-C link-arg=/INCREMENTAL:NO",
-        ] {
+        for flag in msvc_flags {
             if !per_target.is_empty() {
                 per_target.push(' ');
             }
@@ -838,6 +851,25 @@ pub(crate) fn build_subprocess_env(inputs: &BuildSubprocessEnv<'_>) -> HashMap<S
             triple.replace('-', "_").to_uppercase()
         );
         env.insert(key, per_target);
+    }
+
+    // On Windows, the host build (e.g. `cargo run --release` invoked
+    // by a `before:` hook) lands at `target/release/anodizer.exe`.
+    // Cargo's host build reads global `RUSTFLAGS` (not the per-target
+    // `CARGO_TARGET_<HOST>_RUSTFLAGS`, which only applies when
+    // `--target=<HOST>` is explicit). Append the MSVC flag set to
+    // global RUSTFLAGS too so the host build is also reproducible.
+    // Safe on Windows runners because the host triple IS msvc, so the
+    // link.exe-specific flags are valid for every build (proc-macros,
+    // build scripts, etc.).
+    if cfg!(windows) {
+        for flag in msvc_flags {
+            if !rustflags.is_empty() {
+                rustflags.push(' ');
+            }
+            rustflags.push_str(flag);
+        }
+        env.insert("RUSTFLAGS".into(), rustflags.clone());
     }
 
     // Inherit only the explicit allow-list of identity-only host env so
@@ -2433,10 +2465,16 @@ mod tests {
                     let rf = env.get(triple_env).unwrap_or_else(|| {
                         panic!("{triple_env} must be injected so link.exe gets /Brepro")
                     });
-                    assert!(
-                        rf.contains("-C link-arg=/Brepro"),
-                        "{triple_env} must carry `-C link-arg=/Brepro`. got={rf}"
-                    );
+                    for needle in [
+                        "-C link-arg=/Brepro",
+                        "-C link-arg=/PDBALTPATH:%_PDB%",
+                        "-C link-arg=/DEBUG:NONE",
+                    ] {
+                        assert!(
+                            rf.contains(needle),
+                            "{triple_env} must carry `{needle}`. got={rf}"
+                        );
+                    }
                     assert!(
                         rf.contains("--remap-path-prefix="),
                         "{triple_env} must also carry --remap-path-prefix (per-target rustflags REPLACES global RUSTFLAGS, not appends). got={rf}"
@@ -2453,6 +2491,41 @@ mod tests {
                         "{triple_env} must NOT be injected — /Brepro is link.exe-only"
                     );
                 }
+            });
+        }
+
+        /// Regression: on Windows, global RUSTFLAGS must ALSO carry the
+        /// MSVC determinism flags so the host build (e.g.
+        /// `cargo run --release` invoked by a `before:` hook, which has
+        /// no `--target` and therefore reads global RUSTFLAGS) lands a
+        /// byte-stable `target/release/anodizer.exe`. Without this, the
+        /// host build drifts at PE offset 0x108 (TimeDateStamp) even
+        /// though the per-target builds at
+        /// `target/<msvc-triple>/release/` are reproducible.
+        #[test]
+        #[cfg(windows)]
+        #[serial(harness_env)]
+        fn harness_env_windows_injects_msvc_flags_into_global_rustflags() {
+            let tmp = tempfile::tempdir().unwrap();
+            with_cleared(&["RUSTFLAGS"], || {
+                let env = build_subprocess_env(&inputs(tmp.path()));
+                let rf = env.get("RUSTFLAGS").expect(
+                    "RUSTFLAGS must be set on Windows so host builds (no --target) are reproducible"
+                );
+                for needle in [
+                    "-C link-arg=/Brepro",
+                    "-C link-arg=/PDBALTPATH:%_PDB%",
+                    "-C link-arg=/DEBUG:NONE",
+                ] {
+                    assert!(
+                        rf.contains(needle),
+                        "global RUSTFLAGS must carry `{needle}` on Windows. got={rf}"
+                    );
+                }
+                assert!(
+                    rf.contains("--remap-path-prefix="),
+                    "global RUSTFLAGS must also carry --remap-path-prefix. got={rf}"
+                );
             });
         }
 
