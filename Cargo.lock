@@ -28,7 +28,7 @@ dependencies = [
 
 [[package]]
 name = "anodizer"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anodizer-core",
  "anodizer-stage-announce",
@@ -84,7 +84,7 @@ dependencies = [
 
 [[package]]
 name = "anodizer-core"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anodizer-core",
  "anyhow",
@@ -115,7 +115,7 @@ dependencies = [
 
 [[package]]
 name = "anodizer-stage-announce"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anodizer-core",
  "anodizer-stage-publish",
@@ -136,7 +136,7 @@ dependencies = [
 
 [[package]]
 name = "anodizer-stage-appbundle"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anodizer-core",
  "anyhow",
@@ -147,7 +147,7 @@ dependencies = [
 
 [[package]]
 name = "anodizer-stage-archive"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anodizer-core",
  "anyhow",
@@ -164,7 +164,7 @@ dependencies = [
 
 [[package]]
 name = "anodizer-stage-blob"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anodizer-core",
  "anyhow",
@@ -181,7 +181,7 @@ dependencies = [
 
 [[package]]
 name = "anodizer-stage-build"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anodizer-core",
  "anyhow",
@@ -194,7 +194,7 @@ dependencies = [
 
 [[package]]
 name = "anodizer-stage-changelog"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anodizer-core",
  "anyhow",
@@ -208,7 +208,7 @@ dependencies = [
 
 [[package]]
 name = "anodizer-stage-checksum"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anodizer-core",
  "anyhow",
@@ -226,7 +226,7 @@ dependencies = [
 
 [[package]]
 name = "anodizer-stage-dmg"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anodizer-core",
  "anyhow",
@@ -237,7 +237,7 @@ dependencies = [
 
 [[package]]
 name = "anodizer-stage-docker"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anodizer-core",
  "anyhow",
@@ -248,7 +248,7 @@ dependencies = [
 
 [[package]]
 name = "anodizer-stage-flatpak"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anodizer-core",
  "anyhow",
@@ -261,7 +261,7 @@ dependencies = [
 
 [[package]]
 name = "anodizer-stage-makeself"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anodizer-core",
  "anyhow",
@@ -270,7 +270,7 @@ dependencies = [
 
 [[package]]
 name = "anodizer-stage-msi"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anodizer-core",
  "anyhow",
@@ -280,7 +280,7 @@ dependencies = [
 
 [[package]]
 name = "anodizer-stage-nfpm"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anodizer-core",
  "anyhow",
@@ -292,7 +292,7 @@ dependencies = [
 
 [[package]]
 name = "anodizer-stage-notarize"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anodizer-core",
  "anyhow",
@@ -302,7 +302,7 @@ dependencies = [
 
 [[package]]
 name = "anodizer-stage-nsis"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anodizer-core",
  "anyhow",
@@ -313,7 +313,7 @@ dependencies = [
 
 [[package]]
 name = "anodizer-stage-pkg"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anodizer-core",
  "anyhow",
@@ -324,7 +324,7 @@ dependencies = [
 
 [[package]]
 name = "anodizer-stage-publish"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anodizer-core",
  "anodizer-stage-publish",
@@ -348,7 +348,7 @@ dependencies = [
 
 [[package]]
 name = "anodizer-stage-release"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anodizer-core",
  "anodizer-stage-checksum",
@@ -372,7 +372,7 @@ dependencies = [
 
 [[package]]
 name = "anodizer-stage-sbom"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anodizer-core",
  "anyhow",
@@ -386,7 +386,7 @@ dependencies = [
 
 [[package]]
 name = "anodizer-stage-sign"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anodizer-core",
  "anyhow",
@@ -397,7 +397,7 @@ dependencies = [
 
 [[package]]
 name = "anodizer-stage-snapcraft"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anodizer-core",
  "anyhow",
@@ -409,7 +409,7 @@ dependencies = [
 
 [[package]]
 name = "anodizer-stage-source"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anodizer-core",
  "anyhow",
@@ -428,7 +428,7 @@ dependencies = [
 
 [[package]]
 name = "anodizer-stage-srpm"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anodizer-core",
  "anyhow",
@@ -439,7 +439,7 @@ dependencies = [
 
 [[package]]
 name = "anodizer-stage-templatefiles"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anodizer-core",
  "anyhow",
@@ -448,7 +448,7 @@ dependencies = [
 
 [[package]]
 name = "anodizer-stage-upx"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anodizer-core",
  "anyhow",
@@ -4195,7 +4195,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anodizer",
  "anodizer-core",
